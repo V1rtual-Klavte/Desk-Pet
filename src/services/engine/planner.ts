@@ -449,13 +449,15 @@ async function executeStep(
     }
     if (missing.length > 0) {
       // 指定的工具不存在（或到不了子代理）就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
-      // 报告交给宿主写计划进度事件与系统消息（FIX-51），不静默。
+      // 报告交给宿主写计划进度事件；工具名不存在再发系统消息（FIX-51 于 2026-10-06 收窄：
+      // 未限定工具逐步打字是刷屏噪音，只留进度事件与日志）。
       log.warn(`步骤 ${step.id} 指定的工具不存在: ${missing.join("、")}`)
       await callbacks.onStepNotice?.(step, { kind: "missing_tools", names: missing })
       return { reply: "", toolCallsMade: 0, success: false, error: `指定的工具不存在: ${missing.join("、")}` }
     }
   } else {
-    // 未限定工具 = 放大到全部已注册工具，必须可见（FIX-51）
+    // 未限定工具 = 放大到全部已注册工具：例行情形（多数步骤本就不写 allowedTools），
+    // 只记进度事件与日志，不发聊天系统消息（2026-10-06 用户裁决，收窄原 FIX-51「必须可见」）。
     log.warn(`步骤 ${step.id} 未指定 allowedTools，使用全部已注册工具`)
     await callbacks.onStepNotice?.(step, { kind: "unbounded_tools" })
     tools.push(...listAll())

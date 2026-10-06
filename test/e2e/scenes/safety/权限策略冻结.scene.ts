@@ -1,4 +1,3 @@
-import { setSessionSafetyMode, resetSessionSafetyMode } from "@/services/debug"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { setOverride } from "@/services/config"
 import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
@@ -10,10 +9,10 @@ import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：权限策略按回合冻结 ──
 //
-// 裁决与授权哈希必须来自同一份策略快照：回合开始时取一次，回合中改安全模式从下一回合生效。
-// 这里在同一个回合里先以 just_do_it 放行一个 DANGER 探针，随后在阻塞工具的窗口里把会话安全模式
-// 改成 let_me_tk，放行后第二个探针仍然被放行（冻结策略）且没有产生任何确认请求；对照组新开一轮，
-// 同一探针进入 ask 并被测试宿主的确认策略拒绝。
+// 裁决与授权哈希必须来自同一份策略快照：回合开始时取一次，回合中改配置从下一回合生效。
+// 这里在同一个回合里先以 just_do_it（CONFIG `ai.safety.mode`）放行一个 DANGER 探针，
+// 随后在阻塞工具的窗口里把该配置改成 let_me_tk，放行后第二个探针仍然被放行（冻结策略）
+// 且没有产生任何确认请求；对照组新开一轮，同一探针进入 ask 并被测试宿主的确认策略拒绝。
 //
 // 回合内翻转必须由场景自己驱动（框架的断言在回合结束之后才跑），所以冻结回合在 setup 里跑完。
 
@@ -72,12 +71,13 @@ export const 权限策略冻结: SceneDef = {
       fakeText("冻结回合完成"),
     ])
     await initChat()
-    setSessionSafetyMode("just_do_it")
+    // 冻结回合的裁决输入：CONFIG `ai.safety.mode`（2026-10-06 起配置是唯一来源）。
+    setOverride("ai.safety.mode", "just_do_it")
     try {
       const frozenTurn = sendMessage("先做一次危险操作，再让阻塞工具等一会儿。")
       await blocking.started
-      // 回合中改设置：正在跑的回合必须继续用回合开始冻结的策略。
-      setSessionSafetyMode("let_me_tk")
+      // 回合中改配置：正在跑的回合必须继续用回合开始冻结的策略（改配置从下一回合生效）。
+      setOverride("ai.safety.mode", "let_me_tk")
       flippedDuringTurn = true
       blocking.release()
       const result = await frozenTurn
@@ -119,8 +119,10 @@ export const 权限策略冻结: SceneDef = {
           }
         } },
         { type: "expectPolicyReset", run: async () => {
-          // 会话安全模式是跨场景状态：显式复原（探针工具同理，不在 setup 里注销 —— 对照回合还要用它）。
-          resetSessionSafetyMode()
+          // 探针工具是跨场景状态，显式注销（不在 setup 里注销 —— 对照回合还要用它）。
+          // 安全模式不再是「场景自己清理」的一族：它是 CONFIG（`ai.safety.mode`），
+          // 由 standard-setup 的配置隔离在每个 trial 开始时无条件收回（唯一机制，
+          // 2026-10-06 起没有会话级覆盖这条第二轴）。
           unregister(`live-${PROBE_A}`)
           unregister(`live-${PROBE_B}`)
         } },

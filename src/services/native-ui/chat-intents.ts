@@ -26,30 +26,33 @@
 // 本模块只执行领域操作，显示变化由 `session-projection` 的回推完成。
 //
 // 本包增补（核心聊天链路；方法登记见 `HostRequestMap` 的「本包：核心聊天链路」组）：
-//   - `chat_send`           → `sendMessage(text, { imagePaths, delivery })`（用户 ingress；
-//     「先落盘再投递」由该入口内部的 lane 持久 inbox 完成，本层不另建投递通道）；
-//   - `chat_slash_command`  → 同一条 `sendMessage`（**不带**显式投递意图：`/` 文本在
-//     忙碌时按既有语义 nextRun 排队，执行/透传由 ingress preProcess 决定）；
+//   - `chat_send`           → `sendMessage(text, { imagePaths })`（用户 ingress；
+//     「先落盘再投递」由该入口内部的 lane 持久 inbox 完成，本层不另建投递通道；
+//     忙碌时的投递意图由 ingress 按 CONFIG `ai.conversation.defaultDelivery` 决定）；
+//   - `chat_slash_command`  → 同一条 `sendMessage`（`/` 文本在忙碌时按既有语义 nextRun
+//     排队，执行/透传由 ingress preProcess 决定）；
 //   - `chat_stop`           → `stopActiveRun(sessionId)`（在跑计划经它一并终止）；
 //   - `chat_switch_session` → `switchToSession(id)`（与其他会话操作同为有界请求）。
 // `sessionId` 是宿主 UI 的快照：Node 活跃会话是唯一所有者，快照不可能领先于投影，
 // 不一致 = 切换在途，按活跃会话处理并留痕（只有 send/slash 是会话内动作，需要这一
 // 说明；stop/switch 接收显式 id，领域入口本就按 id 工作）。
 //
-// 同包另两条增补（消息行动作与会话级覆盖；方法登记见 `HostRequestMap` 的「本包」
-// 组与调试条组）：
+// 同包另四条增补（消息行动作与抽屉三个 CONFIG 写；方法登记见 `HostRequestMap` 的
+// 「本包」组与调试条组）：
 //   - `chat_remember_message` → 可信来源复核（`resolveCurrentTrustedMemorySource`）
 //     + `applyMemoryChange(add, actor:user_ui)` + `publishMemoryRevision`，回执带
 //     `{ revision }`；不可信/不存在由记忆域如实抛错、本层原样透传（裸 `Error`
 //     无 `code`，回执由宿主侧统一归一为 `OTHER`，原因在 message 里）；
-//   - `chat_set_thinking_effort` / `chat_set_safety_mode` → `debug.ts` 的会话级覆盖
-//     （null = 收回覆盖）；显示收敛由回执后的投影重推承担（见下）。
+//   - `chat_set_default_delivery` / `chat_set_thinking_effort` / `chat_set_safety_mode`
+//     → 与设置页同键的 CONFIG 写（`setOverride` + `flushConfig` 的同一条写盘路径；
+//     2026-10-06 用户裁决：抽屉三个下拉就是设置页对应项的快捷入口，不是单条/会话级
+//     覆盖）；显示收敛由回执后的投影重推承担（见下）。
 
 import { sendMessage, stopActiveRun } from "@/services/agent"
 // 记忆草稿 summary 上限取零依赖叶子（不加载记忆域：barrel 仍只在调用时动态 import）。
 import { DRAFT_SUMMARY_CHARS } from "@/services/agent/memory/draft"
 import { playEventSound } from "@/services/audio"
-import { setSessionSafetyMode, setSessionThinkingEffort } from "@/services/debug"
+import { flushConfig, setOverride } from "@/services/config"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import {
@@ -206,29 +209,20 @@ function parseImagePaths(value: unknown): string[] {
   return value as string[]
 }
 
-/** `chat_send` 的 delivery：与 DeliveryIntent 同取值域；缺省/null = 由 ingress 按配置默认处理。 */
-function parseDelivery(value: unknown): "steer" | "followUp" | undefined {
-  if (value === undefined || value === null) return undefined
-  if (value === "steer" || value === "followUp") return value
-  throw Object.assign(new Error("chat_send 的 delivery 只接受 steer / followUp"), {
-    code: "CONFIG",
-  })
-}
-
 /**
  * 发送一条普通消息（`Send`；用户 ingress 的唯一领域入口）。
  *
  * 形状守卫按 `HostRequestMap`：text 必填字符串；文本与图片同时为空是协议违规
  * （宿主侧 `dispatch_send_text` 已拦过，这里不替它放行空消息）。投递（含忙碌路径的
  * lane 持久 inbox、图片准入）全在 `sendMessage` 内部完成，本层不复制默认值、不
- * 另建通道。
+ * 另建通道；忙碌时的投递意图由 ingress 按 CONFIG `ai.conversation.defaultDelivery`
+ * 决定（单条显式投递意图已随 2026-10-06 用户裁决整链删除）。
  */
 export async function chatSend(args: unknown): Promise<void> {
   const payload = (args ?? {}) as {
     sessionId?: unknown
     text?: unknown
     imagePaths?: unknown
-    delivery?: unknown
   }
   const text = requireSendText(payload.text)
   const imagePaths = parseImagePaths(payload.imagePaths)
@@ -236,11 +230,7 @@ export async function chatSend(args: unknown): Promise<void> {
     throw Object.assign(new Error("chat_send 的文本与图片不能同时为空"), { code: "CONFIG" })
   }
   noteSessionSnapshot(optionalSessionId(payload.sessionId, "chat_send"), "chat_send")
-  const delivery = parseDelivery(payload.delivery)
-  const sending = sendMessage(text, {
-    imagePaths,
-    ...(delivery ? { delivery } : {}),
-  })
+  const sending = sendMessage(text, { imagePaths })
   void playEventSound("send").catch((error) => {
     log.warn("发送音效触发失败:", formatError(error))
   })
@@ -250,8 +240,8 @@ export async function chatSend(args: unknown): Promise<void> {
 /**
  * 发送 `/` 开头的命令文本（`SlashCommand`；与今天同一条 `sendMessage`）。
  *
- * 不带显式投递意图：执行/透传由 ingress preProcess 决定，忙碌时按既有语义
- * （`/` 文本 → nextRun）排队。非 `/` 前缀的文本按协议违规拒绝（该入口只承载 slash）。
+ * 执行/透传由 ingress preProcess 决定，忙碌时按既有语义（`/` 文本 → nextRun）排队。
+ * 非 `/` 前缀的文本按协议违规拒绝（该入口只承载 slash）。
  */
 export async function chatSlashCommand(args: unknown): Promise<void> {
   const payload = (args ?? {}) as { sessionId?: unknown; command?: unknown }
@@ -289,7 +279,7 @@ export async function chatSwitchSession(args: unknown): Promise<void> {
   await switchToSession(requireSessionId(args, "chat_switch_session"))
 }
 
-// ── 本包：消息行动作与会话级覆盖（记住这条 / 思考强度 / 安全策略）──
+// ── 本包：消息行动作与抽屉三个 CONFIG 写（记住这条 / 投递 / 思考 / 安全）──
 
 /** `chat_remember_message` 的 eventId：必填非空字符串（消息的可信事件身份）。 */
 function requireEventId(args: unknown, method: string): string {
@@ -352,49 +342,81 @@ export async function chatRememberMessage(args: unknown): Promise<{ revision: nu
   return { revision }
 }
 
-/** `chat_set_thinking_effort` 的 effort：null = 收回覆盖；其余按 ThinkingEffort 值域拒绝。 */
-function parseThinkingEffort(value: unknown): "auto" | "low" | "medium" | "high" | null {
-  if (value === null) return null
+/**
+ * 抽屉三个下拉的统一写盘：`setOverride`（写内存 cfg + 入写队列）→ `flushConfig()`
+ * 原子写盘，与设置页保存**同一条写盘路径**（`settings_commit` 的 ②/③ 步），
+ * 不另建第二条 CONFIG 写路径。写盘失败如实抛出（配置未落盘），由宿主侧以结构化
+ * 回执呈现（界面不做乐观变更）。
+ */
+async function writeDrawerConfig(key: string, value: string): Promise<void> {
+  setOverride(key, value)
+  await flushConfig()
+}
+
+/** `chat_set_default_delivery` 的 delivery：按 DeliveryIntent 值域拒绝其余形状。 */
+function parseDefaultDelivery(value: unknown): "steer" | "followUp" {
+  if (value === "steer" || value === "followUp") return value
+  throw Object.assign(new Error("chat_set_default_delivery 的 delivery 只接受 steer / followUp"), {
+    code: "CONFIG",
+  })
+}
+
+/**
+ * 默认投递方式（抽屉「投递」下拉）：写 CONFIG `ai.conversation.defaultDelivery`
+ * （与设置页「默认发送方式（忙碌时）」同键、同值域；没有「默认」项——配置总有值）。
+ */
+export async function chatSetDefaultDelivery(args: unknown): Promise<void> {
+  const delivery = parseDefaultDelivery((args as { delivery?: unknown } | null)?.delivery)
+  await writeDrawerConfig("ai.conversation.defaultDelivery", delivery)
+}
+
+/** `chat_set_thinking_effort` 的 effort：按 ThinkingEffort 值域拒绝其余形状。 */
+function parseThinkingEffort(value: unknown): "auto" | "low" | "medium" | "high" {
   if (value === "auto" || value === "low" || value === "medium" || value === "high") return value
+  throw Object.assign(new Error("chat_set_thinking_effort 的 effort 只接受 auto/low/medium/high"), {
+    code: "CONFIG",
+  })
+}
+
+/**
+ * 思考强度（抽屉「思考」下拉）：写 CONFIG `ai.thinking.effort`（与设置页同键；
+ * 没有「默认」项——配置总有值）。
+ *
+ * 显示收敛由回执后的投影重推承担（见 `AFTER_REPLY_PUSH_METHODS`）。
+ */
+export async function chatSetThinkingEffort(args: unknown): Promise<void> {
+  const effort = parseThinkingEffort((args as { effort?: unknown } | null)?.effort)
+  await writeDrawerConfig("ai.thinking.effort", effort)
+}
+
+/** `chat_set_safety_mode` 的 mode：按既有三档值域拒绝其余形状。 */
+function parseSafetyMode(value: unknown): "just_do_it" | "tell_me" | "let_me_tk" {
+  if (value === "just_do_it" || value === "tell_me" || value === "let_me_tk") return value
   throw Object.assign(
-    new Error("chat_set_thinking_effort 的 effort 只接受 auto/low/medium/high/null"),
+    new Error("chat_set_safety_mode 的 mode 只接受 just_do_it/tell_me/let_me_tk"),
     { code: "CONFIG" },
   )
 }
 
 /**
- * 会话级思考强度覆盖（调试条的档位按钮）：`null` = 收回覆盖，回到全局默认。
- *
- * Node 内存态的即时写（`debug.ts` 的会话槽，不持久化）；显示收敛由回执后的投影
- * 重推承担（见 `AFTER_REPLY_PUSH_METHODS`）。
+ * 安全策略（抽屉「安全」下拉）：写 CONFIG `ai.safety.mode`（与设置页「确认策略」
+ * 同键、同值域）。**「回合开始冻结」纪律不变**：改配置仍从下一回合生效
+ * （`safety/permission.ts::freezePermissionPolicy`）。
  */
-export async function chatSetThinkingEffort(args: unknown): Promise<void> {
-  setSessionThinkingEffort(parseThinkingEffort((args as { effort?: unknown } | null)?.effort))
-}
-
-/** `chat_set_safety_mode` 的 mode：null = 收回覆盖；其余按既有三档值域拒绝。 */
-function parseSafetyMode(value: unknown): "just_do_it" | "tell_me" | "let_me_tk" | null {
-  if (value === null) return null
-  if (value === "just_do_it" || value === "tell_me" || value === "let_me_tk") return value
-  throw Object.assign(
-    new Error("chat_set_safety_mode 的 mode 只接受 just_do_it/tell_me/let_me_tk/null"),
-    { code: "CONFIG" },
-  )
-}
-
-/** 会话级安全策略覆盖（调试条的档位按钮）：`null` = 收回覆盖。语义同思考强度。 */
 export async function chatSetSafetyMode(args: unknown): Promise<void> {
-  setSessionSafetyMode(parseSafetyMode((args as { mode?: unknown } | null)?.mode))
+  const mode = parseSafetyMode((args as { mode?: unknown } | null)?.mode)
+  await writeDrawerConfig("ai.safety.mode", mode)
 }
 
 /**
  * 回执之后要补投影推送的方法（顺序语义见文件头；其余方法 no-op）。
  *
- * 会话级覆盖两条也在列：`debug.ts` 的会话槽变化没有领域写路径，投影不会自行重推
- * —— 不补推的话调试条会停在旧档位（默认/覆盖标记与生效值都与刚写的值不符）。
+ * 抽屉三条 CONFIG 写也在列：写盘本身没有领域推送路径，投影不会自行重推 ——
+ * 不补推的话抽屉会停在旧档位（选中态与刚写的配置不符）。
  */
 const AFTER_REPLY_PUSH_METHODS: ReadonlySet<string> = new Set([
   "chat_request_session_history",
+  "chat_set_default_delivery",
   "chat_set_thinking_effort",
   "chat_set_safety_mode",
 ])

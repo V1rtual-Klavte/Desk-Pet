@@ -41,9 +41,8 @@ import { planInteractionRecords, planRecords } from "../../host/plan-confirm-cha
 import { runRuntimeTurn } from "./_runtime-turn"
 import { setUiEventPublisher } from "@/services/host"
 import { planCheckpointStore } from "@/services/engine"
-import { planConfig } from "@/services/config"
+import { getOverride, planConfig, setOverride } from "@/services/config"
 import { initPaths } from "@/services/paths"
-import { resetSessionSafetyMode, setSessionSafetyMode } from "@/services/debug"
 
 /** 工具名是线上契约（测试手写见证，不 import 实现常量）。 */
 const TOOL = "propose_plan"
@@ -258,9 +257,11 @@ describe("提议计划", () => {
 
   it("just_do_it 跳过确认面板：直接执行、结果如实标注未经面板 [plan-tool-just-do-it]", async () => {
     await standardSetup("deny", "deny")
-    // just_do_it 是会话级覆盖（优先级高于 standardSetup 钉在 config 基线上的 tell_me）；
-    // 用例结束收回，避免残留影响后续需要确认通道的用例。
-    setSessionSafetyMode("just_do_it")
+    // just_do_it 写进 CONFIG `ai.safety.mode`（2026-10-06 起安全模式只有这一条轴；
+    // standardSetup 的配置隔离已把它钉在 tell_me）；用例结束按原值还原，避免残留
+    // 影响后续需要确认通道的用例。
+    const previousSafetyMode = getOverride<string>("ai.safety.mode")
+    setOverride("ai.safety.mode", "just_do_it")
     try {
       const provider = installFakeProvider([
         fakeToolCall(TOOL, { summary: "两步计划", steps: TWO_STEPS }, PLAN_CALL_ID_AUTO),
@@ -285,7 +286,7 @@ describe("提议计划", () => {
       expect(planEnds(), "计划收尾事件不对").toEqual(["done"])
       expect(output.reply, "回合没有以模型正文收尾").toContain("没弹面板也做完了")
     } finally {
-      resetSessionSafetyMode()
+      setOverride("ai.safety.mode", previousSafetyMode)
     }
   }, 60_000)
 })

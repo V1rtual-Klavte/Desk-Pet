@@ -96,6 +96,33 @@
 // 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；压缩按钮派发链
 // 的补记（model.rs 的 chip → PanelAction::CompactSession、ui.rs 的 apply_panel_action → /compact
 // slash 命令，Rust 内联单测背书、无 caseId）前批已在列，核对仍在。
+// 2026-10-06 计划报告口径收窄批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（runPlanPhase 的 onStepNotice 收窄：工具名不存在
+// （missing_tools，真异常）仍发聊天系统消息；未限定工具（unbounded_tools，例行情形）只写
+// 进度事件与统一日志，不再逐步骤敲系统消息 —— 2026-10-06 用户裁决）。ci-01..ci-07 的图片
+// 准入、截图、预览、投影与删会话清理链路不在改动面内（与计划步骤报告不相交）；逐点核对
+// 实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）。未修订覆盖点，
+// sourceHash 按当前源码复算。
+// 2026-10-06 最终波统一刷新（本批刷新）：sourceFiles 变化仅 `src/services/session/manager.ts`
+// —— deleteSession 不再作废该会话产生的话题来源（2026-10-06 用户裁决：话题证据独立存活到
+// 自身 TTL，作废入口只留显式治理路径；该语义登记在 observation 的 ob-02，新 caseId
+// `session-delete-keeps-topics` 的载体就在本契约 ci-07 的同一测试文件里）。托管图片清理链路
+// （去重收集 → 命令调用 → 空集不调用 / 失败不改返回语义）未动；ci-01..ci-07 逐点核对：
+// 本契约没有「会话删除连带清话题/观察数据」的覆盖点描述（ci-07 描述的是托管聊天图片清理，
+// 与话题链不相交），实现点仍在、覆盖描述与当前实现一致，未修订覆盖点；sourceHash 按当前
+// 源码复算。
+// 2026-10-06 抽屉三下拉统一 CONFIG 写批次（本批刷新）：sourceFiles 变化 ——
+// src/services/agent/runner.ts（SendMessageOptions.delivery 删除：忙碌投递意图的唯一
+// 来源 = CONFIG `ai.conversation.defaultDelivery`；与图片链不相交）、
+// src/services/engine/harness/runtime.ts（思考强度直读 aiConfig.thinkingEffort、计划确认
+// 直读 safetyConfig.mode；runPlanPhase 的 onStepNotice 收窄已由上一批登记）、
+// crates/native-host/src/ui/chat/model.rs 与 ui.rs（抽屉「投递 / 思考 / 安全」三个下拉统一
+// 为与设置页同键的 CONFIG 写：选项表复用 ui/settings/schema.rs 的 DELIVERY / SAFETY_MODE
+// （安全文案对齐为 全放行 / 告知确认 / 全部确认），选中态来自投影现值，本地循环/覆盖语义
+// 与「默认」项退场；属聊天窗抽屉交互面，不在本契约任何覆盖点的行为面内 —— 原生渲染证据
+// 属原生 UI 测试驱动，与既有口径一致）。ci-01..ci-07 的图片准入、截图、预览、投影与
+// 删会话清理链路逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为
+// 审计）；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 export const chatImagesContract: ModuleContract = {
   module: "chat-images",
@@ -132,7 +159,7 @@ export const chatImagesContract: ModuleContract = {
     "crates/native-host/src/ui/chat/model.rs",
     "crates/native-host/src/ui/chat/ui.rs",
   ],
-  sourceHash: "487826888907164022d0e7815f9b6789f15861bd572a0b26269c416d6e1b83ec",
+  sourceHash: "4f4493fde051fe524ed7f2eef5a0cadbc04d29f5fc2ce53e6545390fdbea7e08",
   coverage: [{ id: "ci-01", feature: "用户图片原路径整链", description: "原生常规图片准入最多4张/15MiB，图片-only输入提交后持久JSONL只存路径；模型请求临时读取真实图像，原文件删除后展示投影仍保留路径、请求明确缺失而无图像副本", why: "文本和UI缩略图不能证明模型收到了图像，也不能证明编码未进入JSONL", layer: "e2e", depth: "deep", scenarios: ["chat-image-path-production"] },
     { id: "ci-02", feature: "视觉预算与审计投影", description: "真实用户图像参与主请求与辅助请求的统一保守预算；base64长短不冒充语言token，完整图像内容仍进入仅hash审计投影", why: "图片预算为零会使上下文与主动持久额度准入失真，图像变化也不能得到相同审计内容", layer: "unit", depth: "deep", scenarios: ["chat-image-budget-content-hash"] },
     { id: "ci-03", feature: "截图展示给用户与隐私总闸", description: "screenshot 工具只在 ai.silentAccess.frequency 非 off（低/中/高档）时可用：Rust capture_screenshot 复检同一档位（off 即 Cancelled），前端命中时返回中性说明且不触达采集/落盘；show_to_user=true 时截图先经 save_screenshot 原子落盘（数据根 screenshots/；2026-10-06 取消 200 张保留上限，落盘文件不再被淘汰，回收只有删会话连带清理与用户手动删除）再挂到本回合提交的助手条目 deskpetImagePaths，读模型重载带回、原文件删除后仍保留路径（界面按不可用呈现）；show_to_user 缺省/false 时不落盘（不调用 save_screenshot、数据根不产生文件），工具结果 details 只有 showToUser、不带 screenshotPath，不挂条目、结算不回传；工具结果对模型始终携带 PNG image 块（私有截图模型照常看得见内嵌图片）", why: "「她给你看她看到的画面」要求条目与文件同源（先文件后条目、取消不产生半条消息），且隐私档位为 off 时不能截；私有截图不该在数据根留下用户没要展示的文件", layer: "integration", depth: "deep", scenarios: ["screenshot-show-to-user-attach", "screenshot-default-private", "screenshot-gate-neutral"] },

@@ -577,7 +577,7 @@ impl ChatUi {
     /// 执行一个面板按钮动作。
     ///
     /// 分流：
-    /// - **本地动作**（用量展开、投递意图循环、slash 选用）只改显示态；
+    /// - **本地动作**（用量展开、调试明细、slash 选用）只改显示态；
     /// - **回执动作**（计划确认 / 逐步门 / 权限答复）构造 `ChatIntent` 经端口派发 ——
     ///   `ChatIntentPort` 的接线实现按 `ChatIntent::receipt_event()` 把回执投给 Node；
     /// - **领域动作**（撤回/恢复/中断/终止）同样经端口交给 Node 领域 API。
@@ -603,11 +603,6 @@ impl ChatUi {
                 if Self::lock(&self.model).toggle_debug_registry() {
                     self.schedule_refresh();
                 }
-                return Ok(PanelOutcome::None);
-            }
-            PanelAction::SetDelivery { mode } => {
-                Self::lock(&self.model).set_delivery(*mode);
-                self.schedule_refresh();
                 return Ok(PanelOutcome::None);
             }
             PanelAction::SlashPick { index } => {
@@ -910,7 +905,14 @@ impl ChatUi {
                 },
                 PanelTransition::None,
             ),
-            // ── 调试条：会话级覆盖（有界请求；Node 侧更新后重推投影，显示随帧收敛）──
+            // ── 抽屉三个下拉：与设置页同键的 CONFIG 写（有界请求；Node 写盘后重推投影，
+            //    显示随帧收敛）──
+            PanelAction::SetDefaultDelivery { delivery } => (
+                ChatIntent::SetDefaultDelivery {
+                    delivery: *delivery,
+                },
+                PanelTransition::None,
+            ),
             PanelAction::SetThinkingEffort { effort } => (
                 ChatIntent::SetThinkingEffort {
                     effort: effort.clone(),
@@ -933,7 +935,6 @@ impl ChatUi {
             ),
             // 本地动作在 `apply_panel_action` 顶部已分流。
             PanelAction::ToggleUsage
-            | PanelAction::SetDelivery { .. }
             | PanelAction::SlashPick { .. }
             | PanelAction::ToggleSessionHistory
             | PanelAction::CloseSessionHistory
@@ -1035,13 +1036,12 @@ impl ChatUi {
                 command: text,
             })
         } else {
-            // 投递意图：面板未显式选择时为 None（由 Node 按配置默认处理；UI 不复制默认值）。
-            let delivery = Self::lock(&self.model).delivery();
+            // 忙碌时的投递由 Node ingress 按 CONFIG `ai.conversation.defaultDelivery`
+            // 决定（UI 不复制默认值；单条显式投递意图已整链删除）。
             self.dispatch(ChatIntent::Send {
                 session_id,
                 text,
                 image_paths,
-                delivery,
             })?;
             // 发送成功 = 待发送区释放（§5.3：发送/撤选/切会话后释放）。失败保留选择：
             // 待发送区不做乐观清空，平台层保留输入并给中性通知。

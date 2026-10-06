@@ -41,7 +41,8 @@ export const 停止入口与继续: SceneDef = {
     blocking = registerBlockingTool(TOOL_NAME)
     const firstTurn = sendMessage("开始一个会被停止的任务。")
     await blocking.started
-    await sendMessage(PAUSED_TEXT, { requestId: "runtime-stop-entry-resume", delivery: "steer" })
+    // 忙碌投递意图由 CONFIG `ai.conversation.defaultDelivery` 决定（夹具缺省 steer）。
+    await sendMessage(PAUSED_TEXT, { requestId: "runtime-stop-entry-resume" })
 
     // 用户显式停止：经生产入口取得归还清单（不是测试直接操作运行槽）。
     const stopped = await stopActiveRun(sessionId)

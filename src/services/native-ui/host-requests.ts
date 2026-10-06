@@ -4,8 +4,9 @@
 // 方法名与 args 形状登记在 `HostRequestMap`；传输复用同一事件/回执通道）。
 // 本包增补：核心聊天链路四条（`chat_send` / `chat_slash_command` / `chat_stop` /
 // `chat_switch_session`；处理体同在 `chat-intents.ts`，前三条的宿主侧提交非阻塞）；
-// 消息行动作与会话级覆盖三条（`chat_remember_message` / `chat_set_thinking_effort` /
-// `chat_set_safety_mode`；处理体同在 `chat-intents.ts`，有界请求）；
+// 消息行动作与抽屉三个 CONFIG 写四条（`chat_remember_message` /
+// `chat_set_default_delivery` / `chat_set_thinking_effort` / `chat_set_safety_mode`；
+// 处理体同在 `chat-intents.ts`，有界请求）；
 // 决策类面板动作九条（计划恢复/丢弃、未知副作用处置、队列撤回、暂停输入继续/丢弃、
 // 中断运行继续/丢弃；处理体在 `decision-intents.ts`，其中 resume_plan /
 // resume_paused_inputs / continue_interrupted_run 的宿主侧提交非阻塞）。
@@ -54,7 +55,7 @@ import { errorCode, formatError } from "@/services/error"
 import { getHostBridge, HOST_REQUEST_EVENT } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { normalizeSeparators, runtimePath } from "@/services/paths"
-import { getActivePersonalityId, getCards, switchPersonality } from "@/services/personality"
+import { getActivePersonalityId, listCardMetas, switchPersonality } from "@/services/personality"
 import { refreshProfileAssets } from "@/services/profile"
 import type {
   EditorAssetPayload,
@@ -77,6 +78,7 @@ import {
   chatRequestSessionHistory,
   chatRestoreSession,
   chatSend,
+  chatSetDefaultDelivery,
   chatSetSafetyMode,
   chatSetThinkingEffort,
   chatSlashCommand,
@@ -286,6 +288,8 @@ export async function dispatchHostRequest(method: string, args: unknown): Promis
     // ── 本包：消息行动作与会话级覆盖（承接见 chat-intents.ts 对应小节）──
     case "chat_remember_message":
       return chatRememberMessage(args)
+    case "chat_set_default_delivery":
+      return chatSetDefaultDelivery(args)
     case "chat_set_thinking_effort":
       return chatSetThinkingEffort(args)
     case "chat_set_safety_mode":
@@ -612,7 +616,11 @@ async function settingsCommit(args: { changes: SettingChangePayload[] }): Promis
  *     配置输入，每次保存后都要重应用；scanner 按档位「关」自行停跑）；
  *   - `general.logging.level` → `applyLogLevel()`（logger 级别是缓存值，需在保存后
  *     重应用；Rust 侧同步接收）；
- *   - `ai.humanizer.enabled` → `revealAll()`（保存后立即揭示已提交未展示的分泡）。
+ *   - `ai.humanizer.enabled` → `revealAll()`（保存后立即揭示已提交未展示的分泡）；
+ *   - `ai.conversation.defaultDelivery` / `ai.thinking.effort` / `ai.safety.mode`
+ *     → 重推一次会话投影帧（复用 `pushSessionProjection`，不另建刷新机制）：聊天
+ *     抽屉三个下拉的选中态来自投影（宿主不读 CONFIG），设置页改了这三项要让抽屉
+ *     即时跟上（抽屉与设置页是同一份配置的两个面）。
  * 其余设置项的消费点都在读取时取现值（类型化 getter / 下一次 run 冻结），无需重应用：
  * 快捷键/字体/主题/舞台/聊天列宽/图片预览/摆位/尺寸/自动呼出/音效已由
  * `pushNativeUiState` 的十条推送覆盖（逐项口径见 pushes.ts 头部）；
@@ -658,6 +666,19 @@ async function reapplyRuntimeSettings(changes: SettingChangePayload[]): Promise<
       revealAll()
     } catch (error) {
       failures.push(`humanizer=${formatError(error)}`)
+    }
+  }
+  if (
+    touched("ai.conversation.defaultDelivery") ||
+    touched("ai.thinking.effort") ||
+    touched("ai.safety.mode")
+  ) {
+    try {
+      // 动态 import：与上面几条同款跨域取用（模块图不在本文件顶端展开）。
+      const { pushSessionProjection } = await import("@/services/native-ui/session-projection")
+      await pushSessionProjection()
+    } catch (error) {
+      failures.push(`chatProjection=${formatError(error)}`)
     }
   }
   if (failures.length > 0) {
@@ -740,7 +761,7 @@ async function setPopupGeometry(args: {
 async function personalityCards(): Promise<PersonalityCardsPayload> {
   return {
     active: getActivePersonalityId(),
-    cards: getCards().map((card) => ({
+    cards: (await listCardMetas()).map((card) => ({
       id: card.id,
       name: card.name,
       description: card.description,

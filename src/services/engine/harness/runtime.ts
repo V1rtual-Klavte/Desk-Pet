@@ -23,7 +23,7 @@ import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPl
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanResult } from "@/services/engine/planner"
-import { getEffectiveSafetyMode, getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
+import { recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
@@ -44,7 +44,7 @@ import {
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
 import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool/local/screenshot-details"
-import { humanizerConfig, loopConfig, memoryConfig, planConfig } from "@/services/config"
+import { aiConfig, humanizerConfig, loopConfig, memoryConfig, planConfig, safetyConfig } from "@/services/config"
 import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { getUnderstandingPromptBlock } from "@/services/observation"
 import {
@@ -1764,7 +1764,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
   const frozenSilentRejectedReply = getFallbackReply("silentRejected")
   const pool = getPoolSnapshot()
-  const thinkingEffort = getEffectiveThinkingEffort()
+  const thinkingEffort = aiConfig.thinkingEffort
   const frozenUserContext = {
     v1rtualInstructions: getV1rtualInstructionsSync(),
     dynamicPrompt: composeDynamicPrompt(formatPoolForPrompt(pool), thinkingEffort)
@@ -2217,13 +2217,14 @@ async function runPlanPhase(args: {
     // create 失败直接上抛：计划还没跑、没有任何副作用，此时「降级继续」会让没有记录的计划真的执行起来
     await planCheckpointStore.create(record, steps)
     if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_created", () => ({ planId, stepCount: plan.steps.length }))
-    // PLAN-12：确认读权限终裁用的同一个有效模式（会话覆盖优先），不再读原始 safetyConfig.mode
+    // PLAN-12：确认读权限终裁用的同一个模式（CONFIG `ai.safety.mode` 现值；
+    // 会话级覆盖机制已删除，配置是唯一真相源）
     stepMode = "auto"
-    if (getEffectiveSafetyMode() !== "just_do_it") {
+    if (safetyConfig.mode !== "just_do_it") {
       const decision = await requestPlanConfirm(plan, {
         sessionId,
         planId,
-        ...(getEffectiveSafetyMode() === "let_me_tk" ? { forceStepByStep: true } : {}),
+        ...(safetyConfig.mode === "let_me_tk" ? { forceStepByStep: true } : {}),
         signal: args.confirmSignal,
       })
       if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_confirmed", () => ({ planId, decision: decision.confirmed ? decision.mode : decision.reason }))
@@ -2316,17 +2317,17 @@ async function runPlanPhase(args: {
         planId, stepId: String(step.id), status: output.success ? "done" : "failed",
       }), { entryId })
     },
-    // 工具解析报告（FIX-51）：工具名解析不到、或未限定工具而放大工具面，都在进度事件与系统消息
-    // 里可见 —— 权限面的变化不能只留在日志里。放大到子代理时派生型工具会被剥离（runPiSubAgent），
-    // 所以文案按子代理实际拿到的集合写，不写成「全部」。
+    // 工具解析报告（FIX-51，2026-10-06 收窄）：工具名解析不到是异常，写进度事件与系统消息；
+    // 未限定工具是例行情形（多数步骤本就不写 allowedTools），只留进度事件与日志 —— 逐步敲
+    // 聊天系统消息是刷屏噪音（用户 2026-10-06 裁决）。放大到子代理时派生型工具会被剥离
+    // （runPiSubAgent），missing 文案按子代理实际拿到的集合写，不写成「全部」。
     async onStepNotice(step, notice) {
       const index = plan.steps.findIndex(item => item.id === step.id) + 1
       void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
       if (notice.kind === "missing_tools") {
         pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
-      } else {
-        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用除派生型工具外的全部已注册工具`, sessionId)
       }
+      // unbounded_tools：不敲聊天，见上注（进度事件已标 warning）。
     },
     // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
     // 不让计划在没有答复的情况下继续跑。用户在中止上落定的归宿是 `declined`（planner 侧给出）。
@@ -2806,7 +2807,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
         if (!activeToolNames.includes(name) && frozenTools.some(tool => tool.name === name)) activeToolNames.push(name)
       }
     }
-    const thinkingEffort = getEffectiveThinkingEffort()
+    const thinkingEffort = aiConfig.thinkingEffort
     // 续跑也是一次生成：上一回合违约挂起的提醒同样要送达 —— 否则「违约 → 用户中断 → 续跑」
     // 这条路上提醒永远送不到（本路径不经 isActiveMessage/activeRequest，故只判可写变量与挂起态）。
     const runtimeDataReminder = hasLlmWritableCardVars(card) && hasRuntimeDataReminder(sessionId)
@@ -2887,7 +2888,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const pool = getPoolSnapshot()
   const context = buildPrompt({
     ...{ v1rtualInstructions: getV1rtualInstructionsSync() },
-    unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(),
+    unansweredCount: 0, thinkingEffort: aiConfig.thinkingEffort,
     contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
     tools: [],
   }, card, pool)

@@ -31,7 +31,8 @@
 // 2026-10-05 收尾复查（本批刷新）：sourceFiles 变化 —— src/services/host/types.ts（另一会话的
 // 音效面与管理行类型扩展，nui-26 已按二批复查核对过音效路径；本轮核对请求/载荷形状与当前
 // 实现一致）、src/services/native-ui/session-projection.ts（调试条投影随实现同步：去掉
-// lastPromptTokens 一格（宿主侧同批删除该投影链）；会话级覆盖与生效值字段未动；正文、
+// lastPromptTokens 一格（宿主侧同批删除该投影链）；会话级覆盖与生效值字段当时未动（该机制
+// 已于 2026-10-06 随抽屉三下拉批次整体删除，见文末最新批次注记）；正文、
 // 标签、历史帧与缺省语义未动）。nui-01..nui-26 逐点核对：nui-14 / nui-18 / nui-19 的帧形状
 // 与触发语义未变，其余点不在改动面内、实现点仍在。本批刷新同时包含另一会话的改动；本轮只做
 // coverage 描述与当前实现一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -113,6 +114,41 @@
 // （ProfileManageResult / CardManageResult 同步删字段）。nui-01..nui-32 逐点核对实现点仍在、
 // 覆盖描述与当前实现一致：nui-10（人格卡列表读注册表）与 nui-27（凭据行 action 线值 credential）
 // 的请求/线值面未动，无覆盖点描述被删面板或 newId/activeId，未修订覆盖点；sourceHash 按当前源码复算。
+// 2026-10-06 Card 按需加载批次（本批刷新）：sourceFiles 变化 —— src/services/native-ui/host-requests.ts
+// （personality_cards 的列表来源从内存注册表改为 listCardMetas 现读 Card 目录；返回形状不变）、
+// src/services/native-ui/management-intents.ts（card_manage 的撞名判定/列表与卡片读写改走
+// listCardMetas / loadCard 单卡现读）、src/services/host/types.ts（update_download_and_install
+// 的结果声明 void → { version }，与 Rust 实际返回对齐；不在本契约覆盖面内）。nui-10 描述
+// 按现状修订（列表读目录现读、不进缓存）；其余各点逐条核对实现点仍在、语义未变。
+// sourceHash 按当前源码复算。
+// 2026-10-06 记忆条目字段名修复批次（本批刷新）：sourceFiles 变化 ——
+// src/services/native-ui/management-intents.ts（memory_item_change 处理器的条目 id 改读
+// `itemId`：新增 requireItemId，与 MemoryItemChangePayload 声明和 Rust 发送端一致 —— 通用
+// requireId 读的 `id` 是 detail 等请求的字段；原实现误读 `id`，Rust 发的 `itemId` 全被拒，
+// 设置页「遗忘 / 纠正 / 核心画像」整链以「缺少有效的 id」假失败，2026-10-06 实机事故修复；
+// 既有单测已补「错误字段名（id）必须拒绝」的线形状钉子，不带 caseId）。nui-* 无覆盖点描述
+// 该字段面；nui-01..nui-32 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，
+// 非逐行行为审计）。未修订覆盖点，sourceHash 按当前源码复算。
+// 2026-10-06 抽屉三下拉统一 CONFIG 写批次（analyze→generate）：sourceFiles 变化 ——
+// src/services/host/types.ts（chat_send 线格式删除 delivery 参数；新增三条请求臂
+// chat_set_default_delivery / chat_set_thinking_effort / chat_set_safety_mode —— 抽屉
+// 「投递 / 思考 / 安全」三个下拉各写一个 CONFIG 键（ai.conversation.defaultDelivery /
+// ai.thinking.effort / ai.safety.mode），与设置页同键同值域、没有「默认」档）、
+// src/services/native-ui/chat-intents.ts（三个处理器经 setOverride + flushConfig 的同一
+// 条写盘路径落盘；三条方法加入 AFTER_REPLY_PUSH_METHODS —— 回执后补推一次会话投影，
+// 下拉选中态随帧收敛）、src/services/native-ui/host-requests.ts（三条请求臂注册；
+// reapplyRuntimeSettings 新增按键裁定：提交触碰上述三键任一时经 pushSessionProjection
+// 重推一帧（设置页→抽屉方向）、无关键不推）与 src/services/native-ui/session-projection.ts
+//（调试投影删除 session*/*Effective 四个字段，改为 thinkingEffort / safetyMode 两个 CONFIG
+// 现值字段；defaultDelivery 语义不变）。**会话级覆盖机制整体删除**（debug.ts 的
+// setSessionThinkingEffort / setSessionSafetyMode / getEffective* 与 SafetyMode 类型已迁往
+// config.ts，消费点直读配置 —— 见 agent-runtime / safety 契约的同批注记）；此前批次注记
+// 里「会话级覆盖与生效值字段未动」的表述已被本批取代。
+// nui-11 描述按现状修订并认领两条新 L2 caseId（native-ui-settings-reapply-drawer /
+// native-ui-settings-reapply-drawer-scoped，test/unit/native-ui/settings-commit-reapply.test.ts）；
+// 抽屉写处理器自身的全值域/拒绝用例（chat-intents-guards.test.ts）不带 caseId，按纪律不凭空
+// 登记 coverage。nui-01..nui-32 其余点逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源
+// 核对，非逐行行为审计）；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const nativeUiContract: ModuleContract = {
@@ -160,7 +196,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "2403f5cbe7049133de63292863edc3a9c5c646f8e4d9090093c97fff22fb04d4",
+  sourceHash: "4fcc9815bafbe9744b4d02d6b117c7a6e191f1ad1c54a23a1b7d31a4fdfc27c2",
   coverage: [
     {
       id: "nui-01",
@@ -272,19 +308,19 @@ export const nativeUiContract: ModuleContract = {
     },
     {
       id: "nui-10",
-      feature: "人格卡列表读 Card 注册表",
+      feature: "人格卡列表现读 Card 目录",
       description:
-        "personality_cards 的卡列表来自 Card 注册表（初始化后 = Card 文件解析结果），未激活任何 Card 时 active 如实为 null（不假装有值）",
-      why: "从 CONFIG 副本读会显示与真实注册表不一致的卡列表，切换入口指向不存在的卡",
+        "personality_cards 的卡列表现读 Card 目录（listCardMetas 逐文件只解析 frontmatter、不进缓存），未激活任何 Card 时 active 如实为 null（不假装有值）",
+      why: "从 CONFIG 副本读会显示与真实目录不一致的卡列表，切换入口指向不存在的卡",
       layer: "unit",
       depth: "shallow",
       scenarios: ["native-ui-personality-cards"],
     },
     {
       id: "nui-11",
-      feature: "settings_commit 的运行期重应用（观察总闸 / 静默了解 / 主动刷新 / 日志级别 / 拟人揭示）",
+      feature: "settings_commit 的运行期重应用（观察总闸 / 静默了解 / 主动刷新 / 日志级别 / 拟人揭示 / 抽屉三键重推投影）",
       description:
-        "提交 ai.silentAccess.* 时重应用观察总闸（set_monitor_enabled 走既有开关入口，且发生在写盘之后）、静默了解调度起停并 refreshProactive；与 silentAccess 无关的提交不触碰观察总闸（按变更键裁定，不做无关副作用）；提交 general.logging.level 时下发 set_log_config（记为数值级别）；提交拟人开关时 revealAll()；重应用失败只留痕——不回滚已保存的配置、不把保存判成失败",
+        "提交 ai.silentAccess.* 时重应用观察总闸（set_monitor_enabled 走既有开关入口，且发生在写盘之后）、静默了解调度起停并 refreshProactive；与 silentAccess 无关的提交不触碰观察总闸（按变更键裁定，不做无关副作用）；提交 general.logging.level 时下发 set_log_config（记为数值级别）；提交拟人开关时 revealAll()；提交抽屉三键（ai.conversation.defaultDelivery / ai.thinking.effort / ai.safety.mode）任一键时经 pushSessionProjection 重推一帧会话投影、且发生在写盘之后——抽屉三个下拉的选中态来自投影（宿主不读 CONFIG），设置页与抽屉是同一份配置的两个面、改完要让抽屉即时跟上；无关键不推（同一按变更键裁定，不放大副作用）；重应用失败只留痕——不回滚已保存的配置、不把保存判成失败",
       why: "不重应用则「改开关要重启才生效」；失败回滚会把已落盘的配置判成未保存，失败抛出则把保存整件事判成失败",
       layer: "unit",
       depth: "deep",
@@ -292,6 +328,8 @@ export const nativeUiContract: ModuleContract = {
         "native-ui-settings-reapply-monitor",
         "native-ui-settings-reapply-scoped",
         "native-ui-settings-reapply-logging",
+        "native-ui-settings-reapply-drawer",
+        "native-ui-settings-reapply-drawer-scoped",
         "native-ui-settings-reapply-failure",
       ],
     },

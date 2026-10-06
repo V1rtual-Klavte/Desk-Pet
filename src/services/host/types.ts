@@ -704,7 +704,7 @@ export type HostCommandMap = {
    */
   update_download_and_install: {
     args: Record<string, never>
-    result: void
+    result: { version: string }
   }
 
   // ── 原生 UI 状态推送与宿主请求回执（W9b 有意扩展 W0 冻结矩阵；新能力，不是重名兼容）──
@@ -1440,13 +1440,13 @@ export type HostRequestMap = {
   // 有界等待都只会得到假的 TIMEOUT（见 Rust `ui/chat/intents.rs` 的热路径说明）；
   // `chat_switch_session` 与会话管理组同为有界请求（请求周期内完成）。
   /**
-   * 发送一条普通消息（用户 ingress）。领域入口 = `sendMessage(text, { imagePaths, delivery })`
+   * 发送一条普通消息（用户 ingress）。领域入口 = `sendMessage(text, { imagePaths })`
    * （先落盘再投递在该入口内部完成，本层不另建投递通道）。
    *
    * - `sessionId` 是宿主 UI 的会话快照：Node 活跃会话是唯一所有者，快照不一致
    *   （切换在途）按活跃会话处理并留痕；
-   * - `delivery` 语义 = `DeliveryIntent`（steer=插话 / followUp=稍后继续）；缺省 = 由
-   *   ingress 按配置默认处理（宿主不复制默认值）；
+   * - 忙碌时的投递意图由 ingress 按 CONFIG `ai.conversation.defaultDelivery` 决定
+   *   （宿主不复制默认值；2026-10-06 用户裁决后线格式**没有**单条显式投递参数）；
    * - 回执形状是 void：`SendMessageResult` 不进回执，失败呈现由 Node 领域的系统消息 /
    *   兜底回复承担（回执迟到时宿主只留痕）。
    */
@@ -1455,13 +1455,12 @@ export type HostRequestMap = {
       sessionId?: string | null
       text: string
       imagePaths?: string[] | null
-      delivery?: "steer" | "followUp" | null
     }
     result: void
   }
   /**
-   * 发送 `/` 开头的命令文本：与今天同一条 `sendMessage`，**不带**显式投递意图
-   * （由 ingress preProcess 决定执行/透传；忙碌时按既有语义 nextRun 排队）。
+   * 发送 `/` 开头的命令文本：与今天同一条 `sendMessage`（由 ingress preProcess
+   * 决定执行/透传；忙碌时按既有语义 nextRun 排队）。
    */
   chat_slash_command: { args: { sessionId?: string | null; command: string }; result: void }
   /**
@@ -1484,19 +1483,29 @@ export type HostRequestMap = {
    */
   chat_remember_message: { args: { sessionId: string; eventId: string }; result: { revision: number } }
   /**
-   * 会话级思考强度覆盖（调试条的档位按钮）：`null` = 收回覆盖，回到全局默认。
-   * 与旧壳 `DebugBar.vue:79-83` 的 select 同域（`_default` 即收回覆盖）。
+   * 默认投递方式（抽屉「投递」下拉）：写 CONFIG `ai.conversation.defaultDelivery`
+   * ——与设置页「默认发送方式（忙碌时）」同键同值域（steer=插话 / followUp=稍后继续），
+   * 走 `setOverride` + `flushConfig` 的同一条写盘路径。**没有「默认」档**（配置总有值）。
    */
-  chat_set_thinking_effort: {
-    args: { effort: ThinkingEffort | null }
+  chat_set_default_delivery: {
+    args: { delivery: "steer" | "followUp" }
     result: void
   }
   /**
-   * 会话级安全策略覆盖（调试条的档位按钮）：`null` = 收回覆盖。
-   * 与旧壳 `DebugBar.vue:90-93` 的 select 同域。
+   * 思考强度（抽屉「思考」下拉）：写 CONFIG `ai.thinking.effort`（与设置页同键；
+   * 值域 auto/low/medium/high）。**没有「默认」档**（配置总有值）。
+   */
+  chat_set_thinking_effort: {
+    args: { effort: ThinkingEffort }
+    result: void
+  }
+  /**
+   * 安全策略（抽屉「安全」下拉）：写 CONFIG `ai.safety.mode`（与设置页「确认策略」
+   * 同键同值域：just_do_it/tell_me/let_me_tk）。**没有「默认」档**（配置总有值）；
+   * 回合冻结纪律不变 —— 改配置从下一回合生效。
    */
   chat_set_safety_mode: {
-    args: { mode: "just_do_it" | "tell_me" | "let_me_tk" | null }
+    args: { mode: "just_do_it" | "tell_me" | "let_me_tk" }
     result: void
   }
 

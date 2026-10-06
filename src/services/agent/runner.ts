@@ -9,7 +9,6 @@ import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getCommandReply, getFallbackReply } from "@/services/personality/stages-cache"
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import { conversationConfig } from "@/services/config"
-import type { DeliveryIntent } from "@/services/config"
 import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/harness"
 import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/harness"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
@@ -228,8 +227,6 @@ export async function initChat(): Promise<void> {
 export interface SendMessageOptions {
   requestId?: string
   priority?: MessagePriority
-  /** 用户显式选择的投递意图：steer=插话 / followUp=稍后继续；空闲发送不受影响。 */
-  delivery?: DeliveryIntent
   /** 原文件路径；准入前验证，JSONL 不保存图片编码。 */
   imagePaths?: readonly string[]
 }
@@ -252,11 +249,12 @@ export interface SendMessageResult {
 }
 
 /**
- * 忙碌投递意图（§3.1）：显式选择优先；未注册的 slash 文本按下一次运行排队（nextRun）；
- * 其余按配置 defaultDelivery。运行阶段只决定能否投递，不再替用户选择意图。
+ * 忙碌投递意图（§3.1）：未注册的 slash 文本按下一次运行排队（nextRun）；其余按
+ * CONFIG `ai.conversation.defaultDelivery` 的现值。运行阶段只决定能否投递，
+ * 不替用户选择意图。2026-10-06 用户裁决：单条显式投递意图整链删除 —— 抽屉的
+ * 「投递」下拉改为写该 CONFIG 键（与设置页同键），忙碌投递只此一条路。
  */
-function resolveDeliveryIntent(explicit: DeliveryIntent | undefined, text: string): "steer" | "followUp" | "nextRun" {
-  if (explicit) return explicit
+function resolveDeliveryIntent(text: string): "steer" | "followUp" | "nextRun" {
   if (text.startsWith("/")) return "nextRun"
   return conversationConfig.defaultDelivery
 }
@@ -480,7 +478,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     (ingress ??= makeIngressEnvelope(pre.rawText, pre.normalizedText, originSessionId, requestId, priority))
 
   // 并发入口：生成中把新输入投递到正在运行的 lane（先落盘到持久 inbox，再影响模型）。
-  // 命令按 busyPolicy 准入（exclusive 明确拒绝），投递意图由单条显式选择或配置默认决定；
+  // 命令按 busyPolicy 准入（exclusive 明确拒绝），投递意图由 CONFIG
+  // `ai.conversation.defaultDelivery` 决定（单条显式意图已删除）；
   // 未识别的 slash 文本按下一次运行排队（nextRun）。
   // 「忙」的唯一判定是 hasOpenOperation：宿主回合之外，压缩等 lane 结构操作也算忙 ——
   // 那种窗口里没有可投递的回合，投递必然失败，输入不能被当成正常回合放进去。
@@ -521,7 +520,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       originSessionId, preResult.normalizedText,
       // Card 身份与输入同刻冻结：记忆整理据此把经历归到当时的 Card，而不是事后正在显示的那个。
       { eventId: inputEventId(requestId), mark: inputSourceMark(ingressFor(preResult), getActiveCard()?.id), imagePaths },
-      resolveDeliveryIntent(options.delivery, text),
+      resolveDeliveryIntent(text),
     )
     if (receipt) {
       pushUserMessage(preResult.normalizedText, originSessionId, inputEventId(requestId), imagePaths)

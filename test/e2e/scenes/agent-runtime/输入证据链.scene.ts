@@ -55,7 +55,8 @@ export const 输入证据链: SceneDef = {
     blocking = registerBlockingTool(TOOL_NAME)
     const firstTurn = sendMessage("开始执行一个长任务。")
     await blocking.started
-    await sendMessage(STEER_TEXT, { requestId: REQUEST_ID, delivery: "steer" })
+    // 忙碌投递意图由 CONFIG `ai.conversation.defaultDelivery` 决定（夹具缺省 steer）。
+    await sendMessage(STEER_TEXT, { requestId: REQUEST_ID })
 
     // 还在 inbox 里：这一档只能说「已排队」，不能说已进入请求。
     queuedStage = await readStage(sessionId)

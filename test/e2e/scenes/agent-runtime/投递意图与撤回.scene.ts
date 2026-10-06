@@ -1,5 +1,6 @@
 import { harnessSlots, listQueuedInputs, withdrawQueuedInput } from "@/services/engine/harness"
 import type { HarnessQueuedItem } from "@/services/engine/harness"
+import { setOverride } from "@/services/config"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"
@@ -38,7 +39,7 @@ export const 投递意图与撤回: SceneDef = {
     caseId: "runtime-delivery-intent",
     module: "agent-runtime",
     contractId: "ar-08",
-    description: "显式投递意图与排队视图：回执与 lane inbox 一致，排队项可单项撤回，已消费项不能假装撤回",
+    description: "配置驱动的投递意图与排队视图：回执与 lane inbox 一致，排队项可单项撤回，已消费项不能假装撤回",
     depth: "deep",
     suite: "regression",
     entry: "production",
@@ -57,10 +58,14 @@ export const 投递意图与撤回: SceneDef = {
     const firstTurn = sendMessage("开始执行一个长任务。")
     await blocking.started
 
-    // 显式选择「稍后继续」与「插话」：回执必须与所选意图一致，不能由运行阶段改写。
-    const follow = await sendMessage(FOLLOW_TEXT, { requestId: "runtime-delivery-intent-follow", delivery: "followUp" })
+    // 两种意图各写一次 CONFIG `ai.conversation.defaultDelivery` 再发送（2026-10-06 用户裁决：
+    // 单条显式投递意图退场，忙碌投递按该配置决定）：回执必须与配置的意图一致，
+    // 不能由运行阶段改写。
+    setOverride("ai.conversation.defaultDelivery", "followUp")
+    const follow = await sendMessage(FOLLOW_TEXT, { requestId: "runtime-delivery-intent-follow" })
     followReceipt = follow.delivery
-    const steer = await sendMessage(STEER_TEXT, { requestId: "runtime-delivery-intent-steer", delivery: "steer" })
+    setOverride("ai.conversation.defaultDelivery", "steer")
+    const steer = await sendMessage(STEER_TEXT, { requestId: "runtime-delivery-intent-steer" })
     steerReceipt = steer.delivery
 
     const queued = await waitForQueue(sessionId, items => items.length >= 2, "两条显式投递")
@@ -71,8 +76,8 @@ export const 投递意图与撤回: SceneDef = {
     queuedKinds = queued.map(item => item.kind)
     consumedSteerEntryId = queued.find(item => item.kind === "steer")?.entryId
 
-    // 单项撤回：只对仍在 inbox 的项生效，撤回后不再进入对话。
-    await sendMessage(WITHDRAWN_TEXT, { requestId: "runtime-delivery-intent-withdraw", delivery: "steer" })
+    // 单项撤回：只对仍在 inbox 的项生效，撤回后不再进入对话（仍按 steer 配置投递）。
+    await sendMessage(WITHDRAWN_TEXT, { requestId: "runtime-delivery-intent-withdraw" })
     const withWithdrawn = await waitForQueue(sessionId, items => items.some(item => item.kind === "steer" && item.text === WITHDRAWN_TEXT), "待撤回项")
     const target = withWithdrawn.find(item => item.text === WITHDRAWN_TEXT)!
     withdrawnKind = await withdrawQueuedInput(sessionId, target.entryId)
@@ -89,8 +94,8 @@ export const 投递意图与撤回: SceneDef = {
       type: "expectExplicitDeliveryAndWithdraw",
       run: async () => {
         blocking?.dispose()
-        if (followReceipt !== "followup") throw new Error(`显式稍后继续的回执应为 followup，实际 ${String(followReceipt)}`)
-        if (steerReceipt !== "steered") throw new Error(`显式插话的回执应为 steered，实际 ${String(steerReceipt)}`)
+        if (followReceipt !== "followup") throw new Error(`followUp 配置下的回执应为 followup，实际 ${String(followReceipt)}`)
+        if (steerReceipt !== "steered") throw new Error(`steer 配置下的回执应为 steered，实际 ${String(steerReceipt)}`)
         if (queuedKinds.join(",") !== "followUp,steer") {
           throw new Error(`排队视图的意图顺序异常: ${JSON.stringify(queuedKinds)}`)
         }

@@ -5185,15 +5185,16 @@ fn session_tab_pill_width(name: &str, closable: bool) -> f64 {
 /// 本地显示态动作：只改模型显示状态、**不经 Node**（与 `ui.rs` 的本地分流同一批）。
 ///
 /// 派发成功**必须由平台主动整帧重建**：模型对这些动作未必 bump `panel_revision`
-/// （实机 bug：`SetDelivery` 在下拉里选完投递档显示不刷新，要收回浮层再打开才变；
-/// 模型里 `toggle_usage`/`toggle_debug_tools`/`toggle_debug_registry` 有 bump、
-/// `set_delivery` 没有），刷新回调可能永远不到。对已 bump 的同类动作多重建一次
-/// 是幂等的（随后到达的整帧刷新按新快照重建，不会重复出问题）。
+/// （实机 bug：投递档在下拉里选完显示不刷新、要收回浮层再打开才变 —— 当时代码
+/// 漏 bump；`toggle_usage`/`toggle_debug_tools`/`toggle_debug_registry` 有 bump，
+/// 后续同类 setter 不能再靠「有 bump」的假设），刷新回调可能永远不到。对已 bump 的
+/// 同类动作多重建一次是幂等的（随后到达的整帧刷新按新快照重建，不会重复出问题）。
+/// 三个抽屉下拉（投递/思考/安全）自 2026-10-06 起都写 CONFIG、**不经本函数**
+/// （走 Node 请求 → 回执后的投影重推）。
 fn panel_action_is_local_display(action: &PanelAction) -> bool {
     matches!(
         action,
-        PanelAction::SetDelivery { .. }
-            | PanelAction::ToggleUsage
+        PanelAction::ToggleUsage
             | PanelAction::ToggleDebugTools
             | PanelAction::ToggleDebugRegistry
             | PanelAction::ToggleSessionHistory
@@ -6940,9 +6941,6 @@ mod tests {
         // 实机 bug（「投递在下拉栏选了后显示状态不刷新，必须收回再打开才更新」）：
         // 这类动作只改模型显示态、不经 Node，且模型未必 bump `panel_revision`，
         // 刷新回调可能永远不到 —— 平台必须自己重建。
-        assert!(panel_action_is_local_display(&PanelAction::SetDelivery {
-            mode: None
-        }));
         assert!(panel_action_is_local_display(&PanelAction::ToggleUsage));
         assert!(panel_action_is_local_display(
             &PanelAction::ToggleDebugTools
@@ -6953,13 +6951,26 @@ mod tests {
         assert!(panel_action_is_local_display(
             &PanelAction::ToggleSessionHistory
         ));
-        // 走 Node 的动作不在其列（回执/投影会带来刷新）。
+        // 走 Node 的动作不在其列（回执/投影会带来刷新）：抽屉三个下拉自
+        // 2026-10-06 起统一写 CONFIG（有界请求 → 回执后的投影重推）。
         assert!(!panel_action_is_local_display(
             &PanelAction::PermissionAllowOnce
         ));
         assert!(!panel_action_is_local_display(&PanelAction::PlanCancel));
         assert!(!panel_action_is_local_display(
-            &PanelAction::SetThinkingEffort { effort: None }
+            &PanelAction::SetDefaultDelivery {
+                delivery: crate::ui::chat::SendDelivery::Steer
+            }
+        ));
+        assert!(!panel_action_is_local_display(
+            &PanelAction::SetThinkingEffort {
+                effort: "auto".into()
+            }
+        ));
+        assert!(!panel_action_is_local_display(
+            &PanelAction::SetSafetyMode {
+                mode: "tell_me".into()
+            }
         ));
     }
 

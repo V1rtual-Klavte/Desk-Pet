@@ -178,7 +178,9 @@ const THEME: &[Choice] = &[
 // 会话投递的文案与选项顺序按旧壳（SettingsPanel 的 AITab「对话投递」三段式）：
 // 默认发送方式 / 插话批量处理 / 稍后继续的后续消息；两段批量策略的选项措辞与顺序
 // 各自独立（插话段「集中处理补充」在前，稍后继续段「逐条处理」在前），不合并成一张表。
-const DELIVERY: &[Choice] = &[
+// `pub(crate)`：聊天抽屉的「投递」下拉是设置页「默认发送方式（忙碌时）」的快捷入口，
+// 直接引用本表做选项（**唯一文案来源**，抽屉不另立一份值域/文案）。
+pub(crate) const DELIVERY: &[Choice] = &[
     Choice {
         value: "steer",
         label: "插话",
@@ -211,7 +213,8 @@ const FOLLOW_UP_BATCH: &[Choice] = &[
     },
 ];
 
-const SAFETY_MODE: &[Choice] = &[
+// `pub(crate)`：聊天抽屉的「安全」下拉与设置页「确认策略」同表（**唯一文案来源**）。
+pub(crate) const SAFETY_MODE: &[Choice] = &[
     Choice {
         value: "just_do_it",
         label: "全放行",
@@ -639,7 +642,7 @@ const AI_COMPANION: &[Field] = &[
         key: "ai.memory.dreaming.tier",
         label: "记忆整理档位",
         kind: FieldKind::Enum(FREQUENCY_TIERS),
-        help: "「关」= 不自动整理（面板手动整理按钮保留）；档位越高空闲阈值越低、整理间隔越短（token 只记账，不限制整理）",
+        help: "「关」= 不自动整理（面板手动整理按钮保留）；低/中/高按固定钟点每日 2/4/6 轮，到点即跑（token 只记账，不限制整理）",
     },
 ];
 
@@ -723,12 +726,12 @@ const AI_PROACTIVE: &[Field] = &[
 ];
 
 /// 静默了解：总闸 + 频率（原 `enabled` 与四个节奏数值字段随档位化删除；
-/// 四个数值属主动消息节奏，已收进 `proactive/protocol.json` 的 `tiers`）。
+/// 节奏数值收进 `proactive/protocol.json` 的 `tiers`，钟点表是每日轮数的唯一来源）。
 const AI_SILENT: &[Field] = &[Field {
     key: "ai.silentAccess.frequency",
     label: "静默了解频率",
     kind: FieldKind::Enum(FREQUENCY_TIERS),
-    help: "总闸 + 频率：「关」= 不自动了解（读取靠手动）；低/中/高按离开时长与每日批数分档",
+    help: "总闸 + 频率：「关」= 不自动了解（读取靠手动）；低/中/高按固定钟点每日 2/4/6 轮，到点即跑",
 }];
 
 // ── 工具 ──

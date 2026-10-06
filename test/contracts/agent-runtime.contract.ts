@@ -14,7 +14,8 @@
 // 刷新，主动表达回合（transientUserInput）不再刷新；累计用量 recordModelUsage("main") 路径
 // 未动）、src/services/debug.ts（updateRequestStats 改为真实 prompt 总量 = input + cacheRead
 // + cacheWrite，Provider 未回报才退回估算）；调试条投影经 getSessionThinkingEffortOverride /
-// getSessionSafetyModeOverride 读取「默认/覆盖」的既有路径未动。
+// getSessionSafetyModeOverride 读取「默认/覆盖」的既有路径当时未动（该机制已于 2026-10-06
+// 随抽屉三下拉批次整体删除：调试投影改直读 CONFIG 现值，见文末最新批次注记）。
 // ar-01..ar-25 逐点核对：ar-07 的 purpose 分列（recordModelUsage）语义与断言面未变；展示统计
 // 新口径不在任何覆盖点的断言面内 —— 对应 L2 用例（test/unit/agent-runtime/
 // debug-request-stats.test.ts）未携带 caseId，本批不凭空登记 coverage（有实现无契约覆盖，
@@ -125,6 +126,13 @@
 // caseId）。两者此前既无锚点也无覆盖声明（旧注释登记的已知缺口），本批关闭。sourceFiles 无增删
 // （runtime.ts / debug.ts 均在列）；**sourceHash 刻意不在本批重算** —— 本批未改任何 src 源码，
 // 按「实施期只登记、验收统一刷新」的口径留待验收环节统一复算。
+// 2026-10-06 计划报告口径收窄批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（runPlanPhase 的 onStepNotice 收窄：工具名不存在
+// （missing_tools，真异常）仍写进度事件与聊天系统消息；未限定工具（unbounded_tools，例行
+// 情形）只写进度事件（status=warning）与统一日志，不再逐步骤敲系统消息 —— 2026-10-06 用户
+// 裁决）。ar-01..ar-37 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行
+// 行为审计）：本批改动面（计划步骤报告分支）不在任何 ar-* 描述的行为面内 —— 该行为的契约
+// 登记在 planner 的 pl-06（已按新口径修订）。未修订覆盖点，sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-06 实测反馈收口（本批刷新）：sourceFiles 变化仅限 context/builder.ts 的计划提议指引
@@ -145,6 +153,29 @@ import type { ModuleContract } from "../host/types"
 // 按 L4 场景集实际值校准 25→26、minDeepScenarios 24→25（口径：只数 e2e 层覆盖点落地的场景 ——
 // 目录 26 个场景全被本契约 e2e 点引用且 module/contractId 匹配，其中「阶段状态行」为 shallow）。
 // ar-01..ar-35 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）。
+// 2026-10-06 最终波统一刷新（本批刷新）：sourceFiles 变化仅 `src/services/session/manager.ts`
+// —— deleteSession 不再作废该会话产生的话题来源（2026-10-06 用户裁决：话题证据独立存活到
+// 自身 TTL，作废入口只留显式治理路径；行为覆盖登记在 observation 的 ob-02，新 caseId
+// `session-delete-keeps-topics`）。会话删除的其余路径（先 invalidatePermissionScope、dispose
+// 运行槽、清托管聊天图片、返回语义）未动；ar-* 各覆盖点不描述「会话删除连带清话题/观察数据」
+// 的行为面（回合、队列、投递、压缩、生成锁与 RUNTIME_DATA 链路均不相交），逐点核对实现点
+// 仍在、覆盖描述与当前实现一致，未修订覆盖点；sourceHash 按当前源码复算。
+// 2026-10-06 抽屉三下拉统一 CONFIG 写批次（analyze→generate）：sourceFiles 变化 ——
+// src/services/agent/runner.ts（SendMessageOptions.delivery 删除：忙碌投递意图的唯一
+// 来源 = CONFIG `ai.conversation.defaultDelivery` 现值（resolveDeliveryIntent 只收
+// text；未识别 slash 文本仍 nextRun）；chat_send 线格式不再有单条显式投递参数）、
+// src/services/debug.ts（会话级覆盖机制整体删除：setSessionThinkingEffort /
+// getEffectiveThinkingEffort / setSessionSafetyMode / getEffectiveSafetyMode /
+// getSession*Override / reset* 与本地 SafetyMode 类型全部移除 —— 思考强度与安全模式的
+// 唯一真相源是 CONFIG 类型化 getter，本模块不再持有第二条状态）、
+// src/services/engine/harness/runtime.ts（三处 getEffectiveThinkingEffort() 改直读
+// aiConfig.thinkingEffort；计划确认的 PLAN-12 策略点改直读 safetyConfig.mode）。
+// **ar-08 描述修订**（feature / description / why）：单条显式投递意图整链删除，改为
+// 「配置驱动的投递意图」—— L4 场景 投递意图与撤回.scene.ts 已同批改写为「写 CONFIG →
+// 发送」两档（caseId 不变）；另有四个既有场景仅删去 `delivery:` 入参、输入先落盘 删去
+// setSessionSafetyMode（改以 ai.safety.mode 钉位），caseId 全部未变。ar-01..ar-37 其余点
+// 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；
+// rules 不动（无 L4 场景增删）；sourceHash 按当前源码复算。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -189,7 +220,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "de2da2fe1e7a4819b66f2b20816abda550d13a25ec51c73bb3c6f6dea4302f5a",
+  sourceHash: "c74c083ccdae32ae751ba8f557a2d36e104e68ab13fe8166234b0433c9a0e96a",
   coverage: [
     {
       id: "ar-01",
@@ -212,7 +243,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-03",
       feature: "followUp 通道语义",
-      description: "以 followUp 入队的收尾输入由本次运行继续处理，正文恰好一次且排在首个回复之后；工具执行期（streaming）的投递模式必须是 steer，不得冒充 followUp",
+      description: "以 followUp 入队的收尾输入由本次运行继续处理，正文恰好一次且排在首个回复之后；工具执行期（streaming）的投递意图取 CONFIG `ai.conversation.defaultDelivery` 现值（本场景未改配置，即工厂默认 steer），队列不把默认投递冒充 followUp",
       why: "followUp 语义不能被 steer 混淆，也不能在自然结束边界丢输入。注：settling 窗口由 Harness 的 turn_end 事件驱动、无法在场景里稳定命中（旧内核的 markDeliveryPhase 入口已随迁移删除），因此本覆盖点验证的是 followUp 通道自身的语义与 streaming 侧的投递模式判定，不声称验证了 settling 自动路由",
       layer: "e2e",
       depth: "deep",
@@ -256,9 +287,9 @@ export const agentRuntimeContract: ModuleContract = {
     },
     {
       id: "ar-08",
-      feature: "显式投递意图与排队视图",
-      description: "忙碌时显式选择插话/稍后继续的投递回执与 lane inbox 的 kind 一致（steered/followup），排队视图（listQueuedInputs）按序给出 kind 与正文，并用 loaded 标明镜像是否可信（条目可见时镜像已就绪；不可信时列表为空不代表没有排队项）；单项撤回仍在 inbox 的项返回 cancelled 且不再进入对话，已消费项返回 already_consumed，运行结束后队列为空；结构操作期间的新输入按准入拒绝：不写兜底失败回复、不静默排队",
-      why: "投递意图必须由用户显式选择而不是由运行阶段决定；排队状态与撤回结果不能虚构，否则用户会把「已排队」当成「已处理」",
+      feature: "配置驱动的投递意图与排队视图",
+      description: "忙碌投递的意图由 CONFIG `ai.conversation.defaultDelivery` 的现值决定（2026-10-06 用户裁决：单条显式投递意图整链删除；抽屉「投递」下拉与设置页同写该键），场景按「写 CONFIG → 发送」两档驱动：回执与 lane inbox 的 kind 一致（steered/followup），排队视图（listQueuedInputs）按序给出 kind 与正文，并用 loaded 标明镜像是否可信（条目可见时镜像已就绪；不可信时列表为空不代表没有排队项）；单项撤回仍在 inbox 的项返回 cancelled 且不再进入对话，已消费项返回 already_consumed，运行结束后队列为空；结构操作期间的新输入按准入拒绝：不写兜底失败回复、不静默排队",
+      why: "投递意图的唯一来源是配置（抽屉「投递」下拉与设置页同写 CONFIG `ai.conversation.defaultDelivery`），运行阶段只决定能否投递、不替用户改写意图；排队状态与撤回结果不能虚构，否则用户会把「已排队」当成「已处理」",
       layer: "e2e",
       depth: "deep",
       scenarios: ["runtime-delivery-intent"],

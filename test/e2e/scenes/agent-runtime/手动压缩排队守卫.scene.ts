@@ -101,9 +101,10 @@ export const 手动压缩排队守卫: SceneDef = {
     registerGateTool()
     const firstTurn = sendMessage(FIRST_USER)
     await gate!.started
-    // 回合进行中经生产投递入口投递 nextRun（`SendMessageOptions.delivery` 只收用户可选的
-    // steer/followUp，nextRun 走同一个 deliverActiveTurn）：先落盘到 lane 持久 inbox，
-    // 本回合不消费它。它没有 UI 气泡，证据以 lane 真相与后续消费为准。
+    // 回合进行中经生产投递入口投递 nextRun（`deliverActiveTurn` 收三档归宿：steer /
+    // followUp 由 CONFIG `ai.conversation.defaultDelivery` 决定，未识别 slash 文本走
+    // nextRun）：先落盘到 lane 持久 inbox，本回合不消费它。它没有 UI 气泡，
+    // 证据以 lane 真相与后续消费为准。
     queuedReceipt = await deliverActiveTurn(
       sessionId, QUEUED_TEXT,
       { eventId: inputEventId("runtime-manual-compact-pending-guard") },

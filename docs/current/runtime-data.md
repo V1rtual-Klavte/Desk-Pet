@@ -58,7 +58,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 | 字段 | 取值 | 语义 | 生效 |
 |---|---|---|---|
-| `ai.conversation.defaultDelivery` | steer / followUp | 忙碌时未显式选择意图的默认投递方式（插话 / 稍后继续） | 下一次发送即读取；聊天界面的单条显式选择优先 |
+| `ai.conversation.defaultDelivery` | steer / followUp | 忙碌投递的唯一输入（插话 / 稍后继续），无单条显式选择 | 下一次发送即读取；聊天抽屉与设置页同键写入（`chat_set_default_delivery`，抽屉选项表引自设置页 schema） |
 | `ai.conversation.steeringMode` | all / one-at-a-time | 插话在同一安全边界前一起进入下一次请求，或逐条处理 | 每个 run 开始前下发，按运行冻结；不重排已排队项 |
 | `ai.conversation.followUpMode` | all / one-at-a-time | 稍后继续的后续消息集中处理或逐条保留话题边界 | 同上 |
 
@@ -81,7 +81,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | 字段 | 用途 | 运行期消费点 |
 |---|---|---|
 | `ai.contextMaxTokens` | 上下文窗口（低于 65536 在模型解析处报错，压缩按同一预算规划） | [context/builder.ts](../../src/services/context/builder.ts)、[compactor.ts](../../src/services/engine/compactor.ts)、[model-gateway.ts](../../src/services/engine/harness/model-gateway.ts) |
-| `ai.thinking.effort` | 思考强度默认值（会话级覆盖走聊天侧 `chat_set_thinking_effort`） | [debug.ts](../../src/services/debug.ts) 的思考强度解析 |
+| `ai.thinking.effort` | 思考强度默认值（聊天抽屉与设置页同键写入 `chat_set_thinking_effort`；无会话级覆盖） | [runtime.ts](../../src/services/engine/harness/runtime.ts) 的回合思考强度直读（`aiConfig.thinkingEffort`） |
 | `ai.loop.maxRetry` | 生成级重试次数（0 = 关闭重试） | [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts) 的 RetryPolicy 下发 |
 | `ai.loop.subAgentRounds` | agent 子代理工具轮上限（无人值守子运行；主聊天回合已无计数上限，走循环病理检测） | [sub-agent.ts](../../src/services/agent/sub-agent.ts) |
 | `ai.loop.maxParallelTools` | 只读并行上限 | 见上一节（宿主许可所有者） |
@@ -112,11 +112,11 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 |---|---|---|
 | `ai.proactive.frequency` | `medium` | 主动消息的**总闸 + 频率**（`off｜low｜medium｜high`），唯一来源是 CONFIG；`off` = 不唤醒、不产生机会、不发送（不另建开关）；用户入口是设置窗「AI → 主动陪伴」与斜杠 `/proactive on`（写回 `medium`，不记忆上次档位）/ `off`（写回 `off`），两者走同一写盘路径（`setOverride` → `flushConfig`），保存后经 `refreshProactive()` 重排随机唤醒并重推 Rust 投影 |
 | `ai.proactive.quietStartHour` / `quietEndHour` | 23 / 9 | 静默时间段（本地小时 0–23 整数），**仅约束主动消息**：该时段不唤醒、不产生机会、不发送。跨夜语义 `start > end`（默认 23 开始、9 结束）；`start == end` = 不静默；白天不设窗口；晚安窗口=静默开始前一小时（派生，不硬编码） |
-| `ai.silentAccess.frequency` | `medium` | 静默了解的总闸 + 频率（同型四档）；`off` = 调度器不启动、不观察、不注入（读取靠手动）；三档决定离开要求（2h / 1h / 30min）、批次间隔（2h / 30min / 15min）、每日批数（4 / 8 / 12）与每小时读取名额（4 / 8 / 12） |
-| `ai.memory.dreaming.tier` | `medium` | 记忆整理档位（同型四档）；`off` = 空闲调度器早退（面板手动整理按钮保留）；三档决定空闲阈值（3600 / 1800 / 600 秒）与最小间隔（240 / 60 / 30 分钟）；每日 token 上限已撤除（2026-10-06）：token 只记观测账，不阻止/中止整理 |
+| `ai.silentAccess.frequency` | `medium` | 静默了解的总闸 + 频率（同型四档）；`off` = 调度器不启动、不观察、不注入（读取靠手动）；三档决定**固定钟点表**（低 12:00、20:00 / 中 10:00、14:00、18:00、22:00 / 高 09:00、11:00、13:00、15:00、17:00、19:00，到点即跑、不再要求系统空闲）、批次防重间隔（2h / 30min / 15min）与每小时读取名额（4 / 8 / 12）；每日轮数=钟点表轮数（2 / 4 / 6） |
+| `ai.memory.dreaming.tier` | `medium` | 记忆整理档位（同型四档）；`off` = 定时调度器早退（面板手动整理按钮保留）；三档决定**固定钟点表**（与静默了解同表，到点即跑、不再要求系统空闲）与最小间隔（240 / 60 / 30 分钟，防重兜底）；每日 token 上限已撤除（2026-10-06）：token 只记观测账，不阻止/中止整理 |
 | `ai.humanizer.enabled` | true | 设置窗保存 CONFIG，下个回合冻结；关闭不加协议、不变换、不调度，已提交多段历史仍逐泡展示；保存后立即揭示未展示分泡（`revealAll`） |
 
-三处档位的数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧）；[config.ts](../../src/services/config.ts) 只做读取期收拢（非法档位按 `medium` 读取、不写盘、同一非法值只诊断一次），[proactive/tiers.ts](../../src/services/proactive/tiers.ts) 负责查表。手写静默小时不是 0–23 整数（小数或范围外）时按默认 23/9 读取并 warn（同一非法值只诊断一次），写盘不拦——设置面 Number 控件只做范围收口，整数合规由读侧兜住。删除字段（2026-10-05）：`ai.silentAccess.enabled` 与 `staySeconds/settleMs/cooldownMs/samePageCooldownMs`（并入档位表）、`ai.memory.dreaming.mode/idleSeconds/minIntervalMinutes/maxDailyTokens`（mode 被 tier 取代）；Rust SQLite `proactive_control.enabled` 列同批删除。**`ai.lock` 整节已删除**（2026-10-06 回合治理批）：AI 生成锁改由回合状态推导（harness 受理计数 + 槽运行状态），不再有 `safetyTimeoutMs` 键、getter 与强制解锁路径；该键从未有设置窗控件（`ui/settings/schema.rs` 无对应字段），YAML 里残留该键按未知键忽略。**静默时段只约束主动消息**：静默了解与记忆整理不受它门禁。配置模板、getter、原生设置窗 schema、保存映射与保存后的重应用/推送保持同步；W2 代码已落地（2026-10-05），测试统一留收口波运行；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。
+三处档位的数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧）；[config.ts](../../src/services/config.ts) 只做读取期收拢（非法档位按 `medium` 读取、不写盘、同一非法值只诊断一次），[proactive/tiers.ts](../../src/services/proactive/tiers.ts) 负责查表。手写静默小时不是 0–23 整数（小数或范围外）时按默认 23/9 读取并 warn（同一非法值只诊断一次），写盘不拦——设置面 Number 控件只做范围收口，整数合规由读侧兜住。删除字段（2026-10-05）：`ai.silentAccess.enabled` 与 `staySeconds/settleMs/cooldownMs/samePageCooldownMs`（并入档位表）、`ai.memory.dreaming.mode/idleSeconds/minIntervalMinutes/maxDailyTokens`（mode 被 tier 取代）；Rust SQLite `proactive_control.enabled` 列同批删除。**`ai.lock` 整节已删除**（2026-10-06 回合治理批）：AI 生成锁改由回合状态推导（harness 受理计数 + 槽运行状态），不再有 `safetyTimeoutMs` 键、getter 与强制解锁路径；该键从未有设置窗控件（`ui/settings/schema.rs` 无对应字段），YAML 里残留该键按未知键忽略。**静默时段只约束主动消息**：静默了解与记忆整理不受它门禁（两链的固定钟点表本身避开 23–9，不随 quietStartHour/quietEndHour 变化）。配置模板、getter、原生设置窗 schema、保存映射与保存后的重应用/推送保持同步；W2 代码已落地（2026-10-05），测试统一留收口波运行；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。
 
 图片条目只保存 `deskpetImagePaths` 原路径：用户发图与 `screenshot` 工具 `show_to_user` 的截图共用这一字段（用户图片的请求视图临时读取、经当前图片处理链处理，见[工具系统](tool-system.md)的 read 边界；截图是工具结果本身带图片块、原图另存 `screenshots/`，两者都不写 CONFIG、不建图片副本）。原文件变化即体现为下一次读取的内容；路径失效明确显示不可用，不从缓存恢复副本。
 
@@ -208,6 +208,8 @@ Card 管理（设置页「人格」节）走同一条运行时路径：新建以
 Profile 是自包含闭包：图层素材只从 Profile 自身目录读取，不跨 Profile 回退；缺失时对应层停止渲染并在编辑器提示。Profile 不保存颜色或图标：界面主题是产品级三套预设（CONFIG `appearance.theme`，实现在 [ui/theme/](../../crates/native-host/src/ui/theme/)），不随 Profile。内置 Profile 共四个：`sugar-pink`（默认，`appearance.activeProfile`）、`yuki`、`profile1`（黍）与 `profile2`（void）。各自启用哪几层由它自己的 `profile.yaml` 决定，本文件不逐个复述层配置——那些值随用户在编辑器里的调整而变，实际资源与配置以[默认 Profile 目录](../../resources/defaults/profiles/)为准；同一 Profile 的各层素材应保持相同画布与主体位置。
 
 内存只保留当前激活 Profile（含资产目录 URL）：`activateProfile()` 与 `ensureProfileLoaded()` 都会淘汰非激活缓存；设置页列 Profile 用 `readProfileMeta()` 轻量读 meta，不进缓存。
+
+Card（人格卡）同样按需加载（2026-10-06）：只有激活卡常驻内存；`personality_cards` 下拉与 `card_manage` 的列表/撞名判定经 `listCardMetas()` 现读全部卡的 frontmatter meta（不进缓存），单卡正文、编辑读取、导出与非激活卡阶段面板经 `loadCard(id)` 现读单文件；写后只重载激活卡副本。
 
 ### 设置页的 Profile / 人格卡管理（无独立列表）
 

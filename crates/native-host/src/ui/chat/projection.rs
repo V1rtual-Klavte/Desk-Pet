@@ -169,12 +169,13 @@ pub struct ProjectedRegisteredTool {
     pub source: String,
 }
 
-/// 调试条快照（`debug.ts` 的 `DebugState` 展示子集 + 两个会话级覆盖的现状）。
+/// 调试条快照（`debug.ts` 的 `DebugState` 展示子集 + 两个配置现值）。
 ///
 /// 缺省语义与 `usage` 同类：**进程级运行期累计，缺省保持现值**（本帧没带只是
-/// 没重新快照；清空会把调试数字抖掉）。两个覆盖字段是 Node `debug.ts` 的
-/// 模块级状态（会话级覆盖，全局同一份）：`sessionThinkingEffort` /
-/// `sessionSafetyMode` 为 `None` = 未覆盖（用全局默认），`*Effective` = 生效值。
+/// 没重新快照；清空会把调试数字抖掉）。`thinking_effort` / `safety_mode` 是
+/// CONFIG 现值（`ai.thinking.effort` / `ai.safety.mode`；Value 由 Node 的类型化
+/// getter 读取）—— 抽屉两个下拉的选中来源。2026-10-06 用户裁决：会话级覆盖机制
+/// 删除后不再有「覆盖 / 生效」两组字段，「默认」选项随之退场。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectedDebug {
@@ -190,18 +191,12 @@ pub struct ProjectedDebug {
     pub last_tool_names: Vec<String>,
     #[serde(default)]
     pub registered_tools: Vec<ProjectedRegisteredTool>,
-    /// 会话级思考强度覆盖；None = 默认（未覆盖）。
+    /// CONFIG `ai.thinking.effort` 现值（「思考」下拉的选中来源）。
     #[serde(default)]
-    pub session_thinking_effort: Option<String>,
-    /// 当前生效的思考强度（覆盖 > 全局默认）。
+    pub thinking_effort: String,
+    /// CONFIG `ai.safety.mode` 现值（「安全」下拉的选中来源）。
     #[serde(default)]
-    pub thinking_effort_effective: Option<String>,
-    /// 会话级安全策略覆盖；None = 默认（未覆盖）。
-    #[serde(default)]
-    pub session_safety_mode: Option<String>,
-    /// 当前生效的安全策略（覆盖 > 全局默认）。
-    #[serde(default)]
-    pub safety_mode_effective: Option<String>,
+    pub safety_mode: String,
 }
 
 /// 会话标签的一条（`SessionMeta` 的展示子集：id/name/createdAt/interrupted）。
@@ -362,8 +357,8 @@ pub struct TranscriptProjection {
     /// （会话/视图态）。
     #[serde(default)]
     pub recovered_plans: Option<Vec<ProjectedRecoveredPlan>>,
-    /// 默认投递意图（`conversationConfig.defaultDelivery`）；None = 本帧不携带 → 清空
-    /// 显示（会话/视图态）。UI 只把它当初始显示值，不复制配置默认（Rust 不读 CONFIG）。
+    /// 默认投递意图（`conversationConfig.defaultDelivery` 现值）；None = 本帧不携带 →
+    /// 清空显示（会话/视图态）。「投递」下拉的选中来源；不复制配置默认（Rust 不读 CONFIG）。
     #[serde(default)]
     pub default_delivery: Option<String>,
     /// 会话标签列表（`sessions` 的整表投影）；None = 本帧不携带 → **保持现值**
@@ -484,8 +479,7 @@ mod tests {
                 "lastContextUsage": 42,
                 "lastToolNames": ["fs.read", "bash"],
                 "registeredTools": [{"name":"fs.read","source":"builtin"}],
-                "sessionThinkingEffort": "low", "thinkingEffortEffective": "low",
-                "sessionSafetyMode": null, "safetyModeEffective": "let_me_tk"
+                "thinkingEffort": "low", "safetyMode": "let_me_tk"
             },
             "slashCommands": [{"name":"help","description":"查看帮助"}],
             "recoveredPlans": [{"planId":"p1","sessionId":"s1","summary":"旧计划","steps":[
@@ -507,9 +501,8 @@ mod tests {
         assert_eq!(debug.last_context_usage, Some(42));
         assert_eq!(debug.last_tool_names, vec!["fs.read", "bash"]);
         assert_eq!(debug.registered_tools[0].source, "builtin");
-        assert_eq!(debug.session_thinking_effort.as_deref(), Some("low"));
-        assert!(debug.session_safety_mode.is_none(), "缺省 null = 未覆盖");
-        assert_eq!(debug.safety_mode_effective.as_deref(), Some("let_me_tk"));
+        assert_eq!(debug.thinking_effort, "low");
+        assert_eq!(debug.safety_mode, "let_me_tk");
         assert_eq!(projection.slash_commands.unwrap()[0].name, "help");
         let recovered = projection.recovered_plans.unwrap();
         assert_eq!(

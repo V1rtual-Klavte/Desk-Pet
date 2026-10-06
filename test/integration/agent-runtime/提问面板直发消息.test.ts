@@ -166,7 +166,7 @@ describe("提问面板与直发消息", () => {
       .toContain("choice-direct-reply-1")
 
     // 用户不点面板、直接在输入框发消息：走生产入口的忙碌投递（steer）。
-    const steered = await sendMessage(STEER_TEXT, { delivery: "steer", requestId: `request-${crypto.randomUUID()}` })
+    const steered = await sendMessage(STEER_TEXT, { requestId: `request-${crypto.randomUUID()}` })
     expect(steered.outcome, "直发消息没有按排队投递").toBe("queued")
     expect(steered.delivery, "直发消息的投递归宿不是 steer").toBe("steered")
 
@@ -201,7 +201,7 @@ describe("提问面板与直发消息", () => {
     const turn = sendMessage(FIRST_TEXT)
     await gate.entered
 
-    const steered = await sendMessage(STEER_TEXT, { delivery: "steer", requestId: `request-${crypto.randomUUID()}` })
+    const steered = await sendMessage(STEER_TEXT, { requestId: `request-${crypto.randomUUID()}` })
     expect(steered.outcome, "直发消息没有按排队投递").toBe("queued")
     expect(steered.delivery, "直发消息的投递归宿不是 steer").toBe("steered")
     // 关键否定：没有待答提问时，投递不得触发任何提问通道的收尾/取消。
@@ -248,7 +248,7 @@ describe("提问面板与直发消息", () => {
     })
     expect(confirmState.pending?.id, "场景前提：权限确认没有停在待答").toBe("perm-direct-reply-1")
 
-    const steered = await sendMessage(STEER_TEXT, { delivery: "steer", requestId: `request-${crypto.randomUUID()}` })
+    const steered = await sendMessage(STEER_TEXT, { requestId: `request-${crypto.randomUUID()}` })
     expect(steered.delivery, "直发消息没有按 steer 投递").toBe("steered")
 
     expect(choiceState.pending, "提问面板没有随直发消息取消").toEqual([])

@@ -10,6 +10,8 @@
 //     且发生在写盘之后；档位「关」= 关闸）；
 //   · 提交与 silentAccess 无关的键时不触碰观察总闸（重应用按变更键裁定，不做无关副作用）；
 //   · 提交 general.logging.level 时重应用日志级别（下发 Rust 的 set_log_config）；
+//   · 提交抽屉三条键（defaultDelivery / thinking.effort / safety.mode）时重推一次会话投影
+//     （复用 pushSessionProjection：抽屉选中态来自投影，设置页改了要让抽屉即时跟上）；
 //   · 重应用失败不回滚已保存的配置、不把保存判成失败（失败留痕可见）。
 //
 // **未运行**：本包交付时只做类型/编译检查（见交付报告）。
@@ -145,6 +147,38 @@ describe("settings_commit 的运行期重应用", () => {
     const logConfig = recorded(calls, "set_log_config")
     expect(logConfig).toHaveLength(1)
     expect(typeof logConfig[0].args.level).toBe("number")
+  })
+
+  it("提交抽屉三条键时重推会话投影（设置页与抽屉两个面同刻一致）[native-ui-settings-reapply-drawer]", async () => {
+    const { bridge, calls } = fakeBridge()
+    setHostBridge(bridge)
+    await initConfig()
+
+    for (const [key, value] of [
+      ["ai.conversation.defaultDelivery", "followUp"],
+      ["ai.thinking.effort", "high"],
+      ["ai.safety.mode", "just_do_it"],
+    ] as const) {
+      calls.length = 0
+      await dispatchHostRequest("settings_commit", { changes: [{ key, value }] })
+      const writeIndex = calls.findIndex((call) => call.method === "write_runtime_config")
+      const pushIndex = calls.findIndex((call) => call.method === "apply_chat_projection")
+      expect(writeIndex, `${key} 应先落盘`).toBeGreaterThanOrEqual(0)
+      expect(pushIndex, `${key} 保存后应重推一帧会话投影（抽屉选中态据此收敛）`).toBeGreaterThan(writeIndex)
+      expect(recorded(calls, "apply_chat_projection").length, "一次保存只推一帧").toBe(1)
+    }
+  })
+
+  it("提交无关键不重推会话投影（按变更键裁定，不放大副作用）[native-ui-settings-reapply-drawer-scoped]", async () => {
+    const { bridge, calls } = fakeBridge()
+    setHostBridge(bridge)
+    await initConfig()
+
+    await dispatchHostRequest("settings_commit", {
+      changes: [{ key: "appearance.chatImagePreview", value: true }],
+    })
+
+    expect(recorded(calls, "apply_chat_projection")).toHaveLength(0)
   })
 
   it("重应用失败不回滚已保存的配置、不把保存判成失败 [native-ui-settings-reapply-failure]", async () => {

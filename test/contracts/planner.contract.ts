@@ -53,6 +53,18 @@
 // 有本地超时。**pl-12 描述修订**（去掉「卡到超时」与超时归宿，补「没有等待超时」与逃生口），
 // scenarios 补 `plan-confirm-no-wait-timeout`；pl-01..pl-13 逐点核对实现点仍在、覆盖描述与当前
 // 实现一致（描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
+// 2026-10-06 计划步骤报告口径收窄批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts 与 src/services/engine/plan/proposal.ts（两条入口的
+// onStepNotice 同口径收窄：工具名不存在（missing_tools，真异常）仍写进度事件与聊天系统消息；
+// 未限定工具（unbounded_tools，例行情形）只写进度事件（status=warning）与统一日志，不再
+// 逐步骤敲系统消息 —— 2026-10-06 用户裁决）、src/services/engine/planner.ts（executeStep 的
+// 未限定工具分支：onStepNotice 照发、注释与 log.warn 口径与新裁决同步）。pl-06 描述按新口径
+// 修订（未限定工具不再「写进度与系统消息」，宿主只写进度事件与日志；工具名不存在仍写系统
+// 消息）；pl-01..pl-05、pl-07..pl-14 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源
+// 核对，非逐行行为审计）。注：既有 L4 场景 plan-production-loop（test/e2e/scenes/planner/
+// 计划生产闭环.scene.ts）的 ②b 已随本批同改动修订——原先 waitSystemMessage 等待该已删除的
+// 系统消息，现改为等 warning 进度事件（正向）＋整轮收尾后核对系统消息里不再出现该文案
+// （负向，避免异步落盘竞态假绿）；全仓不再有该已删消息的等待引用。sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-06 提问/选择工具批次（本批刷新）：pl-06 的派生型工具枚举补入 `ask_user`
@@ -70,6 +82,14 @@ import type { ModuleContract } from "../host/types"
 // 机制，两条入口的对外归宿都经它收口，覆盖点归 planner；agent-runtime 只持计划条目的写入
 // 机制（checkpoint-store.ts）与回合级计划相位（ar-16/ar-17），未登记本模块行为，故
 // settlement.ts 不进 agent-runtime 的 sourceFiles。
+// 2026-10-06 抽屉三下拉统一 CONFIG 写批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/plan/proposal.ts 与 src/services/engine/harness/runtime.ts（两条
+// 入口的确认策略点改直读 safetyConfig.mode：会话级覆盖机制（debug.ts 的
+// getEffectiveSafetyMode）整体删除，「安全」下拉与设置页同写 CONFIG `ai.safety.mode`；
+// 计划相位、确认通道、执行器与确认/执行口径未变）。pl-12 / pl-13 的「just_do_it 跳过
+// 确认面板」描述与当前实现一致（策略点换源、值域未变）；pl-01..pl-14 逐点核对实现点
+// 仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；rules 不动；
+// sourceHash 按当前源码复算。
 export const plannerContract: ModuleContract = {
   module: "planner",
   // `plan-confirmation.ts` 是计划域的确认/逐步门通道（会话键控的待确认表、执行期中断登记、
@@ -86,14 +106,14 @@ export const plannerContract: ModuleContract = {
     // 2026-10-06 验收批次补入：计划结算原语（pl-14）—— 两条入口共享的写盘降级 / 收尾 /
     // 取消归宿的唯一实现（此前 runtime.ts 与 proposal.ts 各存一份同形复刻）。
     "src/services/engine/plan/settlement.ts"],
-  sourceHash: "66f8d4cc52bb58beac3dff9bf0397875bd855101a31fca7624fa1d1bae405814",
+  sourceHash: "8a6b68d3659ff6311602be703b951dc43477cad7b662ec565c75f3b3b4fed775",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", layer: "integration", depth: "shallow", scenarios: ["plan-keyword-trigger"] },
     { id: "pl-03", feature: "evaluateComplexity 简单消息", description: "complexityEval=llm 时普通问候经 LLM 自判断 → 低评分 < 3", why: "避免简单对话触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-simple-text"] },
     { id: "pl-04", feature: "evaluateComplexity LLM 失败回退", description: "complexityEval=llm 且 LLM 评估失败（Provider 以 error 结束流）→ 评分1、原因里带回 Provider 错误，跳过 Plan；评分超出 1–5 被夹回", why: "Plan 容错，且失败原因不能在回退时丢失", layer: "integration", depth: "shallow", scenarios: ["plan-eval-fallback"] },
     { id: "pl-05", feature: "generatePlan 步骤生成", description: "复杂度达标 → LLM 生成分步计划：解析模型返回的围栏 JSON，步骤描述、summary 与 estimatedComplexity 逐项落地（裸 JSON 的兜底正则未由本场景断言）", why: "Plan 核心能力", layer: "integration", depth: "deep", scenarios: ["plan-generate"] },
-    { id: "pl-06", feature: "executePlan 步骤执行", description: "按计划逐步执行：步骤顺序与 onStepStart/onStepDone 回调顺序都是计划顺序，逐条记账成功/失败，全成功才判 overallSuccess；步骤未限定 allowedTools 时经 onStepNotice 如实报告工具面放大（宿主按「除派生型工具外的全部已注册工具」写进度与系统消息，派生型工具在子代理入口还会再被剥掉），指定了不存在的工具、或指定了到不了子代理的派生型工具（isolation=delegate，现为 agent_spawn、propose_plan 与 ask_user）走同一条硬失败：不开工、步骤判失败、产出带工具名的错误、不是取消归宿。两种「解析不到」都由本覆盖点的 unit 场景断言 —— 派生型工具那段用 agent_spawn 这个名字（getToolByName 按 AI 调用的函数名解析，不是工具 id）：恰一条带工具名的 missing_tools 通知、零 Provider 请求、overallSuccess=false、产出 error 带工具名、reply 为空且 toolCallsMade=0（快照归属那一半仍未由 unit 场景断言，production 证据见 mm-11）", why: "Plan 执行闭环，且步骤的权限面变化不能只留在日志里", layer: "integration", depth: "deep", scenarios: ["plan-execute-loop"] },
+    { id: "pl-06", feature: "executePlan 步骤执行", description: "按计划逐步执行：步骤顺序与 onStepStart/onStepDone 回调顺序都是计划顺序，逐条记账成功/失败，全成功才判 overallSuccess；步骤未限定 allowedTools 时经 onStepNotice 如实报告工具面放大（2026-10-06 用户裁决收窄：未限定工具是例行情形，宿主只写进度事件与统一日志、不再逐步骤敲聊天系统消息；文案口径按「除派生型工具外的全部已注册工具」，派生型工具在子代理入口还会再被剥掉），指定了不存在的工具、或指定了到不了子代理的派生型工具（isolation=delegate，现为 agent_spawn、propose_plan 与 ask_user）走同一条硬失败：不开工、步骤判失败、产出带工具名的错误、不是取消归宿，该真异常仍写进度事件与聊天系统消息。两种「解析不到」都由本覆盖点的 unit 场景断言 —— 派生型工具那段用 agent_spawn 这个名字（getToolByName 按 AI 调用的函数名解析，不是工具 id）：恰一条带工具名的 missing_tools 通知、零 Provider 请求、overallSuccess=false、产出 error 带工具名、reply 为空且 toolCallsMade=0（快照归属那一半仍未由 unit 场景断言，production 证据见 mm-11）", why: "Plan 执行闭环，且步骤的权限面变化不能只留在日志里", layer: "integration", depth: "deep", scenarios: ["plan-execute-loop"] },
     { id: "pl-07", feature: "formatStepResults 格式化", description: "执行结果格式化为可读文本：步骤描述与产出逐条落进正文，已落盘的步骤结果带上可回读地址（plan_step_result 条目 id），没落盘时如实标注「原文未落盘」而不假称可回读；结果末尾带收尾指令", why: "Plan 结果展示，回读地址是模型从缩短结果回到真相源的唯一通道", layer: "integration", depth: "shallow", scenarios: ["plan-format-steps"] },
     { id: "pl-08", feature: "Plan 解析降级", description: "generatePlan 在模型没返回可解析 JSON 时降级为单步计划（复杂度 1、描述回落到原文、带 degradedReason=json_parse_failed），而不是抛错或产出空计划；降级在生产段的可见提示由 runtime 按 degradedReason 发系统消息，该出口未由本 unit 场景覆盖", why: "模型输出格式不可控，Plan 必须有一条不依赖模型配合的降级路径", layer: "integration", depth: "deep", scenarios: ["plan-generate-fallback"] },
     { id: "pl-09", feature: "生产入口的计划确认与进度", description: "生产入口跑完整计划闭环：确认视图与进度事件的步数都是截断后（maxSteps 生效后）的步数，终态同时落在 checkpoint 条目（terminal 快照 done、全量步骤基线两步都 done）与终态事件（done）上，步骤结果条目恰为计划步数；确认经会话键控的测试通道确定性应答（mode=auto）并带会话身份。计划段由 `planConfig.enabled` 单独把守（模式已删除、该开关出厂为 true；Live 基线把它钉在 false，本场景在 setup 里显式打开）", why: "计划入口此前只有判定与解析的 unit 覆盖，确认视图、进度 total 与终态证据这些真正的运行时接线没有任何生产入口证据", layer: "e2e", depth: "deep", scenarios: ["plan-production-loop"] },

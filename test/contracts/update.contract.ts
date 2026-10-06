@@ -54,6 +54,20 @@
 // 只服务于已删除的设置页行级列表；属设置面管理孔，不在更新路径上）。up-01 逐条对照当前实现：
 // 更新命令形状（update_check / update_download_and_install / app_restart）仍成立、
 // 「更新动作不进 Node 请求面」仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 Card 按需加载批次（本批刷新）：sourceFiles 变化 —— src/services/host/types.ts
+// （update_download_and_install 的结果声明 void → { version: string }，与 Rust
+// update/mod.rs 实际返回 `{"version": …}` 逐项对齐；Node 侧不消费该结果，L2 用例只断言
+// 命令发出与顺序）与 src/services/native-ui/host-requests.ts（personality_cards 列表改现读
+// Card 目录；不在更新路径上）。up-01 逐条对照当前实现：更新命令形状仍成立（结果声明更准）、
+// 「更新动作不进 Node 请求面」仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 抽屉三下拉统一 CONFIG 写批次（本批刷新）：sourceFiles 变化 ——
+// src/services/host/types.ts（chat_send 线格式删除 delivery 参数；新增三条 chat_set_*
+// 请求臂）与 src/services/native-ui/host-requests.ts（三条请求臂注册 + reapplyRuntimeSettings
+// 的抽屉三键重推会话投影；personality_cards 现读与 Card 按需加载在上一批已登记）—— 都不在
+// 更新路径上。up-01 逐条对照当前实现：更新命令形状（update_check /
+// update_download_and_install / app_restart）仍成立，「更新动作不进 Node 请求面」
+//（dispatchHostRequest 对 action.checkUpdate 与 update_check 均走 default 以 OTHER 拒绝）
+// 仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const updateContract: ModuleContract = {
@@ -64,7 +78,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "32b371bf23240ebcee997e44f823f31bbb45a8f2d8c82cc9e1b3aeaf6d643020",
+  sourceHash: "9bbf3901d8e0ec091c6f719151b3ac76a2c47143b497f4f430610160ee2029fb",
   coverage: [
     {
       id: "up-01",

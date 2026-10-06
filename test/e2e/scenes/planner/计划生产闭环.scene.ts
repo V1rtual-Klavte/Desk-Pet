@@ -154,9 +154,12 @@ export const 计划生产闭环: SceneDef = {
               throw new Error(`进度里出现了被截断的步骤: ${JSON.stringify(progress)}`)
             }
 
-            // ②b 工具面放大的用户可见报告：本计划的步骤都没限定 allowedTools，宿主逐步写一条系统
-            //     消息，口径是子代理实际拿到的那一份（派生型工具在子代理入口被剥掉，所以不是「全部」）。
-            await waitSystemMessage(sessionId, "将使用除派生型工具外的全部已注册工具")
+            // ②b 工具面放大的报告口径（2026-10-06 用户裁决收窄）：步骤都没限定 allowedTools 属
+            //     例行情形 —— 宿主只推进度事件（status=warning，口径「除派生型工具外的全部已注册
+            //     工具」，派生型工具在子代理入口被剥掉），不再逐步敲聊天系统消息；系统消息只剩
+            //     「工具名解析不到」的真异常分支（pl-06 的 unit 场景）。负向断言放在 ⑥：
+            //     系统消息落盘是异步的，必须等整轮计划收尾后核对，避免竞态假绿。
+            await waitRecords(() => planProgressRecords(), records => records.some(record => record.status === "warning"), "未限定工具的进度事件（warning）")
 
             // ③ 终态条目：checkpoint 的 terminal 快照是 done，且全量步骤基线里两步都 done
             const entries = await sessionEntries(sessionId)
@@ -175,6 +178,14 @@ export const 计划生产闭环: SceneDef = {
 
             // ⑤ 终态事件
             await waitRecords(() => planEndRecords(), records => records.some(record => record.reason === "done"), "计划终态事件 done")
+
+            // ⑥ 收窄的负向半边（②b）：整轮计划已收尾，聊天里不得再有「未限定工具」系统消息。
+            //     把它放在全部步骤跑完之后核对 —— 系统消息落盘是异步的，提前查会变成竞态假绿。
+            const systemTexts = customEntries(await sessionEntries(sessionId), DESKPET_SYSTEM_MESSAGE_ENTRY)
+              .map(entry => String((entry.data as { text?: string } | undefined)?.text ?? ""))
+            if (systemTexts.some(text => text.includes("将使用除派生型工具外的全部已注册工具"))) {
+              throw new Error(`未限定工具不应再写系统消息，实际 ${JSON.stringify(systemTexts)}`)
+            }
           } finally {
             setOverride("ai.plan.maxSteps", restore.maxSteps)
             setOverride("ai.plan.complexityThreshold", restore.complexityThreshold)

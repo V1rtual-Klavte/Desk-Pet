@@ -9,9 +9,7 @@ import { resetSessionPersistenceForTest } from "@/services/session/persistence"
 import { MemoryService, resetMemoryProvider } from "@/services/agent/memory"
 import { deleteAllPiSessionsForTest } from "@/services/session/repo"
 import { getActiveCard, initRegistry } from "@/services/personality/registry"
-import { initCards } from "@/services/personality/loader"
 import { registerDefaultTools } from "@/services/tool/registry"
-import { resetSessionSafetyMode } from "@/services/debug"
 import { harnessSlots, resetPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { initSlashCommands } from "@/services/engine"
 import { resetAgentRuntimeForTest } from "@/services/agent/runner"
@@ -33,7 +31,6 @@ let bootstrapped = false
  */
 async function bootstrapOnce(): Promise<void> {
   if (bootstrapped) return
-  await initCards()
   await initRegistry()
   await registerDefaultTools()
   initSlashCommands()
@@ -101,8 +98,8 @@ let configSnapshot: ConfigTree | undefined
  *   `确认通道`、`工具结果存档边界`）靠 `tell_me` 才有 ask；开发者本地若是 `just_do_it`，
  *   这些场景会**静默失去确认请求**，本该拦下它们的断言变成真空断言（门禁假通过）。
  *   `let_me_tk` 也产出 ask，这里只钉一个确定的出厂值，让裁决输入不随本机配置漂移。
- *   钉位只覆盖配置这条轴：会话级覆盖优先级更高（`getEffectiveSafetyMode()` = 会话覆盖 ?? 配置），
- *   由 `standardSetup` 开头的 `resetSessionSafetyMode()` 无条件收回。
+ *   2026-10-06 起配置是安全模式的唯一来源（会话级覆盖机制已删除），本钉位即全部；
+ *   场景改了模式由 `restoreConfigBaseline` 在下一个 trial 无条件收回。
  *
  * 注意：`setOverride` 没有「只改内存」的通道，还原必然写一次运行时 CONFIG ——
  * 与既有的计划钉位同量级（详见 `restoreConfigBaseline`）。
@@ -159,14 +156,10 @@ export async function standardSetup(
   planPolicy: PlanPolicy = "deny",
   choicePolicy: ChoicePolicy = "cancel",
 ): Promise<void> {
-  // 安全裁决输入的第二条轴：会话级覆盖优先级高于 `ai.safety.mode` 钉位
-  // （`getEffectiveSafetyMode()` = 会话覆盖 ?? 配置），却只挂在场景自己的清理上 ——
-  // `输入先落盘` 的还原在断言 finally 里（setup 抛错就到不了），`权限策略冻结` 的还原在
-  // 最后一条检查上（前序断言失败会被运行器 break 掉）。残留的 `just_do_it` 会让需要
-  // `DANGER → ask` 的场景静默失去确认请求，正是钉位要挡的假通过，因此和配置漂移一样
-  // 在隔离点无条件收回。放在第一句、不跨 await：后面的配置还原可能抛错，这条兜底不能被跳过。
-  resetSessionSafetyMode()
-  // 配置隔离紧随其后：本函数之后的一切（含场景自己的 setup）都该在计划门禁关闭的基线上运行
+  // 配置隔离：本函数之后的一切（含场景自己的 setup）都该在计划门禁关闭、安全模式为
+  // tell_me 的基线上运行。安全模式的场景内改动（如 `权限策略冻结` 的 just_do_it/let_me_tk、
+  // `输入先落盘` 的 just_do_it）也由同一次还原无条件收回 —— 2026-10-06 起没有会话级
+  // 覆盖这条更高优先级的轴，配置漂移是唯一要挡的假通过来源。
   await restoreConfigBaseline()
   await bootstrapOnce()
   resetConfirmChannel(confirmPolicy)

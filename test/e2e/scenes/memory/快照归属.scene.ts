@@ -2,8 +2,7 @@ import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-w
 import { compactActiveSession, compactionSettingsFor, harnessSlots, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
-import { aiConfig } from "@/services/config"
-import { getEffectiveSafetyMode } from "@/services/debug"
+import { aiConfig, safetyConfig } from "@/services/config"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries } from "../../../host/session-entries"
 import type { SceneDef } from "../../../e2e/types"
@@ -136,8 +135,8 @@ export const 快照归属: SceneDef = {
             throw new Error(`快照没记录正整数 maxTokens: ${JSON.stringify(params)}`)
           }
           const capabilities = (payload.data.capabilities ?? {}) as { safetyMode?: unknown; toolDecisions?: unknown }
-          if (capabilities.safetyMode !== getEffectiveSafetyMode()) {
-            throw new Error(`快照的冻结 safetyMode 与当前生效值不一致: ${String(capabilities.safetyMode)} ≠ ${getEffectiveSafetyMode()}`)
+          if (capabilities.safetyMode !== safetyConfig.mode) {
+            throw new Error(`快照的冻结 safetyMode 与当前生效值不一致: ${String(capabilities.safetyMode)} ≠ ${safetyConfig.mode}`)
           }
           if (!Array.isArray(capabilities.toolDecisions)) throw new Error("快照的 capabilities.toolDecisions 不是数组")
           const compaction = (payload.data.compaction ?? {}) as { count?: unknown }

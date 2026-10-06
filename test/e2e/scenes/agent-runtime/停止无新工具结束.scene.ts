@@ -164,7 +164,8 @@ export const 停止无新工具结束: SceneDef = {
     await blocking!.started
     // 工具真的拿到了独占额度：不然「额度回空闲」的断言什么都没证明。
     exclusiveHeldBeforeStop = await waitForExclusive(true)
-    await sendMessage(STEER_TEXT, { requestId: "runtime-stop-no-new-tool-end", delivery: "steer" })
+    // 忙碌投递意图由 CONFIG `ai.conversation.defaultDelivery` 决定（夹具缺省 steer）。
+    await sendMessage(STEER_TEXT, { requestId: "runtime-stop-no-new-tool-end" })
 
     // 用户显式停止（生产入口）。
     const stopped = await stopActiveRun(sessionId)

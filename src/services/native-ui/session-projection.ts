@@ -49,14 +49,8 @@ import { watch } from "vue"
 
 import type { Message } from "@/services/agent/types"
 import { playEventSound } from "@/services/audio"
-import { conversationConfig } from "@/services/config"
-import {
-  debug,
-  getEffectiveSafetyMode,
-  getEffectiveThinkingEffort,
-  getSessionSafetyModeOverride,
-  getSessionThinkingEffortOverride,
-} from "@/services/debug"
+import { aiConfig, conversationConfig, safetyConfig } from "@/services/config"
+import { debug } from "@/services/debug"
 import {
   getInterruptedRun,
   harnessSlots,
@@ -229,8 +223,9 @@ export interface ProjectedUsageEntryView {
 /**
  * 调试条快照（Rust `ProjectedDebug` 的逐字段镜像）。
  *
- * `session*` 是会话级覆盖的现状（null = 无覆盖，用全局默认），`*Effective` 是
- * 生效值（覆盖 > 全局默认）；两组分开发，宿主据此区分「默认」与「覆盖」的标记。
+ * `thinkingEffort` / `safetyMode` 是 CONFIG 现值（`ai.thinking.effort` /
+ * `ai.safety.mode` 的类型化 getter 读值）—— 抽屉两个下拉的选中来源。
+ * 2026-10-06 用户裁决：会话级覆盖机制删除后不再有「覆盖 / 生效」两组字段。
  */
 export interface ProjectedDebugView {
   /**
@@ -241,10 +236,10 @@ export interface ProjectedDebugView {
   lastContextUsage: number | null
   lastToolNames: string[]
   registeredTools: { name: string; source: string }[]
-  sessionThinkingEffort: string | null
-  thinkingEffortEffective: string
-  sessionSafetyMode: string | null
-  safetyModeEffective: string
+  /** CONFIG `ai.thinking.effort` 现值。 */
+  thinkingEffort: string
+  /** CONFIG `ai.safety.mode` 现值。 */
+  safetyMode: string
 }
 
 /** `apply_chat_projection` 的载荷 = `TranscriptProjection`（正文 + 文案表 + 面板读模型）。 */
@@ -380,21 +375,19 @@ function collectUsage(): { entries: ProjectedUsageEntryView[] } {
 }
 
 /**
- * 调试条快照（`debug.ts` 的只读搬运 + 两个会话级覆盖的现状/生效值）。
+ * 调试条快照（`debug.ts` 的只读搬运 + 两项 CONFIG 现值）。
  *
- * 覆盖与生效值都走 `debug.ts` 的既有出口：宿主不复制值域判断，只按「覆盖为 null
- * 显示默认」呈现。会话级覆盖由 `chat_set_thinking_effort` / `chat_set_safety_mode`
- * 的处理器写入，提交后重推本帧让面板选择收敛。
+ * 两个档位值只经类型化 getter 读取（`aiConfig.thinkingEffort` / `safetyConfig.mode`），
+ * 不复制默认值；抽屉下拉的选中态即这两个值。`chat_set_*` 处理器写盘后重推本帧让
+ * 选择收敛。
  */
 function collectDebug(): ProjectedDebugView {
   return {
     lastContextUsage: debug.lastContextUsage,
     lastToolNames: [...debug.lastToolNames],
     registeredTools: debug.registeredTools.map((tool) => ({ name: tool.name, source: tool.source })),
-    sessionThinkingEffort: getSessionThinkingEffortOverride(),
-    thinkingEffortEffective: getEffectiveThinkingEffort(),
-    sessionSafetyMode: getSessionSafetyModeOverride(),
-    safetyModeEffective: getEffectiveSafetyMode(),
+    thinkingEffort: aiConfig.thinkingEffort,
+    safetyMode: safetyConfig.mode,
   }
 }
 

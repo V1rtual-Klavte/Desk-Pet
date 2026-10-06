@@ -11,7 +11,7 @@ import { runPiAgentTurn } from "@/services/engine/harness"
 import { resetAgentRuntimeForTest } from "@/services/agent/runner"
 import { userInputMessage } from "@/services/engine/runtime"
 import { initPaths } from "@/services/paths"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
 import { destroyPool, getPoolSnapshot } from "@/services/personality/variable-pool"
@@ -46,8 +46,7 @@ beforeAll(async () => {
   writeFileSync(join(root, "personality", "cards", `${CARD_ID}.md`), cardMarkdown(), "utf8")
   setOverrides({ "ai.humanizer.enabled": true, "ai.plan.enabled": false, "ai.memory.enabled": false })
   await flushConfig()
-  await initCards()
-  const card = getCard(CARD_ID)
+  const card = await loadCard(CARD_ID)
   if (!card) throw new Error("拟人运行时夹具卡未加载")
   await updateStagesFile(card.id, { stages: {
     cardId: card.id, cardVersion: card.version, sourceHash: await stageSourceHash(card),

@@ -80,6 +80,21 @@
 // 失效只来自新请求顶掉 / 取消 / 会话生命周期 / 下发失败（逃生口逐条见 sf-24）。
 // sf-01..sf-23 其余点逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行
 // 行为审计）；sourceHash 按当前源码复算。
+// 2026-10-06 计划报告口径收窄批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（runPlanPhase 的 onStepNotice 收窄：工具名不存在
+// 仍发聊天系统消息；未限定工具只写进度事件与统一日志，不再逐步骤敲系统消息）。sf-01..sf-24
+// 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）：许可内核、
+// 确认 / 放行通道、凭据路径与策略冻结不在改动面内。未修订覆盖点，sourceHash 按当前源码复算
+//（本批复算一并覆盖「契约账本批次」增列 paths/security.rs 时未重算的 sourceFiles 状态）。
+// 2026-10-06 最终波统一刷新（本批刷新）：sourceFiles 变化仅 `src/services/session/manager.ts`
+// —— deleteSession 去掉观察域的话题来源作废入口：删会话不再作废该会话产生的话题来源
+// （2026-10-06 用户裁决：话题证据独立存活到自身 90 天 TTL 自然过期；作废入口只留显式治理
+// 路径——清除静默了解与记忆遗忘；行为覆盖登记在 observation 的 ob-02，新 caseId
+// `session-delete-keeps-topics` 的载体是 test/integration/session/会话删除与托管图片清理.test.ts）。
+// 删除会话前既有的 invalidatePermissionScope(sessionId) 路径未动。sf-01..sf-24 逐点核对：
+// 本契约没有「会话删除连带清话题/观察数据」的覆盖点描述（sf-20 的会话/代际授权失效与 sf-24
+// 的确认逃生口都不在改动面内，许可内核、确认/放行通道与凭据路径未动），实现点仍在、覆盖
+// 描述与当前实现一致，未修订覆盖点；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-06 契约账本批次 systematic sourceFiles 复查补入：`crates/native-host/src/paths/security.rs`
@@ -88,10 +103,19 @@ import type { ModuleContract } from "../host/types"
 // （paths/mod.rs 只是调用方）。此前只列 mod.rs：改坏判定会让凭据路径场景红而本契约 hash
 // 不动（同一门禁失明形态）。sourceFiles 只增这一条；**sourceHash 刻意不在本批重算** ——
 // 本批未改任何 src 源码，留待验收环节统一刷。
+// 2026-10-06 抽屉三下拉统一 CONFIG 写批次（analyze→generate）：sourceFiles 变化 ——
+// src/services/safety/permission.ts（freezePermissionPolicy 直读 safetyConfig.mode：
+// 会话级覆盖机制（debug.ts 的 getEffectiveSafetyMode）整体删除，「安全」下拉与设置页同写
+// CONFIG `ai.safety.mode`；SafetyMode 类型迁至 config.ts；「回合开始冻结」纪律不变 ——
+// 回合中改配置仍从下一回合生效）与 src/services/engine/harness/runtime.ts（计划确认的
+// PLAN-12 策略点改直读 safetyConfig.mode；runPlanPhase 的 onStepNotice 收窄已由上一批
+// 登记）。sf-19 描述按现状修订（驱动方式改为经 setOverride 写 CONFIG：L4 场景
+// 权限策略冻结.scene.ts 已同批改写，caseId 未变）；sf-01..sf-24 其余点逐点核对实现点
+// 仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
 export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/harness/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/engine/user-wait.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/paths/security.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
-  sourceHash: "1bfbf604e83966a0f7a37940e8cebb7efaf9e5bf181109a30cd6d0578836d0f6",
+  sourceHash: "9706adf838d53e5c55bed96dd753b560483984ec5042d6e0120d7181070c2226",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 的工具经生产裁决入口 evaluateToolPermission（标准决策层即 allow）直接放行，不生成确认请求；同一分支现在也接住 NORMAL，会话信任与安全裁决只有 permission.ts 一份实现", why: "安全等级体系基础，且放行结论必须来自唯一裁决点", layer: "integration", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "统一裁决表（SAFE / NORMAL 一律放行）", description: "标准决策是安全等级到裁决结果的唯一映射：NOWAY → deny（最前置，先于安全模式与工具侧策略）；SAFE 与 NORMAL → allow（与安全模式无关，也不看命令是否在白名单里 —— 白名单只决定 NORMAL/DANGER 的归属，是免确认通道而不是拒绝依据）；DANGER → 交给回合冻结的安全模式（let_me_tk → ask、just_do_it → allow、其余含缺省 → ask）。工具与运行模式不再参与裁决：pet/assistant 双模式、lightweightPolicy、`ToolDef.mode`/`ToolContext.mode` 已全链删除，而旧助手下 NORMAL 没有任何 allow 路径、一律 ask —— 这条收紧的消失正是 sf-21 必须逐工具重定级的原因", why: "常规工具需要安全评估，且裁决表必须唯一：NORMAL 的归属翻转后若仍留旧描述，重定级与确认通道的场景会照着已不存在的分支写断言", layer: "integration", depth: "shallow", scenarios: ["safety-normal"] },
@@ -114,7 +138,7 @@ export const safetyContract: ModuleContract = {
     { id: "sf-16", feature: "凭据路径的 Rust 终判", description: "经 IPC 直连 file_read 与 bash_exec：凭据路径（`.ssh` 目录组件、`.pem`/`.key` 后缀，`.sshnotes` 这类前缀不算）被拒绝 —— 文件入口返回 SENSITIVE_PATH 而不是 PATH_NOT_FOUND（词法判定先于 canonicalize，不存在的路径也一样；写入侧在归一化路径、canonicalize 后的祖先与叶子链接上各判一次），bash 入口返回 TOOL 且文案指明凭据路径（层 1 的 deny_credential_paths，与层 1 硬基线、层 2 的系统路径保护并列，调用方不可关闭）。bash 入口**不再接受 scope 与白名单入参**（决策 7：Rust 的 `BashPolicy`/`BashScope`/`enforce_whitelist`/`first_control_syntax` 已删，`enforce_bash_policy(command)` 只收命令本身），所以拒绝不可能来自白名单、策略强度或超时 —— 旧描述里「两种 scope 共用」的前提已不存在", why: "TS 分级副本可被绕过，凭据泄露的最终判定必须在 Rust 且不可关闭；入参面收窄让「调用方无法传弱」本身成为结论", layer: "e2e", depth: "deep", scenarios: ["safety-credential-paths"] },
     { id: "sf-17", feature: "私钥读取被拦", description: "模型请求 read .ssh/id_rsa 时工具不以 done 收场、不经确认通道放行（确认被批准也不能把它放行），会话条目里不出现 OpenSSH 私钥正文", why: "私钥只读一次就足以泄露，且泄露会持久化进会话文件", layer: "e2e", depth: "deep", scenarios: ["safety-credential-read-blocked"] },
     { id: "sf-18", feature: "凭据命令的子进程边界", description: "模型请求 bash 把私钥重定向到文件时工具不以 done 收场；安全基线在 spawn 之前拒绝（被拦回合的耗时远早于命令自然时长），重定向产物不存在 —— 子进程从未产生", why: "bash 是绕过文件工具读取凭据的另一条入口，拦截必须发生在执行之前", layer: "e2e", depth: "deep", scenarios: ["safety-credential-bash-blocked"] },
-    { id: "sf-19", feature: "权限策略按回合冻结", description: "PermissionContext 带预检冻结的 policy：回合中改安全模式不改变本回合的裁决与 policyHash，从下一回合生效", why: "裁决与授权哈希必须来自同一份策略快照，否则同一次确认可能在策略变动后命中旧授权", layer: "e2e", depth: "deep", scenarios: ["memory-permission-freeze"] },
+    { id: "sf-19", feature: "权限策略按回合冻结", description: "PermissionContext 带预检冻结的 policy：回合中改 CONFIG `ai.safety.mode`（L4 场景经 setOverride 驱动；设置页「确认策略」与抽屉「安全」下拉同写该键）不改变本回合的裁决与 policyHash，从下一回合生效", why: "裁决与授权哈希必须来自同一份策略快照，否则同一次确认可能在策略变动后命中旧授权", layer: "e2e", depth: "deep", scenarios: ["memory-permission-freeze"] },
     { id: "sf-20", feature: "子代理授权的会话与代际绑定", description: "计划步骤子代理内的 allow_session 授权按父会话与父槽代际入账：运行内确认请求的身份与工具上下文读到的父会话/父代际逐字段一致，同参第二次命中 grant 不再确认；回合结束后 grant 随 invalidatePermissionScope(会话, 代际) 释放，同参同身份重评估回到 ask；切会话后同参 grant 同样不得命中，必须重新确认", why: "授权不绑定会话与代际会让用户在不知情的新会话里被放行，或让旧代际的授权在运行结束后继续生效", layer: "e2e", depth: "deep", scenarios: ["safety-subagent-grant-scope"] },
     { id: "sf-21", feature: "逐工具重定级", description: "决策 6 的「统一裁决表」与「逐工具重定级」是同一枚硬币：NORMAL 从「助手模式下必 ask」变成「一律 allow」之后，必须同时把隐私与远端能力的声明等级提上去 —— clipboard_read 与 agent_spawn 由 NORMAL 提为 DANGER，MCP 工具（发现侧 client.ts）声明为 DANGER，因此三者在默认安全模式下走 ask（just_do_it 下 allow）而不是被 NORMAL 静默放行；pi-bash 的白名单命令保持 NORMAL 并因此变成免确认（白名单只是免确认通道），app_open 与 clipboard_write 本来就是 DANGER、本次不变。注：本点钉的是注册表里读到的声明等级（可直接断言），实际确认动作由 sf-03 与 /skill、子代理的准入路径覆盖；本点由 L3 测试 `test/integration/safety/工具重定级.test.ts` 覆盖（caseId `safety-regraded-tools`，W2 从 L4 场景迁入）", why: "「统一后 NORMAL 一律放行」本身是放宽，提级是它的唯一补偿；漏掉任一项都会让剪贴板读取、子代理或远端 MCP 调用从「每次都问」变成「从不问」", layer: "integration", depth: "shallow", scenarios: ["safety-regraded-tools"] },
     { id: "sf-24", feature: "权限确认的等待与逃生口（不留等待超时）", description: "权限确认等待**没有超时**（2026-10-06 用户裁决：选择类弹窗不留超时，用户想多久想多久）：假时钟推进 10 分钟，confirmState.pending 仍是原请求、请求不结算（旧实现 5 分钟处按拒绝结算，本断言因此有区分力）。原先的超时兼的职责（「面板没送到就没完没了」）改由显式逃生口承接：权限事件下发失败由桥立即按拒绝结算（fail-closed，native-ui/permission-confirm.ts，caseId 归 native-ui 的 nui-25）、新请求顶掉旧请求按拒绝结算（单槽语义）、signal abort（用户停止回合/回合失效）与 invalidatePermissionScope（会话切换/关闭/恢复）按拒绝结算；授权侧「会话内允许」的 5 分钟保鲜期不受影响（授权与确认是两个生命周期，从用户按下允许起算）。注：确认载荷不再携带 expiresAt（等待没有有效期可展示），面板的「有效期至」一行随之退场", why: "等待超时按拒绝结算是把「用户还没想好」当成「用户拒绝」；但没有超时之后必须逐条给出逃生口，否则一次下发失败会让回合永久悬挂", layer: "integration", depth: "deep", scenarios: ["native-ui-permission-confirm-no-wait-timeout"] },

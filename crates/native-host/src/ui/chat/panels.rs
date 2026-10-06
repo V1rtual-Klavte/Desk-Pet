@@ -70,9 +70,10 @@ pub struct PanelOption {
 
 /// 下拉选择（行首标签 + 弹出选项菜单；选中即派发该选项动作）。
 ///
-/// 迁移自旧壳 `DebugBar.vue` 的 `<select>`：会话级「思考强度」「安全策略」用
-/// 下拉而不是一排常驻按钮 ——「默认」是与档位并列的语义（清除会话级覆盖），
-/// 但交互上是「点开才看到选项」，不是把所有档位铺在面板上。
+/// 迁移自旧壳 `DebugBar.vue` 的 `<select>`：「思考强度」「安全策略」「投递」用
+/// 下拉而不是一排常驻按钮 —— 交互上是「点开才看到选项」，不是把所有档位铺在面板上。
+/// 三个下拉都是设置页对应项（CONFIG 键）的快捷入口，选项即配置值域，**没有
+/// 「默认」项**（配置总有值，不存在「未设置」态）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanelSelect {
     /// 行首标签（如「思考强度」）。旧壳靠 `title` 悬停提示，原生面板没有
@@ -123,7 +124,7 @@ pub enum PanelKind {
     Queue,
     /// 模型用量。
     Usage,
-    /// 投递意图选择（插话 / 稍后继续）。
+    /// 默认投递方式（插话 / 稍后继续；写 CONFIG `ai.conversation.defaultDelivery`）。
     Delivery,
     /// Slash 候选。
     SlashCandidates,
@@ -288,12 +289,14 @@ pub enum PanelAction {
     SlashPick {
         index: usize,
     },
-    /// 选定投递意图（meta 轨上「投递」菜单选一项；`None` = 恢复默认）。
+    /// 选定默认投递方式（浮层「投递」下拉选一项）——写 CONFIG
+    /// `ai.conversation.defaultDelivery`（与设置页同键），不是单条消息的投递意图。
     ///
     /// 取代旧的 `CycleDelivery`（「点一下轮一个」）：用户要求投递是**真下拉菜单**，
-    /// 菜单能直接选，轮换语义随之退场。
-    SetDelivery {
-        mode: Option<super::intents::SendDelivery>,
+    /// 菜单能直接选，轮换语义随之退场；2026-10-06 用户裁决把三个抽屉下拉统一为
+    /// 「与设置页同键的 CONFIG 写入」，单条显式投递意图整链删除。
+    SetDefaultDelivery {
+        delivery: super::intents::SendDelivery,
     },
     // ── 会话历史（A1）──
     /// 展开历史面板；展开时同时请求刷新（打开即重读仓库）。
@@ -321,13 +324,14 @@ pub enum PanelAction {
         event_id: String,
     },
     // ── 调试条（DebugBar 迁移）──
-    /// 会话级思考强度覆盖：`None` = 恢复默认（全局 `ai.thinkingEffort`）。
+    /// 思考强度：写 CONFIG `ai.thinking.effort`（与设置页同键；选项即
+    /// auto/low/medium/high，没有「默认」项）。
     SetThinkingEffort {
-        effort: Option<String>,
+        effort: String,
     },
-    /// 会话级安全策略覆盖：`None` = 恢复默认（全局 `safety.mode`）。
+    /// 安全策略：写 CONFIG `ai.safety.mode`（与设置页「确认策略」同键同值域）。
     SetSafetyMode {
-        mode: Option<String>,
+        mode: String,
     },
     /// 展开/收起「本次请求工具列表」（纯本地显示态）。
     ToggleDebugTools,

@@ -38,7 +38,7 @@ import { captureProactiveOwner, initChat, resumePausedInputs, sendActiveMessage,
 import type { ActiveMessageRequest } from "@/services/agent/types"
 import { harnessSlots, isAIGenerating } from "@/services/engine/harness"
 import { initPaths } from "@/services/paths"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
 import { getActiveSessionId } from "@/services/session/store"
@@ -67,8 +67,7 @@ beforeAll(async () => {
     readFileSync(join(process.cwd(), "resources/defaults/personality/cards/default.md"), "utf8"),
     "utf8",
   )
-  await initCards()
-  const card = getCard("default")
+  const card = await loadCard("default")
   if (!card) throw new Error("默认卡未从临时数据根加载")
   await updateStagesFile(card.id, {
     stages: {
@@ -145,9 +144,9 @@ function failingStep(expectedText: string): FauxResponseStep {
 async function pauseOneInput(sessionId: string, firstTurnGate: ReturnType<typeof gatedStep>): Promise<number> {
   const firstTurn = sendMessage(FIRST_TEXT)
   await firstTurnGate.entered
+  // 忙碌投递意图由 CONFIG `ai.conversation.defaultDelivery` 决定（夹具缺省 steer）。
   const steered = await sendMessage(PAUSED_TEXT, {
     requestId: `admission-pairing-${crypto.randomUUID()}`,
-    delivery: "steer",
   })
   expect(steered.outcome, "阻塞期投递应进入排队（steered），而不是另起回合").toBe("queued")
   const stopped = await stopActiveRun(sessionId)

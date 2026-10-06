@@ -17,6 +17,10 @@
 
 use std::collections::HashMap;
 
+// 抽屉里的「投递 / 安全」下拉与设置页共用同一份选项表（唯一文案来源）：
+// 抽屉是设置页对应项的快捷入口，值域与文案不在这里另立第二份。
+use crate::ui::settings::schema::{DELIVERY, SAFETY_MODE};
+
 use super::events::SimpleStageKey;
 use super::placeholders::{discard_managed_files, placeholder_for, ImagePlaceholder};
 use super::projection::{
@@ -310,9 +314,10 @@ pub struct UsageState {
 
 /// 调试条显示态（DebugBar 迁移；数据来自投影 `debug`，展开开关是纯 UI 态）。
 ///
-/// 两个覆盖字段的语义：`thinking_effort` / `safety_mode` 是**会话级覆盖**
-/// （None = 未覆盖，用全局默认）；`*_effective` 是生效值（覆盖 > 全局），
-/// 只用于「默认（当前 x）」的展示 —— UI 不自己推导全局默认（那是 Node 的配置）。
+/// `thinking_effort` / `safety_mode` 是 **CONFIG 现值**（`ai.thinking.effort` /
+/// `ai.safety.mode`，由 Node 投影进帧）：两个下拉的选中态直接来自它们，UI 不自己
+/// 推导配置值。2026-10-06 用户裁决：会话级覆盖机制删除后不再有「覆盖 / 生效」
+/// 两组字段，「默认」选项随之退场（配置总有值）。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DebugState {
     /// 最近一次**对话请求**的上下文利用率（主动表达回合不刷新，见 `runtime.ts`）。
@@ -322,10 +327,10 @@ pub struct DebugState {
     /// 最近一次**对话请求**携带的工具名（投影 `lastToolNames`；主动表达回合不刷新）。
     pub last_tool_names: Vec<String>,
     pub registered_tools: Vec<ProjectedRegisteredTool>,
-    pub thinking_effort: Option<String>,
-    pub thinking_effort_effective: Option<String>,
-    pub safety_mode: Option<String>,
-    pub safety_mode_effective: Option<String>,
+    /// CONFIG `ai.thinking.effort` 现值（「思考」下拉选中来源；未知值按第一档显示）。
+    pub thinking_effort: String,
+    /// CONFIG `ai.safety.mode` 现值（「安全」下拉选中来源；未知值按第一档显示）。
+    pub safety_mode: String,
     /// 「最近一次请求工具列表」展开开关（纯本地显示态，不落盘）。
     pub tools_expanded: bool,
     /// 「工具注册明细」展开开关（纯本地显示态，不落盘）。
@@ -342,10 +347,8 @@ impl DebugState {
             last_context_usage: projected.last_context_usage,
             last_tool_names: projected.last_tool_names,
             registered_tools: projected.registered_tools,
-            thinking_effort: projected.session_thinking_effort,
-            thinking_effort_effective: projected.thinking_effort_effective,
-            safety_mode: projected.session_safety_mode,
-            safety_mode_effective: projected.safety_mode_effective,
+            thinking_effort: projected.thinking_effort,
+            safety_mode: projected.safety_mode,
             tools_expanded: previous.map(|state| state.tools_expanded).unwrap_or(false),
             registry_expanded: previous
                 .map(|state| state.registry_expanded)
@@ -400,9 +403,8 @@ pub struct ChatSnapshot {
     pub usage: Option<UsageState>,
     /// slash 候选下拉（输入以 `/` 开头时的匹配）。
     pub slash: SlashSnapshot,
-    /// 当前显式选择的投递意图（None = 采用默认）。
-    pub delivery: Option<super::intents::SendDelivery>,
-    /// 投影提供的默认投递意图（只用于显示，不复制 CONFIG 默认值）。
+    /// CONFIG `ai.conversation.defaultDelivery` 的投影现值（「投递」下拉的选中来源；
+    /// 不复制 CONFIG 默认值，None = 投影帧尚未到达）。
     pub default_delivery: Option<super::intents::SendDelivery>,
     /// 会话标签列表（平台层标签条；A1）。
     pub sessions: Vec<SessionTabView>,
@@ -499,7 +501,6 @@ pub struct ChatModel {
     /// slash 注册表（投影提供；执行与否仍在 Node）。
     slash_commands: Vec<super::projection::SlashCommandView>,
     slash: SlashState,
-    delivery: Option<super::intents::SendDelivery>,
     default_delivery: Option<super::intents::SendDelivery>,
     panel_revision: u64,
     /// 待发送区（见 [`ChatSnapshot::pending_images`]；「发送/撤选/切会话后释放」）。
@@ -595,7 +596,6 @@ impl ChatModel {
             self.choices.clear();
             self.slash.partial = None;
             self.slash.selected = 0;
-            self.delivery = None;
             self.stream_revision += 1;
             self.status_revision += 1;
             self.panel_revision += 1;
@@ -1242,22 +1242,10 @@ impl ChatModel {
         true
     }
 
-    /// 循环投递意图：默认 → 插话 → 稍后继续 → 默认。
-    pub fn cycle_delivery(&mut self) -> bool {
-        self.delivery = match self.delivery {
-            None => Some(super::intents::SendDelivery::Steer),
-            Some(super::intents::SendDelivery::Steer) => {
-                Some(super::intents::SendDelivery::FollowUp)
-            }
-            Some(super::intents::SendDelivery::FollowUp) => None,
-        };
-        self.panel_revision += 1;
-        true
-    }
-
-    pub fn delivery(&self) -> Option<super::intents::SendDelivery> {
-        self.delivery
-    }
+    // `cycle_delivery` / `delivery()` / `set_delivery` 删除记录（2026-10-06 用户裁决）：
+    // 单条显式投递意图整链退场 —— 抽屉的「投递」下拉改为写 CONFIG
+    // `ai.conversation.defaultDelivery`（与设置页同键），选中态来自投影的
+    // `default_delivery`；忙碌投递只剩「ingress 按 CONFIG 默认决定」一条路。
 
     // ==========================================
     // 待发送区（聊天发图：选择/拖入后的临时选择态）
@@ -1604,7 +1592,6 @@ impl ChatModel {
             interrupted: self.interrupted.clone(),
             usage: self.usage.clone(),
             slash: self.slash_snapshot(),
-            delivery: self.delivery,
             default_delivery: self.default_delivery,
             sessions: self.session_tabs(),
             panels: self.panel_views(),
@@ -2052,12 +2039,12 @@ impl ChatModel {
     }
 
     /// 调试条面板（DebugBar 迁移）：上下文占用 / 主回合消耗（含缓存命中率）+
-    /// 会话级「思考强度」「安全策略」两个覆盖 + 「工具明细」「注册明细」「压缩」动作。
+    /// 「思考强度」「安全策略」两个下拉 + 「工具明细」「注册明细」「压缩」动作。
     ///
     /// 数据来自投影 `debug`（进程级快照，缺省保持现值）；Node 尚未投影该字段时
-    /// 整条不显示（不摆空壳）。两个覆盖用**下拉**（旧壳 `DebugBar.vue` 的
-    /// `<select>`）：「默认」= 清除覆盖（Node 侧回到全局 `ai.thinkingEffort` /
-    /// `safety.mode`）。
+    /// 整条不显示（不摆空壳）。两个下拉（旧壳 `DebugBar.vue` 的 `<select>`）就是
+    /// 设置页对应项（CONFIG `ai.thinking.effort` / `ai.safety.mode`）的快捷入口：
+    /// 选中即写配置，没有「默认」项；选中态来自投影里的配置现值。
     ///
     /// **完整形态入住上拉抽屉**（2026-10-05 用户规则「那些设置、投递、图片什么的
     /// 都放到上拉；工具、mcp、上下文那些呢？思考强度呢？」）：整块面板现在只在
@@ -2144,60 +2131,49 @@ impl ChatModel {
         out.push(view);
     }
 
-    /// 投递意图（浮层里的一行下拉：默认 / 插话 / 稍后继续）。
+    /// 默认投递方式（浮层里的一行下拉：插话 / 稍后继续；**没有「默认」项**——
+    /// 配置总有值）。选一项 = 写 CONFIG `ai.conversation.defaultDelivery`
+    /// （与设置页「默认发送方式（忙碌时）」同键、同文案表），选中态来自投影的
+    /// `default_delivery` 现值。
     ///
     /// 2026-10-05 第二次改版：它一度被改成 meta 轨上的独立下拉菜单，但**那排 chip 整个
     /// 撤掉了**（用户规则「调试、投递合并为调试，然后调试取消显示，改成输入框上面那个横条
     /// 加个上拉小箭头」），于是投递回到浮层，与用量/调试同处一屏。
+    /// 2026-10-06 用户裁决（原话「改成和设置一样的……这三个选项和设置的都是改配置，
+    /// 不是单条」）：单条显式投递意图退场，本下拉就是设置页对应项的快捷入口。
     fn push_delivery_panel(&self, out: &mut Vec<super::panels::PanelView>) {
-        use super::intents::SendDelivery;
         use super::panels::{PanelAction, PanelKind, PanelOption, PanelSelect, PanelView};
         if self.active_session.is_none() {
             return;
         }
-        let options = vec![
-            PanelOption {
-                label: "默认".into(),
-                action: PanelAction::SetDelivery { mode: None },
-            },
-            PanelOption {
-                label: "插话".into(),
-                action: PanelAction::SetDelivery {
-                    mode: Some(SendDelivery::Steer),
+        // 选项表 = 设置页同一份（`settings::schema::DELIVERY`）：抽屉不另立值域/文案。
+        let options: Vec<PanelOption> = DELIVERY
+            .iter()
+            .map(|choice| PanelOption {
+                label: choice.label.to_string(),
+                action: PanelAction::SetDefaultDelivery {
+                    delivery: super::intents::SendDelivery::from_str(choice.value)
+                        .expect("设置页投递选项表的值必须命中 SendDelivery 值域"),
                 },
-            },
-            PanelOption {
-                label: "稍后继续".into(),
-                action: PanelAction::SetDelivery {
-                    mode: Some(SendDelivery::FollowUp),
-                },
-            },
-        ];
-        let selected = match self.delivery {
-            None => 0,
-            Some(SendDelivery::Steer) => 1,
-            Some(SendDelivery::FollowUp) => 2,
-        };
+            })
+            .collect();
+        // 选中态来自投影（该字段随帧权威、每帧都带；投影未达时按第一项显示，随帧收敛）。
+        let selected = self
+            .default_delivery
+            .and_then(|current| {
+                options.iter().position(|option| {
+                    matches!(
+                        &option.action,
+                        PanelAction::SetDefaultDelivery { delivery } if *delivery == current
+                    )
+                })
+            })
+            .unwrap_or(0);
         out.push(PanelView::new(PanelKind::Delivery).select(PanelSelect {
             label: "投递".into(),
             options,
             selected,
         }));
-    }
-
-    /// 直接选定投递意图（菜单选一项；`None` = 恢复默认）。
-    pub fn set_delivery(&mut self, mode: Option<super::intents::SendDelivery>) {
-        if self.delivery == mode {
-            // 值没变不 bump：白翻一次版本号会让平台多重建一帧（无谓开销）。
-            return;
-        }
-        self.delivery = mode;
-        // **必须 bump 面板版本**：投递行的「当前选中项」就是面板内容，改了它
-        // 界面就该重建。漏了这一句的后果是用户报的那个 bug ——
-        // 「投递在下拉栏选了后显示状态不刷新，必须收回再打开才更新」：
-        // 本地动作只 `schedule_refresh()`，而刷新走 `drain_refresh` 的**版本比对**，
-        // 版本没变就被当成「面板没变化」丢掉。
-        self.panel_revision += 1;
     }
 
     fn push_slash_panel(&self, out: &mut Vec<super::panels::PanelView>) {
@@ -2287,27 +2263,24 @@ fn debug_spend_line(entries: &[super::projection::ProjectedUsageEntry]) -> Optio
     ))
 }
 
-/// 调试条的会话级思考强度下拉（选项与旧壳 `DebugBar.vue` 的 select 逐字一致；
-/// 值 = Node 领域字面量）。「默认」清除会话级覆盖（回到全局 `ai.thinkingEffort`）。
+/// 调试条的思考强度下拉：选项 = CONFIG `ai.thinking.effort` 的值域
+/// （auto/low/medium/high，与旧壳 `DebugBar.vue` 的 select 逐字一致），**没有
+/// 「默认」项**；选中态来自投影里的配置现值（未知值按第一档显示）。
 fn thinking_effort_select(debug: &DebugState) -> super::panels::PanelSelect {
     use super::panels::{PanelAction, PanelOption, PanelSelect};
     const VALUES: [&str; 4] = ["auto", "low", "medium", "high"];
-    let mut options = vec![PanelOption {
-        label: "默认".into(),
-        action: PanelAction::SetThinkingEffort { effort: None },
-    }];
-    options.extend(VALUES.iter().map(|value| PanelOption {
-        label: (*value).to_string(),
-        action: PanelAction::SetThinkingEffort {
-            effort: Some((*value).to_string()),
-        },
-    }));
-    // 选中态来自投影：覆盖值命中某档 → 该档；未覆盖（或未知值）→ 默认。
-    let selected = debug
-        .thinking_effort
-        .as_deref()
-        .and_then(|current| VALUES.iter().position(|value| *value == current))
-        .map(|index| index + 1)
+    let options = VALUES
+        .iter()
+        .map(|value| PanelOption {
+            label: (*value).to_string(),
+            action: PanelAction::SetThinkingEffort {
+                effort: (*value).to_string(),
+            },
+        })
+        .collect();
+    let selected = VALUES
+        .iter()
+        .position(|value| *value == debug.thinking_effort)
         .unwrap_or(0);
     PanelSelect {
         // 列窄（~265px）：label 取两字短名，下拉框放得下不截断（全称信息在选项语义里）。
@@ -2317,30 +2290,23 @@ fn thinking_effort_select(debug: &DebugState) -> super::panels::PanelSelect {
     }
 }
 
-/// 调试条的会话级安全策略下拉（label = 旧壳界面语言；值 = Node 领域字面量）。
-/// 「默认」清除会话级覆盖（回到全局 `safety.mode`）。
+/// 调试条的安全策略下拉：选项表 = 设置页「确认策略」同一份
+/// （`settings::schema::SAFETY_MODE`：全放行 / 告知确认 / 全部确认），**没有
+/// 「默认」项**；选中态来自投影里的配置现值（未知值按第一档显示）。
 fn safety_mode_select(debug: &DebugState) -> super::panels::PanelSelect {
     use super::panels::{PanelAction, PanelOption, PanelSelect};
-    const VALUES: [(&str, &str); 3] = [
-        ("全放行", "just_do_it"),
-        ("告知", "tell_me"),
-        ("全确认", "let_me_tk"),
-    ];
-    let mut options = vec![PanelOption {
-        label: "默认".into(),
-        action: PanelAction::SetSafetyMode { mode: None },
-    }];
-    options.extend(VALUES.iter().map(|(label, value)| PanelOption {
-        label: (*label).to_string(),
-        action: PanelAction::SetSafetyMode {
-            mode: Some((*value).to_string()),
-        },
-    }));
-    let selected = debug
-        .safety_mode
-        .as_deref()
-        .and_then(|current| VALUES.iter().position(|(_, value)| *value == current))
-        .map(|index| index + 1)
+    let options: Vec<PanelOption> = SAFETY_MODE
+        .iter()
+        .map(|choice| PanelOption {
+            label: choice.label.to_string(),
+            action: PanelAction::SetSafetyMode {
+                mode: choice.value.to_string(),
+            },
+        })
+        .collect();
+    let selected = SAFETY_MODE
+        .iter()
+        .position(|choice| choice.value == debug.safety_mode)
         .unwrap_or(0);
     PanelSelect {
         // 与「思考」同口径的两字短名（列窄，避免 label 截断）。
@@ -2488,27 +2454,60 @@ mod tests {
         assert!(snapshot.messages[1].thinking.is_none());
     }
 
-    /// 投递改了**必须 bump 面板版本** —— 投递行的「当前选中项」就是面板内容，
-    /// 漏了它界面就停在旧值（用户报告「投递在下拉栏选了后显示状态不刷新，
-    /// 必须收回再打开才更新」：本地动作只 `schedule_refresh()`，而刷新走
-    /// `drain_refresh` 的版本比对，版本没变就被当成「面板没变化」丢掉）。
-    ///
-    /// 值没变时**不** bump：白翻版本号会让平台多重建一帧。
+    /// 投递下拉是设置页「默认发送方式（忙碌时）」的快捷入口（2026-10-06 用户裁决）：
+    /// 选项表直接引用 `settings::schema::DELIVERY`（文案与值域的唯一来源），选中态
+    /// 来自投影的 `default_delivery`（CONFIG 现值），**没有「默认」选项**。
     #[test]
-    fn 投递改动会推进面板版本_同值不推进() {
+    fn 投递下拉按配置投影选中且与设置页同表() {
         use super::super::intents::SendDelivery;
+        use super::super::panels::{PanelAction, PanelBlock, PanelKind};
+        fn delivery_select(model: &ChatModel) -> super::super::panels::PanelSelect {
+            model
+                .panel_views()
+                .into_iter()
+                .find(|view| view.kind == PanelKind::Delivery)
+                .expect("有活跃会话时投递面板应在")
+                .blocks
+                .into_iter()
+                .find_map(|block| match block {
+                    PanelBlock::Select(select) => Some(select),
+                    _ => None,
+                })
+                .expect("投递面板应由一个下拉构成")
+        }
+
         let mut model = ChatModel::new();
-        let before = model.snapshot().panel_revision;
-
-        model.set_delivery(Some(SendDelivery::Steer));
-        let after = model.snapshot().panel_revision;
-        assert!(after > before, "改了投递必须 bump 面板版本，否则界面不重建");
-
-        model.set_delivery(Some(SendDelivery::Steer));
+        model.apply_projection(projection("s1", vec![]));
+        let select = delivery_select(&model);
+        assert_eq!(select.label, "投递");
         assert_eq!(
-            model.snapshot().panel_revision,
-            after,
-            "同值重复设置不该再 bump（白重建一帧）"
+            select
+                .options
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>(),
+            DELIVERY.iter().map(|choice| choice.label).collect::<Vec<_>>(),
+            "选项文案必须与设置页同一份（不另立第二份表）"
+        );
+        assert_eq!(select.selected, 0, "投影未达时按第一项显示，随帧收敛");
+
+        // 配置现值命中某项：选中跟随投影（followUp → 第二项），动作 = 写配置。
+        let mut frame = projection("s1", vec![]);
+        frame.default_delivery = Some("followUp".into());
+        model.apply_projection(frame);
+        let select = delivery_select(&model);
+        assert_eq!(select.selected, 1, "投影的 default_delivery 决定选中");
+        assert_eq!(
+            select.options[1].action,
+            PanelAction::SetDefaultDelivery {
+                delivery: SendDelivery::FollowUp
+            }
+        );
+        assert_eq!(
+            select.options[0].action,
+            PanelAction::SetDefaultDelivery {
+                delivery: SendDelivery::Steer
+            }
         );
     }
 
@@ -2745,10 +2744,8 @@ mod tests {
             last_context_usage: Some(42),
             last_tool_names: vec!["fs.read".into(), "bash".into()],
             registered_tools: vec![],
-            session_thinking_effort: None,
-            thinking_effort_effective: Some("auto".into()),
-            session_safety_mode: Some("tell_me".into()),
-            safety_mode_effective: Some("tell_me".into()),
+            thinking_effort: "auto".into(),
+            safety_mode: "tell_me".into(),
         });
         frame.usage = Some(crate::ui::chat::projection::ProjectedUsage {
             entries: vec![crate::ui::chat::projection::ProjectedUsageEntry {
@@ -2837,26 +2834,56 @@ mod tests {
             })
             .collect();
         assert_eq!(selects.len(), 2, "思考强度与安全策略各一个下拉");
-        // 未覆盖 → 选中「默认」；「默认」动作 = 清除覆盖（None）。
+        // 「默认」项退场（2026-10-06 用户裁决）：选项即配置值域，选中态来自投影里的
+        // 配置现值（thinking_effort=auto → 第一档）。
         assert_eq!(selects[0].label, "思考");
-        assert_eq!(selects[0].selected, 0, "未覆盖时默认选中");
+        assert_eq!(selects[0].selected, 0, "auto 选中第一档");
         assert_eq!(
             selects[0].options[0].action,
-            PanelAction::SetThinkingEffort { effort: None }
+            PanelAction::SetThinkingEffort {
+                effort: "auto".into()
+            }
         );
         assert_eq!(
-            selects[0].options[2].action,
+            selects[0].options[1].action,
             PanelAction::SetThinkingEffort {
-                effort: Some("low".into())
+                effort: "low".into()
             },
-            "档位动作携带 Node 领域字面量"
+            "档位动作携带 CONFIG 字面量"
         );
-        // 覆盖 tell_me → 选中「告知」（下标 2 = 默认 + 全放行 + 告知）。
+        assert!(
+            selects[0]
+                .options
+                .iter()
+                .all(|option| !matches!(&option.action, PanelAction::SetThinkingEffort { effort } if effort.is_empty())),
+            "不存在空档位（「默认」项已退场）"
+        );
+        // safety_mode=tell_me → 选中「告知确认」；选项表与设置页同一份（文案不另立）。
         assert_eq!(selects[1].label, "安全");
-        assert_eq!(selects[1].selected, 2, "tell_me 选中告知");
+        assert_eq!(
+            selects[1]
+                .options
+                .iter()
+                .map(|option| option.label.as_str())
+                .collect::<Vec<_>>(),
+            SAFETY_MODE
+                .iter()
+                .map(|choice| choice.label)
+                .collect::<Vec<_>>(),
+            "安全选项文案必须与设置页同一份（不另立第二份表）"
+        );
+        assert_eq!(selects[1].selected, 1, "tell_me 选中告知确认");
         assert_eq!(
             selects[1].options[0].action,
-            PanelAction::SetSafetyMode { mode: None }
+            PanelAction::SetSafetyMode {
+                mode: "just_do_it".into()
+            }
+        );
+        assert_eq!(
+            selects[1].options[1].action,
+            PanelAction::SetSafetyMode {
+                mode: "tell_me".into()
+            }
         );
 
         // 「工具明细」「注册明细」「压缩」是 chip（设计稿 `.pbox.debug` 的 `.chip`；紧随
@@ -2999,10 +3026,8 @@ mod tests {
             last_context_usage: Some(5),
             last_tool_names: vec![],
             registered_tools: vec![],
-            session_thinking_effort: None,
-            thinking_effort_effective: None,
-            session_safety_mode: None,
-            safety_mode_effective: None,
+            thinking_effort: "auto".into(),
+            safety_mode: "tell_me".into(),
         });
         model.apply_projection(frame);
         assert!(model.toggle_debug_tools());
@@ -3033,10 +3058,8 @@ mod tests {
             last_context_usage: None,
             last_tool_names: vec![],
             registered_tools: vec![],
-            session_thinking_effort: None,
-            thinking_effort_effective: None,
-            session_safety_mode: None,
-            safety_mode_effective: None,
+            thinking_effort: "auto".into(),
+            safety_mode: "tell_me".into(),
         });
         model.apply_projection(frame);
         let panel = model
@@ -3796,24 +3819,9 @@ mod tests {
         assert_eq!(labels, vec!["执行下一步", "中止"]);
     }
 
-    #[test]
-    fn 投递意图循环为默认插话稍后() {
-        let mut model = ChatModel::new();
-        model.apply_projection(projection("s1", vec![]));
-        assert_eq!(model.delivery(), None, "初始 = 默认（由 Node 按配置处理）");
-        model.cycle_delivery();
-        assert_eq!(
-            model.delivery(),
-            Some(super::super::intents::SendDelivery::Steer)
-        );
-        model.cycle_delivery();
-        assert_eq!(
-            model.delivery(),
-            Some(super::super::intents::SendDelivery::FollowUp)
-        );
-        model.cycle_delivery();
-        assert_eq!(model.delivery(), None);
-    }
+    // `投递意图循环为默认插话稍后` 删除记录（2026-10-06 用户裁决）：本地轮换态
+    // （`cycle_delivery`）随单条显式投递意图整链退场；投递下拉的选中与派发由
+    // `投递下拉按配置投影选中且与设置页同表` 覆盖。
 
     // ==========================================
     // A1：会话标签与历史

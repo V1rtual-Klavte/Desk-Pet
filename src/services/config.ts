@@ -197,6 +197,13 @@ function readQuietHour(raw: unknown, key: string, fallback: number): number {
  */
 export type DeliveryIntent = "steer" | "followUp"
 
+/**
+ * 安全策略三档（CONFIG `ai.safety.mode`）：
+ * just_do_it=全放行 / tell_me=告知确认 / let_me_tk=全部确认。
+ * 值域由读取期收拢到三档，非法值回落 `tell_me`（保守默认），不把非法值透传给裁决链。
+ */
+export type SafetyMode = "just_do_it" | "tell_me" | "let_me_tk"
+
 /** 队列批量策略：all=同一安全边界前积压的补充一起进入下一次请求；one-at-a-time=逐条。 */
 export type QueueMode = "all" | "one-at-a-time"
 
@@ -425,6 +432,11 @@ function queueConfigSave(): void {
   if (saveQueued) return
   saveQueued = true
   queueMicrotask(() => {
+    // `flushConfig()` 要等一条微任务之后才可能轮到这里，而它会把排队中的保存
+    // **接管**进自己的原子写（先清 `saveQueued` 再入队写）：那时本条微任务必须
+    // 退场，否则同一份内容会被写第二遍。没被接管（纯 setOverride、没有 flush）
+    // 才轮到本条微任务落盘。
+    if (!saveQueued) return
     saveQueued = false
     // 合并窗口内的保存没有调用方 await 这条 promise，失败必须主动上报，否则只会静默丢配置
     enqueueConfigWrite(serializeConfig()).catch((error) => {
@@ -889,7 +901,11 @@ export const loopConfig = {
 };
 
 export const safetyConfig = {
-  get mode() { return overrideOr("ai.safety.mode", cfg.ai?.safety?.mode || "tell_me"); },
+  /** 安全策略三档；手写 YAML 的未知取值按保守默认 `tell_me` 收拢（不透传给裁决链）。 */
+  get mode(): SafetyMode {
+    const value = overrideOr("ai.safety.mode", cfg.ai?.safety?.mode || "tell_me")
+    return value === "just_do_it" || value === "let_me_tk" ? value : "tell_me"
+  },
   get sessionTrustEnabled() { return overrideOr("ai.safety.sessionTrustEnabled", cfg.ai?.safety?.sessionTrustEnabled ?? true); },
 };
 

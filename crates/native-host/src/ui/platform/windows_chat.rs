@@ -3396,14 +3396,14 @@ fn tab_name_width(name: &str, scale: f64) -> i32 {
 ///
 /// **为什么要立即重建**（用户报告「投递在下拉栏选完之后显示不刷新，必须收回再打开
 /// 才更新」的根因与修法）：显示类本地动作只改模型 + `schedule_refresh()`，而刷新走
-/// **版本号比对** —— `ChatModel::set_delivery` 没有 bump `panel_revision`，`drain_refresh`
+/// **版本号比对** —— 当时代码里的本地 setter 没有 bump `panel_revision`，`drain_refresh`
 /// 便认为「面板没变」把刷新丢掉，界面停在旧状态（重新打开浮层只是碰巧撞上别的
 /// 重建时机）。这里在派发后无条件重建：与 `toggle_inspector_ui` / `close_history_ui`
 /// 的既有模式一致，覆盖**所有**动作（今后再有忘记 bump 的本地 setter 也不会漏）。
 /// 代价：本来就会 bump 的动作（展开开关 / slash 填入 / 会话历史 / 计划权限回执等）
 /// 会多一次整帧重建——用户点击频率低、重建在毫秒级，可接受。
-/// 更省的做法是共享层给 `set_delivery` 这类 setter 补 `panel_revision += 1`
-/// （本体 `ChatModel`，本平台层不改；已登记在交付报告）。
+/// 更省的做法是共享层给本地 setter 补 `panel_revision += 1`（本体 `ChatModel`，
+/// 本平台层不改；已登记在交付报告）。
 unsafe fn dispatch_panel_action(action: PanelAction) {
     unsafe { handle_panel_outcome(crate::ui::chat::apply_panel_action(action)) };
     chat_apply(ChatRenderUpdate::Full(crate::ui::chat::snapshot()));
@@ -7976,9 +7976,9 @@ mod tests {
     }
 
     /// 面板动作派发必须走 [`dispatch_panel_action`]（派发 + 立即整帧重建）——
-    /// 「投递在下拉里选完之后显示不刷新」的根因是本地动作 `set_delivery` 没 bump
-    /// 版本号、刷新被版本比对丢掉；修法是平台派发后无条件重建。这条守门防止
-    /// 某条分派路径退回「只派发不重建」。
+    /// 「投递在下拉里选完之后显示不刷新」的根因是当时的本地动作没有 bump 版本号、
+    /// 刷新被版本比对丢掉；修法是平台派发后无条件重建。这条守门防止某条分派路径
+    /// 退回「只派发不重建」。
     #[test]
     fn 面板动作派发都走立即重建() {
         let production = production_source();

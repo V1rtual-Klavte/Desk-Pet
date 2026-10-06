@@ -4,7 +4,8 @@
 //
 // 归属 L2 的依据：本文件只覆盖**领域调用之前**就能判定的分支，以及记忆域以
 // 模块替身承接后本层的编排行为 ——
-//   · 会话级覆盖（思考强度 / 安全策略）写的是 `debug.ts` 的进程内槽（无落盘、无回合）；
+//   · 抽屉三个下拉（投递 / 思考 / 安全）写的是 CONFIG（`setOverride` + `flushConfig`
+//     的同一条写盘路径，与设置页一致；无回合、只落配置）；
 //   · send / slash / stop / switch / remember 的入参守卫都在 `sendMessage` /
 //     记忆库调用**之前**抛结构化 CONFIG（合法入参会进入真实领域链路，那属于 L3/L4）；
 //   · remember 的可信来源链用 `vi.mock` 的记录型替身承接（只观测本层如何调用
@@ -15,8 +16,9 @@
 // `test/integration/native-ui/会话意图承接与投影推送.test.ts` 覆盖，本文件不重复。
 //
 // 被测行为：
-//   · 档位写入 / 收回覆盖（null）都经 `debug.ts` 的既有出口读写；
-//   · 非法档位、缺字段以 CONFIG 拒绝，且**不覆盖**已写入的值（不静默改档）；
+//   · 三个档位都经「写运行时 CONFIG + 原子写盘」的同一条路径，读值与类型化 getter 一致；
+//   · 非法档位、缺字段（含 null ——「默认」项已退场）以 CONFIG 拒绝，且**不覆盖**
+//     已写入的值（不静默改档）；
 //   · send / slash / remember 的形状守卫逐条以 CONFIG 拒绝（不静默丢弃、不放行空消息）；
 //   · remember 解析失败原样透传（不重包、不伪加错误码、不进入提交）；成功来源按
 //     evidence 组装 add 提交（actor=user_ui、可信身份随请求）并回传 revision；
@@ -24,13 +26,7 @@
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { initConfig } from "@/services/config"
-import {
-  getSessionSafetyModeOverride,
-  getSessionThinkingEffortOverride,
-  resetSessionSafetyMode,
-  resetSessionThinkingEffort,
-} from "@/services/debug"
+import { aiConfig, conversationConfig, flushConfig, getOverride, initConfig, safetyConfig, setOverride } from "@/services/config"
 import { errorCode } from "@/services/error"
 import { setHostBridge } from "@/services/host"
 import type { HostBridge } from "@/services/host"
@@ -134,9 +130,13 @@ beforeAll(async () => {
   await initConfig()
 })
 
-afterEach(() => {
-  resetSessionThinkingEffort()
-  resetSessionSafetyMode()
+afterEach(async () => {
+  // 用例写的是 CONFIG（`setOverride` 直接改运行时 cfg）：按夹具值复位并等落盘，
+  // 避免写盘微任务与残留档位漂进下一个用例（夹具值见 CONFIG_YAML）。
+  setOverride("ai.conversation.defaultDelivery", "steer")
+  setOverride("ai.thinking.effort", "auto")
+  setOverride("ai.safety.mode", "tell_me")
+  await flushConfig()
   recorder.calls.length = 0
 })
 
@@ -148,49 +148,79 @@ beforeEach(() => {
   memoryMock.publishMemoryRevision.mockReset()
 })
 
-describe("会话级覆盖（思考强度 / 安全策略）", () => {
-  it("档位写入与收回覆盖：null = 回到全局默认（覆盖读值是独立的原生槽）", async () => {
-    await dispatchHostRequest("chat_set_thinking_effort", { effort: "high" })
-    expect(getSessionThinkingEffortOverride()).toBe("high")
-    await dispatchHostRequest("chat_set_thinking_effort", { effort: null })
-    expect(getSessionThinkingEffortOverride(), "null 应收回覆盖而不是写一个 null 档位").toBeNull()
-
-    await dispatchHostRequest("chat_set_safety_mode", { mode: "let_me_tk" })
-    expect(getSessionSafetyModeOverride()).toBe("let_me_tk")
-    await dispatchHostRequest("chat_set_safety_mode", { mode: null })
-    expect(getSessionSafetyModeOverride()).toBeNull()
+describe("抽屉三个下拉 = 与设置页同键的 CONFIG 写", () => {
+  it("三个键逐个可写：运行时 CONFIG 与类型化 getter 同刻一致，且各经一次原子写盘", async () => {
+    // 每条 =（方法, 入参, 读值 getter）；「写进去的值能经设置页同一条 getter 读回」是
+    // 本批的核心契约（抽屉是设置页对应项的快捷入口）。
+    // `yamlLine` = 写盘 YAML 里应出现的那一行（键的最后一段 + 刚写入的值）。
+    const cases: Array<{ method: string; args: Record<string, unknown>; read: () => string; value: string; key: string; yamlLine: string }> = [
+      { method: "chat_set_default_delivery", args: { delivery: "followUp" }, read: () => conversationConfig.defaultDelivery, value: "followUp", key: "ai.conversation.defaultDelivery", yamlLine: "defaultDelivery: followUp" },
+      { method: "chat_set_thinking_effort", args: { effort: "high" }, read: () => aiConfig.thinkingEffort, value: "high", key: "ai.thinking.effort", yamlLine: "effort: high" },
+      { method: "chat_set_safety_mode", args: { mode: "just_do_it" }, read: () => safetyConfig.mode, value: "just_do_it", key: "ai.safety.mode", yamlLine: "mode: just_do_it" },
+    ]
+    for (const item of cases) {
+      recorder.calls.length = 0
+      await dispatchHostRequest(item.method, item.args)
+      expect(getOverride(item.key), `${item.method} 应写进运行时 CONFIG 的 ${item.key}`).toBe(item.value)
+      expect(item.read(), `${item.method} 的写值必须与类型化 getter 同刻一致`).toBe(item.value)
+      const writes = recorded("write_runtime_config")
+      expect(writes, `${item.method} 应经一次原子写盘（与设置页同一条路径）`).toHaveLength(1)
+      expect(String((writes[0]!.args as { content?: unknown }).content), "写盘内容应带上刚写入的值").toContain(item.yamlLine)
+    }
   })
 
-  it("三档安全策略与四档思考强度逐个可写（不是只放行单个特例）", async () => {
+  it("全值域逐个可写（不是只放行单个特例）", async () => {
+    for (const delivery of ["steer", "followUp"] as const) {
+      await dispatchHostRequest("chat_set_default_delivery", { delivery })
+      expect(conversationConfig.defaultDelivery).toBe(delivery)
+    }
     for (const effort of ["auto", "low", "medium", "high"] as const) {
       await dispatchHostRequest("chat_set_thinking_effort", { effort })
-      expect(getSessionThinkingEffortOverride()).toBe(effort)
+      expect(aiConfig.thinkingEffort).toBe(effort)
     }
     for (const mode of ["just_do_it", "tell_me", "let_me_tk"] as const) {
       await dispatchHostRequest("chat_set_safety_mode", { mode })
-      expect(getSessionSafetyModeOverride()).toBe(mode)
+      expect(safetyConfig.mode).toBe(mode)
     }
   })
 
   it("非法档位 / 缺字段以 CONFIG 拒绝，且不覆盖已写入的值（不静默改档）", async () => {
+    await dispatchHostRequest("chat_set_default_delivery", { delivery: "followUp" })
+    await expect(
+      dispatchHostRequest("chat_set_default_delivery", { delivery: "later" }),
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    await expect(dispatchHostRequest("chat_set_default_delivery", {})).rejects.toMatchObject({ code: "CONFIG" })
+    expect(conversationConfig.defaultDelivery, "被拒绝的写入不得改动现值").toBe("followUp")
+
     await dispatchHostRequest("chat_set_thinking_effort", { effort: "low" })
     await expect(
       dispatchHostRequest("chat_set_thinking_effort", { effort: "extreme" }),
     ).rejects.toMatchObject({ code: "CONFIG" })
-    await expect(
-      dispatchHostRequest("chat_set_thinking_effort", {}),
-      "缺 effort 不应被当成「收回覆盖」",
-    ).rejects.toMatchObject({ code: "CONFIG" })
-    expect(getSessionThinkingEffortOverride(), "被拒绝的写入不得改动现值").toBe("low")
+    await expect(dispatchHostRequest("chat_set_thinking_effort", {})).rejects.toMatchObject({ code: "CONFIG" })
+    expect(aiConfig.thinkingEffort, "被拒绝的写入不得改动现值").toBe("low")
 
     await dispatchHostRequest("chat_set_safety_mode", { mode: "tell_me" })
     await expect(
       dispatchHostRequest("chat_set_safety_mode", { mode: "allow_all" }),
     ).rejects.toMatchObject({ code: "CONFIG" })
+    await expect(dispatchHostRequest("chat_set_safety_mode", {})).rejects.toMatchObject({ code: "CONFIG" })
+    expect(safetyConfig.mode).toBe("tell_me")
+  })
+
+  it("null 不再是合法档位（「默认」项随会话级覆盖机制退场）", async () => {
+    // 回归钉：线格式与值域只收真实档位；重新放行 null 会静默把配置写成空值。
     await expect(
-      dispatchHostRequest("chat_set_safety_mode", {}),
+      dispatchHostRequest("chat_set_default_delivery", { delivery: null }),
     ).rejects.toMatchObject({ code: "CONFIG" })
-    expect(getSessionSafetyModeOverride()).toBe("tell_me")
+    await expect(
+      dispatchHostRequest("chat_set_thinking_effort", { effort: null }),
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    await expect(
+      dispatchHostRequest("chat_set_safety_mode", { mode: null }),
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    expect(getOverride("ai.conversation.defaultDelivery")).toBe("steer")
+    expect(getOverride("ai.thinking.effort")).toBe("auto")
+    expect(getOverride("ai.safety.mode")).toBe("tell_me")
   })
 })
 
@@ -208,10 +238,9 @@ describe("发送入口形状守卫（在领域调用之前拒绝）", () => {
     ).rejects.toMatchObject({ code: "CONFIG" })
   })
 
-  it("chat_send：非法 delivery / 非法 sessionId 快照形状都以 CONFIG 拒绝", async () => {
-    await expect(
-      dispatchHostRequest("chat_send", { text: "hi", delivery: "later" }),
-    ).rejects.toMatchObject({ code: "CONFIG" })
+  it("chat_send：非法 sessionId 快照形状以 CONFIG 拒绝（delivery 参数已从线协议移除）", async () => {
+    // 单条显式投递意图整链删除：合法入参只认 text / imagePaths / sessionId 形状；
+    // 投递由 ingress 按 CONFIG `ai.conversation.defaultDelivery` 决定（上面一组）。
     await expect(
       dispatchHostRequest("chat_send", { text: "hi", sessionId: 42 }),
       "sessionId 形状无效是协议违规，不静默当无快照",
@@ -325,9 +354,10 @@ describe("记住这条：记忆域调用与失败透传（解析器以模块替�
 })
 
 describe("回执后的投影重推分界（AFTER_REPLY_PUSH_METHODS）", () => {
-  it("视情况方法（历史刷新 / 两个会话级覆盖）各补推一次投影帧", async () => {
+  it("视情况方法（历史刷新 / 抽屉三条 CONFIG 写）各补推一次投影帧", async () => {
     for (const method of [
       "chat_request_session_history",
+      "chat_set_default_delivery",
       "chat_set_thinking_effort",
       "chat_set_safety_mode",
     ]) {

@@ -967,6 +967,19 @@ pub struct EditorUi {
 
 static EDITOR_UI: OnceLock<EditorUi> = OnceLock::new();
 
+/// 进程级编辑器全局（[`EditorUi`] 单例与进程级 HostLink）的测试串行锁
+/// （与 [`crate::ui::theme::GLOBAL_STATE_TEST_LOCK`] 同款）。
+///
+/// `cargo test` 并行跑同一二进制里的用例，而编辑器域与设置页「图层编辑器」入口
+/// 共用这一份进程级单例：「素材调度与跨层复制」用例在等后台写 notice（「复制完成
+/// 通知」），设置页「动作路由」用例经 `open_window` 派发的载入线程又会在
+/// `NullEditorPort` 上报错后改写同一只 notice 单值槽 —— 实测改写落在素材用例写后
+/// 约 1ms、2ms 轮询直接错过（丢失更新，全量并行必红）。凡测试会经生产路径触碰
+/// 编辑器全局的，持本锁串行；派发异步尾巴的用例（如设置页路由）还要在放锁前等
+/// 异步写落地，不把尾巴带出锁外。
+#[cfg(test)]
+pub(crate) static EDITOR_GLOBAL_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 pub fn editor_ui() -> &'static EditorUi {
     EDITOR_UI.get_or_init(EditorUi::new)
 }
@@ -1950,8 +1963,10 @@ mod tests {
     // ── 素材调度与跨层复制（HostLink 请求面）──
     //
     // 这两条路都在宿主 UI 线程发起、经**进程级** HostLink 与 editor_ui 单例在后台
-    // 结算（assets 模块的 request() 只认全局链路），因此本用例独占这两个全局单例；
-    // 其余用例只碰本地 EditorDraft。
+    // 结算（assets 模块的 request() 只认全局链路）。编辑器域其余用例只碰本地
+    // EditorDraft；但设置页「图层编辑器动作路由」用例会经 `open_window` 派发同一
+    // 单例的载入线程、异步改写 notice 单值槽，与本用例的「复制完成通知」形成丢失
+    // 更新 —— 两处用例共用 [`EDITOR_GLOBAL_TEST_LOCK`] 串行（复盘见其注释）。
 
     /// 安装进程级 HostLink（只装一次）并返回请求记录（事件名 + 载荷）。
     fn test_host_link() -> Arc<Mutex<Vec<(String, Value)>>> {
@@ -2011,6 +2026,9 @@ mod tests {
 
     #[test]
     fn 素材调度与跨层复制回填走宿主请求面() {
+        let _guard = EDITOR_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let sink = test_host_link();
         let link = crate::ui::ports::host_link()
             .expect("用例已安装进程级 HostLink")

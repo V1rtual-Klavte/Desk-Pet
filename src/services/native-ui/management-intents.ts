@@ -71,6 +71,22 @@ function requireId(args: unknown, method: string): string {
   return id
 }
 
+/**
+ * `memory_item_change` 专用：载荷字段是 `itemId`（与 `MemoryItemChangePayload` 的声明
+ * 和 Rust 发送端一致；通用 [`requireId`] 读的是 `id`，那是 detail 等请求的字段）。
+ *
+ * 2026-10-06 实机事故：处理器曾误用 `requireId` 读 `id`，而 Rust 一直发 `itemId` ——
+ * 设置页「遗忘/纠正/核心画像」每次都以「缺少有效的 id」失败的假提醒收场（单测也照错的
+ * 字段名写、双双偏离线协议，故未被发现）。既有单测已补「错误字段名必须拒绝」的线形状钉子。
+ */
+function requireItemId(args: unknown, method: string): string {
+  const itemId = (args as { itemId?: unknown } | null)?.itemId
+  if (typeof itemId !== "string" || itemId.trim().length === 0) {
+    throw Object.assign(new Error(`${method} 缺少有效的 itemId`), { code: "CONFIG" })
+  }
+  return itemId
+}
+
 function requireBool(args: unknown, key: string, method: string): boolean {
   const value = (args as Record<string, unknown> | null)?.[key]
   if (typeof value !== "boolean") {
@@ -469,7 +485,7 @@ export async function memoryItemChange(args: MemoryItemChangePayload): Promise<M
   if (action !== "update" && action !== "forget") {
     throw Object.assign(new Error(`memory_item_change 未知 action: ${String(action)}`), { code: "CONFIG" })
   }
-  const itemId = requireId(args, "memory_item_change")
+  const itemId = requireItemId(args, "memory_item_change")
   const expectedVersion = requireFiniteNumber(args, "expectedVersion", "memory_item_change")
   const baseRevision = requireFiniteNumber(args, "baseRevision", "memory_item_change")
   const memory = await import("@/services/agent/memory")
@@ -673,7 +689,7 @@ async function loadCardStages(args: unknown, method: string): Promise<{
 }> {
   const requested = optionalCardId(args, method)
   const personality = await import("@/services/personality")
-  const card = requested ? personality.getCard(requested) : personality.getActiveCard()
+  const card = requested ? await personality.loadCard(requested) : personality.getActiveCard()
   if (!card) {
     throw Object.assign(new Error(`人格卡不存在：${requested ?? "（没有激活卡）"}`), { code: "PATH_NOT_FOUND" })
   }
@@ -799,13 +815,14 @@ export async function cardManage(args: unknown): Promise<CardManageResult> {
   const op = payload?.op
   const personality = await import("@/services/personality")
   const cards = await import("@/services/personality/card-manage")
-  // 撞名判定吃当前注册表：与设置页下拉看到的是同一份权威列表。
-  const existingIds = () => personality.getCards().map(card => card.id)
+  // 撞名判定吃现读的全量列表：与设置页下拉看到的是同一份权威列表（刻意不缓存，
+  // 缓存残缺会让新建/导入静默覆盖同名文件）。
+  const existingIds = async () => (await personality.listCardMetas()).map(meta => meta.id)
   let message: string
   switch (op) {
     case "create": {
       const name = requireStringField(payload, "name", "card_manage.create")
-      const result = await cards.createCard(name, existingIds())
+      const result = await cards.createCard(name, await existingIds())
       // 新建必须给出推导出的新 id（CardOpResult 的既有语义）；缺 id 是服务层故障，不静默放过。
       if (!result.ok || !result.newId) throw new Error(result.message || "新建 Card 失败")
       message = result.message
@@ -848,7 +865,7 @@ export async function cardManage(args: unknown): Promise<CardManageResult> {
         break
       }
       const raw = await readTextFile(path)
-      const result = await cards.importCardText(raw, existingIds())
+      const result = await cards.importCardText(raw, await existingIds())
       if (!result.ok) throw new Error(result.message || "导入 Card 失败")
       message = result.message
       break
@@ -859,7 +876,7 @@ export async function cardManage(args: unknown): Promise<CardManageResult> {
   log.info(`Card 管理（${op}）:`, message)
   return {
     message,
-    list: cardListProjection(personality.getCards()),
+    list: cardListProjection(await personality.listCardMetas()),
   }
 }
 
@@ -867,14 +884,14 @@ export async function cardManage(args: unknown): Promise<CardManageResult> {
 export async function cardMarkdownRead(args: unknown): Promise<{ cardId: string; text: string }> {
   const requested = optionalCardId(args, "card_markdown_read")
   const personality = await import("@/services/personality")
-  const card = requested ? personality.getCard(requested) : personality.getActiveCard()
+  const card = requested ? await personality.loadCard(requested) : personality.getActiveCard()
   if (!card) {
     throw Object.assign(
       new Error(`人格卡不存在：${requested ?? "（没有激活卡）"}`),
       { code: "PATH_NOT_FOUND" },
     )
   }
-  // 原文取自注册表（每次写入后都会重载）：编辑窗打开的就是这张卡此刻的字。
+  // 原文按需读取（激活卡取常驻副本、非激活卡读单文件）：编辑窗打开的就是这张卡此刻的字。
   return { cardId: card.id, text: card.rawContent }
 }
 

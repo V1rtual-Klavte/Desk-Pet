@@ -7,7 +7,7 @@ import type {
   EffectClass, PermissionDecision, ToolContext, ToolDef,
 } from "@/services/tool"
 import { safetyConfig } from "@/services/config"
-import { getEffectiveSafetyMode } from "@/services/debug"
+import type { SafetyMode } from "@/services/config"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 import { requestPermissionConfirm, cancelPermissionConfirm } from "./confirm"
 
@@ -16,7 +16,7 @@ export type PermissionConfirmation = "allow_once" | "allow_session" | "deny"
 
 /** 回合内冻结的权限策略：回合开始时取一次，回合中改设置从下一回合生效。 */
 export interface PermissionPolicySnapshot {
-  safetyMode: ReturnType<typeof getEffectiveSafetyMode>
+  safetyMode: SafetyMode
   sessionTrustEnabled: boolean
 }
 
@@ -25,9 +25,11 @@ export interface PermissionPolicySnapshot {
  *
  * 冻结的理由是身份一致：同一次确认的裁决与授权哈希必须来自同一份策略，
  * 否则回合中途改设置会让「确认时看到的风险」与「复用授权时的策略」不是同一件事。
+ * 2026-10-06 起安全模式的唯一真相源是 CONFIG `ai.safety.mode`（会话级覆盖机制
+ * 已删除），「回合开始冻结」纪律不变：改配置仍从下一回合生效。
  */
 export function freezePermissionPolicy(): PermissionPolicySnapshot {
-  return { safetyMode: getEffectiveSafetyMode(), sessionTrustEnabled: safetyConfig.sessionTrustEnabled }
+  return { safetyMode: safetyConfig.mode, sessionTrustEnabled: safetyConfig.sessionTrustEnabled }
 }
 
 export interface PermissionContext extends ToolContext {

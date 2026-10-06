@@ -12,10 +12,10 @@
 //! 每次派发都如实报错（[`NullChatIntentPort`]），不静默吞掉用户消息。
 //!
 //! 语义对齐今天的 ChatPanel（供接线时逐项核对）：
-//! - `Send` → `sendMessage(text, { delivery, imagePaths })`；清输入 + 播发送音在
+//! - `Send` → `sendMessage(text, { imagePaths })`；清输入 + 播发送音在
 //!   UI 侧；投递失败（admission/异常）恢复输入框文本并提示 —— 该归宿由平台层实现；
-//! - `SlashCommand` → 今天 `/` 开头的文本走同一条 `sendMessage` 但**不带**显式
-//!   投递意图（`delivery: undefined`），由 ingress preProcess 决定执行/透传；
+//! - `SlashCommand` → 今天 `/` 开头的文本走同一条 `sendMessage`，由 ingress
+//!   preProcess 决定执行/透传；
 //! - `Stop` → `stopActiveRun(sessionId)`（run 收尾由 `deskpet-run-state` 回推）；
 //! - `SwitchSession` → 会话切换（会话标签条）；切会话后的投影由 Node 推送；
 //! - `Retry` → 今天没有独立「重试」按钮（retry 只是模型侧阶段提示）。端口先登记
@@ -77,11 +77,14 @@
 //!   `src/services/native-ui/permission-confirm.ts`）。
 //! `Retry` 仍如实报错：今天没有独立的重试入口（两侧都不提供触发点），不伪造承载者。
 //!
-//! 调试条增补（DebugBar 迁移）：会话级思考强度 / 安全策略覆盖两条经**有界 `request`**
-//! （[`runtime_request`]）映射到 `chat_set_thinking_effort` / `chat_set_safety_mode`
-//! （`None` = 恢复默认，线格式上是 null；方法名按 `HostRequestMap` 命名，Node 侧
-//! 处理器与注册由契约同步落地）。都是 Node 内存态的即时写、请求周期内有确定结果，
-//! 与决策类同款有界阻塞。
+//! 调试条增补（DebugBar 迁移）：抽屉三个下拉（投递 / 思考 / 安全）统一为
+//! **与设置页同键的 CONFIG 写入**，各经**有界 `request`**（[`runtime_request`]）映射到
+//! `chat_set_default_delivery` / `chat_set_thinking_effort` / `chat_set_safety_mode`
+//! （方法名按 `HostRequestMap` 命名；Node 侧处理器走 `setOverride` + `flushConfig`
+//! 的同一条写盘路径）。写盘在请求周期内有确定结果，与决策类同款有界阻塞；
+//! 显示收敛由回执后的投影重推承担（Node 侧 `runChatAfterReplyPush`）。
+//! 2026-10-06 用户裁决：抽屉从此是设置页对应项的快捷入口 —— 单条显式投递意图与
+//! 会话级思考/安全覆盖两层旧机制删除，不再有「默认」选项（配置总有值）。
 //!
 //! 消息行动作（记住这条）：入口 = **聊天消息右键菜单**（气泡上的按钮已于 2026-10-05
 //! 按用户规则退场，入口改由右键承接；平台层只对用户消息挂项，判据 =
@@ -107,7 +110,10 @@ use std::sync::Arc;
 use crate::error::{AppError, AppResult};
 use crate::ui::ports::{HostLink, HOST_REQUEST_TIMEOUT};
 
-/// 显式投递意图（与今天 `deliveryIntent` 的取值同义）。
+/// 投递方式（CONFIG `ai.conversation.defaultDelivery` 的值域，与 `DeliveryIntent` 同义）。
+///
+/// 2026-10-06 用户裁决：单条显式投递意图退场，本枚举只剩两个用途 —— 解析投影里的
+/// 默认投递现值（「投递」下拉的选中来源）与承载 `SetDefaultDelivery` 的配置写值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendDelivery {
     /// 插话：参与当前运行。
@@ -314,14 +320,14 @@ pub struct UiReceiptEvent {
 /// 一条用户意图。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatIntent {
-    /// 发送一条普通消息（可带显式投递意图与图片附件路径）。
+    /// 发送一条普通消息（可带图片附件路径）。忙碌时投递由 ingress 按 CONFIG
+    /// `ai.conversation.defaultDelivery` 决定，**不再有单条显式意图**。
     Send {
         session_id: Option<String>,
         text: String,
         image_paths: Vec<String>,
-        delivery: Option<SendDelivery>,
     },
-    /// 发送一条 `/` 开头的命令文本（无显式投递意图；执行与否由 ingress 决定）。
+    /// 发送一条 `/` 开头的命令文本（执行/排队由 ingress 决定）。
     SlashCommand {
         session_id: Option<String>,
         command: String,
@@ -383,11 +389,13 @@ pub enum ChatIntent {
         session_id: String,
         event_id: String,
     },
-    // ── 调试条（DebugBar 迁移）：会话级运行期覆盖 ──
-    /// 会话级思考强度覆盖（`None` = 恢复默认，即全局 `ai.thinkingEffort`）。
-    SetThinkingEffort { effort: Option<String> },
-    /// 会话级安全策略覆盖（`None` = 恢复默认，即全局 `safety.mode`）。
-    SetSafetyMode { mode: Option<String> },
+    // ── 调试条（DebugBar 迁移）：抽屉三个下拉 = 与设置页同键的 CONFIG 写入 ──
+    /// 默认投递方式（写 `ai.conversation.defaultDelivery`；值域 steer / followUp）。
+    SetDefaultDelivery { delivery: SendDelivery },
+    /// 思考强度（写 `ai.thinking.effort`；值域 auto/low/medium/high）。
+    SetThinkingEffort { effort: String },
+    /// 安全策略（写 `ai.safety.mode`；值域 just_do_it/tell_me/let_me_tk）。
+    SetSafetyMode { mode: String },
     // ── A1：会话标签与历史（映射见文件头「A1 增补」）──
     /// 新建会话（Node `createNewSession` + 以当前 Card 补一条欢迎语）。
     NewSession,
@@ -424,6 +432,7 @@ impl ChatIntent {
             ChatIntent::ContinueInterruptedRun { .. } => "continue-interrupted-run",
             ChatIntent::DiscardInterruptedRun { .. } => "discard-interrupted-run",
             ChatIntent::RememberMessage { .. } => "remember-message",
+            ChatIntent::SetDefaultDelivery { .. } => "set-default-delivery",
             ChatIntent::SetThinkingEffort { .. } => "set-thinking-effort",
             ChatIntent::SetSafetyMode { .. } => "set-safety-mode",
             ChatIntent::NewSession => "new-session",
@@ -528,14 +537,12 @@ fn submit_request(intent: &ChatIntent) -> Option<(&'static str, serde_json::Valu
             session_id,
             text,
             image_paths,
-            delivery,
         } => (
             "chat_send",
             serde_json::json!({
                 "sessionId": session_id,
                 "text": text,
                 "imagePaths": image_paths,
-                "delivery": delivery.map(|delivery| delivery.as_str()),
             }),
             "聊天发送",
         ),
@@ -605,13 +612,17 @@ fn decision_request(intent: &ChatIntent) -> Option<(&'static str, serde_json::Va
     })
 }
 
-/// 调试条（DebugBar 迁移）的会话级覆盖 → 有界 `request`（方法名与 args 按
+/// 调试条（DebugBar 迁移）的三个 CONFIG 写 → 有界 `request`（方法名与 args 按
 /// types.ts 的调试条组登记；Node 承接点为 `src/services/native-ui/chat-intents.ts`，
-/// 处理器更新 `debug.ts` 的会话覆盖并在回执后重推投影让面板选择收敛）：两个动作
-/// 都是 Node 内存态的即时写（无持久化、无长尾），请求周期内有确定结果，
+/// 处理器走 `setOverride` + `flushConfig` 写 CONFIG，与设置页同一条写盘路径，
+/// 并在回执后重推投影让下拉选择收敛）：写盘在请求周期内有确定结果，
 /// 与决策类同款有界阻塞。
 fn runtime_request(intent: &ChatIntent) -> Option<(&'static str, serde_json::Value)> {
     Some(match intent {
+        ChatIntent::SetDefaultDelivery { delivery } => (
+            "chat_set_default_delivery",
+            serde_json::json!({ "delivery": delivery.as_str() }),
+        ),
         ChatIntent::SetThinkingEffort { effort } => (
             "chat_set_thinking_effort",
             serde_json::json!({ "effort": effort }),
@@ -703,9 +714,9 @@ fn unwired_intent_error(intent: &ChatIntent) -> AppError {
 ///   - 决策类六条（abort-running-plan / discard-plan / resolve-unknown-side-effect /
 ///     withdraw-queued / discard-paused-inputs / discard-interrupted-run）：同组有界
 ///     `request`；
-///   - 消息行动作一条（remember-message，入口 = 消息右键菜单）与调试条两条
-///     （set-thinking-effort / set-safety-mode）：同组有界 `request`
-///     （记忆提交 / 内存态写，请求周期内有确定结果）；
+///   - 消息行动作一条（remember-message，入口 = 消息右键菜单）与调试条三条
+///     （set-default-delivery / set-thinking-effort / set-safety-mode）：同组有界
+///     `request`（记忆提交 / CONFIG 写盘，请求周期内有确定结果）；
 ///   - 热路径三条（send/slash/stop）与决策类三条（resume-plan / resume-paused-inputs /
 ///     continue-interrupted-run）：非阻塞 `notify`（提交即成功；传输失败如实报错），
 ///     迟到的领域回执只留痕；
@@ -974,7 +985,6 @@ mod tests {
             session_id: None,
             text: "你好".into(),
             image_paths: vec![],
-            delivery: None,
         })
         .is_none());
         assert!(session_request(&ChatIntent::SlashCommand {
@@ -992,14 +1002,12 @@ mod tests {
                     session_id: Some("s1".into()),
                     text: "你好".into(),
                     image_paths: vec!["/tmp/a.png".into()],
-                    delivery: Some(SendDelivery::Steer),
                 },
                 "chat_send",
                 serde_json::json!({
                     "sessionId": "s1",
                     "text": "你好",
                     "imagePaths": ["/tmp/a.png"],
-                    "delivery": "steer",
                 }),
             ),
             (
@@ -1032,20 +1040,22 @@ mod tests {
             session_id: None,
             text: secret.into(),
             image_paths: vec![],
-            delivery: None,
         })
         .unwrap();
         assert!(!note.contains(secret));
 
-        // 缺省投递意图在线格式上是 null（不由宿主复制配置默认值）。
+        // 单条显式投递意图整链删除：线格式上不再有 delivery（忙碌投递由 ingress 按
+        // CONFIG `ai.conversation.defaultDelivery` 决定，宿主不复制默认值）。
         let (_, args, _) = submit_request(&ChatIntent::Send {
             session_id: None,
             text: "普通消息".into(),
             image_paths: vec![],
-            delivery: None,
         })
         .unwrap();
-        assert_eq!(args["delivery"], serde_json::Value::Null);
+        assert!(
+            args.get("delivery").is_none(),
+            "chat_send 不应再携带 delivery 参数: {args}"
+        );
     }
 
     #[test]
@@ -1138,34 +1148,38 @@ mod tests {
         .is_none());
     }
 
+    /// 三个抽屉下拉 = 与设置页同键的 CONFIG 写：方法名与 args 逐字对齐 types.ts 的
+    /// 调试条组，值一律带真实取值（没有 null「默认」项 —— 配置总有值）。
     #[test]
-    fn 调试条覆盖映射到chat方法且默认是null() {
+    fn 调试条三条config写映射到chat方法且值不带null() {
         let cases = [
             (
+                ChatIntent::SetDefaultDelivery {
+                    delivery: SendDelivery::Steer,
+                },
+                "chat_set_default_delivery",
+                serde_json::json!({ "delivery": "steer" }),
+            ),
+            (
+                ChatIntent::SetDefaultDelivery {
+                    delivery: SendDelivery::FollowUp,
+                },
+                "chat_set_default_delivery",
+                serde_json::json!({ "delivery": "followUp" }),
+            ),
+            (
                 ChatIntent::SetThinkingEffort {
-                    effort: Some("low".into()),
+                    effort: "low".into(),
                 },
                 "chat_set_thinking_effort",
                 serde_json::json!({ "effort": "low" }),
             ),
             (
-                // 「默认」= 清除覆盖：线格式上是 null（与 HostRequestMap 的
-                // `?: T | null` 约定一致），不是空串、也不是省略参数。
-                ChatIntent::SetThinkingEffort { effort: None },
-                "chat_set_thinking_effort",
-                serde_json::json!({ "effort": null }),
-            ),
-            (
                 ChatIntent::SetSafetyMode {
-                    mode: Some("let_me_tk".into()),
+                    mode: "let_me_tk".into(),
                 },
                 "chat_set_safety_mode",
                 serde_json::json!({ "mode": "let_me_tk" }),
-            ),
-            (
-                ChatIntent::SetSafetyMode { mode: None },
-                "chat_set_safety_mode",
-                serde_json::json!({ "mode": null }),
             ),
         ];
         for (intent, method, args) in cases {
@@ -1173,6 +1187,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{} 必须有调试条承载者", intent.name()));
             assert_eq!(mapped_method, method);
             assert_eq!(mapped_args, args);
+            // 值域收窄后线格式不再有 null：任何一档都是真实取值。
+            assert!(
+                mapped_args.as_object().unwrap().values().all(|value| !value.is_null()),
+                "{mapped_args} 不应带 null 档位（「默认」项已退场）"
+            );
         }
         // 其余组的意图不伪造方法名。
         assert!(runtime_request(&ChatIntent::Stop {
@@ -1202,7 +1221,10 @@ mod tests {
         assert_eq!(intent.name(), "remember-message");
 
         // 非本组的意图不伪造方法名（调试条 / 决策类 / 热路径）。
-        assert!(remember_request(&ChatIntent::SetSafetyMode { mode: None }).is_none());
+        assert!(remember_request(&ChatIntent::SetSafetyMode {
+            mode: "tell_me".into()
+        })
+        .is_none());
         assert!(remember_request(&ChatIntent::Stop {
             session_id: "s".into(),
         })
@@ -1359,7 +1381,6 @@ mod tests {
                 session_id: None,
                 text: "你好".into(),
                 image_paths: vec![],
-                delivery: None,
             },
             ChatIntent::PlanConfirmResolved {
                 plan_id: "p".into(),
@@ -1409,7 +1430,6 @@ mod tests {
             session_id: Some("s1".into()),
             text: "你好".into(),
             image_paths: vec![],
-            delivery: Some(SendDelivery::FollowUp),
         })
         .unwrap();
         let payload = published
@@ -1420,8 +1440,12 @@ mod tests {
             .expect("必须已投递一条事件");
         assert_eq!(payload["method"], serde_json::json!("chat_send"));
         assert_eq!(payload["args"]["text"], serde_json::json!("你好"));
-        assert_eq!(payload["args"]["delivery"], serde_json::json!("followUp"));
         assert_eq!(payload["args"]["sessionId"], serde_json::json!("s1"));
+        assert!(
+            payload["args"].get("delivery").is_none(),
+            "投递参数已从线协议移除: {}",
+            payload["args"]
+        );
 
         // 在途登记是单向留痕（LogOnly）：迟到回执只结算留痕，不唤醒任何人。
         let request_id = payload["requestId"].as_u64().expect("requestId");

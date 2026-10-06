@@ -11,7 +11,7 @@
 //   · settings_commit 经既有 setOverride + flushConfig（写盘成功后才算提交），
 //     数组字段回写还原，写盘先于状态推送；写盘失败如实抛出、不推送；
 //   · set_chat_width 写回 general.popup.chatWidth（取整 + 夹到 schema 同域）；
-//   · personality_cards 读 Card 注册表（不是 CONFIG 副本）；
+//   · personality_cards 现读 Card 目录（不是 CONFIG 副本）；
 //   · editor_load/editor_save 走 profile_file_read → 合并 → profile_file_write
 //     （唯一写入路径），先落盘后重推舞台；失败不落配置、不推舞台；
 //   · 回执：成功 ok=true；失败带结构化 code/message；未知方法如实报错。
@@ -384,12 +384,10 @@ describe("请求订阅与回执", () => {
 // ==========================================
 
 describe("失败路径", () => {
-  it("人格卡列表读的是 Card 注册表（不是 CONFIG 副本）[native-ui-personality-cards]", async () => {
+  it("人格卡列表现读 Card 目录（不是 CONFIG 副本）[native-ui-personality-cards]", async () => {
     const { bridge } = fakeBridge()
     setHostBridge(bridge)
     await reloadConfig()  // 幂等的 initConfig 不会回退前一用例写脏的 cfg；reload 让每个用例从假桥重读
-    const { initCards } = await import("@/services/personality")
-    await initCards()
 
     const payload = (await dispatchHostRequest("personality_cards", {})) as {
       active: string | null

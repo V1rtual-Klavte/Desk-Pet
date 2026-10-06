@@ -7,64 +7,14 @@
 
 import { reactive } from "vue"
 import type { Usage } from "@earendil-works/pi-ai"
-import type { ThinkingEffort } from "@/services/agent/types"
 import type { PiTextPurpose } from "@/services/engine/harness"
-import { aiConfig, safetyConfig } from "@/services/config"
+import { aiConfig } from "@/services/config"
 
-// ── 会话级思考强度覆盖 ──
-// null = 使用全局默认 (ai.thinkingEffort)
-let _sessionThinkingEffort: ThinkingEffort | null = null
-
-/** 设置当前会话的思考强度覆盖 */
-export function setSessionThinkingEffort(effort: ThinkingEffort | null): void {
-  _sessionThinkingEffort = effort
-}
-
-/** 获取当前有效的思考强度：会话覆盖 > 全局默认 */
-export function getEffectiveThinkingEffort(): ThinkingEffort {
-  return _sessionThinkingEffort ?? (aiConfig.thinkingEffort as ThinkingEffort)
-}
-
-/**
- * 会话级思考强度覆盖的原始读值（null = 无覆盖）。
- * 与 `getEffectiveThinkingEffort` 分开：调试条投影要同时展示「有没有覆盖」与生效值。
- */
-export function getSessionThinkingEffortOverride(): ThinkingEffort | null {
-  return _sessionThinkingEffort
-}
-
-// ── 会话级安全策略覆盖 ──
-// null = 使用全局默认 (safety.mode)
-export type SafetyMode = "just_do_it" | "tell_me" | "let_me_tk"
-let _sessionSafetyMode: SafetyMode | null = null
-
-/** 设置当前会话的安全策略覆盖 */
-export function setSessionSafetyMode(mode: SafetyMode | null): void {
-  _sessionSafetyMode = mode
-}
-
-/** 获取当前有效的安全策略：会话覆盖 > 全局默认 */
-export function getEffectiveSafetyMode(): SafetyMode {
-  return _sessionSafetyMode ?? (safetyConfig.mode as SafetyMode)
-}
-
-/**
- * 会话级安全策略覆盖的原始读值（null = 无覆盖）。
- * 与 `getEffectiveSafetyMode` 分开：调试条投影要同时展示「有没有覆盖」与生效值。
- */
-export function getSessionSafetyModeOverride(): SafetyMode | null {
-  return _sessionSafetyMode
-}
-
-/** 重置会话思考强度 */
-export function resetSessionThinkingEffort(): void {
-  _sessionThinkingEffort = null
-}
-
-/** 重置会话安全策略 */
-export function resetSessionSafetyMode(): void {
-  _sessionSafetyMode = null
-}
+// `setSessionThinkingEffort` / `getEffectiveThinkingEffort` / `setSessionSafetyMode` /
+// `getEffectiveSafetyMode` 等会话级覆盖机制删除记录（2026-10-06 用户裁决：抽屉三个
+// 下拉改为与设置页同键的 CONFIG 写，不是单条/会话级覆盖）：思考强度与安全模式的
+// **唯一真相源是 CONFIG**（`aiConfig.thinkingEffort` / `safetyConfig.mode`，消费点
+// 直读类型化 getter），本模块不再持有第二条状态。
 
 export interface DebugState {
   /** 上次请求的真实 prompt tokens = Provider input + cacheRead + cacheWrite（未回报时保留上次值） */

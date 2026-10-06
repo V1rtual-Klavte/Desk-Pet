@@ -37,6 +37,7 @@ import { initChat } from "@/services/agent/runner"
 import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/engine/plan/checkpoint-store"
 import { planConfig, setOverride } from "@/services/config"
 import { getActiveCard, listPersonalities, switchPersonality } from "@/services/personality/registry"
+import { loadCard } from "@/services/personality/loader"
 import { readStagesFile } from "@/services/personality/stages-file"
 import type { CardVariableDef, PersonalityCard } from "@/services/personality/types"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
@@ -224,7 +225,12 @@ export const 计划步骤变量写入: SceneDef = {
     cardIdBefore ??= getActiveCard()?.id
     targetVar = findWritableStringVar(getActiveCard())
     if (!targetVar) {
-      const target = listPersonalities().find(card => findWritableStringVar(card))
+      // 列表只有 meta（非激活卡不驻留）：逐张按需读全文，找第一张定义了可写变量的卡
+      let target: PersonalityCard | null = null
+      for (const meta of await listPersonalities()) {
+        const card = await loadCard(meta.id)
+        if (card && findWritableStringVar(card)) { target = card; break }
+      }
       if (!target) throw new Error("没有任何 Card 定义可写入的 card 段字符串变量，场景无法执行")
       const switched = await switchPersonality(target.id)
       if (!switched.ok) throw new Error(`切换到 Card ${target.id} 失败: ${switched.error ?? "未知原因"}`)

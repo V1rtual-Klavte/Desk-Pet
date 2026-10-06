@@ -1,7 +1,6 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { aiConfig, getOverride, setOverride } from "@/services/config"
 import { contextBudget } from "@/services/context"
-import { setSessionSafetyMode } from "@/services/debug"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { PLAN_CHECKPOINT_ENTRY } from "@/services/engine/plan/checkpoint-store"
@@ -75,9 +74,9 @@ function captureOverrides(): OverrideSnapshot {
 }
 
 function restoreOverrides(previous: OverrideSnapshot): void {
-  setSessionSafetyMode(null)
   setOverride("ai.plan.enabled", previous.planEnabled)
   // `safetyConfig.mode` 读的是 `ai.safety.mode`（不是 `safety.mode`）：写错 key 等于没改全局值。
+  // 2026-10-06 起安全模式只有 CONFIG 这一条轴（会话级覆盖机制已删除）。
   setOverride("ai.safety.mode", previous.safetyMode)
 }
 
@@ -106,7 +105,6 @@ export const 输入先落盘: SceneDef = {
     // 计划入口只看 planConfig.enabled（基线把它钉在 false）；安全模式给 just_do_it，计划段不额外等确认。
     setOverride("ai.plan.enabled", true)
     setOverride("ai.safety.mode", "just_do_it")
-    setSessionSafetyMode("just_do_it")
     await initChat()
     sessionId = getActiveSessionId()
     planned = await sendMessage(PLAN_REQUEST)

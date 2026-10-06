@@ -9,7 +9,7 @@
 // 交给主回合的 ephemeral 上下文，提议入口把同格式结果作为工具结果返回模型。
 // 确认、执行、步骤裁决、超时、进度事件、落盘记录与恢复语义完全一致：
 //   · 确认 = `requestPlanConfirm`（既有计划确认面板；just_do_it 模式同样跳过，与自动入口
-//     共用 `getEffectiveSafetyMode` 这一个策略点）；
+//     共用 `safetyConfig.mode` 这一个策略点）；
 //   · 执行 = `executePlan`（步骤超时 / 计划时限 / 失败裁决 / 逐步门都在它内部）；
 //   · 记录 = `planCheckpointStore`（`created`/`step_state`/`terminal` 事件级落盘，
 //     崩溃恢复与「继续/丢弃」面板按同一份记录工作）；
@@ -32,10 +32,9 @@
 // ==========================================
 
 import { publishUiEvent, HOST_EVENT_PLAN_PROGRESS, type HostEventMap, type NodeUiEventName } from "@/services/host"
-import { getEffectiveSafetyMode } from "@/services/debug"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"
-import { planConfig } from "@/services/config"
+import { planConfig, safetyConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { sha256Text } from "@/services/engine/runtime"
@@ -146,11 +145,11 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
     // ── 确认（与自动入口同一策略点：just_do_it 跳过面板）──
     let confirmation: "user" | "auto_policy" = "user"
     let stepMode: "auto" | "stepByStep" = "auto"
-    if (getEffectiveSafetyMode() !== "just_do_it") {
+    if (safetyConfig.mode !== "just_do_it") {
       const decision = await requestPlanConfirm(plan, {
         sessionId,
         planId,
-        ...(getEffectiveSafetyMode() === "let_me_tk" ? { forceStepByStep: true } : {}),
+        ...(safetyConfig.mode === "let_me_tk" ? { forceStepByStep: true } : {}),
         ...(input.signal ? { signal: input.signal } : {}),
       })
       if (!decision.confirmed) {
@@ -235,15 +234,14 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
         }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
         if (entryId) stepResultEntryIds.set(String(step.id), entryId)
       },
-      // 工具解析报告（FIX-51）：权限面变化必须可见，不静默 —— 文案与自动入口的
-      // `runtime.ts::runPlanPhase` 逐字一致（放大到子代理时派生型工具会被剥离，按实际集合写）。
+      // 工具解析报告（FIX-51，2026-10-06 收窄）：与自动入口 `runtime.ts::runPlanPhase`
+      // 同一口径 —— 工具名不存在（真异常）发系统消息；未限定工具属例行情形，只留进度事件，
+      // 不敲聊天（逐步系统消息是刷屏噪音）。放大到子代理时派生型工具会被剥离，按实际集合写。
       async onStepNotice(step, notice) {
         const index = plan.steps.findIndex(item => item.id === step.id) + 1
         void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
         if (notice.kind === "missing_tools") {
           pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
-        } else {
-          pushSystemMessage(`计划第 ${index} 步未限定工具，将使用除派生型工具外的全部已注册工具`, sessionId)
         }
       },
       // 失败询问与逐步前置门都接既有步骤裁决面板；会话切换/终止执行时按 `abort` 结算，

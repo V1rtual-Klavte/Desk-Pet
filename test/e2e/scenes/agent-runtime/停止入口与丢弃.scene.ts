@@ -34,7 +34,8 @@ export const 停止入口与丢弃: SceneDef = {
     blocking = registerBlockingTool(TOOL_NAME)
     const firstTurn = sendMessage("开始一个会被停止的任务。")
     await blocking.started
-    await sendMessage(DISCARDED_TEXT, { requestId: "runtime-stop-entry-discard", delivery: "steer" })
+    // 忙碌投递意图由 CONFIG `ai.conversation.defaultDelivery` 决定（夹具缺省 steer）。
+    await sendMessage(DISCARDED_TEXT, { requestId: "runtime-stop-entry-discard" })
     await stopActiveRun(sessionId)
     await firstTurn
 

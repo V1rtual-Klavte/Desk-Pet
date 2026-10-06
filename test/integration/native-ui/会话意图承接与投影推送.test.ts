@@ -38,7 +38,7 @@ import {
   __resetSessionProjectionForTest,
   type SessionProjectionPayload,
 } from "@/services/native-ui"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
 import { initPaths } from "@/services/paths"
@@ -227,8 +227,7 @@ beforeAll(async () => {
   const cardsDir = join(root, "personality", "cards")
   mkdirSync(cardsDir, { recursive: true })
   writeFileSync(join(cardsDir, `${FIXTURE_CARD_ID}.md`), fixtureCardMarkdown())
-  await initCards()
-  const fixtureCard = getCard(FIXTURE_CARD_ID)
+  const fixtureCard = await loadCard(FIXTURE_CARD_ID)
   expect(fixtureCard, `夹具卡 ${FIXTURE_CARD_ID} 未从临时数据根加载`).toBeDefined()
   if (fixtureCard) {
     await updateStagesFile(fixtureCard.id, {
