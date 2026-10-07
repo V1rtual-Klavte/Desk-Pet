@@ -21,7 +21,7 @@
 
 use std::cell::RefCell;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontW, DeleteObject, EndPaint, InvalidateRect, SetBkMode, SetTextColor,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS,
@@ -139,13 +139,18 @@ pub(crate) struct MainLayout {
 pub(crate) fn install(main: HWND) -> AppResult<MainLayout> {
     let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
     let class_name = wide(STAGE_CLASS);
+    let mut class_error = 0u32;
     unsafe {
         let mut wc: WNDCLASSW = std::mem::zeroed();
         wc.lpfnWndProc = Some(stage_wndproc);
         wc.hInstance = hinstance;
         wc.lpszClassName = class_name.as_ptr();
-        // 类已存在时 RegisterClassW 返回 0；真实结论由 CreateWindowExW 给出。
-        RegisterClassW(&wc);
+        // 类已存在时 RegisterClassW 返回 0（多实例/多次 install 都正常）；真实结论由
+        // CreateWindowExW 给出。但失败时错误码必须留下 —— 只报「创建失败」无从定位
+        // （2026-10-07 Windows 实机：舞台子窗口建不出来、只剩蓝色空框）。
+        if RegisterClassW(&wc) == 0 {
+            class_error = GetLastError();
+        }
     }
     let (width, height) = client_size(main);
     let stage_hwnd = unsafe {
@@ -165,7 +170,12 @@ pub(crate) fn install(main: HWND) -> AppResult<MainLayout> {
         )
     };
     if stage_hwnd == 0 {
-        return Err(AppError::Other("舞台子窗口创建失败".into()));
+        // 两个错误码都带上：CreateWindowExW 的失败原因，以及 RegisterClassW 是否也失败了
+        // （类名冲突、hInstance 不匹配等都从这两处区分）。
+        let create_error = unsafe { GetLastError() };
+        return Err(AppError::Other(format!(
+            "舞台子窗口创建失败（CreateWindowExW 错误码 {create_error}，RegisterClassW 错误码 {class_error}）"
+        )));
     }
     let surface = unsafe { WinLayerSurface::new(stage_hwnd)? };
     let stage = Stage::new(surface);
