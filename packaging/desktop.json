@@ -42,6 +42,7 @@
     "backgroundApp": true
   },
   "nsis": {
-    "installMode": "currentUser"
+    "installMode": "currentUser",
+    "template": "nsis/installer.nsi"
   }
 }

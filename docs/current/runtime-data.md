@@ -10,7 +10,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 | 维度 | 开发（debug） | 生产（release） |
 |---|---|---|
-| 数据根 | `{工作区}/data/desk-pet/`（工作区根由 debug 宿主注入，release 路径不经过它） | 宿主解析的应用数据目录：macOS `~/Library/Application Support/com.v1rtual.deskpet`；Windows `%LOCALAPPDATA%\com.v1rtual.deskpet`。**便携模式**：可执行文件同层（macOS 为 `.app` 的**同级**）放了 `portable.txt` 时，数据根改为 `<安装位置>/data` —— 会话/记忆/设置与种子副本全落安装盘，一个字节不写系统盘；标记是用户的显式选择，判定在 `paths::portable_data_root` 内、不读环境变量，数据根的决定点仍只有 AppPaths 一处 |
+| 数据根 | `{工作区}/data/desk-pet/`（工作区根由 debug 宿主注入，release 路径不经过它） | **Windows 默认 `<安装目录>/userdata`**（不占系统盘，跟着安装盘走；安装目录不可写时留痕并回落 `%LOCALAPPDATA%\com.v1rtual.deskpet`）；**macOS 默认 `~/Library/Application Support/com.v1rtual.deskpet`**（`.app` 常驻 `/Applications`、普通用户不可写），放 `.app` 同级的 `portable.txt` 可改为同级目录的 `userdata/`。目录名 `userdata` 要自证用途（光叫 `data` 看不出是谁的）；标记与回落判定在 `paths::portable_data_root`／`side_data_root` 与 `app_local_data_dir` 内，不读环境变量、不引入第二处路径推导，数据根的决定点仍只有 AppPaths 一处。卸载器按同一路径询问是否连数据一起删（默认不删） |
 | 运行时 CONFIG | 工作区 `CONFIG-DEV.yaml`，不存在时用工作区 `CONFIG.yaml` | `data_root/settings/CONFIG.yaml`，首次启动由编译期嵌入的 `CONFIG.yaml` 模板初始化 |
 | 随包资源根 | 工作区 `packaging/dist`（存在时；`dev:prepare` 摆出 node/harness/defaults 三件套），否则打包布局资源目录 | 打包布局资源目录：macOS `.app/Contents/Resources`；Windows 安装目录（可执行文件同级） |
 | 随包 Node | `packaging/dist/node`（`dev:prepare` 按 [node-runtime.json](../../packaging/node-runtime.json) 锁定版本 22.22.3 暂存，版本一致则跳过） | 安装目录 `resources/node`（release CI 按同一锁定版本暂存并校验 SHASUMS） |

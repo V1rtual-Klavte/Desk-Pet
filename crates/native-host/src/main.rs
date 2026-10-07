@@ -655,24 +655,39 @@ fn packaged_resource_dir(exe: &Path) -> PathBuf {
 /// W5/W10 换成平台 API（NSSearchPathForDirectoriesInDomains /
 /// SHGetKnownFolderPath）后，本函数删除。
 fn app_local_data_dir(exe: &Path) -> AppResult<PathBuf> {
-    // 便携模式优先：安装位置旁放了 `portable.txt` 时，数据根落在它旁边的 `data/`，
-    // 一个字节不写系统盘（判定与两平台布局见 `paths::portable_data_root`）。
+    // 显式便携标记优先（两平台都认，见 `paths::portable_data_root`）：标记是 macOS 的
+    // 唯一便携入口，Windows 上默认已是安装目录、留着它只是不拒绝显式写法。
     if let Some(portable) = native_host::paths::portable_data_root(exe) {
         return Ok(portable);
     }
+    #[cfg(target_os = "windows")]
+    {
+        // Windows **默认**就把数据放安装目录旁的 `data/`：用户明确要求「不占系统盘」，
+        // 而 NSIS 是 per-user 安装（默认 `%LOCALAPPDATA%\<product>`，用户也可选到别的盘），
+        // 数据跟着安装位置走最符合预期。卸载时由卸载器询问是否连数据一起删。
+        //
+        // 装在只读位置时建目录会失败：如实留痕并回落系统目录，不把用户挡在启动之外。
+        let install = native_host::paths::installation_side_dir(exe).ok_or_else(|| {
+            AppError::Config("解析安装目录失败（可执行文件没有父目录）".into())
+        })?;
+        let portable = native_host::paths::side_data_root(install);
+        if std::fs::create_dir_all(&portable).is_ok() {
+            return Ok(portable);
+        }
+        rust_warn!("安装目录不可写（{}），数据根回落系统目录", install.display());
+        let base = std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| AppError::Config("缺少 LOCALAPPDATA 环境变量".into()))?;
+        Ok(PathBuf::from(base).join(APP_IDENTIFIER))
+    }
     #[cfg(target_os = "macos")]
     {
+        // macOS 保持惯例目录：`.app` 常驻 `/Applications`（普通用户不可写，把数据写在那里
+        // 会直接失败），需要便携时用 `.app` 同级的 `portable.txt` 显式开启。
         let home = std::env::var_os("HOME").ok_or(AppError::NoHomeDir)?;
         Ok(PathBuf::from(home)
             .join("Library")
             .join("Application Support")
             .join(APP_IDENTIFIER))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .ok_or_else(|| AppError::Config("缺少 LOCALAPPDATA 环境变量".into()))?;
-        Ok(PathBuf::from(base).join(APP_IDENTIFIER))
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {

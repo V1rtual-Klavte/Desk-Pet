@@ -22,8 +22,12 @@ use crate::error::{AppError, AppResult};
 /// [`portable_data_root`]）即启用便携数据根。
 pub const PORTABLE_MARKER: &str = "portable.txt";
 
-/// 便携数据根的目录名（落在安装位置旁，与标记文件同层）。
-pub const PORTABLE_DATA_DIR: &str = "data";
+/// 安装目录下数据根的目录名：`<安装目录>/userdata`。
+///
+/// 名字要能自证：装到用户自选的目录（如 `D:\desk-pet\`）时，光叫 `data` 看不出是谁的；
+/// `userdata` 一眼说明「这里是用户数据（会话/记忆/设置）」，与程序文件分得清清楚楚，
+/// 卸载时问的也是同一个名字。
+pub const SIDE_DATA_DIR: &str = "userdata";
 
 pub const MEMORY_DB_FILE: &str = "memory.sqlite3";
 pub const MEMORY_BACKUPS_DIR: &str = "backups";
@@ -381,26 +385,37 @@ fn development_data_root() -> AppResult<PathBuf> {
         .join("desk-pet"))
 }
 
-/// 便携数据根：可执行文件旁放了 [`PORTABLE_MARKER`] 时，数据留在 `<安装位置>/data`。
+/// 安装位置下的数据根：`<base>/userdata`（`base` 见 [`installation_side_dir`]）。
+///
+/// 单一落点：Windows 的默认数据根与两平台的便携数据根都用它，不各写一份拼接。
+pub fn side_data_root(base: &Path) -> PathBuf {
+    base.join(SIDE_DATA_DIR)
+}
+
+/// 可执行文件对应的「安装位置」目录：Windows 是 exe 所在目录；macOS 是可执行文件所在
+/// `.app` 的**同级**目录（exe 在 `Contents/MacOS/` 里，往上三层才是 `.app` 的父目录）。
+pub fn installation_side_dir(exe: &Path) -> Option<&Path> {
+    let exe_dir = exe.parent()?;
+    if cfg!(target_os = "macos")
+        && exe_dir.file_name().and_then(|name| name.to_str()) == Some("MacOS")
+        && exe_dir.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("Contents")
+    {
+        return exe_dir.parent()?.parent()?.parent();
+    }
+    Some(exe_dir)
+}
+
+/// 便携数据根：安装位置旁放了 [`PORTABLE_MARKER`] 时，数据留在 `<安装位置>/data/desk-pet`。
 ///
 /// 面向「不想占系统盘」：安装目录放 D 盘、旁边放一个空的 `portable.txt`，会话/记忆/设置与
 /// 种子副本就全落 D 盘，一个字节不写系统盘。标记是**用户的显式选择**，不是环境探测——
-/// 数据根的决定点仍然只有 [`AppPaths`]，本函数只负责给它算候选值。
-///
-/// macOS 的可执行文件在 `<X>.app/Contents/MacOS/`，标记与 `data/` 放在 `.app` 的**同级**，
-/// 与 Windows 的「exe 同层」对称；两平台都不认对方布局的标记。
+/// 数据根的决定点仍然只有 [`AppPaths`]，本函数只负责给它算候选值。macOS 用它做唯一便携
+/// 入口（`.app` 常驻 `/Applications`，那里普通用户不可写）；Windows 默认已是安装目录。
 pub fn portable_data_root(exe: &Path) -> Option<PathBuf> {
-    let exe_dir = exe.parent()?;
-    let base = if cfg!(target_os = "macos")
-        && exe_dir.file_name().and_then(|name| name.to_str()) == Some("MacOS")
-    {
-        exe_dir.parent()?.parent()?.parent()?
-    } else {
-        exe_dir
-    };
+    let base = installation_side_dir(exe)?;
     base.join(PORTABLE_MARKER)
         .is_file()
-        .then(|| base.join(PORTABLE_DATA_DIR))
+        .then(|| side_data_root(base))
 }
 
 pub fn is_e2e() -> bool {
@@ -423,9 +438,14 @@ mod tests {
 
         assert_eq!(portable_data_root(&exe), None, "没有标记不得启用便携模式");
         fs::write(install.join(PORTABLE_MARKER), "").unwrap();
+        assert_eq!(portable_data_root(&exe), Some(side_data_root(&install)));
         assert_eq!(
-            portable_data_root(&exe),
-            Some(install.join(PORTABLE_DATA_DIR))
+            portable_data_root(&exe)
+                .unwrap()
+                .strip_prefix(&install)
+                .unwrap(),
+            Path::new(SIDE_DATA_DIR),
+            "落点必须是 <安装目录>/userdata，就一层、且名字自证"
         );
 
         fs::remove_dir_all(&root).unwrap();
@@ -445,7 +465,7 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(
                 portable_data_root(&exe),
-                Some(root.join(PORTABLE_DATA_DIR)),
+                Some(side_data_root(&root)),
                 "macOS 应认 .app 同级的标记，而不是 Contents/MacOS 里的"
             );
         } else {
