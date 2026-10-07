@@ -600,7 +600,7 @@ fn host_environment() -> AppResult<HostEnvironment> {
         packaged_resource_dir(&exe)
     };
     Ok(HostEnvironment {
-        app_data_dir: app_local_data_dir()?,
+        app_data_dir: app_local_data_dir(&exe)?,
         resource_dir,
         workspace_root: if cfg!(debug_assertions) {
             Some(workspace_root())
@@ -649,9 +649,17 @@ fn packaged_resource_dir(exe: &Path) -> PathBuf {
 /// 应用本地数据根（release）：与 Tauri `app_local_data_dir()` 同口径 ——
 /// `{用户数据目录}/{应用标识}`。debug 构建不使用本值（AppPaths 走工作区内开发根）。
 ///
+/// 便携模式（安装位置旁放了 `portable.txt`）**优先于**系统目录：数据根落在标记旁的
+/// `data/`，用于「不想占系统盘」的场景，判定见 [`native_host::paths::portable_data_root`]。
+///
 /// W5/W10 换成平台 API（NSSearchPathForDirectoriesInDomains /
 /// SHGetKnownFolderPath）后，本函数删除。
-fn app_local_data_dir() -> AppResult<PathBuf> {
+fn app_local_data_dir(exe: &Path) -> AppResult<PathBuf> {
+    // 便携模式优先：安装位置旁放了 `portable.txt` 时，数据根落在它旁边的 `data/`，
+    // 一个字节不写系统盘（判定与两平台布局见 `paths::portable_data_root`）。
+    if let Some(portable) = native_host::paths::portable_data_root(exe) {
+        return Ok(portable);
+    }
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").ok_or(AppError::NoHomeDir)?;

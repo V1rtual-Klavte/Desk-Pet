@@ -18,6 +18,13 @@ use std::sync::OnceLock;
 use crate::error::{AppError, AppResult};
 
 /// 记忆域的固定文件名/目录名（唯一真相源：库写入、备份/导出目录与受保护路径识别共用）。
+/// 便携模式标记文件名：放在可执行文件同层（macOS 上为 `.app` 的同级目录，见
+/// [`portable_data_root`]）即启用便携数据根。
+pub const PORTABLE_MARKER: &str = "portable.txt";
+
+/// 便携数据根的目录名（落在安装位置旁，与标记文件同层）。
+pub const PORTABLE_DATA_DIR: &str = "data";
+
 pub const MEMORY_DB_FILE: &str = "memory.sqlite3";
 pub const MEMORY_BACKUPS_DIR: &str = "backups";
 pub const MEMORY_EXPORTS_DIR: &str = "exports";
@@ -374,6 +381,28 @@ fn development_data_root() -> AppResult<PathBuf> {
         .join("desk-pet"))
 }
 
+/// 便携数据根：可执行文件旁放了 [`PORTABLE_MARKER`] 时，数据留在 `<安装位置>/data`。
+///
+/// 面向「不想占系统盘」：安装目录放 D 盘、旁边放一个空的 `portable.txt`，会话/记忆/设置与
+/// 种子副本就全落 D 盘，一个字节不写系统盘。标记是**用户的显式选择**，不是环境探测——
+/// 数据根的决定点仍然只有 [`AppPaths`]，本函数只负责给它算候选值。
+///
+/// macOS 的可执行文件在 `<X>.app/Contents/MacOS/`，标记与 `data/` 放在 `.app` 的**同级**，
+/// 与 Windows 的「exe 同层」对称；两平台都不认对方布局的标记。
+pub fn portable_data_root(exe: &Path) -> Option<PathBuf> {
+    let exe_dir = exe.parent()?;
+    let base = if cfg!(target_os = "macos")
+        && exe_dir.file_name().and_then(|name| name.to_str()) == Some("MacOS")
+    {
+        exe_dir.parent()?.parent()?.parent()?
+    } else {
+        exe_dir
+    };
+    base.join(PORTABLE_MARKER)
+        .is_file()
+        .then(|| base.join(PORTABLE_DATA_DIR))
+}
+
 pub fn is_e2e() -> bool {
     std::env::var("DESKPET_E2E").ok().as_deref() == Some("1")
 }
@@ -384,6 +413,51 @@ pub fn is_e2e() -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn 便携标记存在时数据根落在安装位置旁() {
+        let root = std::env::temp_dir().join(format!("deskpet-portable-{}", std::process::id()));
+        let install = root.join("install");
+        fs::create_dir_all(&install).unwrap();
+        let exe = install.join("native-host.exe");
+
+        assert_eq!(portable_data_root(&exe), None, "没有标记不得启用便携模式");
+        fs::write(install.join(PORTABLE_MARKER), "").unwrap();
+        assert_eq!(
+            portable_data_root(&exe),
+            Some(install.join(PORTABLE_DATA_DIR))
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// macOS 的可执行文件在 `<X>.app/Contents/MacOS/` 里：标记要认 `.app` 的**同级**，
+    /// 与 Windows 的「exe 同层」对称；非 macOS 不解析这个布局，免得认错位置。
+    #[test]
+    fn 便携标记在macos应用包同级同样生效() {
+        let root = std::env::temp_dir().join(format!("deskpet-portable-app-{}", std::process::id()));
+        let macos_dir = root.join("X.app").join("Contents").join("MacOS");
+        fs::create_dir_all(&macos_dir).unwrap();
+        let exe = macos_dir.join("native-host");
+
+        assert_eq!(portable_data_root(&exe), None);
+        fs::write(root.join(PORTABLE_MARKER), "").unwrap();
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                portable_data_root(&exe),
+                Some(root.join(PORTABLE_DATA_DIR)),
+                "macOS 应认 .app 同级的标记，而不是 Contents/MacOS 里的"
+            );
+        } else {
+            assert_eq!(
+                portable_data_root(&exe),
+                None,
+                "非 macOS 不解析 .app 布局，不得误认标记"
+            );
+        }
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
