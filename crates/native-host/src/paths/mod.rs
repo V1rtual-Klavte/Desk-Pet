@@ -59,6 +59,12 @@ pub struct HostEnvironment {
 /// 处理；真实启动的进程必然已注入。
 static WORKSPACE_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
+/// 生产数据根（由 `AppPaths::init` 注入）。安全边界必须跟着它走：数据根**可以落在用户
+/// 目录之外**（Windows 装到 D 盘、便携模式），而 `allowed_file_roots` 原先只认 `$HOME`
+/// 与临时目录 —— 那些形态下所有会话/画像写入都会撞 PATH_ESCAPE（2026-10-07 实机：
+/// 装到 D 盘后启动即 `profiles 资源目录授权失败: 路径越权`）。
+static DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
 pub struct AppPaths {
     pub data_root: PathBuf,   // 统一读写根
     pub memory: PathBuf,      // {data_root}/memory/
@@ -182,6 +188,11 @@ impl AppPaths {
                 AppError::Config(format!("初始化生产配置失败: {:?}: {e}", paths.config_file))
             })?;
         }
+
+        // 安全边界跟着真实数据根走：debug 的开发根、生产的应用目录、装到别的盘或便携
+        // 模式下的 `<安装目录>/userdata` 都算一个允许根。放在这里注入 —— 目录已建、
+        // 种子已铺，此后所有经 `validate_file_path` 的读写都认它。
+        let _ = DATA_ROOT.set(paths.data_root.clone());
 
         Ok(paths)
     }
@@ -376,6 +387,13 @@ impl AppPaths {
 /// 单元测试不经过 init，读到 `None`；`security::allowed_file_roots` 会跳过该候选。
 fn project_root() -> Option<PathBuf> {
     WORKSPACE_ROOT.get().cloned()
+}
+
+/// 生产数据根。由 `AppPaths::init` 注入；单元测试不经过 init 时读到 `None`，
+/// `security::allowed_file_roots` 会跳过该候选（测试走 `validate_path` 的 base 前缀校验，
+/// 不依赖这里补的候选根）。
+pub(crate) fn data_root() -> Option<PathBuf> {
+    DATA_ROOT.get().cloned()
 }
 
 fn development_data_root() -> AppResult<PathBuf> {

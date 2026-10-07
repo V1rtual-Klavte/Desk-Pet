@@ -7,6 +7,12 @@ pub(crate) fn allowed_file_roots() -> AppResult<Vec<PathBuf>> {
     let temp = std::env::temp_dir();
     let mut candidates = vec![home, temp];
 
+    // 应用自己的数据根：可以落在用户目录之外（Windows 装到 D 盘、便携模式），安全边界
+    // 必须跟着它走，否则会话/画像写入一律 PATH_ESCAPE（见 `DATA_ROOT` 的注释）。
+    if let Some(root) = super::data_root() {
+        candidates.push(root);
+    }
+
     // 开发构建下再把项目根纳入：dev 的数据根是 `{project}/data/desk-pet`，
     // 仓库若不在 $HOME 之内（外置卷、/opt、Windows 的 D:\），所有会话写入
     // 都会直接撞 PATH_ESCAPE，而错误只给出 code，很难看出是根目录的问题。
