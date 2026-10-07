@@ -2379,6 +2379,9 @@ pub(crate) fn apply_theme() {
     chat_apply(ChatRenderUpdate::Full(crate::ui::chat::snapshot()));
     with_chat(|state| unsafe {
         apply_input_theme(state);
+        // 把手带 ▴ 的表面色是**创建时**记的：主题切换后必须重记，否则它底还停在
+        // 上一个主题的带色上（与顶栏 `apply_theme` 同一坑）。
+        paint_win::set_surface_color(state.handle_arrow, handle_bg_flat(theme::tokens()));
         // ownerdraw 的窗口区域（SetWindowRgn）不随重绘更新，而 radii 跨主题不同
         // （sm/btn：brushed 4/5、chrome 8/9、verdigris 4/5）：按各按钮创建时的半径
         // 重贴区域（配对与创建处一致：浮层 ✕/＋/历史 用 `--r1`，其余主按钮/次要按钮

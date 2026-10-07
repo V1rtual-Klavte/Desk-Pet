@@ -585,6 +585,11 @@ pub(crate) fn apply_theme() {
             .map(|ui| (ui.bar, ui.hide, ui.settings))
     });
     if let Some((bar, hide, settings)) = handles {
+        // 表面色是**创建时**记的：主题切换后必须重记，否则按钮底还停在上一个
+        // 主题的条色上（实机症状：顶栏已变浅、设置/× 还是两块深色板）。
+        let bar_flat = crate::ui::theme::tokens().bar_bg.base_color();
+        paint_win::set_surface_color(hide, bar_flat);
+        paint_win::set_surface_color(settings, bar_flat);
         unsafe {
             InvalidateRect(bar, std::ptr::null(), 1);
             InvalidateRect(hide, std::ptr::null(), 1);
