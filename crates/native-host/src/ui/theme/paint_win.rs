@@ -14,9 +14,13 @@
 //!   `AlphaBlend`（1×1 预乘 DIB 拉伸成目标矩形）；确定底色且语义是「叠加」的场合
 //!   （条纹、Bevel、文字投影）先在 sRGB 空间做 `composite_over` 近似再画实色 ——
 //!   sRGB 合成与线性空间合成有肉眼可见的细微差，这是就地注明的取舍，不做 gamma 校正。
-//! - **渐变**：`GradientFill` 只支持水平/垂直两向且忽略 alpha。全不透明的 stop 直接用它；
-//!   含半透明 stop 的渐变改走「1×H 预乘 BGRA 条 + `AlphaBlend` 拉伸」，逐行取样与
-//!   设计稿的多停渐变一一对应（设计稿的 `linear-gradient` 本就是任意停靠点）。
+//! - **渐变**：一律走「1×H 预乘 BGRA 条 + `AlphaBlend` 拉伸」，逐行取样与设计稿的多停
+//!   渐变一一对应（设计稿的 `linear-gradient` 本就是任意停靠点）。**不用 `GradientFill`
+//!   的 `GRADIENT_FILL_RECT_V`**：本机（Windows 11 26100）实测该 API 对**窗口 DC** 返回
+//!   `TRUE` 却一个像素都不写（同一个 API 对 `CreateDIBSection` 的离屏 DC 正常），
+//!   `Fill::Linear` 底的窗口背景会整片透明——图层编辑器窗口「能看见桌面」的直接原因；
+//!   而 `AlphaBlend` 在窗口 DC 上实测正常（舞台合成也一直用它）。两条路径对不透明 stop
+//!   观感一致，代价是每次渐变多一次 1×H 位图拉伸。
 //! - **`Fill::Radial`**：GDI 没有径向渐变，退化为 [`Fill::base_color`]（末档色）实填充。
 //! - **`Fill::Striped`**：按周期逐线画（不走 `CreatePatternBrush`）。理由：条纹色都带
 //!   alpha，pattern brush 是颜色拷贝、表达不了半透明；而周期只有 2–7px、线数在百级，
@@ -115,11 +119,6 @@ pub fn colorref(c: Rgba) -> u32 {
 pub fn rgba_from_colorref(v: u32) -> Rgba {
     let ch = |shift: u32| ((v >> shift) & 0xFF) as f32 / 255.0;
     Rgba::rgba(ch(0), ch(8), ch(16), 1.0)
-}
-
-/// `GradientFill` 的 `TRIVERTEX` 通道：16 位色，低字节留空（0xNN00）。
-pub fn channel16(v: f32) -> u16 {
-    ((v.clamp(0.0, 1.0) * 255.0).round() as u16) << 8
 }
 
 /// sRGB 空间的 src-over 合成（`fg` 盖在 `bg` 上），输出不透明。
@@ -485,14 +484,9 @@ pub fn button_face(
             tokens.primary_shadow,
             tokens.primary_text_shadow,
         ),
-        ButtonRole::Close => (
-            Some(tokens.btn_bg),
-            tokens.dim,
-            Some(tokens.btn_edge),
-            Some(tokens.btn_bevel),
-            tokens.btn_shadow,
-            None,
-        ),
+        // 关闭「×」：**无面**（与 macOS 顶栏一致 —— 只有字，悬浮才整块转 `danger`；
+        // 顶栏是渐变底，给面就会补出一块白板，见 `draw_button` 的无底分支）。
+        ButtonRole::Close => (None, tokens.dim, None, None, Elevation::NONE, None),
         // 未选中标签与文字链都无底无边：落在条底上，只出文字。
         ButtonRole::TabOff => (None, tokens.dim, None, None, Elevation::NONE, None),
         ButtonRole::Link => (None, tokens.ink, None, None, Elevation::NONE, None),
@@ -629,10 +623,10 @@ mod gdi {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
         AlphaBlend, CreateCompatibleDC, CreateDIBSection, CreateEllipticRgn, CreateRoundRectRgn,
-        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, FillRgn, GradientFill,
-        InvalidateRect, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, AC_SRC_ALPHA,
-        AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS,
-        GRADIENT_FILL_RECT_V, GRADIENT_RECT, HBITMAP, HBRUSH, HDC, HFONT, HGDIOBJ, HRGN, TRIVERTEX,
+        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, FillRgn, InvalidateRect,
+        SelectObject, SetBkMode, SetTextColor, SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, GetStockObject, HBITMAP, HBRUSH,
+        HDC, HFONT, HGDIOBJ, HRGN, NULL_BRUSH,
     };
     use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -652,9 +646,9 @@ mod gdi {
     };
 
     use super::{
-        bevel_bands, bitmap_dib_bytes, channel16, colorref, composite_over, dib_height,
-        disabled_face, edge_bands, elevation_bands, paint_order_first_on_top, premul,
-        rgba_from_colorref, sample_linear, stripe_bands, ButtonFace, ButtonRole, Rect,
+        bevel_bands, bitmap_dib_bytes, colorref, composite_over, dib_height, disabled_face,
+        edge_bands, elevation_bands, paint_order_first_on_top, premul, rgba_from_colorref,
+        sample_linear, stripe_bands, ButtonFace, ButtonRole, Rect,
     };
 
     // ── GDI 文本常量（windows-sys 0.52 未登记 DT_*；与 windows_chat.rs 同款就地定义）──
@@ -887,7 +881,9 @@ mod gdi {
         });
     }
 
-    /// 竖向渐变：全不透明走 `GradientFill`；含半透明 stop 走 1×H 预乘条 + `AlphaBlend`。
+    /// 竖向渐变：逐行取样写 1×H 预乘条，再整块 `AlphaBlend` 拉伸。
+    ///
+    /// **不走 `GradientFill`**：见模块头「渐变」条 —— 它在窗口 DC 上会静默不写像素。
     pub fn fill_gradient(hdc: HDC, rect: Rect, stops: &[(f32, Rgba)]) {
         if rect.is_empty() || stops.is_empty() {
             return;
@@ -896,42 +892,7 @@ mod gdi {
             fill_color(hdc, rect, stops[0].1);
             return;
         }
-        if stops.iter().all(|(_, c)| c.a >= 0.999) {
-            gradient_fill(hdc, rect, stops);
-        } else {
-            gradient_fill_alpha(hdc, rect, stops);
-        }
-    }
-
-    /// `GradientFill`（垂直两向之一；该 API 忽略 alpha，只用于全不透明 stop）。
-    fn gradient_fill(hdc: HDC, rect: Rect, stops: &[(f32, Rgba)]) {
-        let span = (rect.h - 1).max(1) as f32;
-        let vertices: Vec<TRIVERTEX> = stops
-            .iter()
-            .map(|(t, c)| TRIVERTEX {
-                x: rect.x,
-                // token 表的 stop t 是非递减契约，映射到 y 也非递减（GradientFill 的要求）。
-                y: rect.y + (t.clamp(0.0, 1.0) * span).round() as i32,
-                Red: channel16(c.r),
-                Green: channel16(c.g),
-                Blue: channel16(c.b),
-                Alpha: 0,
-            })
-            .collect();
-        let mesh = GRADIENT_RECT {
-            UpperLeft: 0,
-            LowerRight: (vertices.len() - 1) as u32,
-        };
-        unsafe {
-            GradientFill(
-                hdc,
-                vertices.as_ptr(),
-                vertices.len() as u32,
-                &mesh as *const GRADIENT_RECT as *const c_void,
-                1,
-                GRADIENT_FILL_RECT_V,
-            );
-        }
+        gradient_fill_alpha(hdc, rect, stops);
     }
 
     /// 半透明竖向渐变：逐行取样写 1×H 预乘条，再整块拉伸混合。
@@ -1220,6 +1181,14 @@ mod gdi {
         draw_elevation(hdc, rect, &face.shadow);
         if let Some(bg) = &face.bg {
             fill_rect(hdc, rect, bg);
+        } else {
+            // 无底角色（`TabOff` / `Link`）：系统会先把 ownerdraw 控件擦成**默认按钮面**
+            // （浅灰/白块），所以「无底」不能真的不画 —— 必须显式盖回它坐在哪层底上，
+            // 否则实机看到的就是把手带 ▴ 与未选中会话标签上的「莫名其妙的白底」
+            // （用户 2026-10-07 实拍）。`bg_base` 在无底角色上就是「条底压面板底」的
+            // 代表色，正是这层表面色。
+            // 调用方记过表面色就用它（顶栏/把手带的底色与 `bg_base` 不同）。
+            fill_color(hdc, rect, surface_color_of(hwnd).unwrap_or(face.bg_base));
         }
         if let Some(state) = &disabled_state {
             // 50% 面板底「冲洗」压在实色 fill 上：等价于 mix(fill, 面板底, 50%)。
@@ -1335,6 +1304,34 @@ mod gdi {
 
     thread_local! {
         static HOVERED: RefCell<HashSet<HWND>> = RefCell::new(HashSet::new());
+        /// 「这个控件坐在哪一层底色上」（无底角色 / STATIC 透底用）。
+        ///
+        /// ownerdraw 控件在 `WM_DRAWITEM` 之前会被系统按**默认按钮面**擦一遍，
+        /// 而底色是渐变（顶栏）或条底（把手带）时，返回实色刷子照样补出一块异色板 ——
+        /// 用户实拍的「莫名其妙的白底白框」就是这个。所以：**绘制端**读这里的表面色
+        /// 把底盖回去；**STATIC** 走 [`hollow_brush`] 完全不擦自己的底。
+        static SURFACE_COLORS: RefCell<HashMap<HWND, Rgba>> = RefCell::new(HashMap::new());
+    }
+
+    /// 记录控件所在的表面底色（无底按钮的「底」；`WM_NCDESTROY` 时自动清除）。
+    pub fn set_surface_color(hwnd: HWND, color: Rgba) {
+        if hwnd == 0 {
+            return;
+        }
+        SURFACE_COLORS.with(|cell| {
+            cell.borrow_mut().insert(hwnd, color);
+        });
+    }
+
+    /// 读回控件所在表面底色；从未写过 → `None`（绘制端回落 `bg_base`）。
+    pub fn surface_color_of(hwnd: HWND) -> Option<Rgba> {
+        SURFACE_COLORS.with(|cell| cell.borrow().get(&hwnd).copied())
+    }
+
+    /// 空心画刷：`WM_CTLCOLORSTATIC` 返回它 = STATIC **不擦自己的底**，
+    /// 底下父亲画的渐变/纹理原样透出来（实色刷会补出一块异色板）。
+    pub fn hollow_brush() -> HBRUSH {
+        unsafe { GetStockObject(NULL_BRUSH) as HBRUSH }
     }
 
     pub fn button_hovered(hwnd: HWND) -> bool {
@@ -1416,6 +1413,11 @@ mod gdi {
             WM_NCDESTROY => {
                 HOVERED.with(|set| {
                     set.borrow_mut().remove(&hwnd);
+                });
+                // 表面色按句柄记账：控件销毁时必须一起销账（句柄会被复用，
+                // 留着会让下一个控件继承上一个的底）。
+                SURFACE_COLORS.with(|cell| {
+                    cell.borrow_mut().remove(&hwnd);
                 });
                 unsafe {
                     RemoveWindowSubclass(hwnd, Some(button_subclass_proc), BUTTON_SUBCLASS_ID)
@@ -1500,13 +1502,6 @@ mod tests {
         for value in [0x0000_0000u32, 0x0012_3456, 0x00FF_FFFF] {
             assert_eq!(colorref(rgba_from_colorref(value)), value);
         }
-    }
-
-    #[test]
-    fn channel16_只填高字节() {
-        assert_eq!(channel16(0.0), 0x0000);
-        assert_eq!(channel16(1.0), 0xFF00);
-        assert_eq!(channel16(0.5), 0x8000);
     }
 
     /// `Fill::base_color` 三变体的兜底：Linear/Striped 取首档、Radial 取末档、空表给黑。

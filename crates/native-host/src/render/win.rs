@@ -32,8 +32,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW,
-    GetWindowRect, KillTimer, RegisterClassW, SetTimer, SetWindowLongPtrW, UpdateLayeredWindow,
-    GWLP_USERDATA, HWND_MESSAGE, ULW_ALPHA, WM_TIMER, WNDCLASSW,
+    KillTimer, RegisterClassW, SetTimer, SetWindowLongPtrW, UpdateLayeredWindow, GWLP_USERDATA,
+    HWND_MESSAGE, ULW_ALPHA, WM_TIMER, WNDCLASSW,
 };
 
 use crate::error::{AppError, AppResult};
@@ -45,8 +45,15 @@ use super::texture::{DecodedTexture, TextureId};
 /// 本模块消息窗的类名与帧计时器 id（id 在消息窗内唯一，不与 W5 的窗口冲突）。
 const SURFACE_CLASS: &str = "DeskPetLayerSurfaceW";
 const FRAME_TIMER_ID: usize = 1;
-/// 16ms ≈ 60Hz，与 W0 探针的帧计时器同口径。
-const FRAME_INTERVAL_MS: u32 = 16;
+/// 帧计时器间隔。**刻意取小于系统时钟节拍的 8ms**：`SetTimer` 按系统时钟节拍量化
+/// （默认 ~15.625ms），请求 16ms 会被推到下一个节拍 —— 2026-10-07 实机实测只有
+/// ~40fps（单帧合成仅 3.5ms，瓶颈在计时器投递不在绘制；macOS 侧由 CVDisplayLink
+/// 直接给 60Hz，所以这处是 Windows 专有差异）。请求 8ms 落在节拍内，实测 ~62fps。
+///
+/// **不要在回调里再加「最小间隔」节流**：这台机器的 WM_TIMER 投递本身有抖动
+/// （实测相邻 tick 会在 8~25ms 之间跳），任何按墙钟丢弃 tick 的写法都会掉到 ~48fps；
+/// 保持"有 tick 就画"才是这里唯一稳定的口径。
+const FRAME_INTERVAL_MS: u32 = 8;
 
 // ── DIB：32bpp 顶朝下、BGRA（预乘），AlphaBlend 与 UpdateLayeredWindow 共用 ──
 
@@ -155,6 +162,16 @@ pub struct WinLayerSurface {
     slot: Option<Box<TickSlot>>,
     slot_ptr: *mut TickSlot,
     ticks_running: bool,
+    /// 可选的不透明背板与前景标记；普通舞台保持透明。
+    backdrop: Option<Box<dyn Fn(HDC, i32, i32) + Send>>,
+    overlay: Option<Box<dyn Fn(HDC, i32, i32) + Send>>,
+    /// 每帧回调前的采样钩子（Windows 平台：取一次全局光标喂舞台）。
+    ///
+    /// 光标原本只由主窗的 `TIMER_TRACK` 单独轮询：采样计时器与帧计时器各自被系统
+    /// 时钟节拍量化、互相错拍，视差图层因此出现「一步一跳」的跟随抖动（用户
+    /// 2026-10-07 实机反馈「光标跟踪图层动的卡卡的」）。把采样挂进帧回调，保证
+    /// 每一帧合成用的都是当拍光标，跟随节拍与帧率严格一致。
+    pre_tick: Option<Box<dyn FnMut() + Send>>,
 }
 
 // 句柄与 DIB 像素指针只在创建线程（W5 UI 线程）使用；见模块头线程约束。
@@ -174,6 +191,13 @@ unsafe extern "system" fn surface_wndproc(
         if !surface.is_null() {
             let running = (*surface).ticks_running;
             let slot = (*surface).slot_ptr;
+            if running {
+                // 采样钩子先跑，借用只活在这个块内、不跨 sink ——
+                // sink 会经 Renderer 的锁再次可变访问同一表面（present）。
+                if let Some(hook) = (*surface).pre_tick.as_mut() {
+                    hook();
+                }
+            }
             if running && !slot.is_null() {
                 ((*slot).sink)();
             }
@@ -192,10 +216,28 @@ fn client_size(hwnd: HWND) -> (i32, i32) {
 }
 
 impl WinLayerSurface {
+    /// 安装每帧回调前的采样钩子（见字段 `pre_tick` 的说明）。
+    ///
+    /// 只由平台层在创建舞台表面后立刻安装；钩子与帧回调同线程、同一条消息处理
+    /// 路径内先执行，因此每一帧合成读到的光标都是当拍的。
+    pub fn set_pre_tick(&mut self, hook: Box<dyn FnMut() + Send>) {
+        self.pre_tick = Some(hook);
+    }
+
+    /// 背板与前景和图层提交到同一张 ULW 位图，普通透明舞台不使用该入口。
+    pub fn set_decoration(
+        &mut self,
+        backdrop: impl Fn(HDC, i32, i32) + Send + 'static,
+        overlay: impl Fn(HDC, i32, i32) + Send + 'static,
+    ) {
+        self.backdrop = Some(Box::new(backdrop));
+        self.overlay = Some(Box::new(overlay));
+    }
+
     /// 为给定的分层窗口建表面与帧计时器消息窗。
     ///
     /// # Safety
-    /// `target_window` 必须是调用线程上有效、已设置 `WS_EX_LAYERED` 的顶层窗口句柄。
+    /// `target_window` 必须是调用线程上有效、已设置 `WS_EX_LAYERED` 的顶层或子窗口句柄。
     pub unsafe fn new(target_window: HWND) -> AppResult<Box<Self>> {
         if target_window == 0 {
             return Err(AppError::Other("渲染表面需要有效的窗口句柄".into()));
@@ -208,6 +250,9 @@ impl WinLayerSurface {
             slot: None,
             slot_ptr: ptr::null_mut(),
             ticks_running: false,
+            backdrop: None,
+            overlay: None,
+            pre_tick: None,
         });
 
         let module = GetModuleHandleW(ptr::null());
@@ -292,6 +337,15 @@ impl RenderSurface for WinLayerSurface {
         }
         let frame = self.frame.as_mut().expect("上方分支刚保证存在");
         frame.clear();
+        if let Some(backdrop) = &self.backdrop {
+            backdrop(frame.hdc, client_w, client_h);
+            // GDI 填充不写有效 alpha；背板是明确的不透明语义。
+            for pixel in unsafe { std::slice::from_raw_parts_mut(frame.bits, frame.byte_len) }
+                .chunks_exact_mut(4)
+            {
+                pixel[3] = 255;
+            }
+        }
 
         // 帧计划是逻辑像素；目标窗口客户区是物理像素，按比值换算（跨 DPI 由 W5 提供
         // 逻辑尺寸；两值未就绪时按 1:1 处理）。
@@ -343,25 +397,32 @@ impl RenderSurface for WinLayerSurface {
             }
         }
 
-        let mut window_rect: RECT = unsafe { std::mem::zeroed() };
-        unsafe {
-            GetWindowRect(self.target, &mut window_rect);
+        if let Some(overlay) = &self.overlay {
+            overlay(frame.hdc, client_w, client_h);
+            for pixel in unsafe { std::slice::from_raw_parts_mut(frame.bits, frame.byte_len) }
+                .chunks_exact_mut(4)
+            {
+                pixel[3] = 255;
+            }
         }
         let screen = unsafe { GetDC(0) };
         let size = SIZE {
             cx: client_w,
             cy: client_h,
         };
-        let dst = POINT {
-            x: window_rect.left,
-            y: window_rect.top,
-        };
         let src = POINT { x: 0, y: 0 };
+        // `pptDst` 传 NULL = 不改变窗口位置：本表面只负责内容，位置由布局方
+        // （`windows_main::relayout` 的 `SetWindowPos`）持有。
+        //
+        // **不能**把它写成 `GetWindowRect` 的屏幕坐标。舞台是分层**子**窗口，
+        // `UpdateLayeredWindow` 对子窗口把 `pptDst` 当**父客户区**坐标：传屏幕坐标等于
+        // 每帧再加一次父窗口原点，子窗口会逐帧累加飞出屏幕（2026-10-07 Windows 实机
+        // 症状「舞台只剩主窗底色、角色不见」的直接原因）。位置不变时文档允许 NULL。
         let updated = unsafe {
             UpdateLayeredWindow(
                 self.target,
                 screen,
-                &dst,
+                ptr::null(),
                 &size,
                 frame.hdc,
                 &src,
@@ -432,6 +493,99 @@ impl Drop for WinLayerSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 不透明背板与前景进入实际分层帧且透明舞台不受影响() {
+        use windows_sys::Win32::Graphics::Gdi::{CreateSolidBrush, FillRect};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{WS_EX_LAYERED, WS_POPUP};
+        struct Target(HWND);
+        impl Drop for Target {
+            fn drop(&mut self) {
+                unsafe {
+                    DestroyWindow(self.0);
+                }
+            }
+        }
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        let target = Target(unsafe {
+            CreateWindowExW(
+                WS_EX_LAYERED,
+                class.as_ptr(),
+                ptr::null(),
+                WS_POPUP,
+                0,
+                0,
+                4,
+                4,
+                0,
+                0,
+                GetModuleHandleW(ptr::null()),
+                ptr::null(),
+            )
+        });
+        assert_ne!(target.0, 0, "需要真实的分层绘制目标");
+        let mut surface = unsafe { WinLayerSurface::new(target.0) }.expect("建立真实表面");
+        let plan = FramePlan {
+            window: super::super::geometry::WindowGeometry {
+                x: 0.0,
+                y: 0.0,
+                width: 4.0,
+                height: 4.0,
+            },
+            draws: Vec::new(),
+        };
+        surface.present(&plan).expect("透明帧提交");
+        let frame = surface.frame.as_ref().unwrap();
+        assert!(
+            unsafe { std::slice::from_raw_parts(frame.bits, frame.byte_len) }
+                .iter()
+                .all(|v| *v == 0)
+        );
+        surface.set_decoration(
+            |hdc, w, h| unsafe {
+                let brush = CreateSolidBrush(0x00ff0000);
+                FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: w,
+                        bottom: h,
+                    },
+                    brush,
+                );
+                DeleteObject(brush);
+            },
+            |hdc, _, _| unsafe {
+                let brush = CreateSolidBrush(0x000000ff);
+                FillRect(
+                    hdc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: 1,
+                        bottom: 1,
+                    },
+                    brush,
+                );
+                DeleteObject(brush);
+            },
+        );
+        surface.present(&plan).expect("装饰帧提交");
+        let frame = surface.frame.as_ref().unwrap();
+        let pixels = unsafe { std::slice::from_raw_parts(frame.bits, frame.byte_len) };
+        assert_eq!(
+            &pixels[..4],
+            &[0, 0, 255, 255],
+            "前景红块盖在背板之上且不透明"
+        );
+        assert_eq!(
+            &pixels[4..8],
+            &[255, 0, 0, 255],
+            "背板蓝色按BGRA写入且alpha有效"
+        );
+        assert!(pixels.chunks_exact(4).all(|pixel| pixel[3] == 255));
+    }
 
     /// 单层混合常量按不透明度代入：255 = 历史常量（不透明）。本模块在本机
     /// （macOS）不编译，本用例由 Windows CI 的 `cargo test --lib` 收口；

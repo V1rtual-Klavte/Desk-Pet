@@ -14,14 +14,11 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::sync::Arc;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, EndPaint, GetDC,
-    InvalidateRect, ReleaseDC, ScreenToClient, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, PAINTSTRUCT,
+    BeginPaint, EndPaint, InvalidateRect, ScreenToClient, HDC, PAINTSTRUCT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
@@ -37,20 +34,19 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowLongPtrW,
-    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, KillTimer,
-    LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassW, SetCursor,
-    SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
-    TranslateMessage, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
-    HTCLIENT, HWND_TOPMOST, IDC_SIZEWE, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN,
-    SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-    TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
-    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_HOTKEY,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE,
-    WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW,
-    WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP,
-    WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
+    GetClientRect, GetCursorPos, GetForegroundWindow, GetMessageW, GetSystemMetrics,
+    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsDialogMessageW, IsIconic,
+    IsWindow, IsWindowVisible, KillTimer, LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage,
+    RegisterClassW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW,
+    CS_VREDRAW, GWLP_USERDATA, HTCLIENT, HWND_TOPMOST, IDC_SIZEWE, IDI_APPLICATION, LWA_ALPHA,
+    MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOW, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
+    WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
+    WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_HOTKEY, WM_HSCROLL, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
+    WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::audio::AudioCue;
@@ -99,10 +95,37 @@ const CMD_SETTINGS: usize = 1004;
 const CMD_EDITOR: usize = 1005;
 /// W9a：可见期光标跟踪计时器（60Hz，与帧动画计时器分开）。
 const TIMER_TRACK: usize = 2;
+/// 光标轮询计时器间隔。取 8ms（同 [`crate::render::win`] 的帧计时器理由：`SetTimer`
+/// 按系统时钟节拍量化，16ms 会被推到 ~25ms → 只有 ~40Hz）。
+///
+/// **这个计时器不只是兜底**：`windows_main::track` 是唯一把光标喂给渲染器的地方
+/// （`set_cursor` 消费事件出口的推送值），帧计时器本身不碰光标。所以它跑多快，
+/// 灵动图层实际就拿到多少 Hz 的光标 —— 2026-10-07 实机：渲染 62fps、事件推送 62Hz，
+/// 但这里只有 ~40Hz，观感就是「卡」。
+const TRACK_INTERVAL_MS: u32 = 8;
 
 /// Rust 字符串 → UTF-16（含 NUL 结尾）。
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// WM_DPICHANGED 的建议尺寸只在本次同步消息里有效，不把该指针重投到队列。
+fn apply_dpi_rect(hwnd: HWND, lparam: LPARAM) {
+    if lparam == 0 {
+        return;
+    }
+    let rect = unsafe { *(lparam as *const RECT) };
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            0,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
 }
 
 /// 窗口 label → `GWLP_USERDATA` 里的判别值（附属窗 wndproc 用）。
@@ -129,82 +152,6 @@ fn window_id_from_code(code: usize) -> Option<WindowId> {
 }
 
 // ==========================================
-// DIB（UpdateLayeredWindow 的 32bpp 位图源）
-// ==========================================
-
-struct Dib {
-    hdc: HDC,
-    bitmap: HBITMAP,
-    old: HGDIOBJ,
-    width: i32,
-    height: i32,
-    /// 像素基址（顶朝下 32bpp）；主窗底色重画前要整块清零。
-    bits: *mut u8,
-}
-
-impl Dib {
-    /// 创建全透明（全零）的顶朝下 32bpp DIB。
-    fn new(width: i32, height: i32) -> Option<Dib> {
-        unsafe {
-            let hdc = CreateCompatibleDC(0);
-            if hdc == 0 {
-                return None;
-            }
-            // windows-sys 0.52 的 BITMAPINFO/HEADER 没有 Default：先清零再写显式字段。
-            let mut header: BITMAPINFO = std::mem::zeroed();
-            header.bmiHeader = BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width,
-                biHeight: -height, // 负数 = 顶朝下
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB,
-                ..std::mem::zeroed()
-            };
-            let mut bits: *mut c_void = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(hdc, &header, DIB_RGB_COLORS, &mut bits, 0, 0);
-            if bitmap == 0 {
-                DeleteDC(hdc);
-                return None;
-            }
-            let old = SelectObject(hdc, bitmap);
-            // 清零 = 全透明（W6 渲染器接入后再画内容）。
-            std::ptr::write_bytes(bits as *mut u8, 0, (width as usize) * (height as usize) * 4);
-            Some(Dib {
-                hdc,
-                bitmap,
-                old,
-                width,
-                height,
-                bits: bits as *mut u8,
-            })
-        }
-    }
-}
-
-impl Dib {
-    /// 整块清零（底色重画前清掉上一次的主题产物）。
-    fn clear(&mut self) {
-        unsafe {
-            std::ptr::write_bytes(self.bits, 0, self.width as usize * self.height as usize * 4);
-        }
-    }
-}
-
-impl Drop for Dib {
-    fn drop(&mut self) {
-        unsafe {
-            SelectObject(self.hdc, self.old);
-            DeleteObject(self.bitmap);
-            DeleteDC(self.hdc);
-        }
-    }
-}
-
-/// 主窗 ULW 底色的重画键：这些量任一变化就要重新把底色画进 DIB。
-type BackdropKey = (u64, i32, i32, i32, i32, bool);
-
-// ==========================================
 // 主线程状态
 // ==========================================
 
@@ -227,15 +174,10 @@ struct WinUi {
     audio: Option<Arc<dyn crate::audio::AudioPort>>,
     audio_unwired_reported: bool,
     exiting: bool,
-    dib: Option<Dib>,
-    /// 主窗 ULW 底色的重画键（主题代际 + 尺寸 + 分隔条几何 + 聊天列可见性）。
-    backdrop_key: Option<BackdropKey>,
     /// W9a：主窗一体布局（舞台子窗口 + 聊天列）。
     main_layout: Option<super::windows_main::MainLayout>,
     /// 可见期光标跟踪计时器是否在跑（收起/隐藏必须停）。
     track_timer_active: bool,
-    /// 编辑器「保存并关闭」的一次性放行（跳过未保存确认）。
-    allow_editor_close: bool,
     /// A3：最近一次由 Node 推送应用的弹窗尺寸（`set_popup_size`；写回边沿按它
     /// 跳过程序应用，防「应用 → 写回 → 再应用」回路，见 `geometry_writeback::AppliedSize`）。
     applied_size: crate::ui::geometry_writeback::AppliedSize,
@@ -381,72 +323,13 @@ impl WinUi {
         f64::from(dpi) / f64::from(DPI_BASELINE)
     }
 
-    fn ensure_dib(&mut self, width: i32, height: i32) -> bool {
-        let needs_recreate = self
-            .dib
-            .as_ref()
-            .map(|dib| dib.width != width || dib.height != height)
-            .unwrap_or(true);
-        if needs_recreate {
-            self.dib = Dib::new(width, height);
-        }
-        self.dib.is_some()
-    }
-
-    /// 主窗自身 ULW 表面的底色（舞台兜底 + 舞台颗粒 + 分隔线）：键变化时才重画。
-    ///
-    /// 分层子窗口（舞台）的透明像素与聊天列左侧的分隔带都透到这一层；
-    /// 重画几何来自 `windows_main::relayout` 写入的 `MainLayout`。
-    fn ensure_backdrop(&mut self, width: i32, height: i32) {
-        let layout = self.main_layout.as_ref();
-        let key: BackdropKey = (
-            crate::ui::theme::generation(),
-            width,
-            height,
-            layout.map(|l| l.divider_x).unwrap_or(0),
-            layout.map(|l| l.divider_w).unwrap_or(0),
-            layout.map(|l| l.chat_visible).unwrap_or(false),
-        );
-        if self.backdrop_key == Some(key) {
-            return;
-        }
-        let Some(dib) = self.dib.as_mut() else { return };
-        dib.clear();
-        super::windows_main::paint_backdrop(dib.hdc, width, height, layout);
-        self.backdrop_key = Some(key);
-    }
-
-    /// 一帧提交：常量 alpha 淡出（缩放由 W6 渲染器在内容层承担；W5 无内容，
-    /// 原型同样只做常量 alpha）。
+    /// 顶层窗口通过系统合成子控件，仅用常量 alpha 控制整窗淡出。
+    /// UpdateLayeredWindow 适用于舞台位图，不能用于承载 Win32 子控件的根窗口：
+    /// 它只提交那张位图，聊天与顶栏不会自动合入位图。
     fn submit_frame(&mut self, alpha: f64) {
-        let hwnd = self.main;
-        let (width, height) = self.physical_size(hwnd);
-        if !self.ensure_dib(width, height) {
-            return;
-        }
-        self.ensure_backdrop(width, height);
-        let Some(dib) = self.dib.as_ref() else { return };
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: (alpha.clamp(0.0, 1.0) * 255.0) as u8,
-            AlphaFormat: AC_SRC_ALPHA as u8,
-        };
-        let mut rect: RECT = unsafe { std::mem::zeroed() };
-        unsafe { GetWindowRect(hwnd, &mut rect) };
-        let dst = POINT {
-            x: rect.left,
-            y: rect.top,
-        };
-        let size = SIZE {
-            cx: width,
-            cy: height,
-        };
-        let src = POINT { x: 0, y: 0 };
-        unsafe {
-            let hdc = GetDC(0);
-            UpdateLayeredWindow(hwnd, hdc, &dst, &size, dib.hdc, &src, 0, &blend, ULW_ALPHA);
-            ReleaseDC(0, hdc);
+        let opacity = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+        if unsafe { SetLayeredWindowAttributes(self.main, 0, opacity, LWA_ALPHA) } == 0 {
+            rust_warn!("主窗透明度提交失败: {}", std::io::Error::last_os_error());
         }
     }
 
@@ -457,7 +340,7 @@ impl WinUi {
         }
         if visible {
             if !self.track_timer_active {
-                unsafe { SetTimer(self.main, TIMER_TRACK, 16, None) };
+                unsafe { SetTimer(self.main, TIMER_TRACK, TRACK_INTERVAL_MS, None) };
                 self.track_timer_active = true;
             }
         } else {
@@ -514,8 +397,8 @@ impl WinUi {
         // （窗底/分隔线在各自的 WM_ERASEBKGND/WM_PAINT 按新 token 自绘）。
         super::windows_settings::apply_theme();
         super::windows_editor::apply_theme();
-        // 主窗 ULW 底色（舞台兜底 + 分隔线）：清键，等下一次提交按新 token 重画。
-        self.backdrop_key = None;
+        // 主窗背景由 WM_PAINT 绘制，子窗口区域由系统裁剪。
+        unsafe { InvalidateRect(self.main, std::ptr::null(), 1) };
         if self.machine.stage() == Stage::Visible {
             self.submit_frame(1.0);
         }
@@ -642,11 +525,7 @@ impl WinUi {
         );
         // 摆位复用 commands/cursor.rs::compute_popup_position（含主窗增强/聚焦、
         // 光标与屏幕采样、Windows 物理→逻辑换算与 clamp）。
-        let pos = match crate::commands::cursor::compute_popup_position(
-            &MainThreadPort,
-            width_log,
-            height_log,
-        ) {
+        let pos = match crate::commands::cursor::popup_position_at_cursor(width_log, height_log) {
             Ok(pos) => pos,
             Err(error) => {
                 rust_warn!("呼出失败：弹窗定位不可用: {error}");
@@ -688,6 +567,7 @@ impl WinUi {
         // 初始帧全透明（先以 opacity=0 提交一帧再显示），随后显示并取焦点。
         self.submit_frame(0.0);
         unsafe {
+            crate::window::platform::apply_windows_window_level(hwnd, WindowLevel::Main);
             SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
@@ -789,126 +669,6 @@ impl WinUi {
 
     // ── 附属窗口 ──
 
-    fn open_aux(&mut self, window: WindowId) -> AppResult<()> {
-        // 聊天：产品形态在主窗内（W9a）；独立聊天窗能力由聊天域自管。
-        if window == WindowId::Chat {
-            super::windows_chat::open_chat_window();
-            return Ok(());
-        }
-        let (title, width, height) = match window {
-            WindowId::Settings => ("设置 - 虚拟桌宠", 540.0, 640.0),
-            WindowId::LayerEditor => ("图层编辑器 - 虚拟桌宠", 860.0, 620.0),
-            WindowId::Viewer => ("图片查看器 - 虚拟桌宠", 640.0, 480.0),
-            other => {
-                return Err(AppError::Other(format!(
-                    "{} 不是可创建的附属窗口",
-                    other.label()
-                )))
-            }
-        };
-        if let Some(existing) = self.aux.get(&window).copied() {
-            unsafe { SetForegroundWindow(existing) };
-            return Ok(());
-        }
-        let scale =
-            f64::from(unsafe { GetDpiForSystem() }.max(DPI_BASELINE)) / f64::from(DPI_BASELINE);
-        let width_phys = (width * scale).round() as i32;
-        let height_phys = (height * scale).round() as i32;
-        let x = (unsafe { GetSystemMetrics(SM_CXSCREEN) } - width_phys) / 2;
-        let y = (unsafe { GetSystemMetrics(SM_CYSCREEN) } - height_phys) / 2;
-        let class = wide(AUX_CLASS);
-        let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
-        // W9a：编辑器窗口同时是第二个渲染器的合成目标，需要 WS_EX_LAYERED；
-        // 其余附属窗保持原样（独立顶层窗：父窗句柄传 0，原生宿主迁移过程记录 §9.4 第 18 条）。
-        let ex_style = if window == WindowId::LayerEditor {
-            WS_EX_TOPMOST | WS_EX_LAYERED
-        } else {
-            WS_EX_TOPMOST
-        };
-        // 设置窗内容可能高于窗口：带上 WS_VSCROLL，滚动由 `windows_settings::on_vscroll`
-        // 按行位移处理（W9a；其它附属窗不加）。
-        // WS_CLIPCHILDREN：设置/编辑器窗自绘主题窗底（WM_ERASEBKGND/WM_PAINT），
-        // 必须把子控件区域排除在父窗绘制之外，否则整块填充会盖住控件（系统不会替我们重绘）。
-        let style = if window == WindowId::Settings {
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL
-        } else {
-            WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN
-        };
-        let hwnd = unsafe {
-            CreateWindowExW(
-                ex_style,
-                class.as_ptr(),
-                wide(title).as_ptr(),
-                style,
-                x,
-                y,
-                width_phys,
-                height_phys,
-                0,
-                0,
-                hinstance,
-                std::ptr::null(),
-            )
-        };
-        if hwnd == 0 {
-            return Err(AppError::Other(format!(
-                "附属窗口创建失败（{}）",
-                window.label()
-            )));
-        }
-        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, window_id_code(window) as isize) };
-        // 先登记再增强：enhance_* 经端口按 id 查窗口，未登记时会静默落空。
-        self.aux.insert(window, hwnd);
-        // 层级/呈现走既有平台函数（单一层级数值真值）。
-        let level = crate::ui::creation_level(window);
-        unsafe { crate::window::platform::apply_windows_window_level(hwnd, level) };
-        if window == WindowId::Settings {
-            let _ = crate::window::settings::enhance_settings_window(&MainThreadPort);
-            // W9a：设置窗内容随窗口创建，关闭随窗口销毁（§6.4）。
-            super::windows_settings::install_settings_content(hwnd);
-        } else if window == WindowId::LayerEditor {
-            let _ = crate::window::settings::enhance_layer_editor_window(&MainThreadPort);
-            // W9a：编辑器内容 + 第二个渲染器（预览表面）随窗口创建，关闭销毁。
-            super::windows_editor::install_editor_content(hwnd);
-        } else if window == WindowId::Viewer {
-            // W8a：查看器内容（帧由 PreviewManager 经 chat_apply 推送）挂载点。
-            crate::ui::platform::windows_chat::install_viewer_content(hwnd);
-        }
-        unsafe { SetForegroundWindow(hwnd) };
-        rust_info!(
-            "附属窗口已创建（独立顶层窗，label={}，{}×{}）",
-            window.label(),
-            width,
-            height
-        );
-        Ok(())
-    }
-
-    fn close_aux(&mut self, window: WindowId) -> AppResult<()> {
-        match window {
-            WindowId::Main => Err(AppError::Other(
-                "主窗口只收起不销毁（关闭请求 → 托盘）".into(),
-            )),
-            WindowId::Settings | WindowId::LayerEditor | WindowId::Viewer => {
-                match self.aux.remove(&window) {
-                    Some(hwnd) => {
-                        unsafe { DestroyWindow(hwnd) };
-                        rust_info!("附属窗口 {} 已关闭并释放", window.label());
-                        Ok(())
-                    }
-                    None => Err(AppError::Other(format!("窗口 {} 未打开", window.label()))),
-                }
-            }
-            WindowId::E2e => Err(AppError::Other("E2E 窗口不在原生薄层窗口管理范围".into())),
-            WindowId::Chat => {
-                // 产品形态的聊天区在主窗内（主窗收起即隐藏聊天列）；这里只关闭
-                // 「独立聊天窗」这一能力（未打开时是 no-op）。
-                super::windows_chat::close_chat_window();
-                Ok(())
-            }
-        }
-    }
-
     // ── 快捷键 ──
 
     fn apply_shortcut(&mut self, shortcut: PlatformShortcut) -> AppResult<()> {
@@ -967,6 +727,121 @@ impl WinUi {
 // 窗口过程
 // ==========================================
 
+fn open_aux(window: WindowId) -> AppResult<()> {
+    // 聊天：产品形态在主窗内（W9a）；独立聊天窗能力由聊天域自管。
+    if window == WindowId::Chat {
+        super::windows_chat::open_chat_window();
+        return Ok(());
+    }
+    let (title, width, height) = match window {
+        WindowId::Settings => ("设置 - 虚拟桌宠", 540.0, 640.0),
+        WindowId::LayerEditor => ("图层编辑器 - 虚拟桌宠", 860.0, 620.0),
+        WindowId::Viewer => ("图片查看器 - 虚拟桌宠", 640.0, 480.0),
+        other => {
+            return Err(AppError::Other(format!(
+                "{} 不是可创建的附属窗口",
+                other.label()
+            )))
+        }
+    };
+    if let Some(existing) = with_ui(|ui| ui.aux.get(&window).copied())? {
+        unsafe { SetForegroundWindow(existing) };
+        return Ok(());
+    }
+    let scale = f64::from(unsafe { GetDpiForSystem() }.max(DPI_BASELINE)) / f64::from(DPI_BASELINE);
+    let width_phys = (width * scale).round() as i32;
+    let height_phys = (height * scale).round() as i32;
+    let x = (unsafe { GetSystemMetrics(SM_CXSCREEN) } - width_phys) / 2;
+    let y = (unsafe { GetSystemMetrics(SM_CYSCREEN) } - height_phys) / 2;
+    let class = wide(AUX_CLASS);
+    let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    // 编辑器只有预览子窗口走逐像素合成；顶层保持普通窗口，
+    // 否则 UpdateLayeredWindow 会用预览位图替代整窗，覆盖参数和按钮。
+    let ex_style = WS_EX_TOPMOST;
+    // 设置窗内容可能高于窗口：带上 WS_VSCROLL，滚动由 `windows_settings::on_vscroll`
+    // 按行位移处理（W9a；其它附属窗不加）。
+    // WS_CLIPCHILDREN：设置/编辑器窗自绘主题窗底（WM_ERASEBKGND/WM_PAINT），
+    // 必须把子控件区域排除在父窗绘制之外，否则整块填充会盖住控件（系统不会替我们重绘）。
+    let style = if window == WindowId::Settings {
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL
+    } else {
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN
+    };
+    let hwnd = unsafe {
+        CreateWindowExW(
+            ex_style,
+            class.as_ptr(),
+            wide(title).as_ptr(),
+            style,
+            x,
+            y,
+            width_phys,
+            height_phys,
+            0,
+            0,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    if hwnd == 0 {
+        return Err(AppError::Other(format!(
+            "附属窗口创建失败（{}）",
+            window.label()
+        )));
+    }
+    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, window_id_code(window) as isize) };
+    // 先登记再增强：enhance_* 经端口按 id 查窗口，未登记时会静默落空。
+    with_ui(|ui| ui.aux.insert(window, hwnd))?;
+    // 层级/呈现走既有平台函数（单一层级数值真值）。
+    let level = crate::ui::creation_level(window);
+    unsafe { crate::window::platform::apply_windows_window_level(hwnd, level) };
+    if window == WindowId::Settings {
+        let _ = crate::window::settings::enhance_settings_window(&MainThreadPort);
+        // W9a：设置窗内容随窗口创建，关闭随窗口销毁（§6.4）。
+        super::windows_settings::install_settings_content(hwnd);
+    } else if window == WindowId::LayerEditor {
+        let _ = crate::window::settings::enhance_layer_editor_window(&MainThreadPort);
+        // W9a：编辑器内容 + 第二个渲染器（预览表面）随窗口创建，关闭销毁。
+        super::windows_editor::install_editor_content(hwnd);
+    } else if window == WindowId::Viewer {
+        // W8a：查看器内容（帧由 PreviewManager 经 chat_apply 推送）挂载点。
+        crate::ui::platform::windows_chat::install_viewer_content(hwnd);
+    }
+    unsafe { SetForegroundWindow(hwnd) };
+    rust_info!(
+        "附属窗口已创建（独立顶层窗，label={}，{}×{}）",
+        window.label(),
+        width,
+        height
+    );
+    Ok(())
+}
+
+fn close_aux(window: WindowId) -> AppResult<()> {
+    match window {
+        WindowId::Main => Err(AppError::Other(
+            "主窗口只收起不销毁（关闭请求 → 托盘）".into(),
+        )),
+        WindowId::Settings | WindowId::LayerEditor | WindowId::Viewer => {
+            match with_ui(|ui| ui.aux.remove(&window))? {
+                Some(hwnd) => {
+                    unsafe { DestroyWindow(hwnd) };
+                    rust_info!("附属窗口 {} 已关闭并释放", window.label());
+                    Ok(())
+                }
+                None => Err(AppError::Other(format!("窗口 {} 未打开", window.label()))),
+            }
+        }
+        WindowId::E2e => Err(AppError::Other("E2E 窗口不在原生薄层窗口管理范围".into())),
+        WindowId::Chat => {
+            // 产品形态的聊天区在主窗内（主窗收起即隐藏聊天列）；这里只关闭
+            // 「独立聊天窗」这一能力（未打开时是 no-op）。
+            super::windows_chat::close_chat_window();
+            Ok(())
+        }
+    }
+}
+
 unsafe extern "system" fn main_wndproc(
     hwnd: HWND,
     msg: u32,
@@ -1001,11 +876,47 @@ unsafe extern "system" fn main_wndproc(
         WM_APP_DRAIN => {
             // 跨线程任务（UiHandle / 快捷键注册）在主线程执行。
             // 读侧同样容忍重入（窗口过程可能在外层借用未释放时进来，见 `with_ui` 注释）。
-            if let Some(queue) =
-                UI.with(|cell| cell.try_borrow().ok().and_then(|borrowed| borrowed.as_ref().map(|ui| ui.queue.clone())))
-            {
+            if let Some(queue) = UI.with(|cell| {
+                cell.try_borrow()
+                    .ok()
+                    .and_then(|borrowed| borrowed.as_ref().map(|ui| ui.queue.clone()))
+            }) {
                 queue.drain();
             }
+            0
+        }
+        WM_ERASEBKGND => 1,
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = unsafe { std::mem::zeroed() };
+            let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+            let mut rect: RECT = unsafe { std::mem::zeroed() };
+            unsafe { GetClientRect(hwnd, &mut rect) };
+            let painted = UI.with(|cell| {
+                if let Ok(borrowed) = cell.try_borrow() {
+                    super::windows_main::paint_backdrop(
+                        hdc,
+                        rect.right,
+                        rect.bottom,
+                        borrowed.as_ref().and_then(|ui| ui.main_layout.as_ref()),
+                    );
+                    true
+                } else {
+                    false
+                }
+            });
+            unsafe { EndPaint(hwnd, &ps) };
+            // 同步窗口调用可能在布局借用内要求绘制；结束当前 paint 后重新失效，
+            // 等外层释放再画，不能把未画内容当成已经验证的区域。
+            if !painted {
+                unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+            }
+            0
+        }
+        WM_DPICHANGED => {
+            apply_dpi_rect(hwnd, lparam);
+            with_ui_repost(hwnd, WM_SIZE, 0, 0, |ui| ui.relayout_main());
+            super::windows_main::apply_titlebar_font();
+            super::windows_chat::apply_chat_font();
             0
         }
         WM_SIZE => {
@@ -1015,7 +926,7 @@ unsafe extern "system" fn main_wndproc(
             // 否则「窗口已变、布局没跟」会一直留到下一次尺寸消息（见 `with_ui_repost`）。
             with_ui_repost(hwnd, msg, wparam, lparam, |ui| {
                 ui.relayout_main();
-                ui.submit_frame(1.0);
+                unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
             });
             0
         }
@@ -1199,7 +1110,11 @@ fn commit_window_geometry_writeback(hwnd: HWND) {
     let width = f64::from(rect.right - rect.left) / scale;
     let height = f64::from(rect.bottom - rect.top) / scale;
     // 本函数由窗口过程（拖动结束/位置变更）调用，读侧一律用 try_borrow，不制造 panic。
-    let applied = UI.with(|cell| cell.try_borrow().ok().and_then(|borrowed| borrowed.as_ref().map(|ui| ui.applied_size)));
+    let applied = UI.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|borrowed| borrowed.as_ref().map(|ui| ui.applied_size))
+    });
     if applied.map_or(false, |applied| applied.suppresses(width, height)) {
         rust_debug!("程序应用的尺寸不写回（与最近推送值一致）");
     } else {
@@ -1207,7 +1122,11 @@ fn commit_window_geometry_writeback(hwnd: HWND) {
     }
     // 位置：固定语义（含「固定但还没有坐标」的过渡态）才把左上角（逻辑像素，
     // 左上原点）写回 `fixedPosition` —— 第一次拖动就把坐标落下，固定模式才有第一份位置。
-    let placement = UI.with(|cell| cell.try_borrow().ok().and_then(|borrowed| borrowed.as_ref().map(|ui| ui.placement)));
+    let placement = UI.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|borrowed| borrowed.as_ref().map(|ui| ui.placement))
+    });
     if placement.map_or(false, |placement| placement.is_fixed()) {
         let x = f64::from(rect.left) / scale;
         let y = f64::from(rect.top) / scale;
@@ -1253,11 +1172,13 @@ unsafe extern "system" fn aux_wndproc(
         // 可编辑 `EDIT` / 下拉清单的主题配色：这两条消息的消费者是**控件的父窗口**，
         // 设置窗的输入框与下拉都以设置窗为父窗，所以在附属窗过程里按 code 转发
         // （原先由 `windows_settings` 自己的父窗子类兜住，路由归位到本文件后子类已删除）。
-        // 只接设置窗（code 1）：编辑器窗的可编辑 `EDIT` 仍走系统配色
-        // （windows_editor 的既有注明），查看器（code 3）不自绘主题。
+        // 编辑器输入字段也按当前主题绘制。
         WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
             if code == 1 {
                 return super::windows_settings::edit_ctlcolor(wparam, lparam);
+            }
+            if code == 2 {
+                return super::windows_editor::edit_ctlcolor(wparam, lparam);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -1301,6 +1222,13 @@ unsafe extern "system" fn aux_wndproc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        WM_HSCROLL => {
+            if code == 2 {
+                super::windows_editor::on_hscroll(hwnd, lparam);
+                return 0;
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_LBUTTONDOWN => {
             if code == 2 {
                 let x = (lparam & 0xFFFF) as i16 as i32;
@@ -1324,7 +1252,10 @@ unsafe extern "system" fn aux_wndproc(
         // 编辑器滚轮缩放（与 macOS `scrollWheel:` 同口径）。设置窗（code == 1）用
         // WM_VSCROLL 滚自己的列表，不吃滚轮，所以这里只认 code == 2。
         WM_MOUSEWHEEL => {
-            if code == 2 {
+            if code == 1 {
+                super::windows_settings::on_mouse_wheel(hwnd, wparam);
+                return 0;
+            } else if code == 2 {
                 super::windows_editor::on_mouse_wheel(hwnd, wparam);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1372,6 +1303,17 @@ unsafe extern "system" fn aux_wndproc(
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
+        WM_DPICHANGED => {
+            apply_dpi_rect(hwnd, lparam);
+            if code == 1 {
+                super::windows_settings::apply_font();
+                super::windows_settings::on_size(hwnd);
+            } else if code == 2 {
+                super::windows_editor::apply_font();
+                super::windows_editor::on_size(hwnd);
+            }
+            0
+        }
         WM_DESTROY => {
             if let Some(window) = window_id_from_code(code) {
                 let _ = with_ui(|ui| {
@@ -1407,7 +1349,9 @@ unsafe extern "system" fn aux_wndproc(
 
 /// 帧回调：可见期推进动画；隐藏后不应再有回调（防御性停表并留痕）。
 /// 可见期跟踪：全局光标喂给舞台渲染器（W9a；隐藏期计时器已停）。
-fn track_tick() {
+/// 取一次全局光标喂舞台。调用点有两处：主窗 `TIMER_TRACK` 计时器（兜底）与
+/// 舞台表面的每帧 `pre_tick` 钩子（`windows_main::install` 接线，保证帧内采样）。
+pub(super) fn track_tick() {
     with_ui(|ui| {
         if let Some(layout) = ui.main_layout.as_mut() {
             super::windows_main::track(layout);
@@ -1508,7 +1452,7 @@ pub fn run_service(request: ServiceRequest) -> AppResult<i32> {
             // A3：WS_THICKFRAME 提供「拖边缘改窗口尺寸」能力（无边框 + 可缩放的
             // 标准组合）；配合 WM_NCCALCSIZE 取消非客户区保持客户区 = 整窗。
             // 用户改尺寸后由 WM_EXITSIZEMOVE 写回 general.popup.defaultSize。
-            WS_POPUP | WS_THICKFRAME | WS_VISIBLE,
+            WS_POPUP | WS_THICKFRAME | WS_VISIBLE | WS_CLIPCHILDREN,
             x,
             y,
             width,
@@ -1522,6 +1466,9 @@ pub fn run_service(request: ServiceRequest) -> AppResult<i32> {
     if hwnd == 0 {
         return Err(AppError::Other("主窗口创建失败（CreateWindowExW）".into()));
     }
+
+    // 常量 alpha 路径让系统同时合成标题、聊天与舞台子窗口。
+    unsafe { SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) };
 
     // 主线程队列唤醒器：PostMessageW 到主窗消息循环（跨线程投递不阻塞）。
     let hwnd_for_wake: isize = hwnd;
@@ -1589,16 +1536,13 @@ pub fn run_service(request: ServiceRequest) -> AppResult<i32> {
             audio,
             audio_unwired_reported: false,
             exiting: false,
-            dib: None,
-            backdrop_key: None,
             main_layout,
             track_timer_active: false,
-            allow_editor_close: false,
             applied_size: crate::ui::geometry_writeback::AppliedSize::default(),
         });
     });
     // 可见期光标跟踪（灵动图层的输入；隐藏/收起时停表）。
-    unsafe { SetTimer(hwnd, TIMER_TRACK, 16, None) };
+    unsafe { SetTimer(hwnd, TIMER_TRACK, TRACK_INTERVAL_MS, None) };
     with_ui(|ui| ui.track_timer_active = true).ok();
     rust_info!("原生 UI 已就绪（主窗/托盘/快捷键等待 Node 推送）");
 
@@ -1615,6 +1559,30 @@ pub fn run_service(request: ServiceRequest) -> AppResult<i32> {
     let mut message: MSG = unsafe { std::mem::zeroed() };
     unsafe {
         while GetMessageW(&mut message, 0, 0, 0) > 0 {
+            // 设置/编辑器包含嵌套 viewport：对话框导航处理 Tab/Shift+Tab，
+            // 先复制句柄并释放 UI，IsDialogMessage 会同步发送控件消息。
+            let panels = UI.with(|cell| {
+                cell.try_borrow()
+                    .ok()
+                    .map(|state| {
+                        state
+                            .as_ref()
+                            .map(|ui| {
+                                [WindowId::Settings, WindowId::LayerEditor]
+                                    .iter()
+                                    .filter_map(|id| ui.aux.get(id).copied())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default()
+            });
+            if panels
+                .into_iter()
+                .any(|panel| IsDialogMessageW(panel, &message) != 0)
+            {
+                continue;
+            }
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
@@ -1735,11 +1703,11 @@ pub fn window_open_devtools(_window: WindowId) -> AppResult<()> {
 }
 
 pub fn open_aux_window(window: WindowId) -> AppResult<()> {
-    with_ui(|ui| ui.open_aux(window))?
+    open_aux(window)
 }
 
 pub fn close_window(window: WindowId) -> AppResult<()> {
-    with_ui(|ui| ui.close_aux(window))?
+    close_aux(window)
 }
 
 pub fn set_popup_placement(mode: PlacementMode) -> AppResult<()> {
@@ -1860,7 +1828,7 @@ pub fn set_chat_panel(open: Option<bool>, width: Option<f64>) -> AppResult<()> {
 
 /// 打开设置窗（设置域的入口）。
 pub fn open_settings_window() -> AppResult<()> {
-    with_ui(|ui| ui.open_aux(WindowId::Settings))?
+    open_aux(WindowId::Settings)
 }
 
 // ── A1：顶栏（主窗聊天列顶部的标题条）──
@@ -1921,7 +1889,26 @@ pub fn prompt_text(title: &str, label: &str, initial: &str) -> AppResult<Option<
 
 /// 打开图层编辑器窗。
 pub fn open_editor_window() -> AppResult<()> {
-    with_ui(|ui| ui.open_aux(WindowId::LayerEditor))?
+    open_aux(WindowId::LayerEditor)
+}
+
+/// 预览参考客户区的逻辑尺寸；只短借状态取 HWND，查询不占用 UI 借用。
+pub(crate) fn popup_reference_size() -> Option<(f64, f64)> {
+    let hwnd = UI.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|state| state.as_ref().map(|ui| ui.main))
+    })?;
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    if unsafe { GetClientRect(hwnd, &mut rect) } == 0 {
+        return None;
+    }
+    let scale =
+        f64::from(unsafe { GetDpiForWindow(hwnd) }.max(DPI_BASELINE)) / f64::from(DPI_BASELINE);
+    Some((
+        f64::from(rect.right - rect.left) / scale,
+        f64::from(rect.bottom - rect.top) / scale,
+    ))
 }
 
 /// 编辑器界面刷新（草稿/保存状态变化）。
@@ -1932,16 +1919,7 @@ pub fn editor_refresh() -> AppResult<()> {
 
 /// 关闭编辑器窗（保存并关闭路径；跳过未保存确认）。
 pub fn close_editor_window() -> AppResult<()> {
-    with_ui(|ui| {
-        let hwnd = ui.aux.remove(&WindowId::LayerEditor);
-        match hwnd {
-            Some(hwnd) => {
-                unsafe { DestroyWindow(hwnd) };
-                Ok(())
-            }
-            None => Err(AppError::Other("编辑器窗口未打开".into())),
-        }
-    })?
+    close_aux(WindowId::LayerEditor)
 }
 
 /// 编辑器预览同步到主窗舞台（主窗/预览一致的唯一落点）。
@@ -2010,7 +1988,8 @@ mod tests {
             "with_ui 必须用 try_borrow_mut（窗口过程重入时不 panic）"
         );
         assert!(
-            body.contains("cell.try_borrow().ok()"),
+            body.chars().filter(|c| !c.is_whitespace()).collect::<String>()
+                .contains("cell.try_borrow().ok()"),
             "窗口过程路径的读侧必须用 try_borrow"
         );
         // 只剩 UI 初始化与销毁两处一次性站点允许裸借用：它们只在建/销时各跑一次，
@@ -2109,12 +2088,10 @@ pub(crate) mod source_guard {
     fn 扫描器能认出嵌套调用() {
         let needle = concat!("with_", "state(");
         assert!(nested_call_sites("with_state(|s| f(s));", needle).is_empty());
-        assert!(nested_call_sites("// with_state(|s| s) 说明\nwith_state(|s| s.x);", needle).is_empty());
-        assert!(nested_call_sites(
-            "with_state(|s| {\n    let v = 1;\n});",
-            needle
-        )
-        .is_empty());
+        assert!(
+            nested_call_sites("// with_state(|s| s) 说明\nwith_state(|s| s.x);", needle).is_empty()
+        );
+        assert!(nested_call_sites("with_state(|s| {\n    let v = 1;\n});", needle).is_empty());
         let injected = "let a = with_state(|s| with_state(|t| t));";
         assert_eq!(nested_call_sites(injected, needle), vec![(1, 1)]);
     }

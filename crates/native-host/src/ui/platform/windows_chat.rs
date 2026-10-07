@@ -11,8 +11,8 @@
 //! `InlinePreviewManager` 帧，点击仍打开独立查看器。
 //!
 //! 与 macOS 侧的有意差异（2026-10-05 气泡重做批）：
-//! - 卡片/气泡是**直角**（GDI 卡片框由画布绘制，不像 CALayer 有圆角），
-//!   气泡宽/对齐/上限与 macOS 共用 `panels` 的「贴合内容宽度」算法；
+//! - 气泡宽/对齐/上限与 macOS 共用 `panels` 的「贴合内容宽度」算法，
+//!   泡底/描边按 `radii.md` 用 GDI 区域裁剪成圆角；只读正文由外层画布滚动；
 //! - RichEdit 不能透明：气泡底色取 token 代表色（渐变取 base 与面板底合成），
 //!   画布上的气泡填充与承载控件的 `EM_SETBKGNDCOLOR` 同值，接缝不可见；
 //! - 输入区占位文案是自绘等价物（覆盖在 RichEdit 上的 STATIC + 命中穿透子类；
@@ -107,12 +107,12 @@ use windows_sys::Win32::UI::Controls::{
 };
 use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::Ime::{
-    ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow, CANDIDATEFORM, CFS_CANDIDATEPOS,
-    GCS_CURSORPOS,
+    GCS_COMPSTR, GCS_CURSORPOS, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
+    ImmSetCandidateWindow, CANDIDATEFORM, CFS_CANDIDATEPOS,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetActiveWindow, GetFocus, GetKeyState, SetFocus, VK_DOWN, VK_ESCAPE, VK_RETURN,
-    VK_SHIFT, VK_TAB, VK_UP,
+    EnableWindow, GetActiveWindow, GetFocus, GetKeyState, SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE,
+    VK_RETURN, VK_SHIFT, VK_TAB, VK_UP, VK_V,
 };
 use windows_sys::Win32::UI::Shell::{
     DefSubclassProc, DragAcceptFiles, DragFinish, DragQueryFileW, RemoveWindowSubclass,
@@ -125,22 +125,22 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsWindow, IsWindowVisible, KillTimer,
     MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
     SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TrackPopupMenu,
-    TranslateMessage, BS_DEFPUSHBUTTON, CBN_SELENDOK, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL,
-    CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
-    ES_READONLY, ES_WANTRETURN, GA_ROOT, GWLP_USERDATA, GWL_STYLE, HMENU, HTTRANSPARENT,
-    HWND_BOTTOM, HWND_TOP, IDCANCEL, IDOK, MF_SEPARATOR, MF_STRING, MSG, SB_BOTTOM, SB_LINEDOWN,
-    SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT,
-    SCROLLINFO, SIF_ALL, SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CTLCOLOREDIT,
-    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DRAWITEM, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_IME_COMPOSITION,
-    WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEHWHEEL,
-    WM_MOUSEWHEEL, WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_PASTE, WM_SETFONT, WM_SIZE,
-    WM_TIMER,
-    WM_VSCROLL, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    TranslateMessage, WindowFromPoint, BS_DEFPUSHBUTTON, CBN_SELENDOK, CBS_DROPDOWNLIST,
+    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL,
+    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GA_ROOT, GWLP_USERDATA, GWL_STYLE,
+    HMENU, HTTRANSPARENT, HWND_BOTTOM, HWND_TOP, IDCANCEL, IDOK, MF_SEPARATOR, MF_STRING, MSG,
+    SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK,
+    SB_TOP, SB_VERT, SCROLLINFO, SIF_ALL, SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXSCREEN, SM_CYSCREEN,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE,
+    WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_DROPFILES,
+    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
+    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+    WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_PASTE, WM_SETFONT, WM_SIZE, WM_TIMER,
+    WM_KILLFOCUS, WM_SETFOCUS, WM_VSCROLL, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_CLIPSIBLINGS,
     WS_EX_CLIENTEDGE, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
-    WS_VISIBLE, WS_VSCROLL, WindowFromPoint,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::host::WindowId;
@@ -188,6 +188,9 @@ const DT_VCENTER: u32 = 0x00000004;
 const DT_SINGLELINE: u32 = 0x00000020;
 const DT_NOPREFIX: u32 = 0x00000800;
 const DT_END_ELLIPSIS: u32 = 0x00008000;
+/// `DrawTextW` 的右对齐 / 只量尺寸（windows-sys 0.52 未登记，与上面同款就地定义）。
+const DT_RIGHT: u32 = 0x00000002;
+const DT_CALCRECT: u32 = 0x00000400;
 const TRANSPARENT: i32 = 1;
 const ODT_BUTTON: u32 = 4;
 /// W8b 面板按钮 ID 基址（第 n 个动作按钮 = 基址 + n）。
@@ -231,6 +234,8 @@ const TAB_CLOSE_GAP: i32 = 4;
 
 /// 输入子类向聊天窗请求“发送”的私有消息。
 const WM_APP_SEND: u32 = WM_APP + 30;
+/// 同步窗口消息重入时，借用释放后补画已验证的更新区域。
+const WM_APP_REPAINT: u32 = WM_APP + 31;
 
 /// W8b 面板本地期限的定时器 ID（SetTimer/KillTimer，一次性）。
 const TIMER_DEADLINE: usize = 1;
@@ -377,17 +382,16 @@ const JUMP_BUTTON_MARGIN: i32 = 12;
 /// 保序截断；面板永不挤掉输入区）。
 const PANEL_MAX_FRACTION: f64 = 0.45;
 
-// RichEdit 控制消息/通知（RichEdit 取值 = WM_USER + N；windows-sys 0.52 只登记了
-// 标准 Edit 的同名常量——例如 `EM_GETLINECOUNT = 0xBA` 是标准 Edit 的值，
-// 与 RichEdit 的 WM_USER+22 不同——不能混用，故本地定义）。
+// RichEdit 专有消息取值来自 richedit.h；通用 Edit 消息仍沿用 WinUser.h，
+// EM_GETLINECOUNT 就是 0xBA（不能臆造 WM_USER 偏移）。
 const WM_USER_MSG: u32 = 0x0400;
-const EM_STREAMIN: u32 = WM_USER_MSG + 57; // 0x439
-const EM_GETLINECOUNT_RICH: u32 = WM_USER_MSG + 22; // 0x416
+const EM_STREAMIN: u32 = WM_USER_MSG + 73; // 0x449
+const EM_GETLINECOUNT: u32 = 0x00BA;
 const EM_SETBKGNDCOLOR: u32 = WM_USER_MSG + 67; // 0x443
 const EM_SETTARGETDEVICE: u32 = WM_USER_MSG + 72; // 0x448；wParam=0、lParam=1 关闭折行
 const EM_GETTEXTRANGE: u32 = WM_USER_MSG + 75; // 0x44B
 const EM_SETEVENTMASK: u32 = WM_USER_MSG + 69; // 0x445
-const EN_LINK: u32 = 0x0700;
+const EN_LINK: u32 = 0x070B;
 const ENM_LINK: usize = 0x0400_0000;
 const SF_RTF: usize = 0x0002;
 
@@ -517,7 +521,7 @@ enum CardKind {
     UserBubble,
     /// 助手轻气泡（2026-10-05 起有底）：`bubble_ai_bg` / `bubble_ai_edge`，
     /// 无立体线/无投影（泡体比用户泡安静，与 macOS `BubbleTheme::for_message`
-    /// 的助手分支同语义）；直角是本模块既有的平台差异（见模块头）。
+    /// 的助手分支同语义），两侧气泡均取 `radii.md` 圆角。
     AssistantBubble,
 }
 
@@ -526,7 +530,9 @@ enum CardKind {
 // ==========================================
 
 #[allow(dead_code)]
-#[repr(C)]
+// richedit.h 在这些结构周围使用 pshpack4.h；x64 下 callback 偏移为 12，
+// 不能用默认 C 对齐（会变为 16，系统将读取错误的回调地址）。
+#[repr(C, packed(4))]
 struct EDITSTREAM {
     dw_cookie: usize,
     dw_error: u32,
@@ -560,7 +566,7 @@ struct Nmhdr {
 }
 
 #[allow(dead_code)]
-#[repr(C)]
+#[repr(C, packed(4))]
 struct ENLINK {
     nmhdr: Nmhdr,
     msg: u32,
@@ -676,9 +682,6 @@ struct ChatWinState {
     composing: bool,
     /// 最近一次渲染的说话人名（流式尾巴复用）。
     speaker: String,
-    /// RTF 流式回调的游标与缓冲（装载期间使用）。
-    rtf_pos: usize,
-    rtf_buf: Vec<u8>,
     // ── W8b 面板区 ──
     /// 面板子控件（父窗口是聊天窗本体；坐标相对面板区左上角）。
     panel_children: Vec<ChildEntry>,
@@ -779,6 +782,45 @@ thread_local! {
     /// 待发送 chip 的缩略图（hwnd → 帧；`draw_themed_button` 的待发送分支读取）。
     /// 随控件换代：`rebuild_pending` 销毁条目时一并移除（旧句柄不留影）。
     static PENDING_THUMBS: RefCell<HashMap<HWND, DecodedFrame>> = RefCell::new(HashMap::new());
+    static DEFERRED_PAINTS: RefCell<Vec<HWND>> = const { RefCell::new(Vec::new()) };
+}
+
+/// MoveWindow 的同步重绘可能发生在聊天重建持借用期间。仍完成 Begin/EndPaint，
+/// 但排一次异步补画；否则空画后更新区被验证，条区/气泡底再也不会出现。
+unsafe fn paint_chat_window(hwnd: HWND, paint: impl FnOnce(&ChatWinState, HDC)) {
+    let mut ps = unsafe { std::mem::zeroed() };
+    let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+    let painted = CHAT.with(|cell| {
+        let Ok(slot) = cell.try_borrow() else {
+            return false;
+        };
+        if let Some(state) = slot.as_ref() {
+            paint(state, hdc);
+        }
+        true
+    });
+    unsafe { EndPaint(hwnd, &ps) };
+    if !painted {
+        DEFERRED_PAINTS.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            if !pending.contains(&hwnd) {
+                if unsafe { PostMessageW(hwnd, WM_APP_REPAINT, 0, 0) } != 0 {
+                    pending.push(hwnd);
+                } else {
+                    rust_warn!("聊天窗口补绘消息投递失败");
+                }
+            }
+        });
+    }
+}
+
+fn repaint_deferred(hwnd: HWND) {
+    discard_deferred_paint(hwnd);
+    unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+}
+
+fn discard_deferred_paint(hwnd: HWND) {
+    DEFERRED_PAINTS.with(|pending| pending.borrow_mut().retain(|target| *target != hwnd));
 }
 
 struct ViewerState {
@@ -1053,8 +1095,8 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
                 let thumb_w =
                     ((f64::from(pending.w) * ratio).round() as i32).clamp(min_thumb, pending.w);
                 let max_scroll = (state.pending_content_w - pending.w).max(1);
-                let progress = (f64::from(state.pending_scroll_x) / f64::from(max_scroll))
-                    .clamp(0.0, 1.0);
+                let progress =
+                    (f64::from(state.pending_scroll_x) / f64::from(max_scroll)).clamp(0.0, 1.0);
                 let travel = (pending.w - thumb_w).max(0);
                 let thumb_x = pending.x + (f64::from(travel) * progress).round() as i32;
                 paint_win::fill_color(
@@ -1159,13 +1201,24 @@ unsafe fn paint_canvas_shell(state: &ChatWinState, hdc: HDC) {
                 paint_win::draw_elevation(hdc, rect, &t.bubble_user_shadow);
                 // 泡底由画布填（泡内留白区不再被承载控件盖住，见 `create_rtf_control`
                 // 的 inset）：与控件底同值，接缝不可见。
-                paint_win::fill_color(hdc, rect, flat_over_panel(&t.bubble_user_bg));
-                paint_win::draw_frame(hdc, rect, t.bubble_user_edge, &t.bubble_user_bevel);
+                let rounded = unsafe { with_round_box(hdc, rect, scaled_f(f64::from(t.radii.md), dpi_scale(state.canvas)), t.bubble_user_edge, || {
+                    paint_win::fill_color(hdc, rect, flat_over_panel(&t.bubble_user_bg));
+                    paint_win::draw_bevel(hdc, rect.deflate(1), &t.bubble_user_bevel);
+                }) };
+                if !rounded {
+                    rust_warn!("用户气泡圆角区域创建失败，保留方角描边");
+                    paint_win::draw_frame(hdc, rect, t.bubble_user_edge, &t.bubble_user_bevel);
+                }
             }
             CardKind::AssistantBubble => {
                 // 轻气泡：无投影、无立体线（`Bevel::NONE`），只有底 + 描边。
-                paint_win::fill_color(hdc, rect, flat_over_panel(&t.bubble_ai_bg));
-                paint_win::draw_frame(hdc, rect, t.bubble_ai_edge, &Bevel::NONE);
+                let rounded = unsafe { with_round_box(hdc, rect, scaled_f(f64::from(t.radii.md), dpi_scale(state.canvas)), t.bubble_ai_edge, || {
+                    paint_win::fill_color(hdc, rect, flat_over_panel(&t.bubble_ai_bg));
+                }) };
+                if !rounded {
+                    rust_warn!("助手气泡圆角区域创建失败，保留方角描边");
+                    paint_win::draw_frame(hdc, rect, t.bubble_ai_edge, &Bevel::NONE);
+                }
             }
         }
     }
@@ -1401,7 +1454,7 @@ unsafe fn paint_round_input_field(hdc: HDC, rect: paint_win::Rect, radius: i32) 
 /// 给承载控件贴圆角窗口区域（`SetWindowRgn`；半径物理像素，0/失败不动）。
 ///
 /// 与 `paint_win::install_button` 的区域装配同一份所有权约定（成功时区域归系统、
-/// 失败时自释放）；那边服务 ownerdraw 按钮、这里只服务输入区两个承载件，不复制
+/// 失败时自释放）；那边服务 ownerdraw 按钮、这里服务输入区与只读正文，不复制
 /// 其整段子类装配。尺寸没变的重复调用是幂等的，但会触发一次重绘 —— 调用点只在
 /// 几何/主题变化时进（见 `layout_panes_for` 的 `strips_changed` 分支与 `apply_theme`）。
 unsafe fn set_round_region(hwnd: HWND, radius_px: i32) {
@@ -1468,18 +1521,23 @@ unsafe extern "system" fn overlay_layer_wndproc(
         }
         WM_PAINT => {
             unsafe {
-                let mut ps: windows_sys::Win32::Graphics::Gdi::PAINTSTRUCT = std::mem::zeroed();
-                let hdc = BeginPaint(hwnd, &mut ps);
-                with_chat(|state| {
+                paint_chat_window(hwnd, |state, hdc| {
                     if hwnd == state.history_layer {
                         paint_history_layer(state, hdc);
                     } else {
                         paint_inspector_layer(state, hdc);
                     }
                 });
-                EndPaint(hwnd, &ps);
             }
             0
+        }
+        WM_APP_REPAINT => {
+            repaint_deferred(hwnd);
+            0
+        }
+        WM_NCDESTROY => {
+            discard_deferred_paint(hwnd);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_CTLCOLORSTATIC => unsafe { ctlcolor_static(wparam, lparam) },
         // 编辑类控件（可编辑框/下拉清单）的主题配色：`WM_CTLCOLOREDIT` /
@@ -1826,6 +1884,24 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
         };
         return;
     }
+    // 无缩略图的待发送 chip（缩略图未就绪 / 不可用）：底照常走 `draw_button`，文案也
+    // 必须走 `draw_pending_label` —— 否则末尾的 ✕ 会被 `DT_END_ELLIPSIS` 吃掉。
+    if role == ButtonRole::Pending {
+        let scale = dpi_scale(item.hwndItem);
+        unsafe {
+            paint_win::draw_button(item.hDC, item.hwndItem, rect, &face, "", pressed, disabled);
+            draw_pending_label(
+                item.hDC,
+                rect,
+                &face,
+                &label,
+                rect.x + scaled(PENDING_THUMB_INSET_X, scale),
+                scale,
+                pressed,
+            );
+        }
+        return;
+    }
     unsafe {
         paint_win::draw_button(
             item.hDC,
@@ -1835,6 +1911,87 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
             &label,
             pressed,
             disabled,
+        )
+    };
+}
+
+/// 待发送 chip 的文案绘制：共享 `pending_label` 的形态是「文件名（大小）✕」，
+/// 而 chip 正文用 `DT_END_ELLIPSIS` —— 文件名一长，末尾的 ✕ 就被省略号一起吃掉
+/// （2026-10-07 用户实拍「有了但是没有 ×」）。这里把 ✕ 摘出来固定贴右缘画，
+/// 正文在左侧剩余宽度里省略：撤选提示永远可见，且宽度仍来自共享文案（不另拼一份）。
+unsafe fn draw_pending_label(
+    hdc: HDC,
+    rect: paint_win::Rect,
+    face: &paint_win::ButtonFace,
+    label: &str,
+    text_left: i32,
+    scale: f64,
+    pressed: bool,
+) {
+    let (title, close) = match label.rfind('✕') {
+        Some(index) => (&label[..index], &label[index..]),
+        None => (label, ""),
+    };
+    let inset = scaled(PENDING_THUMB_INSET_X, scale);
+    let shift = i32::from(pressed);
+    let mut right = rect.right() - inset;
+    unsafe {
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, paint_win::colorref(face.ink));
+    }
+    if !close.is_empty() {
+        // 量 ✕ 自身宽度（很短，本身不省略），给它留出固定位置。
+        let mut measure = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let text = wide(close);
+        unsafe {
+            DrawTextW(
+                hdc,
+                text.as_ptr(),
+                -1,
+                &mut measure,
+                DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT,
+            )
+        };
+        let close_w = (measure.right - measure.left).max(1);
+        let mut close_rect = RECT {
+            left: right - close_w,
+            top: rect.y + shift,
+            right,
+            bottom: rect.bottom() + shift,
+        };
+        unsafe {
+            DrawTextW(
+                hdc,
+                text.as_ptr(),
+                -1,
+                &mut close_rect,
+                DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_RIGHT,
+            )
+        };
+        right -= close_w + scaled(2, scale);
+    }
+    if right <= text_left || title.is_empty() {
+        return;
+    }
+    let mut title_rect = RECT {
+        left: text_left,
+        top: rect.y + shift,
+        right,
+        bottom: rect.bottom() + shift,
+    };
+    let text = wide(title);
+    unsafe {
+        DrawTextW(
+            hdc,
+            text.as_ptr(),
+            -1,
+            &mut title_rect,
+            DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
         )
     };
 }
@@ -1895,32 +2052,16 @@ unsafe fn draw_pending_chip(
             DIB_RGB_COLORS,
             SRCCOPY,
         );
-        // 文案：缩略图右侧到 chip 右缘之间；字色取按钮面的 ink（与 `draw_button`
-        // 正常态同源）。选中态文字下沉 1px，与 `draw_button` 的 shift 同口径。
-        let text_left = image_x + image_w + scaled(4, scale);
-        let text_right = rect.right() - scaled(4, scale);
-        if text_right > text_left {
-            let mut text_rect = RECT {
-                left: text_left,
-                top: rect.y,
-                right: text_right,
-                bottom: rect.bottom(),
-            };
-            if pressed {
-                text_rect.top += 1;
-                text_rect.bottom += 1;
-            }
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, paint_win::colorref(face.ink));
-            let text = wide(label);
-            DrawTextW(
-                hdc,
-                text.as_ptr(),
-                -1,
-                &mut text_rect,
-                DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
-            );
-        }
+        // 文案：缩略图右侧到 chip 右缘之间（✕ 固定贴右缘，见 `draw_pending_label`）。
+        draw_pending_label(
+            hdc,
+            rect,
+            face,
+            label,
+            image_x + image_w + scaled(4, scale),
+            scale,
+            pressed,
+        );
     }
 }
 
@@ -2084,7 +2225,7 @@ pub(crate) fn mount_main_pane(parent: HWND) {
             0,
             wide(CHAT_CLASS).as_ptr(),
             wide("").as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             0,
             0,
             200,
@@ -2443,8 +2584,10 @@ unsafe fn rebuild_pending(state: &mut ChatWinState, snapshot: &crate::ui::chat::
             // 未就绪（Loading/Unavailable）按纯文案走 —— 不显示半个图。
             let thumb = match crate::ui::chat::pending_thumb(image) {
                 crate::ui::chat::PendingThumbStatus::Ready(frame) => {
-                    let (thumb_w, thumb_h) =
-                        crate::ui::chat::pending_strip::thumb_display_size(frame.width, frame.height);
+                    let (thumb_w, thumb_h) = crate::ui::chat::pending_strip::thumb_display_size(
+                        frame.width,
+                        frame.height,
+                    );
                     Some((frame, thumb_w, thumb_h))
                 }
                 _ => None,
@@ -2521,10 +2664,10 @@ unsafe fn rebuild_pending(state: &mut ChatWinState, snapshot: &crate::ui::chat::
         state.pending_count = count;
         state.pending_height = height;
         update_send_enabled(state); // 待发送区变化 = 「发送」可用态的输入之一
-        // 条内容变化（增删条目/滚动偏移）也要重画条底的滚动指示；条目控件自身的
-        // 重绘范围不含那条细线。几何未变时 layout 不会整窗作废，这里显式作废条区
-        //（首次重建时 `paint.pending` 还是空矩形，作废零面积 = no-op，随后 layout
-        // 因条区从无到有整窗作废一次）。
+                                    // 条内容变化（增删条目/滚动偏移）也要重画条底的滚动指示；条目控件自身的
+                                    // 重绘范围不含那条细线。几何未变时 layout 不会整窗作废，这里显式作废条区
+                                    //（首次重建时 `paint.pending` 还是空矩形，作废零面积 = no-op，随后 layout
+                                    // 因条区从无到有整窗作废一次）。
         InvalidateRect(state.hwnd, &state.paint.pending, 0);
     }
 }
@@ -3751,12 +3894,16 @@ unsafe fn build_children(hwnd: HWND) {
     // ── 输入区（多行 RichEdit，原生 IME；Enter 语义在子类里）──
     let input = unsafe {
         CreateWindowExW(
-            WS_EX_CLIENTEDGE,
+            // 不挂 WS_EX_CLIENTEDGE：那是系统给的单像素下沉立体边框，与 macOS 的
+            // 圆角输入槽差得远（用户 2026-10-07 实拍「原生样式、丑」）。输入槽的
+            // 圆角底/描边由聊天窗自己的 `paint_input_slot` 画在控件之下。
+            0,
             wide("RICHEDIT50W").as_ptr(),
             wide("").as_ptr(),
             WS_CHILD
                 | WS_VISIBLE
-                | WS_VSCROLL
+                // 不挂 WS_VSCROLL：多行输入右侧会多出一条原生滚动条（含上下箭头），
+                // macOS 侧没有这条；超长文本靠 `ES_AUTOVSCROLL` 跟随插入符滚动。
                 // 占位标签是叠在输入框上的兄弟控件：本控件开 `WS_CLIPSIBLINGS` 后，
                 // 重绘时会把上方的重叠兄弟（占位 STATIC）从更新区裁掉，不会把它盖住。
                 | WS_CLIPSIBLINGS
@@ -3946,7 +4093,12 @@ unsafe fn build_children(hwnd: HWND) {
             std::ptr::null(),
         )
     };
-    unsafe { make_themed_button_r(handle_arrow, ButtonRole::TabOff, scale, 0.0) };
+    unsafe {
+        make_themed_button_r(handle_arrow, ButtonRole::TabOff, scale, 0.0);
+        // ▴ 是「无面」角色，绘制端要把它自己的底盖回**把手带**的色（不是通用条底色）——
+        // 不记这一笔就会在带中央补出一块浅色板（用户实拍「上拉条也不对」）。
+        paint_win::set_surface_color(handle_arrow, handle_bg_flat(theme::tokens()));
+    }
 
     // ── 浮层 Inspector 的承载窗口（遮罩 + 浮层盒 = 同一个子窗口）──
     //
@@ -4173,8 +4325,6 @@ unsafe fn build_children(hwnd: HWND) {
             composing: false,
             // 说话人名由投影（人格域）提供；未收到投影前不显示名，不留硬编码角色名兜底。
             speaker: String::new(),
-            rtf_pos: 0,
-            rtf_buf: Vec::new(),
             panel_children: Vec::new(),
             panel_height: 0,
             panel_actions: Vec::new(),
@@ -4716,7 +4866,7 @@ fn scroll_inspector_from_wheel(msg: u32, wparam: WPARAM) -> bool {
         if lines == 0 {
             return false;
         }
-        let command = if lines < 0 { SB_LINEUP } else { SB_LINEDOWN };
+        let command = if lines > 0 { SB_LINEUP } else { SB_LINEDOWN };
         for _ in 0..lines.abs() {
             SendMessageW(scroll, WM_VSCROLL, command as WPARAM, 0);
         }
@@ -4766,7 +4916,7 @@ unsafe extern "system" fn inspector_scroll_wndproc(
             let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16;
             let lines = (i32::from(delta) / 120).clamp(-5, 5);
             for _ in 0..lines.abs() {
-                inspector_scroll_command(if lines < 0 { SB_LINEUP } else { SB_LINEDOWN });
+                inspector_scroll_command(if lines > 0 { SB_LINEUP } else { SB_LINEDOWN });
             }
             0
         }
@@ -4933,12 +5083,17 @@ unsafe extern "system" fn chat_wndproc(
         }
         WM_PAINT => {
             unsafe {
-                let mut ps: windows_sys::Win32::Graphics::Gdi::PAINTSTRUCT = std::mem::zeroed();
-                let hdc = BeginPaint(hwnd, &mut ps);
-                with_chat(|state| paint_shell(state, hdc));
-                EndPaint(hwnd, &ps);
+                paint_chat_window(hwnd, |state, hdc| paint_shell(state, hdc));
             }
             0
+        }
+        WM_APP_REPAINT => {
+            repaint_deferred(hwnd);
+            0
+        }
+        WM_NCDESTROY => {
+            discard_deferred_paint(hwnd);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_CTLCOLORSTATIC => unsafe { ctlcolor_static(wparam, lparam) },
         // 同 `overlay_layer_wndproc`：编辑类控件的 CTLCOLOR 消费者是控件父窗
@@ -5004,12 +5159,9 @@ unsafe extern "system" fn chat_wndproc(
             let notification = ((wparam >> 16) & 0xFFFF) as u16;
             // 输入内容变化（含程序化填入/清空）：驱动 slash 候选与「发送」按钮可用态。
             if id == INPUT_ID && notification == EN_CHANGE {
-                let input = CHAT.with(|cell| cell.borrow().as_ref().map(|state| state.input));
-                if let Some(input) = input {
-                    let text = unsafe { read_window_text(input) };
-                    crate::ui::chat::note_input_text(&text);
-                }
-                with_chat(|state| update_send_enabled(state));
+                // EN_CHANGE 已携带发通知的 RichEdit 句柄，不回借 CHAT：设置字体/
+                // 文字可能同步进入这里，而外层仍在持有聊天布局状态。
+                refresh_input_state(lparam as HWND);
                 return 0;
             }
             match id {
@@ -5217,7 +5369,7 @@ unsafe extern "system" fn chat_wndproc(
                 // y 坐标 —— 2026-10-06 前误读 lParam，步长随窗口在屏幕上的位置漂移）。
                 let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16;
                 let lines = (i32::from(delta) / 120).clamp(-5, 5) * 3;
-                let command = if lines < 0 { SB_LINEUP } else { SB_LINEDOWN };
+                let command = if lines > 0 { SB_LINEUP } else { SB_LINEDOWN };
                 for _ in 0..lines.abs() {
                     unsafe {
                         SendMessageW(canvas, WM_VSCROLL, command as WPARAM, 0);
@@ -5340,13 +5492,28 @@ fn update_send_enabled(state: &ChatWinState) {
     // 占位标签的可见性与发送可用态同源（都由输入文本决定）、同触发点（EN_CHANGE
     // 与各程序化清空/填入点一起刷新）——与 macOS `update_send_enabled` 同构。
     if state.input_placeholder != 0 {
-        let empty = text.is_empty();
+        // 占位是**叠在输入框上**的兄弟控件，只要输入框里有东西（文字 / IME 组合串）
+        // 就会盖住它。判定收起的三个条件：
+        // 1. 有文本 → 收（EN_CHANGE 驱动）；
+        // 2. 输入框拿到焦点 → 收：本机微软拼音是 TSF 系，**不发 `WM_IME_*`**，IMM 组合
+        //    串也读不到（两者都实测过），组合期没有任何可靠信号；而得焦点是组合的前提，
+        //    所以「聚焦即收起」是唯一不会盖住拼音串的确定性口径；
+        // 3. `state.composing`（IMM32 系输入法会发 `WM_IME_*`）→ 收。
+        let focused = unsafe { GetFocus() } == state.input;
+        let empty = text.is_empty() && !state.composing && !focused;
         unsafe {
             ShowWindow(
                 state.input_placeholder,
                 if empty { SW_SHOW } else { SW_HIDE },
-            )
-        };
+            );
+            // 占位是**叠在输入框上**的兄弟控件：藏掉它以后输入框不会自动重画，
+            // 露出来的仍是占位那几笔像素 —— 用户实拍「被『说点什么…』挡住了」，
+            // 文字其实已经在下面，只是被占位的残影盖着。显式作废输入框区域，
+            // 让 RichEdit 把这一块重画一遍。
+            if state.input != 0 {
+                InvalidateRect(state.input, std::ptr::null(), 1);
+            }
+        }
     }
     let enabled = !text.trim().is_empty() || crate::ui::chat::chat_ui().has_pending_images();
     unsafe { EnableWindow(state.send, i32::from(enabled)) };
@@ -5383,6 +5550,18 @@ pub(crate) unsafe fn read_window_text(hwnd: HWND) -> String {
     String::from_utf16_lossy(slice)
 }
 
+/// 输入内容变化的统一刷新出口：占位标签可见性、「发送」可用态与 slash 候选
+/// 同源刷新（`EN_CHANGE` 分支与「RichEdit 原生粘贴不补发 EN_CHANGE」的两处
+/// 显式补刷新共用，避免判定复制第二份）。
+fn refresh_input_state(input: HWND) {
+    if input == 0 {
+        return;
+    }
+    let text = unsafe { read_window_text(input) };
+    crate::ui::chat::note_input_text(&text);
+    with_chat(|state| update_send_enabled(state));
+}
+
 /// 「只做视觉、不拦鼠标」子类的统一实现（两处装同一条：**输入区占位标签**与
 /// **把手带状态文字**）：命中测试一律穿透（`HTTRANSPARENT` 让消息落到同线程的
 /// 下层窗口 —— 占位标签落输入框、状态文字落聊天窗的把手带点击段），其余消息
@@ -5417,6 +5596,24 @@ unsafe extern "system" fn input_subclass_proc(
 ) -> LRESULT {
     match msg {
         WM_KEYDOWN => {
+            // Ctrl+V：**RichEdit 自己处理 Ctrl+V，不会发 WM_PASTE**。
+            // 2026-10-07 实机用诊断日志确认：粘贴图片时本文件的 `WM_PASTE` 分支
+            // 一次都没被执行，图片被 RichEdit 当成内嵌对象插进了正文（用户实拍
+            // 「截图粘贴进去还是这鬼样子、没进上面的可滚动图片区」）。所以在按键
+            // 这一层就拦：剪贴板是图片/文件 → 转交待发送区并吃掉按键；纯文本原样
+            // 落回 RichEdit 的原生粘贴。`WM_PASTE` 分支保留（右键菜单粘贴走它）。
+            if wparam == VK_V as WPARAM && unsafe { GetKeyState(i32::from(VK_CONTROL)) } < 0 {
+                if unsafe { paste_clipboard_payload(hwnd) } {
+                    return 0;
+                }
+                // 文本粘贴：交还 RichEdit 自己插字，**它不补发 EN_CHANGE**
+                // （2026-10-07 实机：粘贴文字后 `[诊断·输入]` 一条都没有，占位标签
+                // 一直压在文字上；打字却有 EN_CHANGE）。先让它把粘贴做完，再显式
+                // 补一次刷新 —— 与 EN_CHANGE 共用同一出口，不复制判定。
+                let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+                refresh_input_state(hwnd);
+                return result;
+            }
             let composing = CHAT.with(|cell| {
                 cell.borrow()
                     .as_ref()
@@ -5470,6 +5667,9 @@ unsafe extern "system" fn input_subclass_proc(
                     state.composing = true;
                 }
             });
+            // 组合期要立刻收起占位：候选/拼音串画在输入框里，而占位是**叠在输入框上**
+            // 的兄弟控件 —— 不收就正好盖住正在输入的字（用户实拍「被『说点什么…』挡住」）。
+            with_chat(|state| update_send_enabled(state));
         }
         WM_IME_ENDCOMPOSITION => {
             CHAT.with(|cell| {
@@ -5477,11 +5677,36 @@ unsafe extern "system" fn input_subclass_proc(
                     state.composing = false;
                 }
             });
+            // 组合结束：上屏了就有文本（占位继续收着），被取消则文本为空（占位回来）。
+            with_chat(|state| update_send_enabled(state));
         }
         WM_IME_COMPOSITION => {
             if (lparam as usize & (GCS_CURSORPOS as usize)) != 0 {
                 unsafe { position_candidate_window(hwnd) };
             }
+        }
+        WM_PAINT => {
+            let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+            // TSF 系输入法（本机的微软拼音）**不发 `WM_IME_*`** —— 上面两个分支收不到，
+            // 组合期占位就一直压在拼音串上（用户实拍「被『说点什么…』挡住」）。组合串
+            // 只能查 IMM 上下文，这里借输入框自己的重绘时机对一次状态；**只在翻转时**
+            // 刷新：`update_send_enabled` 里会 InvalidateRect 输入框，无条件刷新会与
+            // WM_PAINT 互相触发成死循环。
+            let composing = unsafe { ime_composing(hwnd) };
+            let flipped = CHAT.with(|cell| {
+                let mut cell = cell.borrow_mut();
+                match cell.as_mut() {
+                    Some(state) if state.composing != composing => {
+                        state.composing = composing;
+                        true
+                    }
+                    _ => false,
+                }
+            });
+            if flipped {
+                with_chat(|state| update_send_enabled(state));
+            }
+            return result;
         }
         WM_DROPFILES => {
             // A3：拖进输入区的文件 → 待发送区（接管 RichEdit 自带的拖放处理）。
@@ -5495,13 +5720,38 @@ unsafe extern "system" fn input_subclass_proc(
             if unsafe { paste_clipboard_payload(hwnd) } {
                 return 0;
             }
+            // 文本粘贴（右键菜单「粘贴」走这条）：同 Ctrl+V 分支 —— RichEdit
+            // 不补发 EN_CHANGE，粘贴完成后显式刷新占位与「发送」可用态。
+            let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+            refresh_input_state(hwnd);
+            return result;
         }
         WM_NCDESTROY => unsafe {
             RemoveWindowSubclass(hwnd, Some(input_subclass_proc), 1);
         },
+        // 焦点边沿要重算占位（见 `update_send_enabled`：聚焦即收起，避免盖住 IME 组合串）。
+        WM_SETFOCUS | WM_KILLFOCUS => {
+            let result = unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
+            with_chat(|state| update_send_enabled(state));
+            return result;
+        }
         _ => {}
     }
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// 输入法是否正在组合（`GCS_COMPSTR` 非空 = 有未上屏的拼音/候选串）。
+///
+/// 为什么不用消息：TSF 系输入法（本机微软拼音）**不发 `WM_IME_STARTCOMPOSITION`**，
+/// 那两条分支收不到；IMM 上下文里的组合串是唯一可靠的读数。
+unsafe fn ime_composing(input: HWND) -> bool {
+    let himc = unsafe { ImmGetContext(input) };
+    if himc == 0 {
+        return false;
+    }
+    let len = unsafe { ImmGetCompositionStringW(himc, GCS_COMPSTR, std::ptr::null_mut(), 0) };
+    unsafe { ImmReleaseContext(input, himc) };
+    len > 0
 }
 
 /// 组合输入时把 IME 候选框钉到插入符（真实候选窗跟随需人工确认）。
@@ -5658,12 +5908,17 @@ unsafe extern "system" fn canvas_wndproc(
         }
         WM_PAINT => {
             unsafe {
-                let mut ps: windows_sys::Win32::Graphics::Gdi::PAINTSTRUCT = std::mem::zeroed();
-                let hdc = BeginPaint(hwnd, &mut ps);
-                with_chat(|state| paint_canvas_shell(state, hdc));
-                EndPaint(hwnd, &ps);
+                paint_chat_window(hwnd, |state, hdc| paint_canvas_shell(state, hdc));
             }
             0
+        }
+        WM_APP_REPAINT => {
+            repaint_deferred(hwnd);
+            0
+        }
+        WM_NCDESTROY => {
+            discard_deferred_paint(hwnd);
+            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_CTLCOLORSTATIC => unsafe { ctlcolor_static(wparam, lparam) },
         WM_DRAWITEM => {
@@ -5690,7 +5945,7 @@ unsafe extern "system" fn canvas_wndproc(
             let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16;
             let lines = (i32::from(delta) / 120).clamp(-5, 5);
             for _ in 0..lines.abs() {
-                canvas_scroll(if lines < 0 { SB_LINEUP } else { SB_LINEDOWN });
+                canvas_scroll(if lines > 0 { SB_LINEUP } else { SB_LINEDOWN });
             }
             0
         }
@@ -6450,9 +6705,7 @@ unsafe fn create_rtf_control(
         let inner_w = (width - inset_x * 2).max(scaled(20, scale));
         let mut style = WS_CHILD | WS_VISIBLE | ES_MULTILINE as u32 | ES_READONLY as u32;
         if code {
-            style |= WS_HSCROLL | (ES_AUTOHSCROLL as u32);
-        } else {
-            style |= WS_VSCROLL;
+            style |= WS_HSCROLL | WS_VSCROLL | ES_AUTOHSCROLL as u32 | ES_AUTOVSCROLL as u32;
         }
         let control = create_child(
             state,
@@ -6482,8 +6735,14 @@ unsafe fn create_rtf_control(
             // 关闭折行（RichEdit 官方做法：wParam=0、lParam=1），再装内容。
             SendMessageW(control, EM_SETTARGETDEVICE, 0, 1);
         }
-        stream_rtf(state, control, rtf);
+        stream_rtf(control, rtf);
         let height = rich_edit_height(control, scale);
+        if card.is_some() && !code {
+            // 正文按完整高度落位后才贴圆角区域；没有内部滚动条，滚动/选择由
+            // RichEdit 与外层 canvas 保持原生语义。输入框的 IME 路径不经过这里。
+            MoveWindow(control, x + inset_x, y + inset_y, inner_w, height, 0);
+            set_round_region(control, scaled_f(f64::from(theme::tokens().radii.md), scale));
+        }
         if let Some(entry) = state
             .children
             .iter_mut()
@@ -6581,7 +6840,7 @@ unsafe fn rich_edit_height(control: HWND, scale: f64) -> i32 {
     // 观测计数（dev A/B）：一次 RichEdit 行数查询 = 本平台的「强制文本排版」
     // （与 macOS `text_layout_extent` 的计数对称）。
     crate::ui::chat::stream_metrics::note_text_layout();
-    let lines: i32 = unsafe { SendMessageW(control, EM_GETLINECOUNT_RICH, 0, 0) } as i32;
+    let lines: i32 = unsafe { SendMessageW(control, EM_GETLINECOUNT, 0, 0) } as i32;
     let line_height = scaled(LINE_HEIGHT as i32, scale);
     (lines.max(1) * line_height) + scaled(8, scale)
 }
@@ -6865,12 +7124,20 @@ fn rtf_escape(text: &str) -> String {
     out
 }
 
-/// RTF 流式装载（`EM_STREAMIN` + `SF_RTF`）：回调从 state 的缓冲拷贝。
-unsafe fn stream_rtf(state: &mut ChatWinState, control: HWND, rtf: &str) {
-    state.rtf_buf = rtf.as_bytes().to_vec();
-    state.rtf_pos = 0;
+struct RtfStream<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+/// EM_STREAMIN 在 SendMessageW 返回前同步读完 cookie，局部缓冲与游标覆盖
+/// 整个回调生命周期。这里不能回借 CHAT：调用者正在重建消息并持有其可变借用。
+unsafe fn stream_rtf(control: HWND, rtf: &str) {
+    let mut source = RtfStream {
+        bytes: rtf.as_bytes(),
+        position: 0,
+    };
     let mut stream = EDITSTREAM {
-        dw_cookie: 0,
+        dw_cookie: &mut source as *mut RtfStream<'_> as usize,
         dw_error: 0,
         callback: Some(rtf_stream_callback),
     };
@@ -6882,37 +7149,30 @@ unsafe fn stream_rtf(state: &mut ChatWinState, control: HWND, rtf: &str) {
             &mut stream as *mut EDITSTREAM as LPARAM,
         );
     }
-    if stream.dw_error != 0 {
-        rust_warn!("RichEdit RTF 装载返回错误码 {}", stream.dw_error);
+    let error = stream.dw_error;
+    if error != 0 {
+        rust_warn!("RichEdit RTF 装载返回错误码 {error}");
     }
 }
 
 unsafe extern "system" fn rtf_stream_callback(
-    _cookie: usize,
+    cookie: usize,
     buffer: *mut u8,
     capacity: i32,
     written: *mut i32,
 ) -> u32 {
-    let mut count = 0usize;
-    CHAT.with(|cell| {
-        if let Ok(mut state) = cell.try_borrow_mut() {
-            if let Some(state) = state.as_mut() {
-                let remaining = state.rtf_buf.len().saturating_sub(state.rtf_pos);
-                let take = remaining.min(capacity.max(0) as usize);
-                if take > 0 {
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            state.rtf_buf[state.rtf_pos..].as_ptr(),
-                            buffer,
-                            take,
-                        );
-                    }
-                    state.rtf_pos += take;
-                }
-                count = take;
-            }
-        }
-    });
+    if cookie == 0 || written.is_null() || capacity < 0 || (capacity > 0 && buffer.is_null()) {
+        return 1;
+    }
+    let source = unsafe { &mut *(cookie as *mut RtfStream<'_>) };
+    let remaining = source.bytes.len().saturating_sub(source.position);
+    let count = remaining.min(capacity as usize);
+    if count > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(source.bytes.as_ptr().add(source.position), buffer, count)
+        };
+        source.position += count;
+    }
     unsafe { *written = count as i32 };
     0
 }
@@ -7423,6 +7683,84 @@ mod tests {
     use super::*;
     use crate::ui::chat::panels::{PanelKind, PanelSurface, PanelView};
     use crate::ui::theme::ThemeId;
+
+    #[test]
+    fn richedit_结构遵循_sdk_四字节对齐() {
+        assert_eq!(std::mem::align_of::<EDITSTREAM>(), 4);
+        assert_eq!(
+            std::mem::offset_of!(EDITSTREAM, callback),
+            std::mem::size_of::<usize>() + 4
+        );
+        assert_eq!(
+            std::mem::size_of::<EDITSTREAM>(),
+            2 * std::mem::size_of::<usize>() + 4
+        );
+        assert_eq!(
+            std::mem::offset_of!(ENLINK, w_param),
+            std::mem::size_of::<Nmhdr>() + 4
+        );
+    }
+
+    #[test]
+    fn rtf_流式装载不回借聊天布局状态() {
+        unsafe {
+            assert_ne!(LoadLibraryW(wide("Msftedit.dll").as_ptr()), 0);
+            let control = CreateWindowExW(
+                0,
+                wide("RICHEDIT50W").as_ptr(),
+                wide("").as_ptr(),
+                WS_POPUP | ES_MULTILINE as u32,
+                0,
+                0,
+                320,
+                100,
+                0,
+                0,
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::null(),
+            );
+            assert_ne!(control, 0, "必须真实建立 RichEdit 来验证同步流式回调");
+            let expected = "正文：hello 中文";
+            let rtf = format!("{{\\rtf1\\ansi {}}}", rtf_escape(expected));
+            CHAT.with(|cell| {
+                let _rebuild_borrow = cell.borrow_mut();
+                stream_rtf(control, &rtf);
+                assert_eq!(read_window_text(control), expected);
+                assert_eq!(SendMessageW(control, EM_GETLINECOUNT, 0, 0), 1);
+                SetWindowTextW(control, wide("first\r\nsecond").as_ptr());
+                assert_eq!(SendMessageW(control, EM_GETLINECOUNT, 0, 0), 2);
+            });
+            DestroyWindow(control);
+        }
+    }
+
+    #[test]
+    fn rtf_回调分段推进到真正的文件末尾() {
+        let bytes = b"12345";
+        let mut source = RtfStream { bytes, position: 0 };
+        let cookie = &mut source as *mut RtfStream<'_> as usize;
+        let mut buffer = [0u8; 3];
+        let mut written = -1;
+        unsafe {
+            assert_eq!(
+                rtf_stream_callback(cookie, buffer.as_mut_ptr(), 3, &mut written),
+                0
+            );
+            assert_eq!(written, 3);
+            assert_eq!(&buffer, b"123");
+            assert_eq!(
+                rtf_stream_callback(cookie, buffer.as_mut_ptr(), 3, &mut written),
+                0
+            );
+            assert_eq!(written, 2);
+            assert_eq!(&buffer[..2], b"45");
+            assert_eq!(
+                rtf_stream_callback(cookie, buffer.as_mut_ptr(), 3, &mut written),
+                0
+            );
+            assert_eq!(written, 0);
+        }
+    }
 
     /// 生产代码段（`#[cfg(test)]` 之前）——源码级守门断言都在这段上做，
     /// 否则会命中测试自己的字面量（那种断言永远为真、等于没写）。

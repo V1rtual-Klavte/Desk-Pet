@@ -27,6 +27,15 @@ use crate::window::{MAIN_WINDOW_HEIGHT, MAIN_WINDOW_WIDTH};
 /// macOS:   (cx, cy, sx, sy, sw, sh) Cocoa 坐标系（原点左下），调用方需做 Y 轴翻转
 type CursorScreen = (i32, i32, i32, i32, i32, i32, f64, f64);
 
+#[cfg(target_os = "windows")]
+thread_local! {
+    /// 显示器几何 + DPI 缓存（键 = `MonitorFromPoint` 的句柄）。理由见
+    /// [`get_cursor_and_screen`]：每拍重算 `GetMonitorInfoW` / `GetDpiForMonitor`
+    /// 会把光标推送频率压到 ~38Hz，灵动图层的跟随因此掉帧。
+    static MONITOR_METRICS: std::cell::RefCell<Option<(isize, (f64, f64, i32, i32, i32, i32))>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn get_cursor_and_screen() -> AppResult<CursorScreen> {
     #[cfg(target_os = "windows")]
     // SAFETY: SetCursorPos is an atomic syscall with no memory side effects.
@@ -43,29 +52,49 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
             return err("无法获取光标位置");
         }
         let monitor = MonitorFromPoint(pt, 2); // MONITOR_DEFAULTTONEAREST
-        let mut info: MONITORINFOEXW = std::mem::zeroed();
-        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-        let (mut sx, mut sy, mut sw, mut sh) =
-            (0i32, 0i32, FALLBACK_SCREEN_WIDTH, FALLBACK_SCREEN_HEIGHT);
-        if GetMonitorInfoW(monitor, &mut info as *mut _ as *mut _) != 0 {
-            let r = info.monitorInfo.rcMonitor;
-            sx = r.left;
-            sy = r.top;
-            sw = r.right - r.left;
-            sh = r.bottom - r.top;
-        }
-        // 获取显示器 DPI，物理像素转逻辑（web）坐标
-        let mut dpi_x: u32 = DPI_BASELINE;
-        let mut dpi_y: u32 = DPI_BASELINE;
-        GetDpiForMonitor(monitor, 0, &mut dpi_x, &mut dpi_y);
-        let scale_x = f64::from(dpi_x) / f64::from(DPI_BASELINE);
-        let scale_y = f64::from(dpi_y) / f64::from(DPI_BASELINE);
+        // 显示器几何 + DPI **按句柄缓存**：`GetMonitorInfoW` / `GetDpiForMonitor`
+        // 在本机实测每次约 10ms，16ms 的光标轮询里每拍都调会把推送频率压到 ~38Hz
+        // （2026-10-07 实机：灵动图层跟随因此一顿一顿，而同帧率是 62fps）。
+        // 句柄不变就复用上次结果；跨显示器时句柄变化，自然重算。
+        let cached = MONITOR_METRICS.with(|cell| {
+            cell.borrow()
+                .filter(|(handle, _)| *handle == monitor as isize)
+                .map(|(_, metrics)| metrics)
+        });
+        let (scale_x, scale_y, lsx, lsy, lsw, lsh) = match cached {
+            Some(metrics) => metrics,
+            None => {
+                let mut info: MONITORINFOEXW = std::mem::zeroed();
+                info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+                let (mut sx, mut sy, mut sw, mut sh) =
+                    (0i32, 0i32, FALLBACK_SCREEN_WIDTH, FALLBACK_SCREEN_HEIGHT);
+                if GetMonitorInfoW(monitor, &mut info as *mut _ as *mut _) != 0 {
+                    let r = info.monitorInfo.rcMonitor;
+                    sx = r.left;
+                    sy = r.top;
+                    sw = r.right - r.left;
+                    sh = r.bottom - r.top;
+                }
+                // 获取显示器 DPI，物理像素转逻辑（web）坐标
+                let mut dpi_x: u32 = DPI_BASELINE;
+                let mut dpi_y: u32 = DPI_BASELINE;
+                GetDpiForMonitor(monitor, 0, &mut dpi_x, &mut dpi_y);
+                let scale_x = f64::from(dpi_x) / f64::from(DPI_BASELINE);
+                let scale_y = f64::from(dpi_y) / f64::from(DPI_BASELINE);
+                let metrics = (
+                    scale_x,
+                    scale_y,
+                    physical_to_logical(sx, scale_x),
+                    physical_to_logical(sy, scale_y),
+                    physical_to_logical(sw, scale_x),
+                    physical_to_logical(sh, scale_y),
+                );
+                MONITOR_METRICS.with(|cell| *cell.borrow_mut() = Some((monitor as isize, metrics)));
+                metrics
+            }
+        };
         let lx = physical_to_logical(pt.x, scale_x);
         let ly = physical_to_logical(pt.y, scale_y);
-        let lsx = physical_to_logical(sx, scale_x);
-        let lsy = physical_to_logical(sy, scale_y);
-        let lsw = physical_to_logical(sw, scale_x);
-        let lsh = physical_to_logical(sh, scale_y);
         return Ok((lx, ly, lsx, lsy, lsw, lsh, scale_x, scale_y));
     }
 
@@ -201,6 +230,14 @@ pub fn compute_popup_position(
     if let Err(error) = port.focus(WindowId::Main) {
         rust_debug!("快捷键弹出前主窗口聚焦跳过: {error}");
     }
+
+    popup_position_at_cursor(win_w, win_h)
+}
+
+/// 原生窗口过程已经持有主窗状态时，只采样并计算几何。
+/// 窗口增强由该调用方使用已持有的句柄完成，避免回到 WindowPort 再借 UI。
+pub(crate) fn popup_position_at_cursor(win_w: i32, win_h: i32) -> AppResult<PopupPosition> {
+    let (win_w, win_h) = popup_window_size(win_w, win_h);
 
     let (cx, cy, sx, sy, sw, sh, scale_x, scale_y) = get_cursor_and_screen()?;
 

@@ -1,16 +1,14 @@
 //! 图层编辑器窗内容（W9a，Windows）：五层编辑 + 第二个渲染器预览。
 //!
-//! **未在 Windows 实机验证**（本机离线类型核对，见原生宿主迁移过程记录 §9.4 第 19 条）。
-//! 与 macOS 同语义：预览 = 第二个 `Renderer`（`WinLayerSurface` 以编辑器窗口为
-//! 合成目标；窗口需带 `WS_EX_LAYERED`，由 `windows.rs` 的 `open_aux` 设置），
+//! 与 macOS 同语义：预览 = 第二个 `Renderer`，只绑定独立的分层子窗口。
+//! 顶层窗口用常规 GDI 绘制，属性控件和预览是互不覆盖的兄弟窗口。
 //! 预览层列表经**线索投影**（`editor::cue_specs`：选中 1.0 / 启用 0.6 / 禁用 0.15，
 //! 五层恒渲染），草稿（不含线索）同步投给主窗舞台（主窗/预览一致），
 //! 保存走 `EditorUi::save`。
 //!
 //! 与 macOS 的已登记差异：
-//! - 参数用数值 `EDIT` 输入（macOS 侧：强度/灵敏度/缩放是滑杆，**位置 X/Y 是数字
-//!   输入框** —— 与旧壳偏移行同形，两平台的偏移输入形态已对齐）；拖动预览在窗口
-//!   空白区按左键拖动；**位置输入不设范围**（任意有限值都接受）—— 两边共享同一条
+//! - 强度/灵敏度/缩放用滑杆，位置 X/Y 用数字输入框，与 macOS 同形；
+//!   预览区域按左键拖动；**位置输入不设范围**（任意有限值都接受）—— 两边共享同一条
 //!   领域规则：偏移可拖到任意位置，框外部分由取景框裁掉
 //!   （`ui/editor/mod.rs::EditorDraft::set_offset` 不夹取，2026-10-05 用户裁决）。
 //!   数值解析/显示与提交后的单轴保留走共享纯函数（`parse_number_input` /
@@ -31,26 +29,24 @@
 //!   合成，与主窗舞台同一底色语义；
 //! - 两区之间与底部按钮条上沿用 `rule` 分隔线。
 //!
-//! **已知限制（如实登记）**：编辑器窗口同时是第二个渲染器的 `UpdateLayeredWindow`
-//! 合成目标 —— 渲染器提交过帧后，窗口外观由分层位图决定，`WM_PAINT`/`WM_ERASEBKGND`
-//! 画的窗底**不在合成里显示**（子控件与 ownerdraw 按钮照常可见）。预览区的
-//! `stage_bg` 要真正可见，需要渲染表面支持背板填充（或把预览改成独立的分层子窗口，
-//! 与 `windows_main` 的舞台同构）—— 属「预览区只占右半边」的既有缺口
-//! （W9b/W11 实机验证项），本批不扩大范围改共享渲染表面。控件区一侧的窗底同样受此
-//! 影响；本文件保证「渲染器未提交帧时」与子控件周边外露区域的底色正确。
+//! 预览背板、中心线和尺寸标记和角色提交到同一张位图，避免普通 GDI 绘制被 ULW 帧覆盖。
 
 use std::cell::{Cell, RefCell};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateFontW, DeleteObject, InvalidateRect, SetBkMode, SetTextColor, CLIP_DEFAULT_PRECIS,
-    DEFAULT_CHARSET, FW_BOLD, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS,
+    ClientToScreen, CreateFontW, DeleteObject, DrawTextW, InvalidateRect, ScreenToClient,
+    SelectObject, SetBkColor, SetBkMode, SetTextColor, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET,
+    DT_BOTTOM, DT_RIGHT, DT_SINGLELINE, FW_BOLD, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows_sys::Win32::UI::Controls::{ODS_DISABLED, ODS_GRAYED, ODS_SELECTED, ODT_BUTTON};
+use windows_sys::Win32::UI::Controls::{
+    InitCommonControlsEx, ICC_BAR_CLASSES, INITCOMMONCONTROLSEX, ODS_DISABLED, ODS_GRAYED,
+    ODS_SELECTED, ODT_BUTTON, TBM_SETPOS, TBM_SETRANGEMAX, TBM_SETRANGEMIN, TBS_HORZ, TBS_NOTICKS,
+};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, IsWindowEnabled, SetFocus, VK_ESCAPE,
+    EnableWindow, IsWindowEnabled, SetCapture, SetFocus, VK_ESCAPE,
 };
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -62,8 +58,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GWL_STYLE,
     IDCANCEL, IDNO, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNOCANCEL, SM_CXSCREEN,
     SM_CYSCREEN, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
-    WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEWHEEL, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION,
+    WS_CHILD, WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_EX_LAYERED, WS_EX_TOPMOST, WS_POPUP,
+    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::render::geometry::WindowGeometry;
@@ -90,6 +87,11 @@ const EDIT_SENSITIVITY: i32 = 1;
 const EDIT_OFFSET_X: i32 = 2;
 const EDIT_OFFSET_Y: i32 = 3;
 const EDIT_INTENSITY: i32 = 4;
+const SLIDER_BASE: i32 = 3200;
+const SLIDER_STEPS: i32 = 1000;
+/// Windows SDK commctrl.h: TBM_GETPOS = WM_USER；windows-sys 0.52 未导出该常量。
+const TBM_GETPOS: u32 = 0x0400;
+const PREVIEW_CLASS: &str = "DeskPetEditorPreview";
 const PICK_ID: i32 = 3100;
 const REVERT_ID: i32 = 3101;
 const SAVE_ID: i32 = 3102;
@@ -111,6 +113,8 @@ const ASSET_HELP_ID: i32 = 3112;
 /// 右侧属性面板宽度（旧壳 `#le-panel`；与 macOS 的 PANEL_W 同口径）。
 const PANEL_W: i32 = 264;
 const MARGIN: i32 = 12;
+const PANEL_GAP: i32 = 8;
+const PARAM_H: i32 = 30;
 /// 顶部层 tab 栏高度（层 tab + 动作按钮）与底部状态行高度。
 const TABS_H: i32 = 38;
 const BOTTOM_H: i32 = 30;
@@ -136,13 +140,161 @@ fn scaled(value: i32, scale: f64) -> i32 {
     (f64::from(value) * scale).round() as i32
 }
 
+/// 和 macOS 相同的左侧取景框；布局、绘制与拖动归一都取这个矩形。
+fn preview_rect(width: i32, height: i32, scale: f64) -> paint_win::Rect {
+    paint_win::Rect::new(
+        scaled(MARGIN, scale),
+        scaled(TABS_H + MARGIN, scale),
+        (width - scaled(MARGIN * 2 + PANEL_W + PANEL_GAP, scale)).max(0),
+        (height - scaled(TABS_H + BOTTOM_H + MARGIN * 2, scale)).max(0),
+    )
+}
+
+fn slider_range(index: i32) -> Option<(f64, f64)> {
+    use crate::ui::editor::{
+        INTENSITY_MAX, INTENSITY_MIN, SCALE_MAX, SCALE_MIN, SENSITIVITY_MAX, SENSITIVITY_MIN,
+    };
+    match index {
+        EDIT_SCALE => Some((SCALE_MIN, SCALE_MAX)),
+        EDIT_SENSITIVITY => Some((SENSITIVITY_MIN, SENSITIVITY_MAX)),
+        EDIT_INTENSITY => Some((INTENSITY_MIN, INTENSITY_MAX)),
+        _ => None,
+    }
+}
+
+fn slider_position(value: f64, min: f64, max: f64) -> i32 {
+    (((value - min) / (max - min)).clamp(0.0, 1.0) * f64::from(SLIDER_STEPS)).round() as i32
+}
+
+/// 预览子窗口只承接绘制和鼠标；拖动捕获仍由编辑器父窗持有。
+unsafe extern "system" fn preview_wndproc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let parent = unsafe { GetParent(hwnd) };
+    match message {
+        WM_LBUTTONDOWN => {
+            let mut point = POINT {
+                x: (lparam & 0xffff) as i16 as i32,
+                y: ((lparam >> 16) & 0xffff) as i16 as i32,
+            };
+            unsafe {
+                ClientToScreen(hwnd, &mut point);
+                ScreenToClient(parent, &mut point);
+            }
+            if on_lbutton_down(parent, point.x, point.y) {
+                unsafe { SetCapture(parent) };
+            }
+            0
+        }
+        WM_MOUSEWHEEL => {
+            on_mouse_wheel(parent, wparam);
+            0
+        }
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+fn create_preview(hwnd: HWND) -> Option<HWND> {
+    let class = wide(PREVIEW_CLASS);
+    let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    unsafe {
+        let mut wc: WNDCLASSW = std::mem::zeroed();
+        wc.lpfnWndProc = Some(preview_wndproc);
+        wc.hInstance = instance;
+        wc.lpszClassName = class.as_ptr();
+        RegisterClassW(&wc);
+    }
+    let child = unsafe {
+        CreateWindowExW(
+            WS_EX_LAYERED,
+            class.as_ptr(),
+            wide("").as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            0,
+            0,
+            1,
+            1,
+            hwnd,
+            0,
+            instance,
+            std::ptr::null(),
+        )
+    };
+    if child == 0 {
+        rust_warn!(
+            "编辑器预览子窗口创建失败：Win32 错误码 {}",
+            unsafe { GetLastError() }
+        );
+        None
+    } else {
+        Some(child)
+    }
+}
+
+fn paint_preview_overlay(hwnd: HWND, hdc: HDC, width: i32, height: i32) {
+    let tokens = theme::tokens();
+    let scale = dpi_scale(hwnd);
+    let line = scaled(1, scale).max(1);
+    for rect in [
+        paint_win::Rect::new(0, 0, width, line),
+        paint_win::Rect::new(0, height - line, width, line),
+        paint_win::Rect::new(0, 0, line, height),
+        paint_win::Rect::new(width - line, 0, line, height),
+    ] {
+        paint_win::fill_color(hdc, rect, tokens.outline);
+    }
+    let dash = scaled(4, scale).max(1);
+    let period = scaled(7, scale).max(1);
+    for x in (0..width).step_by(period as usize) {
+        paint_win::fill_color(
+            hdc,
+            paint_win::Rect::new(x, height / 2, dash.min(width - x), line),
+            tokens.outline,
+        );
+    }
+    for y in (0..height).step_by(period as usize) {
+        paint_win::fill_color(
+            hdc,
+            paint_win::Rect::new(width / 2, y, line, dash.min(height - y)),
+            tokens.outline,
+        );
+    }
+    if let Some((w, h)) = PREVIEW_POPUP_SIZE.with(Cell::get) {
+        let label = wide(&format!("{} × {}", w.round() as i64, h.round() as i64));
+        let font = make_font(scale, 9, false);
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: width - scaled(6, scale),
+            bottom: height - scaled(3, scale),
+        };
+        unsafe {
+            let old = SelectObject(hdc, font);
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, paint_win::colorref(tokens.dim));
+            DrawTextW(
+                hdc,
+                label.as_ptr(),
+                -1,
+                &mut rect,
+                DT_RIGHT | DT_BOTTOM | DT_SINGLELINE,
+            );
+            SelectObject(hdc, old);
+            DeleteObject(font);
+        }
+    }
+}
+
 // ==========================================
 // 主题判定（纯逻辑：无 Win32 调用，可单测；表见文件末的测试小节）
 // ==========================================
 
 /// 编辑器窗里显式创建的按钮（按动作语义分类，不按 ID）。
 ///
-/// 表外的控件（顶部层 tab、素材下拉）不进本表，一律保持系统外观，属刻意选择。
+/// 顶部层 tab 根据选中态取 TabOn/TabOff，素材下拉使用原生控件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditorButton {
     /// 「保存」—— 唯一提交类主操作。
@@ -169,10 +321,10 @@ enum EditorButton {
     AssetHelp,
 }
 
-/// 按钮语义 → ownerdraw 角色；`None` = 保持系统外观。
+/// 按钮语义 → ownerdraw 角色，全部取共享主题，保存突出为主操作。
 ///
 /// 只给「保存」贴 `primary_*` 面（提交语义，与设置窗同一口径）；
-/// 「放弃改动」虽重但语义是撤销而非提交，保持系统外观 —— 避免危险动作被主色放大。
+/// 「放弃改动」取普通按钮面，避免撤销动作被主色放大。
 fn button_role(button: EditorButton) -> Option<ButtonRole> {
     match button {
         EditorButton::Save => Some(ButtonRole::Primary),
@@ -185,7 +337,7 @@ fn button_role(button: EditorButton) -> Option<ButtonRole> {
         | EditorButton::AssetRefresh
         | EditorButton::ToggleLock
         | EditorButton::ToggleEnable
-        | EditorButton::AssetHelp => None,
+        | EditorButton::AssetHelp => Some(ButtonRole::Normal),
     }
 }
 
@@ -210,7 +362,7 @@ unsafe fn make_themed_button(hwnd: HWND, role: ButtonRole, scale: f64) {
     );
 }
 
-/// 按语义表给按钮上主题：主操作转 ownerdraw；其余保持系统外观（不动样式位）。
+/// 按语义表给全部操作按钮上主题。
 fn style_button(button: EditorButton, hwnd: HWND, scale: f64) {
     if let Some(role) = button_role(button) {
         unsafe { make_themed_button(hwnd, role, scale) };
@@ -224,10 +376,13 @@ struct LayerTab {
 
 struct EditorState {
     hwnd: HWND,
+    preview_hwnd: HWND,
     renderer: Renderer,
     /// 顶部层 tab（按层数重建；标题/选中态走 `refresh_ui`）。
     tabs: Vec<LayerTab>,
     edits: Vec<(HWND, i32)>,
+    sliders: Vec<(HWND, i32)>,
+    labels: Vec<HWND>,
     status: HWND,
     fonts: Vec<HFONT>,
     applied_profile: String,
@@ -245,6 +400,8 @@ struct EditorState {
 
 thread_local! {
     static STATE: RefCell<Option<EditorState>> = const { RefCell::new(None) };
+    /// 只供ULW回调绘制尺寸徽标的快照，更新源是主窗尺寸；回调不重借UI状态。
+    static PREVIEW_POPUP_SIZE: Cell<Option<(f64, f64)>> = const { Cell::new(None) };
     /// `with_state` 被重入跳过的累计次数（只用于告警限流）。
     static EDITOR_REENTRY_COUNT: Cell<u32> = const { Cell::new(0) };
 }
@@ -320,7 +477,6 @@ fn client_size(hwnd: HWND) -> (i32, i32) {
 /// 之下、右侧面板之外）取 `tokens().stage_bg` —— 预览与主窗舞台同一底色语义。
 /// 分隔线两条：预览与面板之间的竖线、底部条上沿的横线。
 ///
-/// **可见性限制**见模块头：渲染器提交过 ULW 帧后，本函数画的窗底不在合成里显示。
 pub(crate) fn paint_background(hwnd: HWND, hdc: HDC) {
     let (width, height) = client_size(hwnd);
     if width <= 0 || height <= 0 {
@@ -336,20 +492,19 @@ pub(crate) fn paint_background(hwnd: HWND, hdc: HDC) {
     let bottom_y = (height - scaled(BOTTOM_H, scale)).max(0);
     // 预览区 = 左侧大区（顶部 tab 栏之下、底部状态行之上、右侧属性面板之外），
     // 与 macOS 的版面同构；分隔线在面板左缘左侧。
-    let panel_x = width - scaled(PANEL_W + MARGIN, scale);
-    let preview_right = (panel_x - scaled(8, scale)).max(0);
-    let preview_top = scaled(TABS_H + MARGIN * 2, scale);
-    if preview_right > 0 && bottom_y > preview_top {
-        paint_win::fill_rect(
-            hdc,
-            paint_win::Rect::new(0, preview_top, preview_right, bottom_y - preview_top),
-            &tokens.stage_bg,
-        );
+    let preview = preview_rect(width, height, scale);
+    if !preview.is_empty() {
+        paint_win::fill_rect(hdc, preview, &tokens.stage_bg);
     }
-    let divider_x = (preview_right - 1).max(0);
+    let divider_x = width - scaled(PANEL_W + MARGIN, scale);
     paint_win::fill_color(
         hdc,
-        paint_win::Rect::new(divider_x, preview_top, 1, (bottom_y - preview_top).max(0)),
+        paint_win::Rect::new(
+            divider_x,
+            scaled(TABS_H, scale),
+            1,
+            (bottom_y - scaled(TABS_H, scale)).max(0),
+        ),
         tokens.rule,
     );
     paint_win::fill_color(
@@ -362,8 +517,7 @@ pub(crate) fn paint_background(hwnd: HWND, hdc: HDC) {
 /// `WM_CTLCOLORSTATIC` / `WM_CTLCOLORBTN`：字色按控件记录的角色取（未记录 → `ink`；
 /// 禁用控件统一降为 `dim`），文字底透明、控件底回 `field_bg`（左列工作面色）。
 ///
-/// 注意：可编辑 `EDIT` 走 `WM_CTLCOLOREDIT`（本批不接，保持系统配色）；只读/禁用
-/// `EDIT` 也发 `WM_CTLCOLORSTATIC`，会一并拿到主题字色。
+/// 可编辑 `EDIT` 走 `edit_ctlcolor`；禁用输入框经本出口取说明色。
 pub(crate) fn on_ctlcolor(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let hdc = wparam as HDC;
     let control = lparam as HWND;
@@ -377,6 +531,22 @@ pub(crate) fn on_ctlcolor(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         SetTextColor(hdc, paint_win::colorref(color));
     }
     paint_win::solid_brush(tokens.field_bg.base_color()) as LRESULT
+}
+
+/// 输入框和下拉列表用统一主题的实底；GDI/原生控件不支持编辑框渐变。
+pub(crate) fn edit_ctlcolor(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let hdc = wparam as HDC;
+    let tokens = theme::tokens();
+    let background = tokens.field_bg.base_color();
+    let enabled = unsafe { IsWindowEnabled(lparam as HWND) } != 0;
+    unsafe {
+        SetTextColor(
+            hdc,
+            paint_win::colorref(if enabled { tokens.ink } else { tokens.dim }),
+        );
+        SetBkColor(hdc, paint_win::colorref(background));
+    }
+    paint_win::solid_brush(background) as LRESULT
 }
 
 /// `WM_DRAWITEM`：ownerdraw 按钮绘制（角色/悬浮/按下从控件自身读，与聊天窗同款）。
@@ -426,7 +596,7 @@ pub(crate) fn on_drawitem(lparam: LPARAM) -> bool {
 /// 回到 `windows.rs` 的 `with_ui`，而广播本身就持有该 `WinUi` 的可变借用 —— 重入
 /// `RefCell` 必 panic。这里直接读编辑器域的视图重刷字色，不触碰窗口层。
 pub(crate) fn apply_theme() {
-    let exists = STATE.with(|cell| cell.borrow().is_some());
+    let exists = with_state(|_| ()).is_some();
     if !exists {
         rust_debug!("编辑器未打开，主题广播跳过");
         return;
@@ -447,14 +617,29 @@ pub(crate) fn apply_theme() {
         for (edit, _) in state.edits.iter() {
             unsafe { InvalidateRect(*edit, std::ptr::null(), 1) };
         }
-        for button in state.buttons.iter() {
-            // ownerdraw 主按钮的圆角半径随主题的 `radii.btn` 变化：重新贴一次区域。
-            if paint_win::role_of(*button) == ButtonRole::Primary {
-                paint_win::install_button(
-                    *button,
-                    scaled(theme::tokens().radii.btn.round() as i32, scale),
-                );
+        for label in &state.labels {
+            stamp_text(*label, TextRole::Body);
+        }
+        for (edit, index) in &state.edits {
+            stamp_text(
+                *edit,
+                if slider_range(*index).is_some() {
+                    TextRole::Hint
+                } else {
+                    TextRole::Body
+                },
+            );
+        }
+        for (slider, _) in &state.sliders {
+            unsafe {
+                InvalidateRect(*slider, std::ptr::null(), 1);
             }
+        }
+        for button in state.buttons.iter() {
+            paint_win::install_button(
+                *button,
+                scaled(theme::tokens().radii.btn.round() as i32, scale),
+            );
             unsafe { InvalidateRect(*button, std::ptr::null(), 1) };
         }
         unsafe {
@@ -463,19 +648,40 @@ pub(crate) fn apply_theme() {
             InvalidateRect(state.hwnd, std::ptr::null(), 1);
         }
         stamp_text(state.status, TextRole::Hint);
+        if unsafe { IsWindowVisible(state.hwnd) != 0 && IsIconic(state.hwnd) == 0 } {
+            if let Err(error) = state.renderer.render_now() {
+                rust_warn!("编辑器主题预览重绘失败: {error}");
+            }
+        }
     });
     rust_info!("编辑器窗已按新主题重刷并重绘（Windows）");
 }
 
-/// 编辑器窗建立后挂载内容（W5 的 open_aux 调用；窗口须已带 WS_EX_LAYERED）。
+/// 编辑器窗建立后挂载内容；只有独立预览子窗口带 WS_EX_LAYERED。
 pub(crate) fn install_editor_content(hwnd: HWND) {
-    let surface = match unsafe { WinLayerSurface::new(hwnd) } {
+    let Some(preview_hwnd) = create_preview(hwnd) else {
+        return;
+    };
+    let mut surface = match unsafe { WinLayerSurface::new(preview_hwnd) } {
         Ok(surface) => surface,
         Err(error) => {
-            rust_warn!("编辑器预览表面创建失败（编辑器仍可用，但无预览）: {error}");
+            rust_warn!("编辑器初始化失败（预览表面未建立）: {error}");
+            unsafe {
+                DestroyWindow(preview_hwnd);
+            }
             return;
         }
     };
+    surface.set_decoration(
+        |hdc, w, h| {
+            paint_win::fill_rect(
+                hdc,
+                paint_win::Rect::new(0, 0, w, h),
+                &theme::tokens().stage_bg,
+            )
+        },
+        move |hdc, w, h| paint_preview_overlay(preview_hwnd, hdc, w, h),
+    );
     let mut renderer = Renderer::new(surface);
     renderer.set_enabled(true);
 
@@ -485,31 +691,121 @@ pub(crate) fn install_editor_content(hwnd: HWND) {
     let small = make_font(scale, 11, false);
     let fonts = vec![body, small];
 
-    // 参数输入框（数值）。
+    let controls = INITCOMMONCONTROLSEX {
+        dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_BAR_CLASSES,
+    };
+    if unsafe { InitCommonControlsEx(&controls) } == 0 {
+        rust_warn!(
+            "编辑器滑杆控件初始化失败：Win32 错误码 {}",
+            unsafe { GetLastError() }
+        );
+    }
+
+    // 同 macOS：强度/Y/X/灵敏度/缩放；三条滑杆旁边是只读数值，两轴是输入框。
     let mut edits = Vec::new();
-    for (index, _label) in ["缩放", "灵敏度", "位置X%", "位置Y%", "强度"]
-        .iter()
-        .enumerate()
-    {
+    let mut sliders = Vec::new();
+    let mut labels = Vec::new();
+    for (label, index) in [
+        ("强度", EDIT_INTENSITY),
+        ("位置 Y %", EDIT_OFFSET_Y),
+        ("位置 X %", EDIT_OFFSET_X),
+        ("灵敏度", EDIT_SENSITIVITY),
+        ("缩放", EDIT_SCALE),
+    ] {
+        let label_hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                wide("STATIC").as_ptr(),
+                wide(label).as_ptr(),
+                WS_CHILD | WS_VISIBLE,
+                0,
+                0,
+                68,
+                18,
+                hwnd,
+                0,
+                hinstance,
+                std::ptr::null(),
+            )
+        };
+        unsafe {
+            SendMessageW(label_hwnd, WM_SETFONT, body as WPARAM, 1);
+        }
+        stamp_text(label_hwnd, TextRole::Body);
+        labels.push(label_hwnd);
+        let is_slider = slider_range(index).is_some();
+        if is_slider {
+            let slider = unsafe {
+                CreateWindowExW(
+                    0,
+                    wide("msctls_trackbar32").as_ptr(),
+                    wide("").as_ptr(),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS,
+                    0,
+                    0,
+                    120,
+                    24,
+                    hwnd,
+                    (SLIDER_BASE + index) as isize,
+                    hinstance,
+                    std::ptr::null(),
+                )
+            };
+            unsafe {
+                SendMessageW(slider, TBM_SETRANGEMIN, 0, 0);
+                SendMessageW(slider, TBM_SETRANGEMAX, 1, SLIDER_STEPS as LPARAM);
+            }
+            sliders.push((slider, index));
+        }
         let edit = unsafe {
             CreateWindowExW(
                 0,
-                wide("EDIT").as_ptr(),
+                wide(if is_slider { "STATIC" } else { "EDIT" }).as_ptr(),
                 wide("").as_ptr(),
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER,
+                WS_CHILD | WS_VISIBLE | if is_slider { 0 } else { WS_TABSTOP | WS_BORDER },
                 0,
                 0,
                 80,
                 scaled(22, scale),
                 hwnd,
-                (EDIT_BASE + index as i32) as isize,
+                (EDIT_BASE + index) as isize,
                 hinstance,
                 std::ptr::null(),
             )
         };
         unsafe { SendMessageW(edit, WM_SETFONT, body as WPARAM, 1) };
-        edits.push((edit, index as i32));
+        stamp_text(
+            edit,
+            if is_slider {
+                TextRole::Hint
+            } else {
+                TextRole::Body
+            },
+        );
+        edits.push((edit, index));
     }
+    let asset_label = unsafe {
+        CreateWindowExW(
+            0,
+            wide("STATIC").as_ptr(),
+            wide("素材").as_ptr(),
+            WS_CHILD | WS_VISIBLE,
+            0,
+            0,
+            120,
+            18,
+            hwnd,
+            0,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    unsafe {
+        SendMessageW(asset_label, WM_SETFONT, body as WPARAM, 1);
+    }
+    stamp_text(asset_label, TextRole::Body);
+    labels.push(asset_label);
     let status = unsafe {
         CreateWindowExW(
             0,
@@ -589,9 +885,12 @@ pub(crate) fn install_editor_content(hwnd: HWND) {
     STATE.with(|cell| {
         *cell.borrow_mut() = Some(EditorState {
             hwnd,
+            preview_hwnd,
             renderer,
             tabs: Vec::new(),
             edits,
+            sliders,
+            labels,
             status,
             fonts,
             applied_profile: String::new(),
@@ -605,7 +904,7 @@ pub(crate) fn install_editor_content(hwnd: HWND) {
     rebuild_tabs();
     layout(hwnd);
     refresh_ui();
-    rust_info!("编辑器窗内容已建立（Windows：第二个渲染器绑定编辑器窗口）");
+    rust_info!("编辑器窗内容已建立（Windows：独立预览子窗口、属性滑杆与图层控件）");
 }
 
 /// 按当前层数重建顶部层 tab（标题带「锁/关/缺」角标；点击即选中该层）。
@@ -655,20 +954,30 @@ fn layout(hwnd: HWND) {
         let (width, height) = client_size(hwnd);
         // 顶部：层 tab 栏（左，自 MARGIN 起）+ 动作按钮（右到左：关闭 / 保存 /
         // 本层复位 / 可见 / 锁定 —— 作用于当前选中层）。
-        let top_y = scaled(MARGIN, scale);
+        let preview = preview_rect(width, height, scale);
+        unsafe {
+            MoveWindow(
+                state.preview_hwnd,
+                preview.x,
+                preview.y,
+                preview.w.max(1),
+                preview.h.max(1),
+                1,
+            );
+        }
+        let top_y = scaled((TABS_H - TOP_BUTTON_H) / 2, scale);
+        let actions_left = width - scaled(MARGIN + 5 * TOP_BUTTON_W + 4 * 6, scale);
+        let tab_w = if state.tabs.is_empty() {
+            scaled(TAB_W, scale)
+        } else {
+            ((actions_left - scaled(MARGIN + 8, scale)) / state.tabs.len() as i32
+                - scaled(4, scale))
+            .clamp(scaled(24, scale), scaled(TAB_W, scale))
+        };
         let mut x = scaled(MARGIN, scale);
         for tab in state.tabs.iter() {
-            unsafe {
-                MoveWindow(
-                    tab.button,
-                    x,
-                    top_y,
-                    scaled(TAB_W, scale),
-                    scaled(TOP_BUTTON_H, scale),
-                    1,
-                )
-            };
-            x += scaled(TAB_W + 4, scale);
+            unsafe { MoveWindow(tab.button, x, top_y, tab_w, scaled(TOP_BUTTON_H, scale), 1) };
+            x += tab_w + scaled(4, scale);
         }
         let mut bx = width - scaled(MARGIN, scale);
         for id in [
@@ -698,21 +1007,57 @@ fn layout(hwnd: HWND) {
         // 右侧属性面板（x = width - PANEL_W - MARGIN）：参数输入框自上而下、
         // 素材区（下拉 + 上传/移除/刷新）、单层操作（位置复位 / 放弃改动）。
         let panel_x = width - scaled(PANEL_W + MARGIN, scale);
-        let mut py = top_y + scaled(TABS_H + 6, scale);
-        for (edit, _index) in state.edits.iter() {
+        let mut py = scaled(TABS_H + MARGIN, scale);
+        for (row, (edit, index)) in state.edits.iter().enumerate() {
+            let is_slider = slider_range(*index).is_some();
             unsafe {
                 MoveWindow(
-                    *edit,
+                    state.labels[row],
                     panel_x,
-                    py,
-                    scaled(PANEL_W, scale),
-                    scaled(22, scale),
+                    py + scaled(5, scale),
+                    scaled(68, scale),
+                    scaled(18, scale),
+                    1,
+                );
+                MoveWindow(
+                    *edit,
+                    panel_x + scaled(if is_slider { PANEL_W - 46 } else { 68 }, scale),
+                    py + scaled(if is_slider { 4 } else { 0 }, scale),
+                    scaled(if is_slider { 46 } else { PANEL_W - 68 }, scale),
+                    scaled(if is_slider { 18 } else { 24 }, scale),
                     1,
                 )
             };
-            py += scaled(28, scale);
+            if let Some((slider, _)) = state
+                .sliders
+                .iter()
+                .find(|(_, slider_index)| slider_index == index)
+            {
+                unsafe {
+                    MoveWindow(
+                        *slider,
+                        panel_x + scaled(68, scale),
+                        py,
+                        scaled(PANEL_W - 68 - 46 - 8, scale),
+                        scaled(24, scale),
+                        1,
+                    );
+                }
+            }
+            py += scaled(PARAM_H, scale);
         }
-        py += scaled(10, scale);
+        py += scaled(12, scale);
+        unsafe {
+            MoveWindow(
+                *state.labels.last().unwrap_or(&0),
+                panel_x,
+                py,
+                scaled(PANEL_W, scale),
+                scaled(18, scale),
+                1,
+            );
+        }
+        py += scaled(22, scale);
         if state.asset_combo != 0 {
             unsafe {
                 MoveWindow(
@@ -771,12 +1116,12 @@ fn layout(hwnd: HWND) {
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, ASSET_HELP_ID) };
         if help_button != 0 {
             let bottom_line_logical = f64::from(BOTTOM_H + MARGIN);
-            let layer_ops_bottom_logical = f64::from(py + scaled(24, scale)) / scale;
-            let layer_ops_top_logical = f64::from(py) / scale;
+            let layer_ops_bottom_logical = f64::from(height - py - scaled(24, scale)) / scale;
+            let layer_ops_top_logical = f64::from(height - py) / scale;
             let offset = asset_help_bottom_offset(
                 0.0,
-                bottom_line_logical - layer_ops_bottom_logical,
-                bottom_line_logical - layer_ops_top_logical,
+                layer_ops_bottom_logical - bottom_line_logical,
+                layer_ops_top_logical - bottom_line_logical,
             );
             let help_h = scaled(ASSET_HELP_BUTTON_H.round() as i32, scale);
             let help_y = height
@@ -1000,6 +1345,41 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
     false
 }
 
+/// 原生滑杆变化；位置取 TBM_GETPOS，避免 WM_HSCROLL 的16位载荷精度限制。
+pub(crate) fn on_hscroll(_hwnd: HWND, lparam: LPARAM) {
+    let slider = lparam as HWND;
+    let index = with_state(|state| {
+        state
+            .sliders
+            .iter()
+            .find(|(handle, _)| *handle == slider)
+            .map(|(_, index)| *index)
+    })
+    .flatten();
+    let Some(index) = index else {
+        return;
+    };
+    let Some((min, max)) = slider_range(index) else {
+        return;
+    };
+    let position = unsafe { SendMessageW(slider, TBM_GETPOS, 0, 0) };
+    let value = min + (max - min) * position as f64 / f64::from(SLIDER_STEPS);
+    let selected = editor_ui().view().selected;
+    let result = match index {
+        EDIT_SCALE => editor_ui().op_set_scale(selected, value),
+        EDIT_SENSITIVITY => editor_ui().op_set_sensitivity(selected, value),
+        EDIT_INTENSITY => {
+            editor_ui().op_set_intensity(value);
+            Ok(())
+        }
+        _ => return,
+    };
+    if let Err(error) = result {
+        editor_ui().set_notice(Some(format!("参数更新失败：{error}")));
+    }
+    refresh_ui();
+}
+
 /// WM_SIZE：重排 + 预览几何更新。
 ///
 /// 与 macOS 对称：`macos_editor.rs::relayout`（窗口 resize 通知 → 同一份
@@ -1007,32 +1387,25 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
 /// WM_SIZE 直接分发到这里（`windows.rs::aux_wndproc`，code == 2 分支），
 /// `layout` 用 `MoveWindow` 重摆全部子控件（tab / 顶栏按钮 / 参数输入 / 素材区 /
 /// 状态行），窗底与预览区分界线由 `paint_background` 按新客户区尺寸重画；
-/// 预览的合成目标仍是整窗（区域偏移缺口见模块头「已知限制」）。
+/// 预览合成目标只覆盖左侧取景框，窗体控件由普通 GDI 路径绘制。
 pub(crate) fn on_size(hwnd: HWND) {
     layout(hwnd);
     apply_preview();
 }
 
 /// 拖动：左键按下（预览区）开始，移动改位置，抬起结束。
-pub(crate) fn on_lbutton_down(hwnd: HWND, x: i32, y: i32) -> bool {
+pub(crate) fn on_lbutton_down(_hwnd: HWND, x: i32, y: i32) -> bool {
     with_state(|state| {
         // 只接受预览区（左侧大区：顶部 tab 栏之下、右侧属性面板之外）的拖动 ——
         // 与窗底绘制的预览区几何同一口径。
         let scale = dpi_scale(state.hwnd);
         let (width, height) = client_size(state.hwnd);
-        let preview_right = width - scaled(PANEL_W + MARGIN, scale) - scaled(8, scale);
-        let preview_top = scaled(TABS_H + MARGIN * 2, scale);
-        let bottom = height - scaled(BOTTOM_H, scale);
-        if x >= 0 && x < preview_right && y >= preview_top && y < bottom {
+        let preview = preview_rect(width, height, scale);
+        if x >= preview.x && x < preview.right() && y >= preview.y && y < preview.bottom() {
             state.drag_last = Some((x, y));
         }
     });
-    STATE.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .map(|state| state.drag_last.is_some())
-            .unwrap_or(false)
-    })
+    with_state(|state| state.drag_last.is_some()).unwrap_or(false)
 }
 
 pub(crate) fn on_mouse_move(hwnd: HWND, x: i32, y: i32) -> bool {
@@ -1046,11 +1419,9 @@ pub(crate) fn on_mouse_move(hwnd: HWND, x: i32, y: i32) -> bool {
         // 拖动比例按预览区尺寸归一（预览区 = 顶部 tab 栏之下、右侧属性面板之外、
         // 底部状态行之上）。
         let (client_w, client_h) = client_size(hwnd);
-        let width =
-            f64::from((client_w - scaled(PANEL_W + MARGIN, scale) - scaled(8, scale)).max(1));
-        let height = f64::from(
-            (client_h - scaled(BOTTOM_H, scale) - scaled(TABS_H + MARGIN * 2, scale)).max(1),
-        );
+        let preview = preview_rect(client_w, client_h, scale);
+        let width = f64::from(preview.w.max(1));
+        let height = f64::from(preview.h.max(1));
         let selected = editor_ui().view().selected;
         if let Err(error) =
             editor_ui().op_drag(selected, f64::from(dx), f64::from(dy), width, height)
@@ -1745,6 +2116,25 @@ pub(crate) fn refresh_ui() {
             };
             unsafe { SetWindowTextW(*edit, wide(&text).as_ptr()) };
         }
+        for (slider, index) in &state.sliders {
+            let value = match *index {
+                EDIT_SCALE => selected.map(|layer| layer.scale).unwrap_or(1.0),
+                EDIT_SENSITIVITY => selected.map(|layer| layer.sensitivity).unwrap_or(0.8),
+                EDIT_INTENSITY => view.intensity,
+                _ => continue,
+            };
+            if let Some((min, max)) = slider_range(*index) {
+                unsafe {
+                    EnableWindow(*slider, i32::from(*index == EDIT_INTENSITY || !locked));
+                    SendMessageW(
+                        *slider,
+                        TBM_SETPOS,
+                        1,
+                        slider_position(value, min, max) as LPARAM,
+                    );
+                }
+            }
+        }
         // 状态行（素材列表失败不阻断编辑：错误如实展示，本地文件直选仍可用）。
         let status_text = if let Some(notice) = &view.notice {
             notice.clone()
@@ -1786,9 +2176,14 @@ pub(crate) fn refresh_ui() {
 /// 草稿 → 编辑器预览渲染器（线索投影）+ 主窗舞台（原 specs，不含线索）。
 fn apply_preview() {
     let preview = editor_ui().preview();
+    let popup_size = super::windows::popup_reference_size();
+    PREVIEW_POPUP_SIZE.with(|value| value.set(popup_size));
     with_state(|state| {
         let hwnd = state.hwnd;
         let scale = dpi_scale(hwnd);
+        if let Some((popup_width, _)) = popup_size {
+            state.renderer.set_popup_width(popup_width);
+        }
         state.renderer.set_intensity(preview.intensity);
         state.renderer.set_enabled(preview.effect_enabled);
         // 预览渲染器用线索投影（选中 1.0 / 启用 0.6 / 禁用 0.15，五层恒渲染）；
@@ -1798,23 +2193,15 @@ fn apply_preview() {
             rust_warn!("预览层收敛有 {} 个失败项", report.failures.len());
         }
         state.renderer.set_cursor(None);
-        // 合成目标是整个编辑器窗口（WinLayerSurface 按客户区合成，无区域偏移能力），
-        // 因此几何按整窗给（逻辑像素）：缩放/居中与主窗同一几何核；
-        // 控件是子窗口、绘制在合成内容之上。「预览区只占右半边」的精确合成需要
-        // 表面支持区域偏移（W9b/W11 实机验证时处理，见交付报告的未验证项）。
-        //
-        // 同样因区域偏移缺口未实施（macOS 侧已做，本侧待实机批次）：
-        // ① 预览框按弹窗宽高比的 aspect-fit（整窗合成下无「框」可裁）；
-        // ② `set_popup_width` 与舞台同口径 —— 需要主窗尺寸，本模块拿不到
-        //    windows.rs 的私有主窗状态（属跨文件接线，非本批所有权）；
-        // ③ 预览框指示（边框 / 50% 十字线 / 右下角尺寸标注；macOS 侧 2026-10-05
-        //    已随 `macos_editor.rs::EditorFrameOverlay` 落地）—— 它依赖①的「框」
-        //    几何先存在，且需要表面区域偏移把画饰与预览对齐；同一缺口的下游，
-        //    不在本批强行实施。
-        let (client_w, client_h) = client_size(hwnd);
+        // 几何取独立预览子窗口，铺满左区并在其客户区裁剪（macOS 同口径）。
+        let (client_w, client_h) = client_size(state.preview_hwnd);
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        unsafe {
+            GetWindowRect(state.preview_hwnd, &mut rect);
+        }
         state.renderer.set_window_geometry(WindowGeometry {
-            x: 0.0,
-            y: 0.0,
+            x: f64::from(rect.left) / scale,
+            y: f64::from(rect.top) / scale,
             width: f64::from(client_w) / scale,
             height: f64::from(client_h) / scale,
         });
@@ -1848,6 +2235,11 @@ pub(crate) fn apply_font() {
         let body = make_font(scale, 13, false);
         let small = make_font(scale, 11, false);
         state.fonts = vec![body, small];
+        for label in &state.labels {
+            unsafe {
+                SendMessageW(*label, WM_SETFONT, body as WPARAM, 1);
+            }
+        }
         for tab in state.tabs.iter() {
             unsafe { SendMessageW(tab.button, WM_SETFONT, body as WPARAM, 1) };
         }
@@ -1860,12 +2252,18 @@ pub(crate) fn apply_font() {
         if state.asset_combo != 0 {
             unsafe { SendMessageW(state.asset_combo, WM_SETFONT, body as WPARAM, 1) };
         }
-        for id in [ASSET_REMOVE_ID, ASSET_REFRESH_ID] {
-            let button =
-                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(state.hwnd, id) };
-            if button != 0 {
-                unsafe { SendMessageW(button, WM_SETFONT, body as WPARAM, 1) };
-            }
+        for button in &state.buttons {
+            unsafe { SendMessageW(*button, WM_SETFONT, body as WPARAM, 1) };
+            paint_win::install_button(
+                *button,
+                scaled(theme::tokens().radii.btn.round() as i32, scale),
+            );
+        }
+        for tab in &state.tabs {
+            paint_win::install_button(
+                tab.button,
+                scaled(theme::tokens().radii.btn.round() as i32, scale),
+            );
         }
     });
     rust_debug!("编辑器字体已按全局快照刷新");
@@ -1924,7 +2322,7 @@ mod tests {
     }
 
     #[test]
-    fn 编辑器只有保存贴主按钮面其余保持系统外观() {
+    fn 编辑器保存贴主按钮面其余取普通主题按钮面() {
         assert_eq!(
             button_role(EditorButton::Save),
             Some(ButtonRole::Primary),
@@ -1942,8 +2340,49 @@ mod tests {
             EditorButton::ToggleEnable,
             EditorButton::AssetHelp,
         ] {
-            assert_eq!(button_role(kind), None, "{kind:?} 应保持系统外观");
+            assert_eq!(
+                button_role(kind),
+                Some(ButtonRole::Normal),
+                "{kind:?} 应取普通主题按钮面"
+            );
         }
+    }
+
+    #[test]
+    fn 编辑器取景框与属性栏状态行不重叠且按dpi缩放() {
+        assert_eq!(
+            preview_rect(860, 620, 1.0),
+            paint_win::Rect::new(12, 50, 564, 528)
+        );
+        for scale in [1.0, 1.5, 2.0] {
+            let width = scaled(860, scale);
+            let height = scaled(620, scale);
+            let preview = preview_rect(width, height, scale);
+            assert_eq!(preview.x, scaled(12, scale));
+            assert_eq!(preview.y, scaled(50, scale));
+            assert_eq!(
+                preview.right() + scaled(PANEL_GAP, scale),
+                width - scaled(PANEL_W + MARGIN, scale)
+            );
+            assert_eq!(preview.bottom(), height - scaled(BOTTOM_H + MARGIN, scale));
+        }
+        assert!(preview_rect(100, 100, 1.0).w == 0);
+        assert!(preview_rect(860, 20, 1.0).h == 0);
+    }
+
+    #[test]
+    fn 编辑器滑杆端点映射到领域范围() {
+        for index in [EDIT_INTENSITY, EDIT_SENSITIVITY, EDIT_SCALE] {
+            let (min, max) = slider_range(index).expect("三条滑杆有领域范围");
+            assert_eq!(slider_position(min, min, max), 0);
+            assert_eq!(slider_position(max, min, max), SLIDER_STEPS);
+            assert_eq!(
+                slider_position((min + max) / 2.0, min, max),
+                SLIDER_STEPS / 2
+            );
+        }
+        assert_eq!(slider_range(EDIT_OFFSET_X), None);
+        assert_eq!(slider_range(EDIT_OFFSET_Y), None);
     }
 
     /// 源码级守门：素材提示词面板必须保持**非模态**（不得再出现「禁用属主 +

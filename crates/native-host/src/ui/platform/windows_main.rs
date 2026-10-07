@@ -1,7 +1,6 @@
 //! 主窗一体布局（W9a，Windows）：角色舞台 + 聊天列同窗合成；顶部为全窗宽顶栏（W9c）。
 //!
-//! **未在 Windows 实机验证**（本机只做离线类型核对，bundled SQLite 需要 msvc 工具链，
-//! 见原生宿主迁移过程记录 §9.4 第 19 条）。结构上与 macOS 同语义：
+//! 结构上与 macOS 同语义；Windows 专有的合成、焦点与 DPI 行为需实机验收：
 //! - 舞台是主窗客户区内的**子窗口**（`WS_CHILD | WS_EX_LAYERED`），W6a 的
 //!   `WinLayerSurface` 以它为合成目标（Windows 8 起 `WS_EX_LAYERED` 支持子窗口）；
 //!   `render/win.rs` 的文档把目标写作「顶层窗口」是 W6a 的保守表述 —— **本处是
@@ -10,8 +9,8 @@
 //! - 聊天面板由 `windows_chat::mount_main_pane` 挂进主窗（同一份控件栈）；
 //! - 分隔条拖动由主窗过程转发鼠标事件（`WM_LBUTTONDOWN` 命中分隔条区域时进入拖动）；
 //! - **全窗宽顶栏（W9c）**：主窗层的一条整窗宽 26px 子窗口顶栏（品牌/状态位/
-//!   关闭「×」+ 拖动；设置/图层入口在托盘菜单，不在条内）。创建顺序在聊天面板
-//!   之后 = 兄弟 z 序在上，覆盖聊天列顶部的同一 26px 带；舞台子窗口从带下方开始
+//!   关闭「×」/设置 + 拖动）。布局时显式提升到兄弟 z 序最上，覆盖聊天列顶部
+//!   的同一 26px 带；舞台子窗口从带下方开始
 //!   （顶部布局预留）。条高、品牌槽与状态位坐标等几何的唯一来源是
 //!   `ui/titlebar.rs`（旧聊天列顶栏副本已随旧实现删除）；文本唯一真值同样在那里。
 //!
@@ -30,11 +29,12 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::ODT_BUTTON;
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowRect, MoveWindow, RegisterClassW,
-    SendMessageW, SetWindowPos, SetWindowTextW, BS_OWNERDRAW, CS_HREDRAW, CS_VREDRAW, HMENU,
-    HTCAPTION, HWND_TOP, SWP_NOACTIVATE, SWP_NOZORDER, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_SIZE, WNDCLASSW,
-    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, GetClientRect, GetParent, GetWindowRect, MoveWindow,
+    RegisterClassW, SendMessageW, SetWindowPos, SetWindowTextW, BS_OWNERDRAW, CS_HREDRAW,
+    CS_VREDRAW, HMENU, HTCAPTION, HWND_TOP, SWP_NOACTIVATE, SWP_NOZORDER, WM_COMMAND, WM_CREATE,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+    WM_PAINT, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_EX_LAYERED, WS_VISIBLE,
 };
 
 use crate::error::{AppError, AppResult};
@@ -66,15 +66,16 @@ const CHAT_FALLBACK_WIDTH_RATIO: f64 = 1.0 / 3.0;
 
 /// 顶栏窗口类名。
 const TITLEBAR_CLASS: &str = "DeskPetMainTitlebar";
-/// 关闭「×」按钮宽度（本侧条内只余它一枚按钮）。
+/// 关闭「×」按钮宽度。
 const NAV_CLOSE_WIDTH: i32 = 22;
-/// 右侧按钮保留宽度（条内只余关闭按钮，故比 macOS 的 46 窄）。
-const TITLEBAR_RIGHT_RESERVE: i32 = 30;
+const NAV_SETTINGS_WIDTH: i32 = 34;
+/// 与 macOS 一致：「×」+「设置」+ 间距与内边距。
+const TITLEBAR_RIGHT_RESERVE: i32 = 72;
 /// 顶栏按钮 ID（只在本顶栏窗口的子控件里使用，与 `windows_chat.rs` 的 ID 命名
 /// 空间天然隔离 —— WM_COMMAND 只到达控件直接父窗口）。
-/// 只保留关闭「×」：Windows 的设置/图层入口在托盘菜单（与 macOS 只保留
-/// 设置/图层、去掉「×」的裁定互为镜像）。
+/// 图层入口仍在设置窗与托盘菜单。
 const BAR_BTN_HIDE_ID: i32 = 2003;
+const BAR_BTN_SETTINGS_ID: i32 = 2004;
 /// `SetBkMode` 的 TRANSPARENT（1）：windows-sys 的 `Gdi::TRANSPARENT` 类型是 u32，
 /// 该 API 要 i32，按 `windows_chat.rs` 同款就地定义（避免类型不匹配）。
 const TRANSPARENT: i32 = 1;
@@ -85,6 +86,7 @@ struct TitlebarUi {
     brand: HWND,
     status: HWND,
     hide: HWND,
+    settings: HWND,
     /// 顶栏字体（随全局字体快照刷新时整只替换）。
     font: HFONT,
 }
@@ -122,14 +124,14 @@ fn client_size(hwnd: HWND) -> (i32, i32) {
 pub(crate) struct MainLayout {
     stage: Stage,
     stage_hwnd: HWND,
-    // 以下三项由 windows.rs 的 ULW 底色读取（BackdropKey + paint_backdrop 入参），
+    // 以下三项由 windows.rs 的背景绘制读取（paint_backdrop 入参），
     // 是跨 windows_main / windows 两个模块的共享布局状态，故对 crate 可见。
     pub(crate) chat_visible: bool,
     /// 聊天列宽度（逻辑像素）；`None` = 未收到 CONFIG 推送（用兜底）。
     chat_width: Option<f64>,
     /// 分隔条拖动：按下时的鼠标 x（物理）与当时的列宽（逻辑）。
     divider_drag: Option<(i32, f64)>,
-    // ── 主窗 ULW 底色的重画几何（`relayout` 每轮写入；`windows.rs` 读）──
+    // ── 主窗底色的重画几何（`relayout` 每轮写入；`windows.rs` 读）──
     /// 分隔带左缘（物理像素）与带宽；`chat_visible=false` 时无意义。
     pub(crate) divider_x: i32,
     pub(crate) divider_w: i32,
@@ -177,13 +179,25 @@ pub(crate) fn install(main: HWND) -> AppResult<MainLayout> {
             "舞台子窗口创建失败（CreateWindowExW 错误码 {create_error}，RegisterClassW 错误码 {class_error}）"
         )));
     }
-    let surface = unsafe { WinLayerSurface::new(stage_hwnd)? };
+    let mut surface = unsafe { WinLayerSurface::new(stage_hwnd)? };
+    // 光标采样与帧同拍：帧回调先取一次全局光标再合成，视差图层因此每帧推进一次，
+    // 不再受「采样计时器与帧计时器各自量化、互相错拍」影响（用户实机反馈
+    // 「光标跟踪图层动的卡卡的」；`render/win.rs` 的 `pre_tick` 有完整因由）。
+    // 主窗的 `TIMER_TRACK` 保留为兜底（帧循环停摆时仍能看到光标）。
+    surface.set_pre_tick(Box::new(|| {
+        super::windows::track_tick();
+        // [诊断·临时] 帧内采样节拍（1 秒一条；定位跟随卡顿时用来区分
+        // 「帧率不足」与「采样错拍」）。收敛后再决定去留。
+        if let Some(hz) = follow_stat_tick() {
+            rust_debug!("[诊断·跟随] 帧内采样 {hz} Hz");
+        }
+    }));
     let stage = Stage::new(surface);
 
     // 聊天面板：同一份控件实现挂进主窗（产品形态在主窗内）。
     windows_chat::mount_main_pane(main);
 
-    // 全窗宽顶栏：必须在聊天面板之后创建 —— 兄弟 z 序在上，正好盖住其 26px 顶栏带。
+    // 全窗宽顶栏：relayout 显式抬到最上，盖住聊天面板的顶部预留带。
     create_titlebar(main);
 
     let mut layout = MainLayout {
@@ -265,7 +279,7 @@ pub(crate) fn relayout(layout: &mut MainLayout, main: HWND) {
     let titlebar = TITLEBAR.with(|cell| cell.borrow().as_ref().map(|ui| ui.bar));
     if let Some(titlebar) = titlebar {
         if titlebar != 0 {
-            unsafe { MoveWindow(titlebar, 0, 0, width, band, 1) };
+            unsafe { SetWindowPos(titlebar, HWND_TOP, 0, 0, width, band, SWP_NOACTIVATE) };
         }
     }
 
@@ -283,7 +297,35 @@ pub(crate) fn relayout(layout: &mut MainLayout, main: HWND) {
     }
 }
 
-/// 可见期跟踪：全局光标喂给舞台（60Hz，由 W5 的跟踪计时器调用）。
+/// [诊断·临时] 帧内光标采样计数：`Some(hz)` = 刚满一秒，回读这一秒的采样数。
+///
+/// 与帧循环的 `[诊断·舞台] 渲染 N fps` 对照：两者接近说明「每帧都有当拍光标」；
+/// 明显低于帧率就是采样错拍（跟随卡顿的判据）。定位结束后连同调用点一起删。
+fn follow_stat_tick() -> Option<u32> {
+    static STAT: std::sync::Mutex<Option<(std::time::Instant, u32)>> =
+        std::sync::Mutex::new(None);
+    let mut stat = STAT.lock().unwrap_or_else(|error| error.into_inner());
+    let now = std::time::Instant::now();
+    match *stat {
+        Some((started, count)) => {
+            let count = count + 1;
+            if now.duration_since(started).as_millis() >= 1000 {
+                *stat = Some((now, 0));
+                Some(count)
+            } else {
+                *stat = Some((started, count));
+                None
+            }
+        }
+        None => {
+            *stat = Some((now, 0));
+            None
+        }
+    }
+}
+
+/// 可见期跟踪：全局光标喂给舞台（每帧一次，见 `install` 的 `pre_tick` 接线；
+/// 主窗 `TIMER_TRACK` 计时器是同函数的兜底调用点）。
 pub(crate) fn track(layout: &mut MainLayout) {
     let cursor = match crate::commands::cursor::get_cursor_position() {
         Ok(cursor) => Some(crate::render::geometry::CursorPosition {
@@ -422,17 +464,11 @@ pub(crate) fn teardown(layout: &mut MainLayout) {
 }
 
 // ==========================================
-// 主窗 ULW 底色（stage_bg + 颗粒 + 分隔线）
+// 主窗 GDI 底色（stage_bg + 颗粒 + 分隔线）
 // ==========================================
 
-/// 画主窗自身 ULW 表面的底色（`windows.rs::submit_frame` 在提交前调用）。
-///
-/// 为什么画在这里：主窗是 `WS_EX_LAYERED`（`UpdateLayeredWindow` 提交），它自己不
-/// 走 GDI 绘制；而舞台子窗口是**分层子窗口** —— 子窗口透明像素处透出的正是父窗口
-/// 的 ULW 内容，聊天列左边的分隔带也落在这一层。所以「舞台兜底 + 分隔线」必须进
-/// 主窗的 DIB，而不是某个子窗口的 `WM_PAINT`。
-///
-/// **未在 Windows 实机验证**（分层子窗口与父 ULW 内容的合成行为，同模块头约定）。
+/// 主窗 WM_PAINT 的背景。主窗用整体 alpha 配合 GDI 承载控件；仅舞台子窗口
+/// 使用 UpdateLayeredWindow，透明像素透出这里的舞台底色。
 pub(crate) fn paint_backdrop(hdc: HDC, width: i32, height: i32, layout: Option<&MainLayout>) {
     if width <= 0 || height <= 0 {
         return;
@@ -452,7 +488,7 @@ pub(crate) fn paint_backdrop(hdc: HDC, width: i32, height: i32, layout: Option<&
     if let Some(layout) = layout {
         if layout.chat_visible && layout.divider_w > 0 {
             // 分隔线：`outline` 色的 1px 竖线，落在分隔带**右缘**（紧贴聊天列左缘，
-            // = 设计稿 `.chat` 的 `border-left` 位置）。热区本身不涂色：整窗 ULW 底
+            // = 设计稿 `.chat` 的 `border-left` 位置）。热区本身不涂色：整窗背景
             // （上面的 `stage_bg`）在带下方承担底色 —— 与 macOS
             // `macos_main.rs::paint_divider` 对称（右缘 1px 叠舞台底）。
             let x = layout.divider_x + layout.divider_w - 1;
@@ -465,7 +501,7 @@ pub(crate) fn paint_backdrop(hdc: HDC, width: i32, height: i32, layout: Option<&
 // 全窗宽顶栏（顶部 26px 带，条内几何来自 `ui::titlebar`）
 // ==========================================
 
-/// 创建全窗宽顶栏子窗口（主窗内的兄弟窗口；创建顺序在聊天面板之后 = z 序在上）。
+/// 创建全窗宽顶栏子窗口（主窗内的兄弟窗口；z 序由 relayout 显式维护）。
 fn create_titlebar(main: HWND) {
     let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
     let class_name = wide(TITLEBAR_CLASS);
@@ -486,7 +522,7 @@ fn create_titlebar(main: HWND) {
             0,
             class_name.as_ptr(),
             wide("").as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             0,
             0,
             width,
@@ -543,11 +579,16 @@ unsafe fn paint_titlebar(bar: HWND, hdc: HDC) {
 
 /// 主题切换：顶栏底与「×」按钮重绘（其余窗口由 `windows.rs` 的广播逐一处理）。
 pub(crate) fn apply_theme() {
-    let handles = TITLEBAR.with(|cell| cell.borrow().as_ref().map(|ui| (ui.bar, ui.hide)));
-    if let Some((bar, hide)) = handles {
+    let handles = TITLEBAR.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|ui| (ui.bar, ui.hide, ui.settings))
+    });
+    if let Some((bar, hide, settings)) = handles {
         unsafe {
             InvalidateRect(bar, std::ptr::null(), 1);
             InvalidateRect(hide, std::ptr::null(), 1);
+            InvalidateRect(settings, std::ptr::null(), 1);
         }
     }
     rust_info!("主窗顶栏已按新主题重绘（Windows）");
@@ -604,12 +645,25 @@ unsafe fn build_titlebar_children(bar: HWND) {
                 std::ptr::null(),
             )
         };
-        // 只建「×」（收起）：设置/图层入口在托盘菜单，Windows 顶栏不重复放。
-        // macOS 顶栏 2026-10-06 起同样自绘「×」（Borderless 无系统关闭入口），
-        // 两平台唯一的按钮链差异只剩「设置」（macOS 顶栏有，Windows 走托盘）。
+        // 与 macOS 同序：右侧「×」收起，左侧「设置」。
         let hide = make_button("×", BAR_BTN_HIDE_ID);
-        // 关闭键：主题按钮（btn_bg 族 + dim 字；悬浮换 danger，见 paint_win::button_face）。
+        let settings = make_button("设置", BAR_BTN_SETTINGS_ID);
+        // 顶栏按钮与 macOS 同为**无面**文字入口：底是整条 28px 的渐变 `bar_bg`，
+        // 给它们按钮面（`btn_bg`）就会在渐变条上补出两块白板 —— 用户 2026-10-07
+        // 实拍「获得焦点后顶栏全是莫名其妙的白底白框」。无底角色 + 记录表面色 =
+        // 底盖回条色、只有字与悬浮反馈。
+        paint_win::set_role(settings, ButtonRole::TabOff);
+        paint_win::set_surface_color(settings, crate::ui::theme::tokens().bar_bg.base_color());
+        paint_win::install_button(
+            settings,
+            scaled(
+                crate::ui::theme::tokens().radii.btn.round() as i32,
+                dpi_scale(bar),
+            ),
+        );
+        // 关闭键：同为无面入口（悬浮换 danger，见 paint_win::button_face 的 Close 分支）。
         paint_win::set_role(hide, ButtonRole::Close);
+        paint_win::set_surface_color(hide, crate::ui::theme::tokens().bar_bg.base_color());
         paint_win::install_button(
             hide,
             scaled(
@@ -619,7 +673,7 @@ unsafe fn build_titlebar_children(bar: HWND) {
         );
         // 字体：全局快照族名 + 小号字（刷新见 apply_titlebar_font）。
         let font = create_titlebar_font(bar);
-        for control in [brand, status, hide] {
+        for control in [brand, status, hide, settings] {
             SendMessageW(control, WM_SETFONT, font as WPARAM, 1);
         }
         TITLEBAR.with(|cell| {
@@ -628,6 +682,7 @@ unsafe fn build_titlebar_children(bar: HWND) {
                 brand,
                 status,
                 hide,
+                settings,
                 font,
             });
         });
@@ -640,9 +695,9 @@ unsafe fn layout_titlebar_children(bar: HWND) {
     let ui = TITLEBAR.with(|cell| {
         cell.borrow()
             .as_ref()
-            .map(|ui| (ui.brand, ui.status, ui.hide))
+            .map(|ui| (ui.brand, ui.status, ui.hide, ui.settings))
     });
-    let Some((brand, status, hide)) = ui else {
+    let Some((brand, status, hide, settings)) = ui else {
         return;
     };
     let (width, height) = client_size(bar);
@@ -676,13 +731,22 @@ unsafe fn layout_titlebar_children(bar: HWND) {
             nav_h,
             1,
         );
-        // 右侧按钮右对齐：仅「×」（设置/图层入口在托盘菜单，Windows 只保留关闭）。
+        // 右侧按钮从右到左：×、设置（与 macOS 同序）。
         let hide_w = scaled(NAV_CLOSE_WIDTH, scale);
-        let hide_x = scaled_f(
-            titlebar::right_button_x(f64::from(width) / scale, &[f64::from(NAV_CLOSE_WIDTH)])[0],
-            scale,
+        let positions = titlebar::right_button_x(
+            f64::from(width) / scale,
+            &[f64::from(NAV_CLOSE_WIDTH), f64::from(NAV_SETTINGS_WIDTH)],
         );
+        let hide_x = scaled_f(positions[0], scale);
         MoveWindow(hide, hide_x, y, hide_w, nav_h, 1);
+        MoveWindow(
+            settings,
+            scaled_f(positions[1], scale),
+            y,
+            scaled(NAV_SETTINGS_WIDTH, scale),
+            nav_h,
+            1,
+        );
     }
 }
 
@@ -741,17 +805,24 @@ pub(crate) fn apply_titlebar_font() {
         rust_warn!("顶栏字体创建失败，保留旧字体");
         return;
     }
-    TITLEBAR.with(|cell| {
-        if let Some(ui) = cell.borrow_mut().as_mut() {
-            if ui.font != 0 {
-                unsafe { DeleteObject(ui.font) };
-            }
+    let controls = TITLEBAR.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        slot.as_mut().map(|ui| {
+            let old = ui.font;
             ui.font = font;
-            for control in [ui.brand, ui.status, ui.hide] {
-                unsafe { SendMessageW(control, WM_SETFONT, font as WPARAM, 1) };
-            }
-        }
+            (old, [ui.brand, ui.status, ui.hide, ui.settings])
+        })
     });
+    if let Some((old, controls)) = controls {
+        for control in controls {
+            unsafe { SendMessageW(control, WM_SETFONT, font as WPARAM, 1) };
+        }
+        if old != 0 {
+            unsafe { DeleteObject(old) };
+        }
+    } else {
+        unsafe { DeleteObject(font) };
+    }
 }
 
 /// 顶栏「×」按钮的主题绘制（标签直接取自控件文本，避免第二处字面量）。
@@ -808,12 +879,15 @@ unsafe extern "system" fn titlebar_wndproc(
         }
         WM_CTLCOLORSTATIC => {
             // 静态标签（品牌/状态位）：透明底 + `dim` 字（叠在 bar_bg 上）。
+            // 背景刷必须**空心**：`bar_bg` 是渐变，返回实色刷会让 STATIC 用自己的
+            // 实色擦一块矩形出来（用户实拍「顶栏莫名其妙的白底白框」的其中一半）。
+            // 空心刷 = 不擦自己的底，父亲画的渐变原样透出来。
             unsafe {
                 let hdc = wparam as HDC;
                 SetBkMode(hdc, TRANSPARENT);
                 SetTextColor(hdc, paint_win::colorref(crate::ui::theme::tokens().dim));
             }
-            paint_win::solid_brush(crate::ui::theme::tokens().bar_bg.base_color()) as LRESULT
+            paint_win::hollow_brush() as LRESULT
         }
         WM_DRAWITEM => {
             if lparam != 0 {
@@ -840,9 +914,15 @@ unsafe extern "system" fn titlebar_wndproc(
             // **未在 Windows 实机验证**（本机无法编译 Windows 目标）。
             HTCAPTION as LRESULT
         }
+        WM_NCLBUTTONDOWN if wparam == HTCAPTION as WPARAM => {
+            // 标题带是子窗口，默认处理会移动子窗口本身；拖动必须转给主窗。
+            unsafe { SendMessageW(GetParent(hwnd), WM_NCLBUTTONDOWN, wparam, lparam) };
+            0
+        }
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as i32;
             match id {
+                BAR_BTN_SETTINGS_ID => crate::ui::settings::settings_ui().open_window(),
                 // 「收起」= 与主窗关闭请求同一归宿（不退出、不销毁）。
                 BAR_BTN_HIDE_ID => {
                     if let Err(error) = crate::ui::platform::windows::retract_main_window() {
@@ -916,7 +996,7 @@ mod tests {
     }
 
     /// 最短窗宽（`MAIN_WINDOW_MIN_WIDTH`）下：状态文字仍有可读宽度；右侧保留区
-    /// 容得下仅剩的关闭「×」（设置/图层入口在托盘菜单，条内不重复放）。
+    /// 容得下关闭「×」与「设置」。
     #[test]
     fn 最短窗宽下状态位与关闭按钮几何相容() {
         let slot = titlebar::status_slot_width(
@@ -928,8 +1008,11 @@ mod tests {
             "状态位文字在最短窗宽下被压没（槽 {slot}）"
         );
         assert!(
-            TITLEBAR_RIGHT_RESERVE >= NAV_CLOSE_WIDTH,
-            "右侧保留区容不下关闭按钮"
+            f64::from(TITLEBAR_RIGHT_RESERVE)
+                >= f64::from(NAV_CLOSE_WIDTH + NAV_SETTINGS_WIDTH)
+                    + titlebar::BUTTON_GAP
+                    + titlebar::RIGHT_MARGIN,
+            "右侧保留区容不下关闭与设置按钮"
         );
     }
 }
