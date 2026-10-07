@@ -1404,6 +1404,10 @@ fn draw_number_choice(item: &DrawItemStruct) {
 fn rebuild_tab() {
     let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
     with_state(|state| {
+        // 重建前的销毁数量留痕（info 级）：实机「切 Tab 后旧内容还留在窗上」有两个可能 ——
+        // 控件没销毁（这里会是 0）与像素没重画（这里大于 0，靠 `layout` 末尾的失效补）。
+        // 每次切 Tab 一行，不构成噪声；定案后可回落到 debug。
+        let rebuild_from = state.slots.len();
         for slot in state.slots.drain(..) {
             unsafe { DestroyWindow(slot.hwnd) };
             // 句柄会被系统复用：销毁的开关 / 档位段必须注销，不能留陈旧状态项。
@@ -1847,6 +1851,11 @@ fn rebuild_tab() {
         state.panel_base_y = y;
         destroy_panel_area(state);
         build_panel_controls(state);
+        rust_info!(
+            "设置页重建：销毁旧控件 {rebuild_from} 个，新建 {} 个（Tab={}）",
+            state.slots.len(),
+            TABS[state.tab].id
+        );
     });
 }
 
@@ -4100,6 +4109,11 @@ fn layout(hwnd: HWND) {
             }
         }
     });
+    // 重排后整窗失效一次：**附属窗类刷留空**（`windows.rs` 的类注册，`hbrBackground = 0`），
+    // 系统因此不会自动擦除背景 —— 不显式失效，被销毁/移走的旧控件像素会永久留在窗上、
+    // 叠在新内容下面（2026-10-07 实机：切 Tab 后「所有的东西都停留在上面」，还被当成
+    // 「设置页没有样式」）。`WS_CLIPCHILDREN` 下这次重画只覆盖控件之间的空隙，子控件各自重画。
+    unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
 }
 
 /// 揭示按钮点击 →（下一次写入 `EM_SETPASSWORDCHAR` 的字符, 按钮标题）。

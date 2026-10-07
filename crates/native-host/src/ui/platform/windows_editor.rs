@@ -808,6 +808,11 @@ fn layout(hwnd: HWND) {
             };
         }
     });
+    // 重排后整窗失效一次：附属窗类刷留空（`windows.rs` 类注册的 `hbrBackground = 0`），
+    // 系统不自动擦除背景 —— 不显式失效，被销毁/移走的旧控件像素会永久留在窗上
+    // （与设置窗同一根因，2026-10-07 实机：控件重排后旧像素残留）。`WS_CLIPCHILDREN`
+    // 下这次重画只覆盖控件之间的空隙。
+    unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
 }
 
 /// WM_COMMAND：层 tab / 参数输入 / 按钮。
