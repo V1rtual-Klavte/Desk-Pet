@@ -47,6 +47,12 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
   （`packaging/desktop.json` 的 `resources`）。加依赖前先想清楚它进不进产物。
 - 依赖只开需要的 feature（`default-features = false` + 精确列表），注释写明**为什么开这些**；
   版本与 Cargo.lock 已有版本对齐，不引第二份同类实现（例如 deflate 只留 zlib-rs 一个后端）。
+- **Windows exe 的两段资源由 `build.rs` 编译期嵌入，缺一不可**：图标（`1 ICON`，资源 ID 1，
+  任务栏/Alt-Tab/托盘按它取）与应用清单（`1 24` = `RT_MANIFEST`，`app.manifest`）。
+  清单**只为声明 Windows 8+ 兼容性** —— 舞台子窗口是 `WS_EX_LAYERED + WS_CHILD`，
+  没有该声明时 `CreateWindowExW` 直接返回 NULL（实机症状：只剩蓝色空框，2026-10-07）。
+  清单里**不写 DPI 段**：DPI 口径由代码的 `SetProcessDpiAwarenessContext` 设定。
+  改动它们前先读 `build.rs` 顶部与 `app.manifest` 的因由注释。
 
 ## 4. 路径与安全边界
 
