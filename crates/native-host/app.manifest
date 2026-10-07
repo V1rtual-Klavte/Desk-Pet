@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- 应用清单（RT_MANIFEST，资源 ID 1；由 build.rs 经 rc.exe 嵌进 exe）。
+     **唯一目的：声明 Windows 8 及以上兼容性。**
+
+     为什么必须有：舞台子窗口用 WS_EX_LAYERED + WS_CHILD 承载逐像素 alpha 的合成表面，
+     而「分层子窗口」只在应用清单声明了 Windows 8 及以上 supportedOS 时才可用 ——
+     微软文档（WS_EX_LAYERED：Windows 8 起支持顶层窗与子窗口）与 Avalonia #8004、
+     JUCE 论坛两处真实案例一致：**没有声明时 CreateWindowExW 直接返回 NULL**。
+     实机症状正是用户报的「舞台子窗口创建失败，只剩一个蓝色空框」（2026-10-07）。
+
+     刻意**不写 dpiAware / dpiAwareness**：DPI 口径由代码里的
+     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+     设定（windows.rs，建窗前调用），清单一旦声明该段就会压过并锁死那次调用。
+     同理不写 requestedExecutionLevel 之外的任何行为开关。 -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="V1rtual.DeskPet" version="1.0.0.0" processorArchitecture="*" />
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 8 / 8.1 / 10（含 11）：分层子窗口的最低要求是 Win8 那一条，
+           后两条按惯例一并声明（不声明会在这些系统上拿到版本兼容 shim）。 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}" />
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}" />
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>
