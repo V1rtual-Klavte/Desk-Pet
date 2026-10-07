@@ -1960,17 +1960,22 @@ mod tests {
     #[test]
     fn ui_状态借用一律容忍重入() {
         let src = include_str!("windows.rs");
+        // 只扫 `#[cfg(test)]` 之前的正文：测试段自己也会出现这些字面量 —— 首版扫了全文件，
+        // 断言行把自己数了进去（`contains` 也因此变成自证），在 windows-latest 上现红。
+        let body = &src[..src
+            .find("#[cfg(test)]")
+            .expect("本文件必须有测试段（本守门依赖它切分正文）")];
         assert!(
-            src.contains("cell.try_borrow_mut()"),
+            body.contains("cell.try_borrow_mut()"),
             "with_ui 必须用 try_borrow_mut（窗口过程重入时不 panic）"
         );
         assert!(
-            src.contains("cell.try_borrow().ok()"),
+            body.contains("cell.try_borrow().ok()"),
             "窗口过程路径的读侧必须用 try_borrow"
         );
         // 只剩 UI 初始化与销毁两处一次性站点允许裸借用：它们只在建/销时各跑一次，
         // 窗口过程不可能在那之前先进来。
-        let bare: Vec<String> = src
+        let bare: Vec<String> = body
             .lines()
             .enumerate()
             .filter(|(_, line)| line.contains("cell.borrow"))
