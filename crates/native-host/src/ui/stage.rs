@@ -46,10 +46,6 @@ fn take_pushed_cursor() -> Option<crate::render::geometry::CursorPosition> {
         .take()
 }
 
-/// [诊断·临时] 视差位移更新统计：`(窗口起点, 本秒内的位移次数, 上次坐标)`。
-/// 判据与删除时点见 [`Stage::set_cursor`] 的注释。
-static CURSOR_STEP_STAT: Mutex<Option<(std::time::Instant, u32, (f64, f64))>> = Mutex::new(None);
-
 /// 原生 UI 的事件消费口实现（`EventSink` 出口按 原生宿主迁移过程记录 §9.4 第 1/2 条路由到这里）。
 pub struct StageNativeEvents;
 
@@ -62,15 +58,11 @@ impl NativeEventSink for StageNativeEvents {
         });
     }
 
-    fn window_observed(&self, observation: &crate::host::WindowObservation) {
-        // 原生 UI 当前没有 `window-observed` 消费者（观察/行为域在 Node 侧消费；原生宿主迁移过程记录 §9.4
-        // 第 2 条的「原生 UI 也可能要」为后续接入预留）。不静默：留痕后按无消费者丢弃。
-        rust_debug!(
-            "原生 UI 暂无 window-observed 消费者（state={} generation={} sequence={}）",
-            observation.observation_state,
-            observation.monitor_generation,
-            observation.sequence
-        );
+    fn window_observed(&self, _observation: &crate::host::WindowObservation) {
+        // 原生 UI 当前没有 `window-observed` 消费者：观察/行为域在 Node 侧消费
+        //（原生宿主迁移过程记录 §9.4 第 2 条的「原生 UI 也可能要」为后续接入预留）。
+        // 按无消费者**有意丢弃**：Node 侧照常消费、不属故障路径；排查观察链的证据点
+        // 在 Node 的 `ProactiveTrace`（behavior_observed）。不再逐条留痕（降噪 2026-10-07）。
     }
 }
 
@@ -223,28 +215,6 @@ impl Stage {
     /// 中断时轮询照常供值，跟随不会失效。
     pub fn set_cursor(&mut self, cursor: Option<crate::render::geometry::CursorPosition>) {
         let effective = take_pushed_cursor().or(cursor);
-        // [诊断·临时] 真正喂给渲染器的光标里「位置发生变化」的频率 —— 等价于
-        // 视差图层每秒真的动几次。与 `[诊断·跟随] 帧内采样`（采样次数）和
-        // `[诊断·舞台] 渲染 fps`（合成帧数）对照：位移频率明显低于帧率，跟随
-        // 就是「一步一跳」而不是流畅推进。定位结束后连同静态量一起删。
-        if let Some(position) = effective {
-            let mut stat = CURSOR_STEP_STAT
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            let now = std::time::Instant::now();
-            match *stat {
-                Some((started, steps, last)) => {
-                    let steps = steps + u32::from((position.x, position.y) != last);
-                    if now.duration_since(started).as_millis() >= 1000 {
-                        rust_debug!("[诊断·位移] 图层位移更新 {steps} Hz");
-                        *stat = Some((now, 0, (position.x, position.y)));
-                    } else {
-                        *stat = Some((started, steps, (position.x, position.y)));
-                    }
-                }
-                None => *stat = Some((now, 0, (position.x, position.y))),
-            }
-        }
         self.renderer.set_cursor(effective);
     }
 

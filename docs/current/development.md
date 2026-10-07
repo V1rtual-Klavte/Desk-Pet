@@ -90,11 +90,13 @@ log.info("状态已更新")
 log.error("操作失败", error)
 ```
 
-Rust 对应日志宏位于 [macros.rs](../../crates/native-host/src/macros.rs)，内核是 [logger.rs](../../crates/native-host/src/logger.rs)。终端、DevTools 与 data_root/logs/deskpet.log 使用本地时间，方便跨端对齐事件。
+Rust 对应日志宏位于 [macros.rs](../../crates/native-host/src/macros.rs)，内核是 [logger.rs](../../crates/native-host/src/logger.rs)。终端与 data_root/logs/deskpet.log 使用本地时间，方便跨端对齐事件。
 
 **崩溃兜底留痕（2026-10-07）**：`main()` 最先安装 panic hook，把 panic 写进**系统临时目录**的 `v1rtual-desk-pet-crash.log`（Windows 上即 `%TEMP%`；`logger::crash_log_path()`），同时写一份进常规日志。刻意**不落数据根**——早期失败（路径解析、种子）发生时数据根可能还没建起来。这条兜底是必需的而非锦上添花：release 的 Windows 构建是窗口子系统、没有控制台，Rust 默认的 panic 输出（stderr）**无声丢失**；而 panic 一旦发生在 `extern "system"` 回调（窗口过程）里就无法 unwind，直接 `abort()`，用户端表现为「闪退且什么都没有」。
 
-前端按时间/条数批量转发到 Rust；当前批量阈值在 logger 模块，文件大小与备份数在 Rust 日志内核。改参数直接定位这些定义，不在配置或其他模块复制常量。
+前端按时间/条数批量转发到 Rust（`logger::emit_frontend` → 终端 + 文件双出口）；当前批量阈值在 logger 模块，文件大小与备份数在 Rust 日志内核。改参数直接定位这些定义，不在配置或其他模块复制常量。
+
+**Node 日志单一出口（2026-10-07）**：TS 侧 `createLogger` **不再同时写进程 console** —— 集成运行时子进程的 stdout/stderr 归监督器的 stdio 采集器采集，console 那一路会被二次采集，同一条日志进文件两次。stdio 采集器保留，给裸 stderr / 崩溃输出兜底；转发失败仍由 logger 模块里唯一的 console 调用兜底（[保留已登记 §4.2]）。Rust 侧沿用 `DESKPET_LOG_LEVEL` / 构建默认级别；为定位跟随卡顿加的 `[诊断·*]` 临时探针与「主线程任务队列清空」逐条留痕已随定位结束删除。
 
 生效级别由 [config.ts](../../src/services/config.ts) 的 computeLogLevel 计算：开发模式一律 debug → 生产配置值。开发模式的判据是宿主运行模式端口（Node = ServerWelcome、旧壳 = Vite 构建模式，见 [host/ports.ts](../../src/services/host/ports.ts)），不再是 `import.meta.env`；`.env` 的 VITE_* 覆写已随端口化删除（运行期调参走 CONFIG/开发配置）。Rust 启动时有自己的构建默认值与 DESKPET_LOG_LEVEL，前端初始化后推送统一级别。引导期在 `runDomainBootstrap` 的 `initConfig()` 之后立即应用（`applyLogLevel()`）：`computeLogLevel()` 需要真实运行模式与已加载配置，不应用则 logger 停在保守默认 `info`，主动链路的 debug 证据整段丢失；刻意不放进 `initConfig()` 内部——它被多个 L2 用例直接调用，放进去会给每次调用加一次 `set_log_config` 下行请求与噪声。领域引导序列用例断言引导后 `getLogLevel() === computeLogLevel()`。下发失败只 `log.debug` 留痕、不阻断启动：后果是两端过滤级别不一致，Rust 侧按其构建默认值过滤（根因留痕在 `applyLogLevel`，T4.41）。
 

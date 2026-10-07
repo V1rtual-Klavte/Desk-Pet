@@ -1,8 +1,11 @@
 // ==========================================
 // 统一日志工具
-// 所有日志同时输出到：
-//   1. Rust 终端 + 日志文件（经 HostBridge 批量转发）
-//   2. 进程控制台 console（开发时备用）
+// 所有日志经 HostBridge 批量转发进 Rust 日志内核（`logger.rs` 的 `emit_frontend`
+// → **终端 + 文件**双出口，与 Rust 日志汇成同一条时间线）。
+//
+// **不再同时写进程 console**（2026-10-07）：集成运行时子进程的 stdout/stderr 由
+// 监督器的 stdio 采集器采集进同一份 Rust 日志 —— console 那一路会被二次采集，
+// 同一条日志进文件两次。采集器保留：裸 stderr / 崩溃输出仍靠它兜底。
 //
 // 级别策略（优先级由高到低）：
 //   开发模式一律 debug > 生产读配置（判据来自宿主运行模式端口，见 @/services/host）
@@ -16,9 +19,9 @@
 //   log.warn("重试中...");  // → [12:34:57.123] WARN  [AI] 重试中...
 //   log.error("失败", e);   // → [12:34:58.456] ERROR [AI] 失败 Error: ...
 //
-// 本文件里的 console.*（flushLogs 的转发失败、createLogger 的 debug/info/warn/error）
-// 是全仓唯一合法的 console 调用点：logger 自身的失败没有第二个日志出口，其它模块
-// 一律经 createLogger（AGENTS.md 禁止直接 console.*）[保留已登记 §4.2]
+// 本文件里的 console.*（仅 flushLogs 的转发失败兜底）是全仓唯一合法的 console
+// 调用点：logger 自身的失败没有第二个日志出口，其它模块一律经 createLogger
+//（AGENTS.md 禁止直接 console.*）[保留已登记 §4.2]
 // ==========================================
 
 import { getHostBridge, type HostBridge } from "@/services/host"
@@ -157,27 +160,19 @@ export function createLogger(prefix: string): Logger {
   return {
     debug(msg: string, ...args: unknown[]) {
       if (!enabled("debug")) return
-      const l = line("DEBUG", msg, args)
-      console.debug(l)
-      toRust("debug", l)
+      toRust("debug", line("DEBUG", msg, args))
     },
     info(msg: string, ...args: unknown[]) {
       if (!enabled("info")) return
-      const l = line("INFO ", msg, args)
-      console.info(l)
-      toRust("info", l)
+      toRust("info", line("INFO ", msg, args))
     },
     warn(msg: string, ...args: unknown[]) {
       if (!enabled("warn")) return
-      const l = line("WARN ", msg, args)
-      console.warn(l)
-      toRust("warn", l)
+      toRust("warn", line("WARN ", msg, args))
     },
     error(msg: string, ...args: unknown[]) {
       // error 永远输出，不受 level 限制
-      const l = line("ERROR", msg, args)
-      console.error(l)
-      toRust("error", l)
+      toRust("error", line("ERROR", msg, args))
     },
   }
 }

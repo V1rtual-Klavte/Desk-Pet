@@ -146,10 +146,7 @@ extern "C" fn drain_main_jobs(context: *mut c_void) {
         return;
     }
     let queue = unsafe { Arc::from_raw(context as *const MainThreadQueue) };
-    let drained = queue.drain();
-    if drained > 0 {
-        rust_debug!("主线程任务队列清空 {drained} 条");
-    }
+    queue.drain();
     drop(queue);
 }
 
