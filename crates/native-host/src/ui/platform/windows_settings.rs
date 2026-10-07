@@ -128,7 +128,8 @@ use windows_sys::Win32::Graphics::Gdi::{
     DrawFocusRect, DrawTextW, EndPaint, InvalidateRect, ScreenToClient, SelectObject, SetBkColor,
     SetBkMode, SetTextColor, SetWindowRgn, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_CALCRECT,
     DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK,
-    FW_BOLD, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+    FW_BOLD, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE,
+    RDW_INVALIDATE, RedrawWindow,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 // `SS_CENTER`（STATIC 水平居中样式）：windows-sys 0.52 把 `SS_*` 放在
@@ -159,7 +160,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_YESNO, MSG, PM_REMOVE, SB_BOTTOM, SB_LINEDOWN,
     SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT,
     SCROLLINFO, SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNA, WM_CLOSE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNA,
+    WM_CLOSE,
     WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY,
     WM_DRAWITEM, WM_ERASEBKGND, WM_GETFONT, WM_MEASUREITEM, WM_MOUSEWHEEL, WM_NCHITTEST, WM_PAINT,
     WM_SETFONT, WM_VSCROLL, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
@@ -4276,6 +4278,23 @@ fn build_memory_evidence(
     }
 }
 
+/// 批量挪位：`SWP_NOREDRAW` 抑制控件即时自绘，统一由 `layout()` 末尾的
+/// **一次** `RedrawWindow` 收口 —— 滚动期「每只控件 `MoveWindow(重绘=1)`」的
+/// 重绘风暴是实机滚轮卡顿的根因（2026-10-07）。
+unsafe fn move_batched(child: HWND, x: i32, y: i32, w: i32, h: i32) {
+    unsafe {
+        SetWindowPos(
+            child,
+            0,
+            x,
+            y,
+            w,
+            h,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
+        );
+    }
+}
+
 /// 按当前滚动量与状态重排全部控件（含固定控件）。
 ///
 /// **自己借 STATE**：调用方不得在 `with_state` 借用里调它（嵌套即丢内容，理由见
@@ -4317,13 +4336,12 @@ fn layout(hwnd: HWND) {
                 .iter()
                 .any(|row| row.control == slot.hwnd && row.action == RowAction::Pick);
             unsafe {
-                MoveWindow(
+                move_batched(
                     slot.hwnd,
                     scaled(slot.x, scale),
                     y,
                     w,
                     scaled(slot.h + if combo { COMBO_LIST_H } else { 0 }, scale),
-                    1,
                 );
             }
             if combo {
@@ -4333,38 +4351,35 @@ fn layout(hwnd: HWND) {
         // 固定控件：状态行在底部、两个按钮靠右、Tab 按钮只调宽度。
         if state.fixed.status != 0 {
             unsafe {
-                MoveWindow(
+                move_batched(
                     state.fixed.status,
                     scaled(MARGIN, scale),
                     height - scaled(30, scale),
                     (width - scaled(220, scale)).max(60),
                     scaled(18, scale),
-                    1,
                 )
             };
         }
         unsafe {
-            MoveWindow(
+            move_batched(
                 state.fixed.refresh,
                 width - scaled(196, scale),
                 height - scaled(36, scale),
                 scaled(80, scale),
                 scaled(26, scale),
-                1,
             );
-            MoveWindow(
+            move_batched(
                 state.fixed.save,
                 width - scaled(100, scale),
                 height - scaled(36, scale),
                 scaled(80, scale),
                 scaled(26, scale),
-                1,
             );
         }
         // 左竖栏行按钮：竖排（顶距 9、行距 26+1），不随滚动位移。
         for (index, button) in state.fixed.tab_buttons.iter().enumerate() {
             unsafe {
-                MoveWindow(
+                move_batched(
                     *button,
                     scaled(RAIL_PAD_X, scale),
                     scaled(
@@ -4373,7 +4388,6 @@ fn layout(hwnd: HWND) {
                     ),
                     scaled(RAIL_W - RAIL_PAD_X * 2, scale),
                     scaled(RAIL_ITEM_H, scale),
-                    1,
                 )
             };
         }
@@ -4395,7 +4409,19 @@ fn layout(hwnd: HWND) {
                 );
             }
         }
-        unsafe { InvalidateRect(state.viewport, std::ptr::null(), 1) };
+        // 滚动/重排的绘制收口：控件在上面的批里用 `SWP_NOREDRAW` 挪位，这里
+        // **一次**失效整片内容面并带全部子控件重画 —— 旧实现每只控件
+        // `MoveWindow(重绘=1)`，滚一格就是一轮「每控件自绘 + 交错擦底」的风暴
+        //（实机滚轮卡顿根因，2026-10-07）。`RDW_ALLCHILDREN` 让移动过的控件在
+        // 最终位置各自重画一次，不会丢内容。
+        unsafe {
+            RedrawWindow(
+                state.viewport,
+                std::ptr::null(),
+                0,
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+            )
+        };
     });
     // 重排后整窗失效一次：**附属窗类刷留空**（`windows.rs` 的类注册，`hbrBackground = 0`），
     // 系统因此不会自动擦除背景 —— 不显式失效，被销毁/移走的旧控件像素会永久留在窗上、

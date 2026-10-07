@@ -81,6 +81,13 @@ impl Rect {
         self.w <= 0 || self.h <= 0
     }
 
+    /// 点（同一坐标系）是否落在矩形内。右/下开区间，与 GDI `PtInRect` 同口径 ——
+    /// 顶栏的「绘制与命中共用同一份矩形」以此为底座，边界差一像素会让入口点不中
+    /// 或被当成拖动区。
+    pub const fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
+
     /// 四边内缩 `d` 像素（可为负 = 外扩）。
     pub const fn deflate(&self, d: i32) -> Self {
         Self {
@@ -624,9 +631,10 @@ mod gdi {
     use windows_sys::Win32::Graphics::Gdi::{
         AlphaBlend, CreateCompatibleDC, CreateDIBSection, CreateEllipticRgn, CreateRoundRectRgn,
         CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, FillRgn, InvalidateRect,
-        SelectObject, SetBkMode, SetTextColor, SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, GetStockObject, HBITMAP, HBRUSH,
-        HDC, HFONT, HGDIOBJ, HRGN, NULL_BRUSH,
+        RestoreDC, SaveDC, SelectClipRgn, SelectObject, SetBkMode, SetTextColor, SetWindowRgn,
+        AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HBRUSH, HDC, HFONT,
+        HGDIOBJ, HRGN,
     };
     use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -1236,6 +1244,84 @@ mod gdi {
         }
     }
 
+    /// 单面顶栏的条内入口（设置 /「×」）：直接画在条面上，**无面时什么都不画**。
+    ///
+    /// 顶栏不再用子控件承载这些入口 —— 子窗口是不透明表面，条底渐变透不过来
+    /// （实机症状：STATIC 白板 + 按钮深色方板，2026-10-07）。与 [`draw_button`]
+    /// 的差异：
+    /// - 无底角色**不补表面色**：面就是条底本身，什么都不画即为正确；
+    /// - 圆角走 **DC 剪切区域**（`SelectClipRgn`，只作用于本次绘制、随 `RestoreDC`
+    ///   复原），不依赖窗口区域 `SetWindowRgn`（实机观察到窗口区域未生效，见
+    ///   `apply_round_region` 的失败留痕）；
+    /// - 省略文字投影：条内角色（`TabOff` / `Close`）的 `text_shadow` 都是 `None`。
+    pub fn draw_bar_entry(
+        hdc: HDC,
+        rect: Rect,
+        face: &ButtonFace,
+        label: &str,
+        font: HFONT,
+        pressed: bool,
+        radius_px: i32,
+    ) {
+        if rect.is_empty() {
+            return;
+        }
+        let saved = unsafe { SaveDC(hdc) };
+        let mut region: HRGN = 0;
+        if radius_px > 0 {
+            let r = radius_px.min(rect.w / 2).min(rect.h / 2).max(1);
+            region = unsafe {
+                CreateRoundRectRgn(
+                    rect.x,
+                    rect.y,
+                    rect.right() + 1,
+                    rect.bottom() + 1,
+                    r * 2,
+                    r * 2,
+                )
+            };
+            if region != 0 {
+                unsafe { SelectClipRgn(hdc, region) };
+            }
+        }
+        if let Some(bg) = &face.bg {
+            fill_rect(hdc, rect, bg);
+        }
+        if let Some(edge) = face.edge {
+            draw_frame(hdc, rect, edge, &face.bevel.unwrap_or(Bevel::NONE));
+        } else if let Some(bevel) = &face.bevel {
+            draw_bevel(hdc, rect, bevel);
+        }
+        if let Some(overlay) = face.overlay {
+            fill_color(hdc, rect, overlay);
+        }
+        let old = if font != 0 {
+            unsafe { SelectObject(hdc, font) }
+        } else {
+            0
+        };
+        let text = wide(label);
+        let shift = i32::from(pressed);
+        let flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS;
+        unsafe {
+            SetBkMode(hdc, TRANSPARENT);
+            let mut r = win_rect(rect.offset(shift, shift));
+            SetTextColor(hdc, colorref(face.ink));
+            DrawTextW(hdc, text.as_ptr(), -1, &mut r, flags);
+            if old != 0 {
+                SelectObject(hdc, old);
+            }
+        }
+        // 先复原 DC（把区域从 DC 上摘下）再释放句柄：`SelectClipRgn` 不复制区域，
+        // 提前释放会让 DC 拖着悬空句柄。
+        if saved != 0 {
+            unsafe { RestoreDC(hdc, saved) };
+        }
+        if region != 0 {
+            unsafe { DeleteObject(region) };
+        }
+    }
+
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
     }
@@ -1304,12 +1390,12 @@ mod gdi {
 
     thread_local! {
         static HOVERED: RefCell<HashSet<HWND>> = RefCell::new(HashSet::new());
-        /// 「这个控件坐在哪一层底色上」（无底角色 / STATIC 透底用）。
+        /// 「这个控件坐在哪一层底色上」（无底角色的自绘底用）。
         ///
         /// ownerdraw 控件在 `WM_DRAWITEM` 之前会被系统按**默认按钮面**擦一遍，
-        /// 而底色是渐变（顶栏）或条底（把手带）时，返回实色刷子照样补出一块异色板 ——
-        /// 用户实拍的「莫名其妙的白底白框」就是这个。所以：**绘制端**读这里的表面色
-        /// 把底盖回去；**STATIC** 走 [`hollow_brush`] 完全不擦自己的底。
+        /// 而底色是渐变或条底时，返回实色刷子照样补出一块异色板 —— 用户实拍的
+        /// 「莫名其妙的白底白框」就是这个。所以：**绘制端**读这里的表面色把底
+        /// 盖回去（顶栏条内入口已改单面绘制、不走这条路，见 `windows_main.rs`）。
         static SURFACE_COLORS: RefCell<HashMap<HWND, Rgba>> = RefCell::new(HashMap::new());
     }
 
@@ -1326,12 +1412,6 @@ mod gdi {
     /// 读回控件所在表面底色；从未写过 → `None`（绘制端回落 `bg_base`）。
     pub fn surface_color_of(hwnd: HWND) -> Option<Rgba> {
         SURFACE_COLORS.with(|cell| cell.borrow().get(&hwnd).copied())
-    }
-
-    /// 空心画刷：`WM_CTLCOLORSTATIC` 返回它 = STATIC **不擦自己的底**，
-    /// 底下父亲画的渐变/纹理原样透出来（实色刷会补出一块异色板）。
-    pub fn hollow_brush() -> HBRUSH {
-        unsafe { GetStockObject(NULL_BRUSH) as HBRUSH }
     }
 
     pub fn button_hovered(hwnd: HWND) -> bool {
@@ -1375,6 +1455,11 @@ mod gdi {
             }
             // 成功时区域归系统所有；失败时还归我们，必须自己释放（漏 = GDI 句柄泄漏）。
             if SetWindowRgn(hwnd, region, 1) == 0 {
+                // 实机诊断（2026-10-07）：区域被系统拒绝时控件按直角渲染。本轮实机
+                // 观察到所有 ownerdraw 按钮圆角整体失效（发送/会话标签/顶栏按钮全
+                // 直角）；这一行把「API 拒绝」与「区域生效但绘制端没吃它」切开，
+                // 实机日志一读即可定案。
+                crate::rust_warn!("按钮圆角区域被系统拒绝（hwnd={hwnd}），本次按直角渲染");
                 DeleteObject(region);
             }
         }
@@ -1859,6 +1944,20 @@ mod tests {
         assert_eq!(bytes, vec![0, 64, 128, 128], "B=A=0 参与预乘，R 减半");
     }
 
+    /// 命中口径：右/下开区间（与 GDI `PtInRect` 一致）。顶栏按钮「绘制与命中
+    /// 共用同一份矩形」，边界差一像素就会「看得见点不中」或误触发拖动。
+    #[test]
+    fn 矩形含点判定为右下开区间() {
+        let rect = Rect::new(10, 20, 30, 18);
+        assert!(rect.contains(10, 20), "左上角在矩形内");
+        assert!(rect.contains(39, 37), "右下角内侧在矩形内");
+        assert!(!rect.contains(40, 37), "右缘（开区间）不在矩形内");
+        assert!(!rect.contains(10, 38), "下缘（开区间）不在矩形内");
+        assert!(!rect.contains(9, 20), "左侧外不在矩形内");
+        assert!(!rect.contains(10, 19), "上侧外不在矩形内");
+        assert!(!Rect::new(0, 0, 0, 0).contains(0, 0), "空矩形不含任何点");
+    }
+
     #[test]
     fn 按钮面_角色映射() {
         for id in ThemeId::ALL {
@@ -1892,10 +1991,19 @@ mod tests {
                 button_face(tokens, ButtonRole::TabOff, false, false).ink,
                 tokens.dim
             );
-            match button_face(tokens, ButtonRole::Close, false, false).bg {
-                Some(fill) => assert_eq!(fill.base_color(), tokens.btn_bg.base_color()),
-                None => panic!("关闭键默认取 btn_bg 族"),
-            }
+            // 关闭「×」是**无面**入口（与 macOS 顶栏一致：只有字，悬浮整块转
+            // `danger`，由下一测试钉住）。这里钉的是「无面」契约本身：退回
+            // `btn_bg` 按钮面 = 在顶栏渐变上补一块白板（实机症状）。
+            let close = button_face(tokens, ButtonRole::Close, false, false);
+            assert!(
+                close.bg.is_none(),
+                "{id:?} 关闭键为无面文字入口（与 macOS 顶栏一致）"
+            );
+            assert_eq!(close.ink, tokens.dim, "{id:?} 关闭键默认字色取 dim");
+            assert!(
+                close.edge.is_none() && close.bevel.is_none(),
+                "{id:?} 关闭键无描边/立体线（无面）"
+            );
         }
     }
 

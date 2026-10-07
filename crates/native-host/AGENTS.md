@@ -200,3 +200,10 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
   抬 alert 层级无效（实测被复位）；唯一修法是进入模态前用 `set_picker_window_level` 降三窗
   （`macos_widgets::run_modal_alert` / `with_picker_level_guard`，Drop 守卫恢复）。
   新增任何 `runModal` 站点必须过它 —— `模态调用站点不绕过降级包裹` 是源码级守门测试。
+- **子窗口是不透明表面，渐变条上不落子控件**：STATIC / ownerdraw 按钮各有独立表面，
+  条底渐变透不过来 —— 实机表现为「文字白板 + 入口深色方板」（2026-10-07 顶栏，
+  逐像素取证）。条内条目一律**单面绘制**：父窗 `WM_PAINT` 里画，命中/悬停/按压在
+  窗口过程记账（`windows_main.rs` 的 `BarHit`），**绘制与命中共用同一份矩形**
+  （`layout_titlebar` 是唯一写入点）；悬浮圆角走 **DC 剪切区域**（`SelectClipRgn`
+  + `SaveDC`/`RestoreDC`）—— 窗口区域 `SetWindowRgn` 对子控件在实机未生效
+  （同批观察；失败留痕见 `paint_win::apply_round_region`，定案前别把圆角押在它上）。
