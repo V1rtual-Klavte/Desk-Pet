@@ -116,6 +116,8 @@ enum Mode {
 }
 
 fn main() {
+    // 最先安装：窗口子系统没有控制台，缺了它 panic 会无声 abort（见 logger::install_panic_hook）。
+    logger::install_panic_hook();
     logger::init_from_env();
     #[cfg(debug_assertions)]
     {

@@ -92,6 +92,13 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
   （`textDidChange:` 属 `NSTextDelegate`，不是 `NSTextViewDelegate`）。
 - **RefCell 不得重入**：`match x.borrow().foo() { … }` 的只读借用活到**整个 match 结束**，
   分支里再 `borrow_mut()` 必 panic。先把值取出来再 match。
+  在窗口过程这条路上它还会**升级成进程级崩溃**：Win32 的 `SetWindowPos` / `SendMessage` /
+  `SetFocus` / `ShowWindow` 会**同步**把消息派发回本进程的窗口过程，回调里再借用就撞上
+  外层尚未释放的借用；而 panic 落在 `extern "system"` 回调里无法 unwind，Rust 直接
+  `abort()`（Windows 表现为 `0xC0000409` / `FAST_FAIL_FATAL_APP_EXIT`，进程静默消失）。
+  **规则**：UI 状态的借用口（`windows.rs` 的 `with_ui` 与同族取用）一律用 `try_borrow_mut` /
+  `try_borrow`，重入时按普通错误返回而不是 panic；只有 UI 初始化与销毁这两处一次性站点
+  可以裸借用（有源码级守门测试盯着）。2026-10-07 的 Windows 启动崩溃即此路径。
 - 逐帧改 CALayer 属性必须包 `CATransaction` 关掉隐式动画。
 - **Node 不得驱动窗口显隐与层级**；窗口 chrome 类命令的消费者是原生 UI。
 

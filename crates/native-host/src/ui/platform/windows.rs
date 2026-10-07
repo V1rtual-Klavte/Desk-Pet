@@ -12,7 +12,7 @@
 //! （bundled SQLite 需要 msvc C 工具链，见原生宿主迁移过程记录 §9.4 第 19 条）。类型面的依据
 //! 是 `windows-sys 0.52` 的注册表源码与既有 `commands/cursor.rs` 的同版本用法。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -245,12 +245,49 @@ thread_local! {
     static UI: RefCell<Option<WinUi>> = const { RefCell::new(None) };
 }
 
+/// `with_ui` 被重入跳过的累计次数（只用于告警限流）。
+thread_local! {
+    static UI_REENTRY_COUNT: Cell<u32> = const { Cell::new(0) };
+}
+
+/// 借用 UI 状态执行 `f`。
+///
+/// **必须容忍重入**：Win32 的 `SetWindowPos` / `SendMessage` / `SetFocus` / `ShowWindow`
+/// 等 API 会**同步**把消息派发回本进程的窗口过程，而窗口过程里又会调 `with_ui` ——
+/// 此时外层闭包仍握着 `borrow_mut`（借用活到闭包返回）。`RefCell` 默认行为是 panic，
+/// 而 panic 一旦发生在 `extern "system"` 回调里就无法 unwind，Rust 直接 `abort()`：
+/// Windows 上表现为 `0xC0000409` / `FAST_FAIL_FATAL_APP_EXIT`，进程当场消失，
+/// 且（无 panic hook 时）连一行日志都不留。2026-10-07 的 Windows 实机启动崩溃
+/// 正是这条路径：`set_popup_placement` 的 `SetWindowPos` 同步派发回主窗窗口过程，
+/// 回调里的 `with_ui` 撞上尚未释放的借用（实机 backtrace 落在 `NtUserSetWindowPos`
+/// → `KiUserCallbackDispatcher` → `CallWindowProcW`）。
+///
+/// 因此这里用 `try_borrow_mut()`：重入不 panic，按普通错误返回（调用方多是
+/// `let _ = with_ui(..)`，照常继续）。被跳过的那次消息会在随后的重画/重排里自然补上，
+/// 不会留下状态错乱；重入次数超限时只留痕、不阻断。
 fn with_ui<R>(f: impl FnOnce(&mut WinUi) -> R) -> AppResult<R> {
-    UI.with(|cell| match cell.borrow_mut().as_mut() {
-        Some(ui) => Ok(f(ui)),
-        None => Err(AppError::Other(
-            "原生 UI 未在此线程初始化（窗口操作只能在 UI 主线程）".into(),
-        )),
+    UI.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut borrowed) => match borrowed.as_mut() {
+            Some(ui) => Ok(f(ui)),
+            None => Err(AppError::Other(
+                "原生 UI 未在此线程初始化（窗口操作只能在 UI 主线程）".into(),
+            )),
+        },
+        Err(_) => {
+            UI_REENTRY_COUNT.with(|count| {
+                let times = count.get() + 1;
+                count.set(times);
+                // 限流：前 5 次逐条报，其后每 100 次一条 —— 窗口过程可能高频重入。
+                if times <= 5 || times % 100 == 0 {
+                    rust_warn!(
+                        "with_ui 重入被跳过（窗口过程在外层借用未释放时再次进入），累计 {times} 次"
+                    );
+                }
+            });
+            Err(AppError::Other(
+                "原生 UI 正被外层窗口操作借用（Win32 同步回调重入），本次跳过".into(),
+            ))
+        }
     })
 }
 
@@ -926,7 +963,10 @@ unsafe extern "system" fn main_wndproc(
         }
         WM_APP_DRAIN => {
             // 跨线程任务（UiHandle / 快捷键注册）在主线程执行。
-            if let Some(queue) = UI.with(|cell| cell.borrow().as_ref().map(|ui| ui.queue.clone())) {
+            // 读侧同样容忍重入（窗口过程可能在外层借用未释放时进来，见 `with_ui` 注释）。
+            if let Some(queue) =
+                UI.with(|cell| cell.try_borrow().ok().and_then(|borrowed| borrowed.as_ref().map(|ui| ui.queue.clone())))
+            {
                 queue.drain();
             }
             0
@@ -1118,7 +1158,8 @@ fn commit_window_geometry_writeback(hwnd: HWND) {
     let scale = f64::from(dpi) / f64::from(DPI_BASELINE);
     let width = f64::from(rect.right - rect.left) / scale;
     let height = f64::from(rect.bottom - rect.top) / scale;
-    let applied = UI.with(|cell| cell.borrow().as_ref().map(|ui| ui.applied_size));
+    // 本函数由窗口过程（拖动结束/位置变更）调用，读侧一律用 try_borrow，不制造 panic。
+    let applied = UI.with(|cell| cell.try_borrow().ok().and_then(|borrowed| borrowed.as_ref().map(|ui| ui.applied_size)));
     if applied.map_or(false, |applied| applied.suppresses(width, height)) {
         rust_debug!("程序应用的尺寸不写回（与最近推送值一致）");
     } else {
@@ -1126,7 +1167,7 @@ fn commit_window_geometry_writeback(hwnd: HWND) {
     }
     // 位置：固定语义（含「固定但还没有坐标」的过渡态）才把左上角（逻辑像素，
     // 左上原点）写回 `fixedPosition` —— 第一次拖动就把坐标落下，固定模式才有第一份位置。
-    let placement = UI.with(|cell| cell.borrow().as_ref().map(|ui| ui.placement));
+    let placement = UI.with(|cell| cell.try_borrow().ok().and_then(|borrowed| borrowed.as_ref().map(|ui| ui.placement)));
     if placement.map_or(false, |placement| placement.is_fixed()) {
         let x = f64::from(rect.left) / scale;
         let y = f64::from(rect.top) / scale;
@@ -1134,8 +1175,10 @@ fn commit_window_geometry_writeback(hwnd: HWND) {
         // 用户刚拖到的位置就是固定位置：同步宿主摆放快照（Node 持久化后不回推），
         // 否则下一次呼出会按旧坐标摆回并把旧坐标再次写回 CONFIG。
         UI.with(|cell| {
-            if let Some(ui) = cell.borrow_mut().as_mut() {
-                ui.placement = PlacementMode::Fixed { x, y };
+            if let Ok(mut borrowed) = cell.try_borrow_mut() {
+                if let Some(ui) = borrowed.as_mut() {
+                    ui.placement = PlacementMode::Fixed { x, y };
+                }
             }
         });
     }
@@ -1904,6 +1947,39 @@ mod tests {
         assert_eq!(
             crate::ui::creation_level(WindowId::Viewer).macos_level(),
             1200
+        );
+    }
+
+    /// 源码级守门：UI 状态的借用一律走 `try_*`（容忍重入）。
+    ///
+    /// 背景（2026-10-07 Windows 实机启动崩溃）：Win32 的 `SetWindowPos` / `SendMessage`
+    /// 会**同步**把消息派发回本进程的窗口过程，回调里的 `with_ui` 会撞上外层尚未释放的
+    /// `borrow_mut`。`RefCell` 默认行为是 panic，而 panic 落在 `extern "system"` 回调里
+    /// 无法 unwind ⇒ 直接 `abort()`（`0xC0000409` / `FAST_FAIL_FATAL_APP_EXIT`），
+    /// 进程静默消失、连一行日志都不留。改回裸借用，这条崩溃就会复发。
+    #[test]
+    fn ui_状态借用一律容忍重入() {
+        let src = include_str!("windows.rs");
+        assert!(
+            src.contains("cell.try_borrow_mut()"),
+            "with_ui 必须用 try_borrow_mut（窗口过程重入时不 panic）"
+        );
+        assert!(
+            src.contains("cell.try_borrow().ok()"),
+            "窗口过程路径的读侧必须用 try_borrow"
+        );
+        // 只剩 UI 初始化与销毁两处一次性站点允许裸借用：它们只在建/销时各跑一次，
+        // 窗口过程不可能在那之前先进来。
+        let bare: Vec<String> = src
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.contains("cell.borrow"))
+            .map(|(index, line)| format!("{}: {}", index + 1, line.trim()))
+            .collect();
+        assert_eq!(
+            bare.len(),
+            2,
+            "除 UI 初始化与销毁外不应出现裸借用（会在窗口过程重入时 panic）：{bare:#?}"
         );
     }
 }

@@ -111,6 +111,43 @@ fn write_line(line: &str) {
     write_file(line);
 }
 
+/// 崩溃兜底文件（落在系统临时目录，Windows 上即 `%TEMP%`）。
+///
+/// 刻意不走数据根：早期的失败（路径解析、种子）发生时数据根可能还没建、甚至建不起来，
+/// 而那正是最需要留痕的时候。
+const CRASH_FILE_NAME: &str = "v1rtual-desk-pet-crash.log";
+
+/// 崩溃兜底文件的完整路径（给「去哪看」的提示与测试用）。
+pub fn crash_log_path() -> PathBuf {
+    std::env::temp_dir().join(CRASH_FILE_NAME)
+}
+
+/// 安装 panic 兜底出口。**最先调用**（早于任何可能 panic 的初始化）。
+///
+/// release 的 Windows 构建是窗口子系统、没有控制台，Rust 默认的 panic 输出（stderr）
+/// **无声丢失**；而 panic 一旦发生在 `extern "system"` 回调（窗口过程）里就无法 unwind，
+/// Rust 直接 `abort()` —— 进程静默消失，日志停在崩溃前的最后一行，用户端表现为
+/// 「闪退且什么都没有」。2026-10-07 的 Windows 启动崩溃（窗口过程重入 `RefCell` →
+/// panic → `abort` / `0xC0000409`）就是靠手工重定向 stderr 才查到，代价是一整轮排查。
+///
+/// 这里把 panic 同时写进固定位置的崩溃文件（不依赖任何初始化）与已挂上的日志 sink；
+/// 默认 hook 照常执行，panic 语义（unwind / abort）不变。
+pub fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let text = format!("FATAL panic：{info}");
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(crash_log_path())
+        {
+            let _ = writeln!(file, "[{}] {text}", local_hms());
+        }
+        write_line(&text);
+        previous(info);
+    }));
+}
+
 // ── 文件 sink ──
 
 struct FileSink {
@@ -185,5 +222,33 @@ impl FileSink {
             // 重开失败：置零避免每次写入都重试轮转，旧句柄继续写已改名的文件
             Err(_) => self.written = 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 崩溃兜底文件落在系统临时目录() {
+        let path = crash_log_path();
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some(CRASH_FILE_NAME)
+        );
+        // 刻意不落数据根：早期失败时数据根可能还不存在（见 CRASH_FILE_NAME 注释）。
+        assert!(path.starts_with(std::env::temp_dir()));
+    }
+
+    /// 装 hook 后 panic：崩溃文件必须留下带源码位置的消息，且 panic 照常向上传播。
+    #[test]
+    fn panic_兜底留痕可读且不吞掉panic() {
+        install_panic_hook();
+        let marker = format!("崩溃兜底自检 pid={}", std::process::id());
+        let caught = std::panic::catch_unwind(|| panic!("{marker}"));
+        assert!(caught.is_err(), "崩溃兜底不得吞掉 panic");
+        let text = std::fs::read_to_string(crash_log_path()).unwrap_or_default();
+        assert!(text.contains(&marker), "崩溃文件没有记录本次 panic：{text}");
+        assert!(text.contains("logger.rs"), "崩溃文件应带源码位置：{text}");
     }
 }
