@@ -19,7 +19,7 @@
 
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -118,17 +118,28 @@ async function main() {
   if (entry === undefined) fail(`SHASUMS256.txt 里找不到 ${artifact}`)
   const expected = entry[0].toLowerCase()
 
-  const coverage = await fetch(`${base}/${artifact}`)
-  if (!coverage.ok) fail(`${artifact} 拉取失败: HTTP ${coverage.status}`)
-  if (coverage.body === null) fail(`${artifact} 响应没有 body`)
+  // 归档放稳定路径（`packaging/.cache`，已 gitignore）：CI 按 node-runtime.json 的指纹
+  // 缓存它，命中就不再下载 —— Windows runner 上拉这 ~50MB 要一分钟上下。
+  // **复用是安全的**：不论来自缓存还是刚下载，下面都对着 SHASUMS256.txt 重算 SHA-256，
+  // 不符即重新下载、仍不符才失败（缓存残缺/上游重发都会走这条）。
+  const archiveDir = join(REPO_ROOT, "packaging", ".cache")
+  const archive = join(archiveDir, artifact)
 
   const work = mkdtempSync(join(tmpdir(), "deskpet-node-"))
   let actual
   try {
-    const archive = join(work, artifact)
-    const buf = Buffer.from(await coverage.arrayBuffer())
-    writeFileSync(archive, buf)
-    actual = sha256File(archive)
+    actual = existsSync(archive) ? sha256File(archive) : null
+    if (actual === expected) {
+      console.log(`stage-node: 复用归档缓存 ${archive}`)
+    } else {
+      if (actual !== null) console.log(`stage-node: 归档缓存校验不符（实测 ${actual}），重新下载`)
+      const coverage = await fetch(`${base}/${artifact}`)
+      if (!coverage.ok) fail(`${artifact} 拉取失败: HTTP ${coverage.status}`)
+      if (coverage.body === null) fail(`${artifact} 响应没有 body`)
+      mkdirSync(archiveDir, { recursive: true })
+      writeFileSync(archive, Buffer.from(await coverage.arrayBuffer()))
+      actual = sha256File(archive)
+    }
     if (actual !== expected) fail(`SHA-256 不符：SHASUMS256.txt 声明 ${expected}，实测 ${actual}`)
     // darwin-arm64 另有实测记录（node-runtime.json），两处对不上说明上游重发过或记录漂移
     const recorded = runtime.verification?.darwinArm64?.sha256

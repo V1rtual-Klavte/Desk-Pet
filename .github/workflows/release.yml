@@ -105,6 +105,14 @@ jobs:
           name: harness-bundle
           path: packaging/dist/harness
 
+      # 随包 Node 的下载归档（~50MB）按 node-runtime.json 的指纹缓存：命中就不再下载
+      # （Windows runner 上这一步冷跑约 60s）。复用安全由脚本自己保证 —— 用之前照样对着
+      # 上游 SHASUMS256.txt 重算 SHA-256。
+      - uses: actions/cache@v4
+        with:
+          path: packaging/.cache
+          key: node-runtime-${{ runner.os }}-${{ hashFiles('packaging/node-runtime.json') }}
+
       - run: node .github/scripts/stage-node.mjs
 
       # 将本次应用/Node 版本与刚构建的 Harness 指纹写入包内清单；helper 安装时

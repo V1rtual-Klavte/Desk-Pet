@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 target
+# 随包 Node 的下载归档缓存（.github/scripts/stage-node.mjs 落盘处；CI 按
+# packaging/node-runtime.json 的指纹缓存它，命中则不重新下载）
+packaging/.cache
 
 # 包管理统一用 pnpm；npm 的 lockfile 是 2026-06 合并冲突时带进来的残留，
 # 留着会让人误按过期版本安装依赖。
