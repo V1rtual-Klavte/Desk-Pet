@@ -24,7 +24,7 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly, Message};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
-    NSApplicationDelegate, NSBackingStoreType, NSColor, NSImage, NSMenu, NSMenuDelegate,
+    NSApplicationDelegate, NSBackingStoreType, NSColor, NSEvent, NSImage, NSMenu, NSMenuDelegate,
     NSMenuItem, NSRunningApplication, NSScreen, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
@@ -235,8 +235,12 @@ fn web_frame_to_cocoa(mtm: MainThreadMarker, x: f64, y: f64, w: f64, h: f64) -> 
 // ==========================================
 
 define_class!(
-    /// 产品窗口。唯一目的：覆盖 `canBecomeKeyWindow` —— 无边框 `NSWindow` 默认不能
-    /// 成为 key window，键盘与中文 IME 会收不到（原型 A 实测，原生宿主迁移过程记录 §9.4 第 17 条）。
+    /// 产品窗口。两件事：
+    /// 1. 覆盖 `canBecomeKeyWindow` —— 无边框 `NSWindow` 默认不能成为 key window，
+    ///    键盘与中文 IME 会收不到（原型 A 实测，原生宿主迁移过程记录 §9.4 第 17 条）；
+    /// 2. 接住标准编辑快捷键 `⌘C/⌘V/⌘X/⌘A`（[`macos_widgets::handle_standard_edit_shortcut`]）——
+    ///    产品是 Accessory 策略、无应用主菜单，这些键没有 key equivalent 可派发，
+    ///    文本控件里按下去只会 beep（2026-10-07 用户实测：「设置里不能复制粘贴」）。
     ///
     /// `pub(crate)`：W8a 的聊天窗（`platform/macos_chat.rs`）复用本窗口类与
     /// [`new_window`]，不复制第二份 `canBecomeKeyWindow` 覆盖。
@@ -250,6 +254,17 @@ define_class!(
         #[unsafe(method(canBecomeKeyWindow))]
         fn can_become_key_window(&self) -> bool {
             true
+        }
+
+        /// 标准编辑快捷键的窗口级接住点（主/聊天/设置/编辑器/查看器全覆盖）。
+        /// 浮层窗口（`NSPopover`）不是本类，由内容根的 `FlippedView` 承担同一份实现。
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> objc2::runtime::Bool {
+            if macos_widgets::handle_standard_edit_shortcut(self, event) {
+                return objc2::runtime::Bool::YES;
+            }
+            // SAFETY: nswindow 的同名方法；参数就是本方法的入参。
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
         }
     }
 );

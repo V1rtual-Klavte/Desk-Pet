@@ -5,12 +5,13 @@
 //! 系统查不到时回落到 `NSFont::systemFontOfSize`（执行契约 §6.4 的 fallback 要求）。
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{define_class, msg_send, MainThreadOnly, Message};
+use objc2::runtime::{AnyObject, Bool, Sel};
+use objc2::{define_class, msg_send, sel, MainThreadOnly, Message};
 use objc2_app_kit::{
-    NSAlert, NSAppearance, NSAppearanceCustomization, NSButton, NSColor, NSControl,
-    NSControlStateValueOff, NSControlStateValueOn, NSFont, NSLineBreakMode, NSPopUpButton,
-    NSScrollView, NSSlider, NSTextField, NSView, NSWindow,
+    NSAlert, NSApplication, NSAppearance, NSAppearanceCustomization, NSButton, NSColor, NSControl,
+    NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSFont,
+    NSLineBreakMode, NSPopUpButton, NSScrollView, NSSlider, NSTextField, NSTextView, NSView,
+    NSWindow,
 };
 use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
@@ -212,6 +213,109 @@ pub(crate) fn slider(
 }
 
 // ==========================================
+// 标准编辑快捷键（⌘C/⌘V/⌘X/⌘A）
+// ==========================================
+
+/// 「纯 ⌘ 组合键」的字符（小写化）：含 Command 且**不含** Control / Option 时返回
+/// `charactersIgnoringModifiers()` 的小写形态；其它组合（带 Control/Option 的、
+/// 非 Command 的、取不到字符的）一律 `None`。Shift 允许参与，`⌘⇧V` 与 `⌘V`
+/// 同键（大小写差异由小写化抹平）。
+///
+/// 为什么存在这一族：产品用 `NSApplicationActivationPolicy::Accessory`
+///（桌宠，**刻意不设应用主菜单**，见 `macos.rs::run_service`）—— 标准编辑快捷键
+/// 没有 key equivalent 可派发，AppKit 只会 beep（实机症状：设置窗里 ⌘C/⌘V 没反应）。
+/// 补挂菜单会推翻产品设计，所以由 [`handle_standard_edit_shortcut`] 在窗口层接住。
+/// **判据只此一份**：接住点横跨窗口类与容器视图两处钩子，不各写一套修饰键条件。
+pub(crate) fn command_shortcut_key(event: &NSEvent) -> Option<String> {
+    let flags = event.modifierFlags();
+    if !flags.contains(NSEventModifierFlags::Command)
+        || flags.contains(NSEventModifierFlags::Control)
+        || flags.contains(NSEventModifierFlags::Option)
+    {
+        return None;
+    }
+    event
+        .charactersIgnoringModifiers()
+        .map(|chars| chars.to_string().to_lowercase())
+}
+
+/// 标准编辑动作（选择子与 AppKit 标准编辑菜单逐字一致）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum StandardEditAction {
+    Paste,
+    Copy,
+    Cut,
+    SelectAll,
+}
+
+impl StandardEditAction {
+    /// 键字符 → 动作；不是这四个键一律 `None`（其它 ⌘ 组合不吞）。
+    ///
+    /// 大小写不敏感（`⌘⇧V` 取到的就是大写 `V`）：判据不依赖调用方先做小写化，
+    /// 少一处会漂移的前提。
+    pub(crate) fn from_key(key: &str) -> Option<Self> {
+        if key.eq_ignore_ascii_case("v") {
+            Some(Self::Paste)
+        } else if key.eq_ignore_ascii_case("c") {
+            Some(Self::Copy)
+        } else if key.eq_ignore_ascii_case("x") {
+            Some(Self::Cut)
+        } else if key.eq_ignore_ascii_case("a") {
+            Some(Self::SelectAll)
+        } else {
+            None
+        }
+    }
+
+    fn selector(self) -> Sel {
+        match self {
+            Self::Paste => sel!(paste:),
+            Self::Copy => sel!(copy:),
+            Self::Cut => sel!(cut:),
+            Self::SelectAll => sel!(selectAll:),
+        }
+    }
+}
+
+/// 窗口层接住标准编辑快捷键；返回 `true` = 事件已被消费（调用方不再走 `super`）。
+///
+/// 两处钩子共用这一份实现（`performKeyEquivalent:` 的实现体）：
+/// - `DeskPetWindow`（`macos.rs`）：覆盖全部产品窗（主/聊天/设置/编辑器/查看器）；
+/// - [`FlippedView`]：覆盖浮层窗口 —— `NSPopover` 的窗不是产品窗类，只有内容根视图在树里。
+///
+/// **只在「正在编辑文本」时接管**：first responder 是 `NSTextView`（单行 `NSTextField`
+/// 编辑期的字段编辑器也是它的子类）。判据与标准编辑菜单的启用条件同义 —— 菜单项只在
+/// 文本响应者响应时才可用；无文本焦点时本函数不动任何键，原样回落 `super`。
+///
+/// 派发走 `sendAction:to:from:`（target = nil = 沿响应链找第一响应者），**各视图自己的
+/// 覆写仍然生效**：聊天输入框的 `paste:`（剪贴板有图片就先进待发送区）就是经这条被调到的。
+/// 2026-10-07 用最小 AppKit 探针实机核过这条链（无主菜单 + Accessory 策略下）：
+/// 基线复现「⌘V 不粘贴」、窗口类钩子与视图钩子都可达、自定义 `paste:`/`copy:` 覆写被调用
+/// 且各只一次（排除与 keyDown 双派发）。
+pub(crate) fn handle_standard_edit_shortcut(window: &NSWindow, event: &NSEvent) -> bool {
+    let Some(responder) = window.firstResponder() else {
+        return false;
+    };
+    if as_any(&*responder).downcast_ref::<NSTextView>().is_none() {
+        return false;
+    }
+    let Some(action) =
+        command_shortcut_key(event).and_then(|key| StandardEditAction::from_key(&key))
+    else {
+        return false;
+    };
+    // 主线程标记取不到只可能是「不在 UI 主线程」——本函数只被 AppKit 在主线程调用，
+    // 那属于状态异常；如实不处理（回落 super），不 panic、也不假装成功。
+    let Some(mtm) = MainThreadMarker::new() else {
+        crate::rust_warn!("标准编辑快捷键在非主线程到达，已回落系统处理");
+        return false;
+    };
+    let app = NSApplication::sharedApplication(mtm);
+    // SAFETY: sendAction:to:from: 是 NSApplication 的标准目标-动作派发（无额外前提）。
+    unsafe { app.sendAction_to_from(action.selector(), None, None) }
+}
+
+// ==========================================
 // 翻转容器（左上原点，与表单从上往下的排布一致）
 // ==========================================
 
@@ -229,6 +333,21 @@ define_class!(
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool {
             true
+        }
+
+        /// 标准编辑快捷键的容器级接住点：浮层（`NSPopover`）的窗不是产品窗类
+        /// （`DeskPetWindow`），只有内容根视图在它的视图树里 —— 本类的实例就是
+        /// 设置/编辑器浮层表单的根，`performKeyEquivalent:` 走树时即可到达。
+        /// 判据与守卫见 [`handle_standard_edit_shortcut`]，与窗口类钩子同一份实现。
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> Bool {
+            if let Some(window) = self.window() {
+                if handle_standard_edit_shortcut(&window, event) {
+                    return Bool::YES;
+                }
+            }
+            // SAFETY: nsview 的同名方法；参数就是本方法的入参。
+            unsafe { msg_send![super(self), performKeyEquivalent: event] }
         }
     }
 );
@@ -529,6 +648,65 @@ mod tests {
                 source.matches(needle).count(),
                 0,
                 "{name} 出现裸模态调用：必须改走 run_modal_alert",
+            );
+        }
+    }
+
+    /// 标准编辑动作只认四个键：⌘V/⌘C/⌘X/⌘A；其它 ⌘ 组合（如 ⌘Z/⌘S）不得被吞。
+    /// `⌘⇧V` 取到大写字符，大小写不敏感是**行为要求**不是便利 —— 掉这项就会让
+    /// 带 Shift 的写法静默失效。
+    #[test]
+    fn 标准编辑动作只认四个键且大小写不敏感() {
+        assert_eq!(StandardEditAction::from_key("v"), Some(StandardEditAction::Paste));
+        assert_eq!(StandardEditAction::from_key("V"), Some(StandardEditAction::Paste));
+        assert_eq!(StandardEditAction::from_key("c"), Some(StandardEditAction::Copy));
+        assert_eq!(StandardEditAction::from_key("x"), Some(StandardEditAction::Cut));
+        assert_eq!(StandardEditAction::from_key("a"), Some(StandardEditAction::SelectAll));
+        for other in ["z", "s", "f", "", "vv", " ", "选"] {
+            assert_eq!(
+                StandardEditAction::from_key(other),
+                None,
+                "⌘{other} 不属标准编辑动作，必须原样落回系统",
+            );
+        }
+    }
+
+    /// 源码级守门：判据（`command_shortcut_key`）与接住实现
+    /// （`handle_standard_edit_shortcut` 的两处 `performKeyEquivalent:` 钩子）
+    /// 各只有一处 —— 两处钩子各写一套修饰键条件必然漂移，视图层再长一份
+    /// 「视图自己的 keyDown 兜底」则会与窗口层双派发。
+    #[test]
+    fn 标准编辑快捷键判据与接住点各只一份() {
+        // 拆开拼接，避免断言文本自己命中扫描（本文件含本测试的源码）。
+        let predicate = concat!("fn command_", "shortcut_key(");
+        let hook = concat!("#[unsafe(method(perform", "KeyEquivalent:))]");
+        let widgets = include_str!("macos_widgets.rs");
+        assert_eq!(
+            widgets.matches(predicate).count(),
+            1,
+            "判据实现应只在 macos_widgets.rs 出现一次",
+        );
+        assert_eq!(
+            widgets.matches(hook).count(),
+            1,
+            "容器级接住钩子应只在 macos_widgets.rs 出现一次（FlippedView）",
+        );
+        for (name, source, hooks) in [
+            ("macos.rs", include_str!("macos.rs"), 1),
+            ("macos_chat.rs", include_str!("macos_chat.rs"), 0),
+            ("macos_settings.rs", include_str!("macos_settings.rs"), 0),
+            ("macos_editor.rs", include_str!("macos_editor.rs"), 0),
+            ("macos_main.rs", include_str!("macos_main.rs"), 0),
+        ] {
+            assert_eq!(
+                source.matches(predicate).count(),
+                0,
+                "{name} 出现第二份修饰键判据：应复用 macos_widgets 的实现",
+            );
+            assert_eq!(
+                source.matches(hook).count(),
+                hooks,
+                "{name} 的 performKeyEquivalent: 钩子数不符（窗口级只应有一个，视图级归容器）",
             );
         }
     }

@@ -991,9 +991,11 @@ fn commit_file_drop(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Bool {
 define_class!(
     /// 聊天输入：`NSTextView` 原生 IME（预编辑上屏/候选窗跟随是系统行为），
     /// 覆盖 Enter 语义 —— 组合输入（marked text）中一律交还系统，
-    /// 与今天前端 `e.isComposing || keyCode === 229` 的护栏同义；
-    /// 另在视图层接住 ⌘V/⌘C/⌘X/⌘A（Accessory 策略无应用菜单，标准编辑键
-    /// 没有 key equivalent，为什么见 `keyDown:` 的注释）。
+    /// 与今天前端 `e.isComposing || keyCode === 229` 的护栏同义。
+    ///
+    /// 标准编辑键（⌘V/⌘C/⌘X/⌘A）由**窗口层**接住（`macos_widgets::handle_standard_edit_shortcut`，
+    /// 因由见那里；2026-10-07 起不再由本视图的 `keyDown:` 兜）：⌘V 经 `sendAction` 落到本类的
+    /// [`ChatInputView::paste`] 覆写，图片优先的粘贴语义一个字不变。
     ///
     /// A3：同时接管文件拖入（把文件拖进输入区 → 待发送区），不让 NSTextView
     /// 自带的拖放把路径/附件插进正文；非文件拖放一律拒绝（有意取舍：输入区
@@ -1042,43 +1044,9 @@ define_class!(
     impl ChatInputView {
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
-            // ── 标准编辑快捷键（⌘V / ⌘C / ⌘X / ⌘A）──
-            // 为什么在视图层接：产品用 `NSApplicationActivationPolicy::Accessory`
-            //（桌宠，**刻意不设应用主菜单** —— 不占菜单栏、不进 Cmd+Tab；策略与理由
-            // 见 `macos.rs::run_service`）。没有主菜单就没有 key equivalent，这些标准
-            // 编辑键 AppKit 无处派发，只会响一声 beep（用户实测症状）。补挂菜单会
-            // 推翻上面的产品设计，所以由输入视图自己接住这四个键。
-            // 只接这四个 —— 其余 ⌘ 组合不吞，落回下面的既有逻辑（slash 导航 /
-            // Return / super）。
-            if let Some(key) = command_shortcut_key(event) {
-                match key.as_str() {
-                    // 与 `paste:` 消息共用同一份粘贴实现（图片优先，否则原生文本粘贴）。
-                    "v" => {
-                        self.perform_paste(None);
-                        return;
-                    }
-                    "c" => {
-                        unsafe {
-                            let _: () = msg_send![super(self), copy: None::<&AnyObject>];
-                        }
-                        return;
-                    }
-                    "x" => {
-                        unsafe {
-                            let _: () = msg_send![super(self), cut: None::<&AnyObject>];
-                        }
-                        return;
-                    }
-                    "a" => {
-                        unsafe {
-                            let _: () = msg_send![super(self), selectAll: None::<&AnyObject>];
-                        }
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-
+            // 标准编辑键（⌘V/⌘C/⌘X/⌘A）不在这里接：窗口层 `performKeyEquivalent:` 先到
+            // （`macos_widgets::handle_standard_edit_shortcut`，因由见那里），⌘V 经
+            // `sendAction` 落到本类的 `paste:` 覆写。这里只管 Enter / slash / IME 语义。
             let key_code = event.keyCode();
             let is_return = key_code == 36 || key_code == 76; // Return / 小键盘 Enter
             let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
@@ -1128,9 +1096,8 @@ define_class!(
         }
 
         /// 输入框的 `paste:` 消息入口（覆写 NSText 的粘贴方法）：右键系统菜单的
-        /// 「粘贴」项等 target-action 派发走这里；⌘V 在 `keyDown:` 里直接调
-        /// [`ChatInputView::perform_paste`] —— 两条入口共用同一份实现，
-        /// 粘贴规则不复制第二份。
+        /// 「粘贴」项与 ⌘V（窗口层接住后经 `sendAction` 派发，见类注释）都走这里，
+        /// 与 [`ChatInputView::perform_paste`] 共用同一份实现，粘贴规则不复制第二份。
         #[unsafe(method(paste:))]
         fn paste(&self, sender: Option<&AnyObject>) {
             self.perform_paste(sender);
@@ -1236,7 +1203,7 @@ impl ChatInputView {
         unsafe { &*(self as *const ChatInputView as *const NSTextView) }
     }
 
-    /// 粘贴语义的唯一实现（`paste:` 消息与 `keyDown:` 的 ⌘V 分支共用）：
+    /// 粘贴语义的唯一实现（右键菜单「粘贴」与 ⌘V 都经 `paste:` 落到这里）：
     /// 剪贴板里是图片（或文件）就接进待发送区，否则原样回落系统文本粘贴。
     ///
     /// 平台层只做剪贴板读取；落盘、转码、准入与待发送区全在共享模块
@@ -1269,29 +1236,6 @@ impl ChatInputView {
 fn input_has_marked_text(input: &NSTextView) -> bool {
     let client: &ProtocolObject<dyn NSTextInputClient> = ProtocolObject::from_ref(input);
     client.hasMarkedText()
-}
-
-/// 「纯 ⌘ 组合键」的字符（小写化）：含 Command 且**不含** Control / Option 时返回
-/// `charactersIgnoringModifiers()` 的小写形态；其它组合（带 Control/Option 的、
-/// 非 Command 的、取不到字符的）一律 `None`。Shift 允许参与，`⌘⇧V` 与 `⌘V`
-/// 同键（大小写差异由小写化抹平）。
-///
-/// 为什么存在这个函数：产品用 `NSApplicationActivationPolicy::Accessory`
-///（桌宠，刻意不设应用主菜单，见 `macos.rs::run_service`）—— 标准编辑快捷键
-/// 没有 key equivalent 可派发，AppKit 只会 beep。`ChatInputView` 与
-/// `MessageTextView` 都在自己的 `keyDown:` 里经它接住 ⌘V/⌘C/⌘X/⌘A
-///（判据只此一份，两个视图不各写一套修饰键条件）。
-fn command_shortcut_key(event: &NSEvent) -> Option<String> {
-    let flags = event.modifierFlags();
-    if !flags.contains(NSEventModifierFlags::Command)
-        || flags.contains(NSEventModifierFlags::Control)
-        || flags.contains(NSEventModifierFlags::Option)
-    {
-        return None;
-    }
-    event
-        .charactersIgnoringModifiers()
-        .map(|chars| chars.to_string().to_lowercase())
 }
 
 impl ChatInputView {
@@ -5763,34 +5707,6 @@ define_class!(
             }
         }
 
-        /// 键盘编辑键（⌘C / ⌘A）——与输入框同因：Accessory 策略下应用没有主菜单
-        ///（见 [`command_shortcut_key`] 的说明），标准编辑快捷键没有 key equivalent
-        /// 可派发，AppKit 只会 beep（用户实测症状：选中文字按 ⌘C 无反应）。
-        /// 正文视图只接「复制 / 全选」两个键；其余按键（含其它 ⌘ 组合、滚动/翻页/
-        /// 移动插入点）一律落回 super 的 `keyDown:`，既有键行为不变。
-        #[unsafe(method(keyDown:))]
-        fn key_down(&self, event: &NSEvent) {
-            if let Some(key) = command_shortcut_key(event) {
-                match key.as_str() {
-                    "c" => {
-                        unsafe {
-                            let _: () = msg_send![super(self), copy: None::<&AnyObject>];
-                        }
-                        return;
-                    }
-                    "a" => {
-                        unsafe {
-                            let _: () = msg_send![super(self), selectAll: None::<&AnyObject>];
-                        }
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-            unsafe {
-                let _: () = msg_send![super(self), keyDown: event];
-            }
-        }
     }
 
     /// 裸 impl：承载**不属于任何协议**的自定义 target-action（写进协议块会在类
