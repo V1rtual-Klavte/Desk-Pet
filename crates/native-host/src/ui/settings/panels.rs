@@ -30,6 +30,19 @@ pub const PANEL_MEMORY_BACKUPS: &str = "memory.backups";
 /// 外观页的音效试听面板（行按钮 = 试听该事件当前分配的音效）。
 pub const PANEL_SOUNDS: &str = "appearance.sounds";
 
+/// 工具页是否渲染某个管理面板（**两端共用的渲染口径**，纯函数可测）。
+///
+/// 用户规则（2026-10-05）：「工具里面，不要显示工具列表了」—— 撤下的是
+/// [`PANEL_POLICIES`]（「工具策略（声明）」）这一个只读列表；MCP 服务器 / Skill
+/// 两组是带开关与动作的管理面，保留。**只在渲染层去掉**：数据仍由共享层一次聚合
+/// （拆「不产」要动共享 fetch，属跨平台语义变化，另批裁决）。
+///
+/// 规则放共享层是因为它是**产品口径、不是平台差异** —— 各平台各写一份，Windows
+/// 就会漏（2026-10-07 实机：Windows 工具页仍列着工具策略，macOS 已撤下）。
+pub fn renders_tools_panel(panel_id: &str) -> bool {
+    panel_id != PANEL_POLICIES
+}
+
 /// 一行的动作形状（平台层按钮的点击归宿）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowAction {

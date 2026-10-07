@@ -37,10 +37,10 @@ use objc2_foundation::{
 };
 
 use crate::ui::settings::panels::{
-    self, mcp_form_rows, ListPanel, McpFieldControl, McpFieldRow, McpTransport, MemoryDetailState,
-    MemoryEvidenceState, PanelRow, RowAction, RowOption, MCP_FIELD_ARGS, MCP_FIELD_COMMAND,
-    MCP_FIELD_ENABLED, MCP_FIELD_ENV, MCP_FIELD_HEADERS, MCP_FIELD_NAME, MCP_FIELD_TRANSPORT,
-    MCP_FIELD_URL,
+    self, mcp_form_rows, renders_tools_panel, ListPanel, McpFieldControl, McpFieldRow, McpTransport,
+    MemoryDetailState, MemoryEvidenceState, PanelRow, RowAction, RowOption, MCP_FIELD_ARGS,
+    MCP_FIELD_COMMAND, MCP_FIELD_ENABLED, MCP_FIELD_ENV, MCP_FIELD_HEADERS, MCP_FIELD_NAME,
+    MCP_FIELD_TRANSPORT, MCP_FIELD_URL,
 };
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
@@ -545,16 +545,6 @@ fn pick_row_title(options: &[RowOption], selected: &str) -> String {
         .map(|option| option.label.as_str())
         .unwrap_or("—");
     format!("{label} ▾")
-}
-
-/// 工具页是否渲染某个管理面板（纯函数，可测）。
-///
-/// 用户规则（2026-10-05）：「工具里面，不要显示工具列表了」—— 撤下的是
-/// 「工具策略（声明）」这一个只读列表；MCP 服务器 / Skill 两组是带开关与动作的
-/// 管理面，保留。**只在渲染层去掉**：数据仍由共享层一次聚合（拆「不产」要动
-/// 共享 fetch，属跨平台语义变化，另批裁决）。
-fn renders_tools_panel(panel_id: &str) -> bool {
-    panel_id != crate::ui::settings::panels::PANEL_POLICIES
 }
 
 /// 「自动整理」入口按钮的标题（纯函数，可测）：记录数进标题，点开才知道内容。

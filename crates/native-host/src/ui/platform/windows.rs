@@ -17,8 +17,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, InvalidateRect, ScreenToClient, HDC, PAINTSTRUCT,
+    BeginPaint, CreateRoundRectRgn, DeleteObject, EndPaint, InvalidateRect, ScreenToClient,
+    SetWindowRgn, HDC, PAINTSTRUCT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
@@ -44,8 +48,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_NOZORDER, SW_HIDE, SW_SHOW, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
     WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM,
     WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_HOTKEY, WM_HSCROLL, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR,
-    WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_PAINT,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW, WS_CLIPCHILDREN,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW,
     WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
 };
 
@@ -54,7 +59,7 @@ use crate::error::{AppError, AppResult};
 use crate::host::{WindowId, WindowLevel, WindowVisibility};
 use crate::ui::shortcut::PlatformShortcut;
 use crate::ui::state::{
-    clamp_window_origin, popup_auto_show, transform_origin, CommittedAssistantTracker, FrameVisual,
+    clamp_window_origin, popup_auto_show, transform_origin, CommittedAssistantTracker,
     PlacementMode, ScreenRect, ShowHideMachine, Stage, Tick,
 };
 use crate::ui::{HostExitHook, MainThreadQueue, ServiceRequest};
@@ -69,6 +74,18 @@ use crate::window::{
 
 const MAIN_CLASS: &str = "DeskPetMainWindow";
 
+/// 主窗圆角半径（逻辑像素）—— 对齐 macOS 无边框窗的系统窗口圆角。
+///
+/// macOS 侧不给窗口设圆角：主窗是 `Borderless` + `setOpaque(false)` +
+/// `setHasShadow(true)`，圆角由窗口服务器按系统口径给出（`macos.rs::create_main_window`）。
+/// Windows 没有等价物，只能自己裁：顶层窗在**窗口边界**上裁像素的唯一手段是
+/// `SetWindowRgn`（DC 剪切区域画不出「窗口外」的像素；分层窗的常量 alpha 也不自裁）。
+/// 实机验证（2026-10-07，屏幕合成截图）：本窗 `WS_EX_LAYERED + LWA_ALPHA` **接受**
+/// 圆角区域并真的裁掉四角（角外露出桌面）—— 与 ownerdraw 子按钮那条路相反
+/// （子按钮的区域不生效，改走绘制端 `SelectClipRgn`，见 `paint_win::draw_button`）。
+/// 取值 10 是 macOS 系统窗口圆角的口径（Big Sur 起的窗口圆角 ≈ 10pt）。
+const MAIN_WINDOW_CORNER_RADIUS: f64 = 10.0;
+
 /// `MINMAXINFO`（windows-sys 0.52 未登记；只用 minTrackSize；本地定义与
 /// `windows_chat.rs` 的同名结构各自守住自己的约束，不跨模块共享私有 FFI 形状）。
 #[repr(C)]
@@ -79,7 +96,9 @@ struct MainMinMaxInfo {
     pt_min_track_size: POINT,
     pt_max_track_size: POINT,
 }
-const AUX_CLASS: &str = "DeskPetAuxWindow";
+// 附属窗类名：设置窗的 ownerdraw 按钮要按父窗类别选重放例程（见
+// `windows_settings::draw_button_on_parent_backdrop`），因此对同 crate 可见。
+pub(crate) const AUX_CLASS: &str = "DeskPetAuxWindow";
 const HOTKEY_ID: i32 = 0x4450; // 'DP'
 const TIMER_FRAME: usize = 1;
 /// 主线程任务队列的唤醒消息（`PostMessageW`）。
@@ -187,7 +206,7 @@ thread_local! {
     static UI: RefCell<Option<WinUi>> = const { RefCell::new(None) };
 }
 
-/// `with_ui` 被重入跳过的累计次数（只用于告警限流）。
+// `with_ui` 被重入跳过的累计次数（只用于告警限流）。
 thread_local! {
     static UI_REENTRY_COUNT: Cell<u32> = const { Cell::new(0) };
 }
@@ -924,6 +943,9 @@ unsafe extern "system" fn main_wndproc(
             // 程序性改尺寸（`set_popup_size` 的 SetWindowPos）会**同步**把这个消息送回来，
             // 那时外层 `with_ui` 还握着借用 —— 被跳过的那一轮改走异步重投补上，
             // 否则「窗口已变、布局没跟」会一直留到下一次尺寸消息（见 `with_ui_repost`）。
+            // 圆角区域按窗口物理尺寸算，必须先于布局重排重贴（不管布局那一步是否被
+            // 重入跳过，区域都跟着新尺寸走）。
+            apply_main_window_round_corners(hwnd);
             with_ui_repost(hwnd, msg, wparam, lparam, |ui| {
                 ui.relayout_main();
                 unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
@@ -1091,7 +1113,86 @@ unsafe extern "system" fn main_wndproc(
             PostQuitMessage(0);
             0
         }
+        // 激活态变化：认领该消息，别让 `DefWindowProc` 重画非客户区。
+        //
+        // 症状（2026-10-07 用户实拍「点里面获得焦点后再点其他软件失焦，桌宠的边框、背景
+        // 就错乱了」）：窗口激活时最外圈被系统换成经典主题灰 `(180,180,180)` ——
+        // 顶 5 行全宽、右 5 列全高（实测 673×444 屏幕拷贝：y=2..6 / x=666..670），
+        // 与自绘的圆角+主题底撞成"灰边"；失焦后该圈恢复为主题底色，一来一回就是
+        // 用户看到的"边框、背景错乱"。复现与修复都在本机实机核对过：
+        // 向主窗投一条 `WM_NCACTIVATE(TRUE)` 即画出整圈灰边，投之前（未激活）没有。
+        //
+        // 本窗客户区 = 整窗（见上方 `WM_NCCALCSIZE`），一切像素由自绘负责，
+        // 非客户区不允许系统再画 —— 因此这里直接认领：`WM_NCACTIVATE` 返回 TRUE
+        // （文档口径：应用已处理、无需系统重画），`WM_NCPAINT` 返回 0（空实现）。
+        // 注意 `DWMWA_BORDER_COLOR=NONE`（见 `apply_main_window_frame_suppression`）
+        // 只关掉 DWM 那条 1px 系统描边，管不住这一次 NC 重画，两者不可互替。
+        WM_NCACTIVATE => {
+            // 激活前若已有系统画的灰边残留在窗口缓存里，整窗失效一次让自绘覆盖干净
+            // （本窗 `WM_PAINT` 画满客户区，不依赖激活态，不需要按 wParam 分支）。
+            unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+            1
+        }
+        WM_NCPAINT => 0,
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+/// 主窗圆角：给顶层窗贴 `SetWindowRgn` 的圆角矩形区域（见 [`MAIN_WINDOW_CORNER_RADIUS`]）。
+///
+/// 调用点：建窗后一次、每次 `WM_SIZE` 一次（区域按**窗口物理尺寸**算，改尺寸必须重贴；
+/// `SetWindowRgn` 成功后区域归系统所有，重贴即是「换新区域、系统回收旧区域」）。
+/// DPI 变化的圆角也随 `WM_DPICHANGED → WM_SIZE` 的重投一起更新。
+///
+/// 失败不致命也不静默：区域建不出来或系统拒收时留 warning（窗口退化为直角，
+/// 与旧行为一致），不制造 panic —— 本函数在窗口过程路径上。
+fn apply_main_window_round_corners(hwnd: HWND) {
+    let mut rect: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetWindowRect(hwnd, &mut rect) };
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(DPI_BASELINE);
+    let scale = f64::from(dpi) / f64::from(DPI_BASELINE);
+    let radius = ((MAIN_WINDOW_CORNER_RADIUS * scale).round() as i32).max(1);
+    // 椭圆宽高取 2r（`CreateRoundRectRgn` 的椭圆是内切椭圆，取 2r 得到半径 r 的圆角）。
+    let region = unsafe { CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2) };
+    if region == 0 {
+        rust_warn!("主窗圆角区域创建失败（CreateRoundRectRgn 返回 NULL）；本窗退化为直角");
+        return;
+    }
+    // 第三个参数 = 立即重绘；成功后区域归系统所有（不得再 DeleteObject）。
+    if unsafe { SetWindowRgn(hwnd, region, 1) } == 0 {
+        // 失败时系统没有接管区域，所有权仍在本进程 —— 不删就是每次 WM_SIZE 泄漏一个 GDI 对象。
+        unsafe { DeleteObject(region) };
+        rust_warn!("主窗圆角区域设置失败（SetWindowRgn 返回 0）；本窗退化为直角");
+    }
+}
+
+/// 去掉 Win11 给带 `WS_THICKFRAME` 的窗口另画的系统边框（`DWMWA_BORDER_COLOR`）。
+///
+/// 症状（2026-10-07 用户实拍「整个界面的边框有莫名其妙的白框」）：无边框主窗的四边
+/// 多出 1px 纯白描边 + 5px 近白填充，由 DWM 画在自绘内容**之上** —— 浅色主题下
+/// 与主题底撞成「白框」，右侧聊天列与底边各多 5px 亮带、顶栏上沿多 7px 亮带。
+/// `DWMWA_COLOR_NONE` 让 DWM 不画这条边框，自绘描边与 `SetWindowRgn` 圆角不受影响
+/// （本机 Win11 26200 / Chrome 主题实拍：四边亮带消失，白框不再出现）。
+///
+/// 不支持该属性的旧系统返回失败码 —— 那不是故障，窗口保持系统默认外观即可，
+/// 因此按 warning 留痕、不改变控制流（与 [`apply_main_window_round_corners`] 同口径）。
+fn apply_main_window_frame_suppression(hwnd: HWND) {
+    let none: u32 = DWMWA_COLOR_NONE;
+    let hr = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR as u32,
+            (&none as *const u32).cast(),
+            size_of::<u32>() as u32,
+        )
+    };
+    if hr != 0 {
+        rust_warn!("主窗系统边框未去掉（DwmSetWindowAttribute 返回 0x{hr:08X}）；本窗保留系统边框");
     }
 }
 
@@ -1469,6 +1570,13 @@ pub fn run_service(request: ServiceRequest) -> AppResult<i32> {
 
     // 常量 alpha 路径让系统同时合成标题、聊天与舞台子窗口。
     unsafe { SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA) };
+
+    // macOS 的系统窗口圆角：Windows 侧只能自己裁（见 MAIN_WINDOW_CORNER_RADIUS）。
+    apply_main_window_round_corners(hwnd);
+
+    // Win11 会给带 `WS_THICKFRAME` 的窗口另画一条系统边框，压在自绘内容之上
+    // （见 `apply_main_window_frame_suppression`）。
+    apply_main_window_frame_suppression(hwnd);
 
     // 主线程队列唤醒器：PostMessageW 到主窗消息循环（跨线程投递不阻塞）。
     let hwnd_for_wake: isize = hwnd;

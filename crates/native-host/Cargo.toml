@@ -117,6 +117,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_Foundation",                 # CloseHandle / HWND / BOOL / POINT
     "Win32_UI_Shell",                   # ShellExecuteW（commands/tool_exec/desktop.rs 的 app_open）
     "Win32_Graphics_Gdi",               # GetMonitorInfoW / MonitorFromPoint / MONITORINFOEXW（commands/cursor.rs）
+    "Win32_Graphics_Dwm",               # DwmSetWindowAttribute：去掉主窗的系统边框（ui/platform/windows.rs 的 apply_main_window_frame_suppression）
     "Win32_UI_HiDpi",                   # GetDpiForMonitor（commands/cursor.rs 的 DPI 换算）
     "Win32_UI_WindowsAndMessaging",     # 前台窗口/消息窗口/钩子/会话常量、SW_SHOWNORMAL
     "Win32_System_Threading",           # OpenProcess / GetCurrentThreadId

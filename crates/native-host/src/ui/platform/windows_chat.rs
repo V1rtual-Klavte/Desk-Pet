@@ -90,12 +90,12 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateFontW, CreateRectRgn,
+    BeginPaint, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateRectRgn,
     CreateRoundRectRgn, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRgn, FrameRgn, GetDIBits,
-    InvalidateRect, ScreenToClient, SelectClipRgn, SetBkMode, SetTextColor, SetWindowRgn,
-    StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_BITFIELDS, BI_RGB, CLIP_DEFAULT_PRECIS,
-    DEFAULT_CHARSET, DIB_RGB_COLORS, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT, OUT_DEFAULT_PRECIS,
-    RGN_DIFF, SRCCOPY,
+    GetPixel, InvalidateRect, RedrawWindow, ScreenToClient, SelectClipRgn, SelectObject, SetBkMode,
+    SetTextColor, SetWindowRgn, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_BITFIELDS, BI_RGB,
+    DIB_RGB_COLORS, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT,
+    RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RGN_DIFF, SRCCOPY,
 };
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
@@ -123,11 +123,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, DispatchMessageW, GetAncestor, GetCaretPos, GetClientRect, GetCursorPos,
     GetMessageW, GetParent, GetScrollInfo, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsWindow, IsWindowVisible, KillTimer,
-    MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
+    MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
+    SetForegroundWindow,
     SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TrackPopupMenu,
     TranslateMessage, WindowFromPoint, BS_DEFPUSHBUTTON, CBN_SELENDOK, CBS_DROPDOWNLIST,
     CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GA_ROOT, GWLP_USERDATA, GWL_STYLE,
+    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GA_ROOT, GWL_STYLE,
     HMENU, HTTRANSPARENT, HWND_BOTTOM, HWND_TOP, IDCANCEL, IDOK, MF_SEPARATOR, MF_STRING, MSG,
     SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK,
     SB_TOP, SB_VERT, SCROLLINFO, SIF_ALL, SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXSCREEN, SM_CYSCREEN,
@@ -170,7 +171,6 @@ const CANVAS_CLASS: &str = "DeskPetChatCanvas";
 
 /// 子控件 ID（聊天窗范围内唯一）。
 const INPUT_ID: i32 = 1001;
-const STATUS_ID: i32 = 1002;
 const STOP_ID: i32 = 1003;
 /// 占位按钮 ID 基址（第 n 张图 = 基址 + n）。
 const PLACEHOLDER_BASE: i32 = 2000;
@@ -189,8 +189,11 @@ const DT_SINGLELINE: u32 = 0x00000020;
 const DT_NOPREFIX: u32 = 0x00000800;
 const DT_END_ELLIPSIS: u32 = 0x00008000;
 /// `DrawTextW` 的右对齐 / 只量尺寸（windows-sys 0.52 未登记，与上面同款就地定义）。
+const DT_LEFT: u32 = 0x00000000;
 const DT_RIGHT: u32 = 0x00000002;
 const DT_CALCRECT: u32 = 0x00000400;
+/// 把手带状态文字：单行、左对齐、垂直居中（槽宽由共享 `handle_status_width` 收口）。
+const STATUS_TEXT_FLAGS: u32 = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS;
 const TRANSPARENT: i32 = 1;
 const ODT_BUTTON: u32 = 4;
 /// W8b 面板按钮 ID 基址（第 n 个动作按钮 = 基址 + n）。
@@ -316,14 +319,6 @@ const INPUT_FIELD_MIN_WIDTH: i32 = 72;
 
 // ── 把手带与浮层（2026-10-05 第二次改版：底部那排 chip 整体退场、只留一个把手）──
 
-///
-/// 输入区上方「把手带」的箭头按钮 ID（2026-10-05 第二次改版：底部那排 chip 整个
-/// 退场、只留一个上拉把手，原 1100..1107 轨段随之作废，把手取 1100）。
-/// 它只是带上的**一个**入口：带内其余位置（含被穿透的状态文字）由聊天窗的
-/// `WM_LBUTTONDOWN` 段接住，两处都调用同一个 `toggle_inspector_ui`。
-/// 与既有各段（1001..1012 固定控件、1108 浮层关闭、2000+ 图片占位、3000+ 面板按钮、
-/// 4000+/4600+ 会话标签、5000+ 待发送、8000+ 面板下拉）互不重叠。
-const BTN_HANDLE_ID: i32 = 1100;
 /// 浮层关闭「✕」的固定 ID（独立取值，不再从轨段推导）。
 const INSPECTOR_CLOSE_ID: i32 = 1108;
 /// 把手左侧状态文字的左内边距、状态点半径与点/文字间距
@@ -411,7 +406,12 @@ const INPUT_PLACEHOLDER: &str = "说点什么…";
 const PANE_GAP: i32 = 8;
 const MESSAGE_SPACING: i32 = 12;
 const LABEL_HEIGHT: i32 = 16;
-const LINE_HEIGHT: f64 = 19.0;
+/// 正文行高（物理逻辑像素）。**必须跟 `resolve_ui_font_family` 选中的正文族在
+/// RichEdit 下的自然行距一致**：DengXian 13px = 18px（MiSans 23 / 雅黑 25，见
+/// `composer-fix-round4.md` 的实测表）。取大了气泡就会明显偏高——用户实拍
+/// 「聊天气泡太大」的直接来源（旧值 19 + `rich_edit_height` 的 +8 余量，
+/// 两行泡 64px vs mac 46px）。
+const LINE_HEIGHT: f64 = 18.0;
 const CODE_BLOCK_MAX_HEIGHT: i32 = 240;
 /// 输入区左缘留白（输入框本体与按钮列的布局基准，与 macOS 的 `8.0` 同值）。
 const SIDE_MARGIN: i32 = 8;
@@ -465,6 +465,12 @@ struct ChatPaintRects {
     pending: RECT,
     /// 把手带（`--fbg2` 底；状态点画在这里，箭头按钮是子控件）。
     handle: RECT,
+    /// 把手带的状态文字槽（左半侧、圆点之后；绘制端按它左对齐 —— 与箭头同层，
+    /// 子控件的不透明表面会让 composer 渐变透不过来，2026-10-07 实机）。
+    handle_status: RECT,
+    /// 把手箭头字形框（共享 `handle_arrow_frame` 的 10×10 逻辑框，物理像素；
+    /// 三角在绘制端直接画，不再由子按钮承载）。
+    handle_arrow: RECT,
     /// 输入区底条（`--ibg`：覆盖输入行 + 把手带 + 与上方条区之间的间距）。
     input_bar: RECT,
     /// 输入框槽位（边缘/立体线由聊天窗画，承载控件按 2px 内缩）。
@@ -485,6 +491,8 @@ impl ChatPaintRects {
         panels: Self::EMPTY_RECT,
         pending: Self::EMPTY_RECT,
         handle: Self::EMPTY_RECT,
+        handle_status: Self::EMPTY_RECT,
+        handle_arrow: Self::EMPTY_RECT,
         input_bar: Self::EMPTY_RECT,
         input_field: Self::EMPTY_RECT,
     };
@@ -655,7 +663,6 @@ struct ChatWinState {
     input: HWND,
     /// 输入区占位标签（自绘等价物；盖在输入框上、命中穿透，见 `build_children`）。
     input_placeholder: HWND,
-    status: HWND,
     stop: HWND,
     fonts: Vec<HFONT>,
     /// 画布内容总高与当前滚动位置（物理像素）。
@@ -690,9 +697,6 @@ struct ChatWinState {
     /// 面板按钮 ID → 动作（每次重建面板时整体替换）。
     panel_actions: Vec<PanelAction>,
     // ── 把手带（输入行上方一行；整条带可点开合浮层，箭头是居中视觉提示）──
-    /// 把手上拉箭头按钮（常驻；点它 / 再点一次开合浮层，文本随 `inspector_open` 翻面；
-    /// 带上其余位置同样可点，见 `chat_wndproc` 的 `WM_LBUTTONDOWN` 段）。
-    handle_arrow: HWND,
     /// 把手带当前文案（**只含中性通知 `notice`**，见 [`handle_status_label`]）。
     /// 平台侧只存这一份：`paint_shell` 依据它决定圆点亮不亮 —— 圆点与文字
     /// 同生共死（空通知 = 空串 + 圆点不亮）；文案仍由 `update_status` 从快照写入。
@@ -722,12 +726,6 @@ struct ChatWinState {
     /// 浮层是否开着，**直接来自 `ChatSnapshot::inspector_open`**（每次整帧同步；
     /// 布局在无快照的路径上读它）。平台层不翻转本地镜像 —— 开合由模型状态驱动。
     inspector_open: bool,
-    /// 浮层**本次开启的时刻**（false→true 边沿写入；同击竞态护栏用）。
-    ///
-    /// 实机症状（2026-10-07）：点把手开的浮层被同一次手势的后续消息立刻收起
-    /// （「闪一下就消失」）。`toggle_inspector_ui` / `close_inspector_ui` 对开启后
-    /// ≤500ms 内的再开合/收起一律忽略并留痕 —— 护栏触发行即真实关闭来源的实机证据。
-    inspector_opened_at: Option<std::time::Instant>,
     // ── 会话历史锚定弹层（挂在标签条「历史」按钮下方；脱离布局流）──
     /// 弹层承载窗口（与浮层共用 `LAYER_CLASS`；盖住消息流区域，盒锚在层顶）。
     history_layer: HWND,
@@ -913,7 +911,48 @@ fn stamp_ink(hwnd: HWND, color: crate::ui::theme::Rgba) {
 /// paint_win 模块头的取舍）。**单一来源**：承载控件的 `EM_SETBKGNDCOLOR`
 /// （[`rich_bg`]）与画布上的卡片/气泡填充用同一个值，控件与画布的接缝不可见。
 fn flat_over_panel(fill: &crate::ui::theme::Fill) -> crate::ui::theme::Rgba {
-    paint_win::composite_over(fill.base_color(), theme::tokens().panel_bg.base_color())
+    paint_win::composite_over(fill_mid(fill), theme::tokens().panel_bg.base_color())
+}
+
+/// 渐变 token 在「只能吃单色」的出口（RichEdit 底、`WM_CTLCOLOR` 画刷）上的代表色：
+/// 取**渐变中点**而不是首档。
+///
+/// 首档（[`crate::ui::theme::Fill::base_color`]）是渐变的顶部色，拿它当代表色会系统性
+/// 偏亮 —— 2026-10-07 实拍：Chrome 输入框 `--fbg` 首档是纯白，RichEdit 直接吃成
+/// (255,255,255) 的方白块，而 mac 侧同一控件是 `#FFFFFF→#E7EFF7` 的竖向渐变
+/// （录制实测均值 ≈(237,243,248)，`test/.tmp/win-ui-align/ref/theme-1/frame-0101.png`）。
+/// 取中点后单色块与 mac 的观感对齐；气泡同族（`--aibg` 等）走同一口径。
+fn fill_mid(fill: &crate::ui::theme::Fill) -> crate::ui::theme::Rgba {
+    use crate::ui::theme::{Fill, Rgba};
+    fn sample(stops: &[(f32, Rgba)], t: f32) -> Rgba {
+        let Some(&(_, first)) = stops.first() else {
+            return Rgba::black_alpha(1.0);
+        };
+        if stops.len() == 1 {
+            return first;
+        }
+        let mut prev = (0.0_f32, first);
+        for &(pos, color) in &stops[1..] {
+            if t <= pos {
+                let span = (pos - prev.0).max(f32::EPSILON);
+                let k = ((t - prev.0) / span).clamp(0.0, 1.0);
+                return Rgba::rgba(
+                    prev.1.r + (color.r - prev.1.r) * k,
+                    prev.1.g + (color.g - prev.1.g) * k,
+                    prev.1.b + (color.b - prev.1.b) * k,
+                    prev.1.a + (color.a - prev.1.a) * k,
+                );
+            }
+            prev = (pos, color);
+        }
+        prev.1
+    }
+    match fill {
+        Fill::Solid(color) => *color,
+        Fill::Linear(stops) | Fill::Striped { stops, .. } => sample(stops, 0.5),
+        // 径向渐变的兜底色沿用 `base_color` 的口径（末档），与 GDI 端的实色兜底一致。
+        Fill::Radial { .. } => fill.base_color(),
+    }
 }
 
 /// RichEdit 底色 = token 的代表色与面板底合成（RichEdit 不能透明，渐变只能取
@@ -931,19 +970,6 @@ fn win_rect_of(rect: &RECT) -> paint_win::Rect {
 fn rich_bg_alpha(color: crate::ui::theme::Rgba, alpha: f32) -> u32 {
     let panel = theme::tokens().panel_bg.base_color();
     paint_win::colorref(paint_win::composite_over(color.with_alpha(alpha), panel))
-}
-
-/// 把手带的实色近似（左侧状态 STATIC 的背景画刷用）：`--fbg2` 叠在输入区底条色
-/// （其代表色再压面板底）之上 —— 与 `paint_shell` 里把手带的绘制同源。
-/// STATIC 用自己的画刷擦背景，GDI 画刷没有 alpha，只能给同值的实色。
-fn handle_bg_flat(tokens: &'static theme::Tokens) -> theme::Rgba {
-    paint_win::composite_over(
-        tokens.strip_bg,
-        paint_win::composite_over(
-            tokens.input_bar_bg.base_color(),
-            tokens.panel_bg.base_color(),
-        ),
-    )
 }
 
 /// 遮罩色（浮层打开时压住消息流）：token 表没有 `--scrimc`（设计稿注明它是页面级
@@ -1027,6 +1053,30 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
                 paint_win::Rect::new(tabs.x, tabs.bottom() - 1, tabs.w, 1),
                 t.bar_edge,
             );
+            // 条区自绘按钮的「所在面」实色 = 条区**实际画出来的**像素（含 sheen/颗粒
+            // 与 `strip_bg` 叠加）。不采样就只能拿 `panel_bg` 猜 —— 它比条区暗 ~35
+            // 灰阶，ownerdraw 按钮的圆角补角会在四角留下深色方块（用户 2026-10-07
+            // 实拍「按钮黑色方角」）。同一函数里刚画完，取到的就是最终可见色。
+            unsafe {
+                // 探针取**条区中部**：`tabs.x + 2` 落在聊天列左缘的描边/立体线上，
+                // 采到的是比条底亮 ~5 灰阶的边线色 —— 自绘按钮的圆角补角用它就会
+                // 在药丸四周露出一个浅色矩形（用户 2026-10-07 实拍「新会话后面有
+                // 矩形灰底」）。
+                register_band_surface(
+                    hdc,
+                    state.hwnd,
+                    (tabs.x + tabs.w / 2, tabs.y + tabs.h / 2),
+                    &[state.nav_new, state.nav_history],
+                );
+                let tab_hwnds: Vec<HWND> = state.tab_children.iter().map(|c| c.hwnd).collect();
+                // 同一探针口径：条区中部（`tabs.x + 2` 会采到左缘描边色，见上）。
+                register_band_surface(
+                    hdc,
+                    state.hwnd,
+                    (tabs.x + tabs.w / 2, tabs.y + tabs.h / 2),
+                    &tab_hwnds,
+                );
+            }
         }
         if !rect_is_empty(&state.paint.bar) {
             let bar = win_rect_of(&state.paint.bar);
@@ -1067,10 +1117,32 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
                 t.bar_edge,
             );
         }
+        // composer 的整块面（`--ibg`）先铺：macOS 侧它覆盖**待发送条 + 把手带 +
+        // 输入行**（`macos_chat.rs::relayout_panes` 的 `composer_top_from_bands`），
+        // 把手带不再是独立的一条灰带 —— 它就是 composer 的上部（用户 2026-10-07
+        // 实拍「输入框上面那个和 mac 根本不一样」）。条区内其它元素（待发送条、
+        // 把手状态、箭头）都画在这块面之上，顺序不能反。
+        if !rect_is_empty(&state.paint.input_bar) {
+            let input_bar = win_rect_of(&state.paint.input_bar);
+            paint_win::fill_rect(hdc, input_bar, &t.input_bar_bg);
+            // 输入行按钮的所在面同理：按**输入行中心那一行**的实色采样（composer 是
+            // 竖向渐变，按钮四角跨十几像素，取按钮中心行最接近）。
+            let row_h = scaled(INPUT_HEIGHT, scale);
+            let row_y = input_bar.bottom() - row_h + row_h / 2;
+            unsafe {
+                register_band_surface(
+                    hdc,
+                    state.hwnd,
+                    (input_bar.x + 2, row_y),
+                    &[state.stop, state.pick_images, state.send],
+                );
+            }
+        }
         if !rect_is_empty(&state.paint.pending) {
             // 待发送条（设计稿 `.pend`：`--fbg2` 底 + **底边** `--bare` 与输入行分隔）；
-            // 它同时是 composer 的顶块 —— 顶边线用 `--iedge`（设计稿 `.composer` 的
-            // `border-top`），与「无待发送条时」画在输入条顶的那条线同源。
+            // 它是 composer 的顶块（composer 面已在上面铺过）—— 顶边线用 `--iedge`
+            //（设计稿 `.composer` 的 `border-top`），底边线与「无待发送条时」画在
+            // 输入条顶的那条线同源。
             let pending = win_rect_of(&state.paint.pending);
             paint_win::fill_color(hdc, pending, t.strip_bg);
             paint_win::fill_color(
@@ -1114,38 +1186,28 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
         }
         if !rect_is_empty(&state.paint.input_bar) {
             let input_bar = win_rect_of(&state.paint.input_bar);
-            paint_win::fill_rect(hdc, input_bar, &t.input_bar_bg);
-            // composer 顶边线（设计稿 `.composer{border-top:1px solid var(--iedge)}`）：
-            // 有待发送条时它在上面 pending 段画过（条底是 `--bare`），这里不重复画 ——
-            // 否则会给「待发送条 | 输入行」的分界补出一条 `--iedge` 线。
-            if rect_is_empty(&state.paint.pending) {
-                paint_win::fill_color(
-                    hdc,
-                    paint_win::Rect::new(input_bar.x, input_bar.y, input_bar.w, 1),
-                    t.input_bar_edge,
-                );
-            }
+            // composer 上边线（设计稿 `.rail{border-top:1px solid var(--bare)}`）：
+            // macOS 用**亮边** `bar_edge` 贴住 composer 上沿（`macos_chat.rs` 的
+            // `apply_line(Top, bar_edge)`，用户规则「这个白边应该贴着下面」）。
+            // 旧实现画的是 `input_bar_edge`（同主题下明显更深的灰蓝），实机上就是
+            // 输入框上方那道扎眼的分隔线。
+            paint_win::fill_color(
+                hdc,
+                paint_win::Rect::new(input_bar.x, input_bar.y, input_bar.w, 1),
+                t.bar_edge,
+            );
         }
-        // 把手带（输入行上方那个横条）：`--fbg2` 底 + 顶线；左侧状态点是裸绘制
-        // （强调色圆点），状态文字是承载 STATIC（字色 dim；背景画刷见
-        // `ctlcolor_static` 的把手分支）。**画在输入区底条之后**（顺序有依赖：
-        // 底条覆盖带区，带条再压上去）。顶线分工：有待发送条时 composer 顶线由
-        // pending 段画（`--iedge`），这里只在**没有**待发送条时补同一条线。
-        // 条区是**满宽**填充（与 bar/tabs/panels/pending 同口径），面板边框
-        // （outline + 立体线）由本函数**最后**统一绘制、压在条区之上 —— 填充不会
-        // 溢出边框（macOS 侧「把手带底色溢出面板边框」的根因是带底是宿主描边
-        // **之上**的子视图、填充铺到外沿把描边染成另一色，修法是带底按描边内缩
-        // `macos_chat::band_span`；Windows 无同源：填充与描边同一个 DC、描边后画）。
+        // 把手带（composer 上部那条行）：**不画底、不画线**，只画左侧状态点与
+        // 状态文字、中置上拉箭头 —— 与 macOS「把手带只是「状态文字 + 箭头 +
+        // 整条可点」的行」同口径。三件全部**单面绘制**：子控件（STATIC/按钮）
+        // 是不透明表面，各自会把自己那块铺成异色板（2026-10-07 实机：「灰板 +
+        // 白方块 + 竖条箭头」）。带区仍有独立命中区（开合浮层），只是不着色。
+        // 带坐在 composer 顶段（渐变首档附近）：圆点边缘的预合成底与箭头的
+        // 半透明 ink 都按这个实色近似（GDI 画刷没有 alpha，与 mac 的
+        // `ink.with_alpha(0.72)` / CALayer 合成同口径的实色等价）。
+        let composer_flat = t.input_bar_bg.base_color();
         if !rect_is_empty(&state.paint.handle) {
             let handle = win_rect_of(&state.paint.handle);
-            paint_win::fill_color(hdc, handle, t.strip_bg);
-            if rect_is_empty(&state.paint.pending) {
-                paint_win::fill_color(
-                    hdc,
-                    paint_win::Rect::new(handle.x, handle.y, handle.w, 1),
-                    t.input_bar_edge,
-                );
-            }
             // 圆点与文字同生共死（与 macOS `update_status` 的 `setHidden` 同口径）：
             // 没有通知时不亮一个看起来像「在线」的常亮点。
             if handle_status_dot_visible(&state.handle_status_label) {
@@ -1155,9 +1217,68 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
                     handle.y + handle.h / 2,
                     scaled(HANDLE_STATUS_DOT_RADIUS, scale),
                     t.accent,
-                    handle_bg_flat(t),
+                    composer_flat,
                 );
             }
+            // 状态文字：只显示中性通知（[`handle_status_label`]），左对齐在
+            // 圆点之后；字体与字色复用静态文字的小号/`dim` 口径。
+            if !state.handle_status_label.is_empty() && !rect_is_empty(&state.paint.handle_status)
+            {
+                let font = state.fonts.get(1).copied().unwrap_or(0);
+                let old = if font != 0 {
+                    unsafe { SelectObject(hdc, font) }
+                } else {
+                    0
+                };
+                let text = wide(&state.handle_status_label);
+                // `DrawTextW` 收 windows-sys 的 `RECT`（不是 `paint_win::Rect`）。
+                let mut rect = {
+                    let r = win_rect_of(&state.paint.handle_status);
+                    RECT {
+                        left: r.x,
+                        top: r.y,
+                        right: r.right(),
+                        bottom: r.bottom(),
+                    }
+                };
+                unsafe {
+                    SetBkMode(hdc, TRANSPARENT);
+                    SetTextColor(hdc, paint_win::colorref(t.dim));
+                    DrawTextW(hdc, text.as_ptr(), -1, &mut rect, STATUS_TEXT_FLAGS);
+                    if old != 0 {
+                        SelectObject(hdc, old);
+                    }
+                }
+            }
+        }
+        // 上拉箭头（▴ 合着 / ▾ 开着）：画的是三角而不是字形 —— 字体对 U+25B4/25BE
+        // 的覆盖不可靠（2026-10-07 实机：▴ 被画成一根竖条），且子按钮的面会盖住
+        // composer 渐变。字形框仍来自共享 `handle_arrow_frame`（10×10 居中）。
+        if !rect_is_empty(&state.paint.handle_arrow) {
+            let glyph = win_rect_of(&state.paint.handle_arrow);
+            let up = handle_arrow_up(state.inspector_open);
+            // 三角按 mac 录制的**实测量级**收小：录制帧里 ▴ 的 bbox 只有
+            // 5×4px（藏在共享 `handle_arrow_frame` 的 10×10 字形框里居中），
+            // 颜色是对应的 `dim`（实测 (99,108,121) ≈ dim 预合成在 composer 上）。
+            // 旧实现按整框铺满 + `ink` 72% 预合成，实机明显比 mac 大一倍、黑一档。
+            let half_w = (glyph.w / 5).max(2);
+            let half_h = (glyph.h / 5).max(2);
+            let cx = glyph.x + glyph.w / 2;
+            let cy = glyph.y + glyph.h / 2;
+            let (a, b, c) = if up {
+                (
+                    (cx, cy - half_h),
+                    (cx - half_w, cy + half_h),
+                    (cx + half_w, cy + half_h),
+                )
+            } else {
+                (
+                    (cx, cy + half_h),
+                    (cx - half_w, cy - half_h),
+                    (cx + half_w, cy - half_h),
+                )
+            };
+            paint_win::fill_triangle(hdc, [a, b, c], t.dim);
         }
         if !rect_is_empty(&state.paint.input_field) {
             let field = win_rect_of(&state.paint.input_field);
@@ -1169,6 +1290,13 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
         }
         // 面板外描边（中性 `outline`，同 macOS：设计稿 `.chat` 的边界是 `--outline`）
         // + 内立体线（`panel_bevel`）；画在最后 = macOS CALayer border 的最外层。
+        // 条内按钮的投影（`paint_button_shadows`）先于描边：它只落在条面上，
+        // 不压面板描边。
+        let mut shadow_targets: Vec<HWND> = vec![state.nav_new, state.nav_history];
+        shadow_targets.extend(state.tab_children.iter().map(|child| child.hwnd));
+        shadow_targets.extend([state.stop, state.pick_images, state.send]);
+        shadow_targets.extend(state.pending_children.iter().map(|child| child.hwnd));
+        paint_button_shadows(hdc, state.hwnd, &shadow_targets);
         paint_win::draw_frame(hdc, full, t.outline, &t.panel_bevel);
     }
 }
@@ -1192,6 +1320,17 @@ unsafe fn paint_canvas_shell(state: &ChatWinState, hdc: HDC) {
     if let Some(inset) = t.log_inset {
         paint_win::draw_inset(hdc, full, &inset, true);
     }
+    // 聊天列的左右外描边（`--outline`）：画布从聊天窗客户区 x=0 起、横跨整列，
+    // `paint_shell` 末尾 `draw_frame(full, …)` 的左右两列被它盖住 —— 于是
+    // **舞台列与聊天列之间那条分界线**（mac 侧由 `DIVIDER_WIDTH` 分隔条右缘
+    // 的 1px `outline` 承担，见 `macos_main::paint_divider`）与右窗沿都会丢
+    //（用户 2026-10-07 实拍「细分割线没了」）。这里按同一 token 补回，不另造常量。
+    paint_win::fill_color(hdc, paint_win::Rect::new(0, 0, 1, full.h), t.outline);
+    paint_win::fill_color(
+        hdc,
+        paint_win::Rect::new(full.w - 1, 0, 1, full.h),
+        t.outline,
+    );
     for frame in &state.card_frames {
         let rect = paint_win::Rect::new(
             frame.rect.left,
@@ -1228,6 +1367,9 @@ unsafe fn paint_canvas_shell(state: &ChatWinState, hdc: HDC) {
             }
         }
     }
+    // 「↓ 新消息」按钮（聊天窗的子窗，悬在画布之上）的接触影：它下方可见的表面
+    // 就是这条画布，母通道按同一口径补（同 `paint_button_shadows` 的 why）。
+    paint_button_shadows(hdc, state.canvas, &[state.jump]);
 }
 
 // ==========================================
@@ -1270,6 +1412,11 @@ unsafe fn paint_inspector_layer(state: &ChatWinState, hdc: HDC) {
             scaled_f(f64::from(t.radii.md), scale),
             scaled(INSPECTOR_HEADER_HEIGHT, scale),
         );
+        // 浮层内自绘按钮的接触影：按钮自己的 DC 画不出窗口外（见
+        // `paint_button_shadows`），由层窗这条父通道补。
+        let mut targets: Vec<HWND> = vec![state.inspector_close];
+        targets.extend(state.inspector_children.iter().map(|child| child.hwnd));
+        paint_button_shadows(hdc, state.inspector_layer, &targets);
     }
 }
 
@@ -1296,6 +1443,13 @@ unsafe fn paint_history_layer(state: &ChatWinState, hdc: HDC) {
         paint_win::fill_color(hdc, panel_box, scrim);
         // header_h = 0：不画标题行（内容自带标题行）。
         paint_inspector_box(hdc, panel_box, scaled_f(f64::from(t.radii.md), scale), 0);
+        // 弹层内自绘按钮的接触影（父通道；同 `paint_inspector_layer`）。
+        let targets: Vec<HWND> = state
+            .history_children
+            .iter()
+            .map(|child| child.hwnd)
+            .collect();
+        paint_button_shadows(hdc, state.history_layer, &targets);
     }
 }
 
@@ -1604,27 +1758,10 @@ unsafe extern "system" fn overlay_layer_wndproc(
 /// 再按**动作后的新快照**整帧重建 —— 平台层不翻转任何本地状态
 /// （`ChatSnapshot::inspector_open` 就是开合的唯一输入，见字段注释）。
 /// 模型随后排的刷新因版本号未变会被丢弃，这里的立即重建才是当帧生效点。
+///
+/// 入口只有一个：整条把手带的 `WM_LBUTTONDOWN`（箭头是同一块面上的绘制，
+/// 不再有子按钮 —— 两个入口曾在同一次点击里开完又关，见 `build_children` 注释）。
 unsafe fn toggle_inspector_ui() {
-    // 同击竞态护栏（2026-10-07 实机「浮层闪一下就消失」）：浮层刚开（≤500ms）时
-    // 到达的「再点一次」若是同一次手势的残留消息，会立刻把它又合上 —— 按竞态忽略
-    // 并留痕；护栏触发行即真实来源证据（过了窗口期的再点照常开合）。
-    let young_open = CHAT.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .and_then(|state| {
-                if state.inspector_open {
-                    state.inspector_opened_at
-                } else {
-                    None
-                }
-            })
-            .map(|at| at.elapsed() < std::time::Duration::from_millis(500))
-            .unwrap_or(false)
-    });
-    if young_open {
-        rust_info!("浮层开启后 500ms 内收到再次开合请求，已按同击竞态忽略（护栏；来源=把手/箭头）");
-        return;
-    }
     if let Err(error) = crate::ui::chat::apply_panel_action(PanelAction::ToggleInspector) {
         // 纯显示动作在共享层提前返回、正常到不了这里；失败如实留痕（不重建，
         // 界面保持与模型一致）。
@@ -1644,20 +1781,6 @@ unsafe fn close_inspector_ui() {
     });
     if !open {
         return; // 已经收着：空操作（与共享层 `close_inspector` 同义）
-    }
-    // 同击竞态护栏（2026-10-07 实机「浮层闪一下就消失」）：✕ 与遮罩两条关闭路都
-    // 汇到这里；开启后 ≤500ms 内到达的收起请求按同一次手势的残留消息忽略并留痕
-    //（护栏触发行即真实关闭来源的实机证据；过窗后的正常收起不受影响）。
-    let young = CHAT.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .and_then(|state| state.inspector_opened_at)
-            .map(|at| at.elapsed() < std::time::Duration::from_millis(500))
-            .unwrap_or(false)
-    });
-    if young {
-        rust_info!("浮层开启后 500ms 内收到收起请求，已按同击竞态忽略（护栏；来源=✕/遮罩路径）");
-        return;
     }
     if let Err(error) = crate::ui::chat::apply_panel_action(PanelAction::CloseInspector) {
         rust_warn!("浮层收起动作未送达共享层: {error}");
@@ -1729,10 +1852,17 @@ fn bottom_stack(
         pending_y
     };
     let panel_top = panel_bottom - panel_h;
+    // 正文下沿与 mac `chat_bands` 的 `scroll_y` 逐档对齐：
+    // - 有流内面板 → 面板上沿之上留一个 `PANE_GAP`；
+    // - 有待发送条 → 直接贴条的上沿（条在 composer 面里，不另留缝）；
+    // - 都没有 → **贴把手带上沿**（旧实现贴 `pending_y` = 把手带上方 8px，
+    //   实机就是「上拉条上方那条灰线与 composer 之间空一截」，用户 2026-10-07 实拍）。
     let canvas_bottom = if panel_h > 0 {
         panel_top - gap
+    } else if pending_h > 0 {
+        pending_y
     } else {
-        panel_bottom
+        handle_y
     };
     BottomStack {
         input_y,
@@ -1741,6 +1871,129 @@ fn bottom_stack(
         panel_bottom,
         panel_top,
         canvas_bottom,
+    }
+}
+
+/// 把条内自绘按钮的投影**画在父窗通道里**（按钮自己的 DC 画不出窗口矩形之外）。
+///
+/// mac 侧投影是 CALayer 的层外扩散（药丸「浮」在面上）；Windows 的子窗口只能把
+/// 投影画进自己矩形内，外沿那圈被裁掉、内侧又贴着药丸边 —— 实机读成一条贴边硬环
+/// （用户 2026-10-07 实拍）。父窗先画一遍同口径投影：落在按钮矩形**之外**的部分
+/// 才是可见增量（矩形内会被按钮自己的面盖住），与 mac 的层外软晕同观感。
+///
+/// 每个按钮的角色/圆角都从它自己的登记取（`role_of` / `button_radius_of`），不落
+/// 第二份角色表；投影先画、按钮后画（子窗永远在父窗之上），顺序天然正确。
+unsafe fn paint_button_shadows(hdc: HDC, owner: HWND, controls: &[HWND]) {
+    let t = theme::tokens();
+    for &control in controls {
+        if control == 0 {
+            continue;
+        }
+        // 隐藏的控件不画投影：隐藏窗口照样有矩形（`GetWindowRect` 有效），不判可见
+        // 就会在它原来的位置上留一枚**没有按钮的灰药丸** —— 实机症状就是用户
+        // 2026-10-07 实拍的「上拉条上面一个莫名其妙的灰色气泡」（画布给隐藏的
+        // 「新消息」跳转按钮一直补接触影，按钮本身已 SW_HIDE）。
+        if unsafe { IsWindowVisible(control) } == 0 {
+            continue;
+        }
+        let role = paint_win::role_of(control);
+        let face = paint_win::button_face(t, role, false, false);
+        if face.shadow.contact.is_none() && face.shadow.ambient.is_none() {
+            continue; // 无投影角色（TabOff/Link/Pending…）不画
+        }
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        if unsafe { GetWindowRect(control, &mut rect) } == 0 {
+            continue;
+        }
+        let mut top_left = POINT {
+            x: rect.left,
+            y: rect.top,
+        };
+        unsafe { ScreenToClient(owner, &mut top_left) };
+        let target = paint_win::Rect::new(
+            top_left.x,
+            top_left.y,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+        );
+        if target.is_empty() {
+            continue;
+        }
+        let radius = paint_win::button_radius_of(control);
+        // 单层接触影（见 `draw_contact_shadow` 的 why）：按钮的投影在 mac 是层外
+        // 扩散，分层版在这里会四周压出硬环。
+        if let Some(contact) = face.shadow.contact {
+            unsafe { paint_win::draw_contact_shadow(hdc, target, radius, &contact) };
+        }
+    }
+}
+
+/// RTF `\fonttbl` 里的正文字体族（与控件字体同源）：RTF 文本的字体族由 fonttbl
+/// 决定，`WM_SETFONT` 管不到它 —— 两处若各写一份族名，就会「控件换了族、正文还
+/// 停在旧族」（行距/字形不一致）。
+fn rtf_body_font_family() -> String {
+    let snapshot = crate::ui::font::snapshot();
+    snapshot
+        .family
+        .clone()
+        .unwrap_or_else(paint_win::resolve_ui_font_family)
+}
+
+/// `GetPixel` 取 DC 上一点的实色（COLORREF → `Rgba`）；越界/裁剪外返回 `None`。
+unsafe fn sample_dc_color(hdc: HDC, x: i32, y: i32) -> Option<theme::Rgba> {
+    let value = unsafe { GetPixel(hdc, x, y) };
+    (value != u32::MAX).then(|| paint_win::rgba_from_colorref(value))
+}
+
+/// 采样条区实色并登记给条上的自绘按钮（圆角补角用「它们实际坐的面」）。
+///
+/// ownerdraw 按钮的圆角是**画出来的**（窗口区域 `SetWindowRgn` 实机不生效，见
+/// `paint_win::apply_round_region`），四角那块 `矩形 − 圆角矩形` 由
+/// `paint_win::draw_button` 补底色 —— 补错色就是四角深色方块（`panel_bg` 比条区
+/// 实际色暗 ~35 灰阶，用户 2026-10-07 实拍「按钮黑色方角」）。条区刚画完时从同一
+/// DC 取一点，拿到的就是最终可见色（含 sheen/颗粒/叠层），不另建色值定义点。
+///
+/// **逐控件按自己的中心采样**：条面带 sheen（横向渐变），整条共用一个探针点时
+/// 远离探针的按钮会差 ~7 灰阶 —— 实机就是「药丸后面一块比条底亮的矩形」
+/// （用户 2026-10-07 实拍「新会话」）。`fallback` 只在控件矩形取不到时用。
+unsafe fn register_band_surface(
+    _hdc: HDC,
+    owner: HWND,
+    _fallback: (i32, i32),
+    controls: &[HWND],
+) {
+    // **不能用 `GetPixel` 采 DC**：WM_PAINT 期间 DC 被更新区裁剪，采样点落在
+    // 更新区之外就返回 `CLR_INVALID` —— 实机日志显示每个按钮的采样都失败，表面色
+    // 从未登记上，四角只能落回与条底差 ~35 灰阶的 `bg_base`（用户实拍「药丸后面
+    // 一块矩形灰底」）。改成从 token 直接算：条底面 = `strip_bg` 叠在面板底渐变上，
+    // 行位置取控件中心那一行。
+    let tokens = theme::tokens();
+    let mut client: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(owner, &mut client) };
+    let height = f64::from((client.bottom - client.top).max(1));
+    for &control in controls {
+        if control == 0 {
+            continue;
+        }
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        // 表面上下两行：按钮矩形顶/底边换算成面板渐变的 t，条色 `strip_bg` 叠在
+        // 面板底之上 —— 补角按这段渐变铺，四角与条底逐像素同色。
+        let (top_y, bottom_y) = if unsafe { GetWindowRect(control, &mut rect) } != 0 {
+            let mut point = POINT {
+                x: (rect.left + rect.right) / 2,
+                y: rect.top,
+            };
+            unsafe { ScreenToClient(owner, &mut point) };
+            let span = f64::from(rect.bottom - rect.top).max(1.0);
+            (f64::from(point.y), f64::from(point.y) + span)
+        } else {
+            (0.0, height)
+        };
+        let sample = |y: f64| {
+            let t = (y / height).clamp(0.0, 1.0);
+            paint_win::composite_over(tokens.strip_bg, paint_win::fill_sample(&tokens.panel_bg, t))
+        };
+        paint_win::set_surface_rows(control, sample(top_y), sample(bottom_y));
     }
 }
 
@@ -1810,14 +2063,11 @@ fn inspector_body_view_height(panel_box: paint_win::Rect, scale: f64) -> i32 {
     .max(1)
 }
 
-/// 把手箭头的朝向文案：浮层收着 = 上拉（▴）、开着 = 可往下收（▾）。
-/// 朝向表示「点一下会发生什么」（旧 meta 轨 chip 的翻面口径）。
-fn handle_arrow_label(inspector_open: bool) -> &'static str {
-    if inspector_open {
-        "▾"
-    } else {
-        "▴"
-    }
+/// 把手箭头的朝向：浮层收着 = 上拉（▴）、开着 = 可往下收（▾）。
+/// 朝向表示「点一下会发生什么」（旧 meta 轨 chip 的翻面口径）；绘制端按它选三角的
+/// 顶点方向（共享 `handle_arrow_label` 的字形口径，Windows 画几何、不依赖字体覆盖）。
+fn handle_arrow_up(inspector_open: bool) -> bool {
+    !inspector_open
 }
 
 /// 把手带的状态文案：**只取中性系统回执 `notice`**（用户规则 2026-10-05：
@@ -1833,38 +2083,6 @@ fn handle_status_label(status: &StatusSnapshot) -> String {
 /// 同口径）：没有真实文案时不亮一个看起来像「在线」的常亮点。
 fn handle_status_dot_visible(label: &str) -> bool {
     !label.is_empty()
-}
-
-/// 把手箭头**按钮**的区域（客户区坐标；以共享 [`handle_arrow_frame`] 的 10×10
-/// 字形框为锚：按钮取整个 `HANDLE_ARROW_WIDTH` 宽的条区、以字形中心为水平中心、
-/// 占满带高）。共享几何第二版把字形**水平+垂直居中**，这里跟着居中——
-/// 否则会出现「看到的箭头在中间、能点的地方在右边」。
-///
-/// 它与把手带其余位置平权：按钮只是「箭头」这个视觉提示自己的点按区，带内
-/// 其它地方由聊天窗 `WM_LBUTTONDOWN` 段接（都调 `toggle_inspector_ui`）。
-///
-/// 为什么按钮比字形大：10px 的点按区太难点；文案由 `draw_button` 居中绘制，
-/// 字形因此正好落回共享 frame（纯函数测试钉住中心点一致）。
-fn handle_arrow_area(
-    glyph: crate::ui::chat::panels::PanelFrame,
-    handle_h: i32,
-    scale: f64,
-) -> paint_win::Rect {
-    let arrow_w = scaled_f(crate::ui::chat::panels::HANDLE_ARROW_WIDTH, scale);
-    let center_x = scaled_f(glyph.x + glyph.width / 2.0, scale);
-    paint_win::Rect::new((center_x - arrow_w / 2).max(0), 0, arrow_w, handle_h.max(0))
-}
-
-/// 把手上拉箭头跟随浮层开合翻面（只在文案变化时下发，避免逐帧 SetWindowText）。
-fn update_handle_arrow(state: &ChatWinState) {
-    if state.handle_arrow == 0 {
-        return;
-    }
-    let label = handle_arrow_label(state.inspector_open);
-    let current = unsafe { read_window_text(state.handle_arrow) };
-    if current != label {
-        unsafe { SetWindowTextW(state.handle_arrow, wide(label).as_ptr()) };
-    }
 }
 
 /// 会话历史弹层的盒几何（弹层层窗客户区坐标）：**右缘对齐锚点**（「历史」按钮
@@ -1891,6 +2109,70 @@ fn rect_contains(rect: paint_win::Rect, x: i32, y: i32) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
 }
 
+/// 控件 -> （承载窗, 承载窗自己的绘制例程）：ownerdraw 按钮的「底」重放源。
+///
+/// 只认两种归属，其余窗口（浮层 / 历史弹层 / 文档弹窗）本轮不接、返回 `None`：
+/// - 聊天窗自己的子控件（新会话 / 加号 / 历史 / 图片 / 发送 / 停止 / 待发送 chip）
+///   走 `paint_shell`（聊天窗客户区坐标）；
+/// - 悬在正文画布上的「新消息」跳转按钮与画布内 chip 走 `paint_canvas_shell`
+///   （原点由 `control_rect_in_parent(control, state.canvas)` 换算，见调用点）。
+///
+/// `state.jump` 的父窗是聊天窗、底却是画布：归属按**控件语义**判定、不按父窗，
+/// 否则会把画布上的内容重放成聊天窗的面（药丸四角会与其下消息内容对不上）。
+fn button_backdrop_owner(
+    state: &ChatWinState,
+    control: HWND,
+) -> Option<(HWND, unsafe fn(&ChatWinState, HDC))> {
+    if control == 0 {
+        return None;
+    }
+    let parent = unsafe { GetParent(control) };
+    if control == state.jump || parent == state.canvas {
+        return Some((state.canvas, paint_canvas_shell));
+    }
+    if parent == state.hwnd {
+        return Some((state.hwnd, paint_shell));
+    }
+    None
+}
+
+/// 把控件矩形里的**真实底**（承载窗自己画的像素）贴到控件 DC 上。
+///
+/// 这是本轮「灰色矩形底」的唯一修法：ownerdraw 子控件是不透明表面，矩形里的一切
+/// 都得控件自己画；旧口径用 `strip_bg` 合成 `panel_bg` 的近似值补底 / 补角，而真实
+/// 条底还叠了 sheen / 颗粒 / 投影，实测差 20+ 灰阶（2026-10-07 实机：加号按钮四角
+/// `(192,202,212)` vs 相邻条区 `(223,230,238)`）。重放走承载窗**自己的绘制例程**，
+/// 四角与周围逐像素同色。
+///
+/// 失败（`CHAT` 重建持借期间、控件不属于这两个承载窗、位图建不出）返回 `false`：
+/// 调用方按旧近似口径画完并留痕，不静默变形。
+unsafe fn blit_button_backdrop(item: &DrawItemStruct, rect: paint_win::Rect) -> bool {
+    let control = item.hwndItem;
+    CHAT.with(|cell| {
+        // 重建 / 布局持借期间不重入（仓库 UI 借用纪律：RefCell 不得重入）。
+        let Ok(slot) = cell.try_borrow() else {
+            return false;
+        };
+        let Some(state) = slot.as_ref() else {
+            return false;
+        };
+        let Some((owner, painter)) = button_backdrop_owner(state, control) else {
+            return false;
+        };
+        let Some(origin) = paint_win::control_rect_in_parent(control, owner) else {
+            return false;
+        };
+        unsafe {
+            paint_win::blit_backdrop(
+                item.hDC,
+                rect,
+                (origin.x, origin.y),
+                |hdc| painter(state, hdc),
+            )
+        }
+    })
+}
+
 /// ownerdraw 按钮统一绘制（聊天窗与画布共用；角色/悬浮从控件自身读）。
 unsafe fn draw_themed_button(item: &DrawItemStruct) {
     let tokens = theme::tokens();
@@ -1910,6 +2192,7 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
     // 底/边/按下态照常走 `draw_button`，标题由这里手工摆（缩略图占掉左侧一段）。
     let thumb = PENDING_THUMBS.with(|images| images.borrow().get(&item.hwndItem).cloned());
     if let Some(frame) = thumb {
+        let backdrop = unsafe { blit_button_backdrop(item, rect) };
         unsafe {
             draw_pending_chip(
                 item.hDC,
@@ -1920,6 +2203,7 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
                 &frame,
                 pressed,
                 disabled,
+                backdrop,
             )
         };
         return;
@@ -1928,8 +2212,18 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
     // 必须走 `draw_pending_label` —— 否则末尾的 ✕ 会被 `DT_END_ELLIPSIS` 吃掉。
     if role == ButtonRole::Pending {
         let scale = dpi_scale(item.hwndItem);
+        let backdrop = unsafe { blit_button_backdrop(item, rect) };
         unsafe {
-            paint_win::draw_button(item.hDC, item.hwndItem, rect, &face, "", pressed, disabled);
+            paint_win::draw_button(
+                item.hDC,
+                item.hwndItem,
+                rect,
+                &face,
+                "",
+                pressed,
+                disabled,
+                backdrop,
+            );
             draw_pending_label(
                 item.hDC,
                 rect,
@@ -1942,6 +2236,7 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
         }
         return;
     }
+    let backdrop = unsafe { blit_button_backdrop(item, rect) };
     unsafe {
         paint_win::draw_button(
             item.hDC,
@@ -1951,6 +2246,7 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
             &label,
             pressed,
             disabled,
+            backdrop,
         )
     };
 }
@@ -2050,9 +2346,19 @@ unsafe fn draw_pending_chip(
     frame: &DecodedFrame,
     pressed: bool,
     disabled: bool,
+    backdrop_painted: bool,
 ) {
     unsafe {
-        paint_win::draw_button(hdc, hwnd, rect, face, "", pressed, disabled);
+        paint_win::draw_button(
+            hdc,
+            hwnd,
+            rect,
+            face,
+            "",
+            pressed,
+            disabled,
+            backdrop_painted,
+        );
         let scale = dpi_scale(hwnd);
         let (thumb_w, thumb_h) =
             crate::ui::chat::pending_strip::thumb_display_size(frame.width, frame.height);
@@ -2147,18 +2453,17 @@ unsafe fn ctlcolor_static(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // 「坐在别的底上」的 STATIC 要返回所在表面的底色作背景刷（STATIC 会用它
     // 擦自己的客户区；返回面板底会补出一块异色板）：
     // - 输入区占位标签盖在 RichEdit 上 → 输入框的合成底色（`rich_bg(&field_bg)` 同值）；
-    // - 状态文字在把手带上（2026-10-05 第二次改版：状态文字进输入区上方的
-    //   把手带）→ 带底（`--fbg2` 叠底条色）的实色近似；
     // - 浮层标题行**没有标题文字**（标题没有共享来源，不自己造；行内只有 ✕）→
     //   不需要额外分支：默认面板底画刷即盒底同色。
-    let (placeholder, status) = CHAT.with(|cell| {
+    // 把手带的状态文字不再是 STATIC：子窗口的不透明表面会把 composer 渐变挡成一块
+    // 灰板（2026-10-07 实机），改由 `paint_shell` 单面绘制。
+    let placeholder = CHAT.with(|cell| {
         cell.try_borrow()
             .ok()
             .and_then(|cell| {
-                cell.as_ref()
-                    .map(|state| (state.input_placeholder, state.status))
+                cell.as_ref().map(|state| state.input_placeholder)
             })
-            .unwrap_or((0, 0))
+            .unwrap_or(0)
     });
     let color = paint_win::text_color_of(control).unwrap_or(tokens.ink);
     unsafe {
@@ -2167,9 +2472,6 @@ unsafe fn ctlcolor_static(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     }
     if control != 0 && control == placeholder {
         return paint_win::solid_brush(flat_over_panel(&tokens.field_bg)) as LRESULT;
-    }
-    if control != 0 && control == status {
-        return paint_win::solid_brush(handle_bg_flat(tokens)) as LRESULT;
     }
     paint_win::solid_brush(tokens.panel_bg.base_color()) as LRESULT
 }
@@ -2419,13 +2721,10 @@ pub(crate) fn apply_theme() {
     chat_apply(ChatRenderUpdate::Full(crate::ui::chat::snapshot()));
     with_chat(|state| unsafe {
         apply_input_theme(state);
-        // 把手带 ▴ 的表面色是**创建时**记的：主题切换后必须重记，否则它底还停在
-        // 上一个主题的带色上（与顶栏 `apply_theme` 同一坑）。
-        paint_win::set_surface_color(state.handle_arrow, handle_bg_flat(theme::tokens()));
         // ownerdraw 的窗口区域（SetWindowRgn）不随重绘更新，而 radii 跨主题不同
         // （sm/btn：brushed 4/5、chrome 8/9、verdigris 4/5）：按各按钮创建时的半径
         // 重贴区域（配对与创建处一致：浮层 ✕/＋/历史 用 `--r1`，其余主按钮/次要按钮
-        // 用 `--r3`；把手箭头无底无边、不需要圆角）。
+        // 用 `--r3`）。
         let scale = dpi_scale(state.hwnd);
         for (control, radius) in [
             (state.send, theme::tokens().radii.btn),
@@ -2440,7 +2739,6 @@ pub(crate) fn apply_theme() {
         }
         // 输入区承载件的圆角区域（radius 跨主题不同：sm 4/8/4）。
         apply_input_round_regions(state, scale);
-        stamp_ink(state.status, theme::tokens().dim);
         stamp_ink(state.input_placeholder, theme::tokens().dim);
         InvalidateRect(state.input_placeholder, std::ptr::null(), 1);
         InvalidateRect(state.hwnd, std::ptr::null(), 1);
@@ -2472,24 +2770,12 @@ pub(crate) fn apply_chat_font() {
         let ui_face = snapshot
             .family
             .clone()
-            .unwrap_or_else(|| "Microsoft YaHei UI".to_string());
-        let make = |height: f64, weight: i32, face: &str| unsafe {
-            CreateFontW(
-                -scaled(height.round() as i32, scale),
-                0,
-                0,
-                0,
-                weight,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET as u32,
-                OUT_DEFAULT_PRECIS as u32,
-                CLIP_DEFAULT_PRECIS as u32,
-                0,
-                0,
-                wide(face).as_ptr(),
-            )
+            .unwrap_or_else(paint_win::resolve_ui_font_family);
+        // 统一走 `paint_win::create_ui_font`（**灰度抗锯齿**）：系统缺省的
+        // DEFAULT_QUALITY 会打开 ClearType，浅底小字上出现橙/蓝彩边（实机与 mac
+        // 录制对比明显「脏」，2026-10-07）；顶栏已先行走这条路径。
+        let make = |height: f64, weight: i32, face: &str| {
+            paint_win::create_ui_font(-scaled(height.round() as i32, scale), weight, face)
         };
         let body = make(snapshot.scaled_size(13.0, 13.5), FW_NORMAL as i32, &ui_face);
         let small = make(snapshot.scaled_size(11.0, 13.5), FW_NORMAL as i32, &ui_face);
@@ -2508,12 +2794,11 @@ pub(crate) fn apply_chat_font() {
         unsafe {
             SendMessageW(state.input, WM_SETFONT, body as WPARAM, 1);
             SendMessageW(state.input_placeholder, WM_SETFONT, body as WPARAM, 1);
-            SendMessageW(state.status, WM_SETFONT, small as WPARAM, 1);
             SendMessageW(state.stop, WM_SETFONT, body as WPARAM, 1);
             SendMessageW(state.pick_images, WM_SETFONT, body as WPARAM, 1);
             SendMessageW(state.send, WM_SETFONT, body as WPARAM, 1);
             SendMessageW(state.jump, WM_SETFONT, small as WPARAM, 1);
-            // 浮层关闭键与把手箭头是常驻小号控件（标题行没有标题文字）。
+            // 浮层关闭键是常驻小号控件（标题行没有标题文字）。
             SendMessageW(state.inspector_close, WM_SETFONT, small as WPARAM, 1);
             for child in &state.pending_children {
                 SendMessageW(child.hwnd, WM_SETFONT, small as WPARAM, 1);
@@ -2553,6 +2838,47 @@ pub(crate) fn chat_apply(update: ChatRenderUpdate) {
         }
         ChatRenderUpdate::StatusOnly(status) => with_chat(|state| update_status(state, &status)),
     }
+    // 浮层/弹层子树的补画：层窗开合只走 `ShowWindow`，**状态借用期内**同步派回的
+    // WM_PAINT 会被重入保护跳过（更新区已被 BeginPaint 验证），而仅当盒几何变化时
+    // 才有的那次 `InvalidateRect` 又救不回来 —— 实机表现是「点一下浮层闪一下就
+    // 没有了」，只有外部强制重绘才出现（2026-10-07 逐像素取证）。这里在借用之外
+    // 补一次整棵子树的失效（含子控件），让浮层随开合真正上屏。
+    invalidate_overlay_layers();
+}
+
+/// 浮层 / 会话历史弹层的整棵子树失效（在状态借用**之外**调用，见 [`chat_apply`]）。
+fn invalidate_overlay_layers() {
+    let (inspector, history) = CHAT.with(|cell| {
+        cell.try_borrow()
+            .ok()
+            .and_then(|slot| {
+                slot.as_ref()
+                    .map(|state| (state.inspector_layer, state.history_layer))
+            })
+            .unwrap_or((0, 0))
+    });
+    // `RDW_UPDATENOW`：浮层开合只走 `ShowWindow`，同步派回的那次 WM_PAINT 会在
+    // 状态借用期内被重入保护跳过（BeginPaint 已把更新区验证掉）；只 `RDW_INVALIDATE`
+    // 的异步失效实机表现为「点一下浮层闪一下就没有了」，而外部同参数 +
+    // `RDW_UPDATENOW` 的强制重绘能让浮层立刻上屏（2026-10-07 逐像素取证）。
+    // 本函数在状态借用**之外**调用，同步绘制不会撞重入保护。
+    for layer in [inspector, history] {
+        if layer == 0 || unsafe { IsWindowVisible(layer) } == 0 {
+            continue;
+        }
+        let ok = unsafe {
+            RedrawWindow(
+                layer,
+                std::ptr::null(),
+                0,
+                RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            )
+        };
+        if ok == 0 {
+            // 不静默：失败就是这一帧浮层不上屏（与本函数要修的症状一致）。
+            rust_warn!("浮层子树失效失败（RedrawWindow 返回 0）；本帧浮层可能不重画");
+        }
+    }
 }
 
 /// 整帧应用：面板区 → 顶栏/标签条 → 待发送条 → 布局 → 正文画布 → 期限定时器
@@ -2560,14 +2886,7 @@ pub(crate) fn chat_apply(update: ChatRenderUpdate) {
 unsafe fn apply_full(state: &mut ChatWinState, snapshot: &crate::ui::chat::ChatSnapshot) {
     unsafe {
         // 浮层开合直接取快照（唯一真相源在模型；平台不翻转本地状态）。
-        if snapshot.inspector_open && !state.inspector_open {
-            // false→true 边沿：记开启时刻（同击竞态护栏的时间基准，见字段注释）。
-            state.inspector_opened_at = Some(std::time::Instant::now());
-        } else if !snapshot.inspector_open {
-            state.inspector_opened_at = None;
-        }
         state.inspector_open = snapshot.inspector_open;
-        update_handle_arrow(state);
         if state.active_session != snapshot.active_session {
             state.active_session = snapshot.active_session.clone();
             state.view_generation = state.view_generation.wrapping_add(1);
@@ -3492,17 +3811,18 @@ unsafe fn rebuild_tabs(state: &mut ChatWinState, snapshot: &crate::ui::chat::Cha
                 // 空间不够：右侧「+」「历史」入口优先，其余标签本帧不显示。
                 break;
             }
-            let mut title = String::new();
-            if tab.active {
-                title.push_str("▸ ");
-            }
-            title.push_str(&tab.name);
+            // 标签文字就是会话名：macOS `rebuild_tabs` 不给选中标签加任何前缀
+            // （选中语义由 pill 底表达）。旧实现在这里用「▸ 」当按下态标记，
+            // 与 mac 的字面不一致，已删除。
+            let mut title = tab.name.clone();
             if tab.interrupted {
                 title.push_str(" !");
             }
             let index = state.session_targets.len();
+            // 选中标签的底是 mac 的 pill 视图（完整渐变 + 描边 + 立体线 + 投影），
+            // 不是按钮面 —— 角色见 `ButtonRole::TabPill`。
             let tab_role = if tab.active {
-                ButtonRole::TabOn
+                ButtonRole::TabPill
             } else {
                 ButtonRole::TabOff
             };
@@ -3928,7 +4248,11 @@ unsafe fn build_children(hwnd: HWND) {
             0,
             wide(CANVAS_CLASS).as_ptr(),
             wide("").as_ptr(),
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN,
+            // `WS_CLIPSIBLINGS`：画布与浮层/弹层是重叠兄弟窗。缺它时画布重绘会把
+            // 自己画进**上层浮层**的区域（本文件同类问题已有定论，见占位标签与
+            // 面板底板的同款注释），实机症状就是「浮层开了、内容也对，但屏幕上
+            // 被画布盖回原样」——只有外部强制重绘浮层才看得见（2026-10-07）。
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
             0,
             0,
             100,
@@ -4009,30 +4333,10 @@ unsafe fn build_children(hwnd: HWND) {
         );
     }
 
-    // ── 状态文字（**只显示中性系统通知 `notice`**：过程状态文案（阶段/工具）
-    //    只在顶栏显示、底部不重复 —— 用户规则 2026-10-05，口径在
-    //    [`handle_status_label`]；第二次改版起挂在把手带左侧、圆点之后，位置由
-    //    `layout_panes_for` 驱动；左对齐是 STATIC 默认样式）。命中做穿透：
-    //    把手带整条可点，点状态文字也开合浮层（见 `chat_wndproc` 的 WM_LBUTTONDOWN）──
-    let status = unsafe {
-        CreateWindowExW(
-            0,
-            wide("STATIC").as_ptr(),
-            wide("").as_ptr(),
-            WS_CHILD | WS_VISIBLE,
-            0,
-            0,
-            100,
-            scaled(LABEL_HEIGHT, scale),
-            hwnd,
-            STATUS_ID as HMENU,
-            hinstance,
-            std::ptr::null(),
-        )
-    };
-    // 命中穿透与占位标签同款（子类 id 按窗口独立，两条互不影响）；不穿透的话
-    // 点在状态文字上会被 STATIC 吃掉，把手带就不是「整条可点」。
-    unsafe { SetWindowSubclass(status, Some(hit_transparent_subclass_proc), 2, 0) };
+    // 把手带的状态文字不建 STATIC：它是 composer 面上的一行字，子窗口的不透明
+    // 表面会把渐变挡成一块灰板（2026-10-07 实机），改由 `paint_shell` 单面绘制，
+    // 几何槽在 `layout_panes_for` 的 `paint.handle_status`（文案口径见
+    // [`handle_status_label`]：只显示中性系统通知 `notice`）。
 
     // ── 停止按钮（运行中显示；运行态由 `deskpet-run-state` 回推）──
     let stop = unsafe {
@@ -4120,34 +4424,10 @@ unsafe fn build_children(hwnd: HWND) {
         ShowWindow(jump, SW_HIDE);
     }
 
-    // ── 把手带上的上拉小箭头（浮层入口之一；点它 / 再点一次开合浮层）──
-    //
-    // 无底无边的小字入口（`ButtonRole::TabOff`）：箭头只是把手带上一个字，
-    // 不引入第三块「按钮面」。文案随 `inspector_open` 翻面（见 `update_handle_arrow`），
-    // 位置在布局里由共享 `handle_arrow_frame` 对齐；带内其余位置由聊天窗的
-    // `WM_LBUTTONDOWN` 段接住（同一个开合入口）。
-    let handle_arrow = unsafe {
-        CreateWindowExW(
-            0,
-            wide("BUTTON").as_ptr(),
-            wide(handle_arrow_label(false)).as_ptr(),
-            WS_CHILD | WS_VISIBLE,
-            0,
-            0,
-            10,
-            10,
-            hwnd,
-            BTN_HANDLE_ID as HMENU,
-            hinstance,
-            std::ptr::null(),
-        )
-    };
-    unsafe {
-        make_themed_button_r(handle_arrow, ButtonRole::TabOff, scale, 0.0);
-        // ▴ 是「无面」角色，绘制端要把它自己的底盖回**把手带**的色（不是通用条底色）——
-        // 不记这一笔就会在带中央补出一块浅色板（用户实拍「上拉条也不对」）。
-        paint_win::set_surface_color(handle_arrow, handle_bg_flat(theme::tokens()));
-    }
+    // 把手上拉箭头同样**单面绘制**（见 `paint_shell` 的三角段）：它曾是
+    // `ButtonRole::TabOff` 的子按钮，按钮自己的表面色会在带中央补出一块方板，
+    // 且同一次点击会既进聊天窗的 `WM_LBUTTONDOWN` 又进按钮的 `WM_COMMAND`
+    //（开完立刻被关掉 —— 用户 2026-10-07 实拍「点一下闪一下就消失」）。
 
     // ── 浮层 Inspector 的承载窗口（遮罩 + 浮层盒 = 同一个子窗口）──
     //
@@ -4161,7 +4441,9 @@ unsafe fn build_children(hwnd: HWND) {
             0,
             wide(LAYER_CLASS).as_ptr(),
             wide("").as_ptr(),
-            WS_CHILD, // 不带 WS_VISIBLE：开合由 layout_panes_for 驱动
+            // 不带 WS_VISIBLE：开合由 layout_panes_for 驱动。
+            // `WS_CLIPSIBLINGS`：与画布重叠，重绘互不越界（见画布创建处的同款注释）。
+            WS_CHILD | WS_CLIPSIBLINGS,
             0,
             0,
             10,
@@ -4244,7 +4526,8 @@ unsafe fn build_children(hwnd: HWND) {
             0,
             wide(LAYER_CLASS).as_ptr(),
             wide("").as_ptr(),
-            WS_CHILD, // 不带 WS_VISIBLE：开合由 layout_history_layer 驱动
+            // 不带 WS_VISIBLE：开合由 layout_history_layer 驱动；同款 `WS_CLIPSIBLINGS`。
+            WS_CHILD | WS_CLIPSIBLINGS,
             0,
             0,
             10,
@@ -4291,23 +4574,10 @@ unsafe fn build_children(hwnd: HWND) {
     }
 
     // 系统字体（与 Windows 端既有口径一致：微软雅黑 UI / 等宽 Consolas）。
-    let make_font = |height: i32, weight: i32, face: &str| unsafe {
-        CreateFontW(
-            -scaled(height, scale),
-            0,
-            0,
-            0,
-            weight,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            OUT_DEFAULT_PRECIS as u32,
-            CLIP_DEFAULT_PRECIS as u32,
-            0,
-            0,
-            wide(face).as_ptr(),
-        )
+    // 灰度抗锯齿（`create_ui_font`）：与顶栏/全局字体同一路径，不用 ClearType
+    //（浅底小字彩边，2026-10-07 实机）。
+    let make_font = |height: i32, weight: i32, face: &str| {
+        paint_win::create_ui_font(-scaled(height, scale), weight, face)
     };
     // 全局字体快照（`appearance.font` 的投影）：族名缺省回落 W8a 既有的中文 UI 字体，
     // 字号按「正文 13」基线同比缩放；等宽体保持 Consolas（代码块语义不随全局族名改）。
@@ -4315,7 +4585,7 @@ unsafe fn build_children(hwnd: HWND) {
     let ui_face = snapshot
         .family
         .clone()
-        .unwrap_or_else(|| "Microsoft YaHei UI".to_string());
+        .unwrap_or_else(paint_win::resolve_ui_font_family);
     let body_size = snapshot.scaled_size(13.0, 13.5).round() as i32;
     let small_size = snapshot.scaled_size(11.0, 13.5).round() as i32;
     let mono_size = snapshot.scaled_size(12.0, 13.5).round() as i32;
@@ -4329,14 +4599,11 @@ unsafe fn build_children(hwnd: HWND) {
         // 占位与输入文本同字体（macOS 占位与输入框同为 14pt）；字色 dim（次要文字）。
         SendMessageW(input_placeholder, WM_SETFONT, body as WPARAM, 1);
         stamp_ink(input_placeholder, theme::tokens().dim);
-        SendMessageW(status, WM_SETFONT, small as WPARAM, 1);
         SendMessageW(stop, WM_SETFONT, body as WPARAM, 1);
         SendMessageW(pick_images, WM_SETFONT, body as WPARAM, 1);
         SendMessageW(send, WM_SETFONT, body as WPARAM, 1);
         SendMessageW(jump, WM_SETFONT, small as WPARAM, 1);
-        // 把手箭头与状态位同为小号 chrome。
-        SendMessageW(handle_arrow, WM_SETFONT, small as WPARAM, 1);
-        // 关闭键与把手箭头是小号 chrome（标题行没有标题文字）。
+        // 关闭键是小号 chrome（标题行没有标题文字）。
         SendMessageW(inspector_close, WM_SETFONT, small as WPARAM, 1);
         if pane {
             // A1：标签条按钮用小号字体（导航条是次要 chrome）。
@@ -4344,8 +4611,6 @@ unsafe fn build_children(hwnd: HWND) {
                 SendMessageW(control, WM_SETFONT, small as WPARAM, 1);
             }
         }
-        // 字色：状态文字（把手带左侧）是次要文字 dim。
-        stamp_ink(status, theme::tokens().dim);
         // 输入区的 Enter 语义（发送/换行/IME 组合）经子类接管。
         SetWindowSubclass(input, Some(input_subclass_proc), 1, 0);
     }
@@ -4357,7 +4622,6 @@ unsafe fn build_children(hwnd: HWND) {
             canvas,
             input,
             input_placeholder,
-            status,
             stop,
             fonts: vec![body, small, bold, mono],
             content_height: 0,
@@ -4377,7 +4641,6 @@ unsafe fn build_children(hwnd: HWND) {
             panel_children: Vec::new(),
             panel_height: 0,
             panel_actions: Vec::new(),
-            handle_arrow,
             handle_status_label: String::new(),
             inspector_layer,
             inspector_close,
@@ -4388,7 +4651,6 @@ unsafe fn build_children(hwnd: HWND) {
             inspector_scroll_y: 0,
             inspector_box: paint_win::Rect::new(0, 0, 0, 0),
             inspector_open: false,
-            inspector_opened_at: None,
             history_layer,
             history_children: Vec::new(),
             history_height: 0,
@@ -4473,23 +4735,17 @@ unsafe fn layout_panes_for(state: &mut ChatWinState) {
         let (input_y, handle_y, pending_y) = (stack.input_y, stack.handle_y, stack.pending_y);
         let (panel_bottom, panel_top, canvas_bottom) =
             (stack.panel_bottom, stack.panel_top, stack.canvas_bottom);
-        // 把手带的箭头按钮：位置由共享 `handle_arrow_frame` 给出（10×10 **水平+垂直
-        // 居中**），按钮取整个箭头**区域**（`HANDLE_ARROW_WIDTH` 宽 × 带高）——
-        // 居中的 10×10 字形正好落在共享 frame 的圆心（纯函数测试钉住），点按区域
-        // 又不至于只有 10px 那么难点。
-        if state.handle_arrow != 0 {
-            let logical_width = f64::from(width) / scale;
-            let glyph = handle_arrow_frame(logical_width);
-            let arrow_area = handle_arrow_area(glyph, handle_h, scale);
-            MoveWindow(
-                state.handle_arrow,
-                arrow_area.x,
-                handle_y + arrow_area.y,
-                arrow_area.w,
-                arrow_area.h,
-                1,
-            );
-        }
+        // 把手带的箭头**字形框**（共享 `handle_arrow_frame`：10×10、水平+垂直居中）：
+        // 绘制端按它画三角；命中不在这里 —— 整条带都是开合区（`WM_LBUTTONDOWN`）。
+        let arrow_glyph = {
+            let glyph = handle_arrow_frame(f64::from(width) / scale);
+            RECT {
+                left: scaled_f(glyph.x, scale),
+                top: handle_y + scaled_f(glyph.y, scale),
+                right: scaled_f(glyph.x + glyph.width, scale),
+                bottom: handle_y + scaled_f(glyph.y + glyph.height, scale),
+            }
+        };
         // A3：待发送条（有选择时）在输入行之上、功能面板区之下；无选择时高度为 0。
         // 2026-10-06 横向可滚：子控件 x 记的是**内容坐标**，这里按滚动偏移平移；
         // 越界偏移钳回（撤选/变窄后不留空白滚动区），新增条目滚到最右露出刚加的图。
@@ -4575,21 +4831,20 @@ unsafe fn layout_panes_for(state: &mut ChatWinState) {
         // 状态文字：把手带**左半侧**、圆点之后（点 + 文字，垂直居中）；可用宽来自
         // 共享 `handle_status_width(width)`（箭头居中后它只给左半侧：
         // `(宽 − 30)/2 − 4`，窄窗可能压到 0），再扣掉左侧点与间距；
-        // 单行省略由 STATIC 的默认行为承担。
+        // 单行省略由绘制端的 `DT_END_ELLIPSIS` 承担。**单面绘制**：文字槽只记几何，
+        // 没有 STATIC 子控件（它的不透明表面会把 composer 渐变挡成灰板）。
         let status_text_x = scaled(
             HANDLE_STATUS_PAD_X + HANDLE_STATUS_DOT_RADIUS * 2 + HANDLE_STATUS_TEXT_GAP,
             scale,
         );
         let status_text_w = scaled_f(handle_status_width(f64::from(width) / scale), scale)
             - scaled(HANDLE_STATUS_DOT_RADIUS * 2 + HANDLE_STATUS_TEXT_GAP, scale);
-        MoveWindow(
-            state.status,
-            status_text_x,
-            handle_y + (handle_h - status_h).max(0) / 2,
-            status_text_w.max(scaled(24, scale)),
-            status_h,
-            1,
-        );
+        let handle_status = RECT {
+            left: status_text_x,
+            top: handle_y + (handle_h - status_h).max(0) / 2,
+            right: status_text_x + status_text_w.max(scaled(24, scale)),
+            bottom: handle_y + (handle_h - status_h).max(0) / 2 + status_h,
+        };
         // 输入行内右侧：「图片」+ 主按钮槽（设计稿 `.inp` 的「图片 + 主按钮」）。
         // 主按钮槽里空闲显示「发送」、运行中显示「停止」（`update_status` 切换），
         // 两者都比槽窄、在槽内水平居中；运行中仍可经 Enter 发送（插话/投递语义）。
@@ -4672,22 +4927,38 @@ unsafe fn layout_panes_for(state: &mut ChatWinState) {
                 bottom: pending_y + pending_h,
             };
         }
-        // 把手带（输入行上方一行；`--fbg2` 底 + 状态点在 `paint_shell` 画）。
+        // 把手带（输入行上方一行；**无底色、无分隔线**，只有状态点/文字与 ▴ ——
+        // 与 macOS 模块头同口径；带区仍有独立命中区，开合浮层）。
         paint.handle = RECT {
             left: 0,
             top: handle_y,
             right: width,
             bottom: handle_y + handle_h,
         };
-        // 输入区底条（主题 `--ibg`）：覆盖输入行 + 把手带 + 与上方条区之间的间距
-        // ——与 macOS `relayout_panes` 的 band_height 同口径；带条自带 `--fbg2` 底，
-        // 在 `paint_shell` 里画在底条**之后**（顺序有依赖，别调换）。
+        paint.handle_status = handle_status;
+        paint.handle_arrow = arrow_glyph;
+        // 输入区底条（主题 `--ibg`）：**composer 的整块面**，上沿与 macOS
+        // `composer_top_from_bands` 同源：**覆盖待发送条（若有）+ 把手带 + 输入行**
+        // 一整块（`macos_chat.rs::relayout_panes` 的注释「composer 从消息流下沿一直
+        // 铺到窗口底，一整块面」）。旧实现无条时从把手带**下沿**开始铺，带区落在
+        // 面上之外 —— 实机就是「输入框上方多出一条灰带」（用户 2026-10-07 实拍）。
+        let composer_top = if pending_h > 0 { pending_y } else { handle_y };
         paint.input_bar = RECT {
             left: 0,
-            top: handle_y - gap,
+            top: composer_top,
             right: width,
             bottom: height,
         };
+        // 输入行按钮的「所在面」实色（`draw_button` 的圆角补角用）：按 composer
+        // 渐变在**按钮行中心**取样 —— 用整块面的首档色会在按钮四角漏出一圈浅晕
+        //（2026-10-07 实机：禁用「发送」四周一圈比 composer 浅的环）。
+        let composer_h = (height - composer_top).max(1);
+        let row_t = f64::from((input_y + input_h / 2 - composer_top).clamp(0, composer_h))
+            / f64::from(composer_h);
+        let row_surface = paint_win::fill_sample(&theme::tokens().input_bar_bg, row_t);
+        for control in [state.stop, state.pick_images, state.send] {
+            paint_win::set_surface_color(control, row_surface);
+        }
         // 输入框槽位 = 上面 MoveWindow 的同一几何（单行槽、右侧让给三个按钮）。
         paint.input_field = RECT {
             left: field_left,
@@ -4700,6 +4971,8 @@ unsafe fn layout_panes_for(state: &mut ChatWinState) {
             || !rect_eq(&state.paint.panels, &paint.panels)
             || !rect_eq(&state.paint.pending, &paint.pending)
             || !rect_eq(&state.paint.handle, &paint.handle)
+            || !rect_eq(&state.paint.handle_status, &paint.handle_status)
+            || !rect_eq(&state.paint.handle_arrow, &paint.handle_arrow)
             || !rect_eq(&state.paint.input_bar, &paint.input_bar)
             || !rect_eq(&state.paint.input_field, &paint.input_field);
         state.paint = paint;
@@ -5178,9 +5451,8 @@ unsafe extern "system" fn chat_wndproc(
         }
         WM_LBUTTONDOWN => {
             // 把手带**整条可点**（2026-10-05 第三波）：点带内任意位置开合浮层。
-            // 状态文字已做命中穿透、箭头按钮自吃点击（WM_COMMAND 的 BTN_HANDLE_ID
-            // 段）——三个入口最终都落到同一个 `toggle_inspector_ui`；带上没有
-            // 其它可交互元素，不存在抢交互。带外一律交回默认处理。
+            // 状态文字与箭头都是同一块面上的绘制（没有子控件），所以这是**唯一**
+            // 的开合入口 —— 一次点击只翻转一次。带外一律交回默认处理。
             let x = i32::from((lparam & 0xFFFF) as u16 as i16);
             let y = i32::from(((lparam >> 16) & 0xFFFF) as u16 as i16);
             let in_handle = CHAT.with(|cell| {
@@ -5220,9 +5492,6 @@ unsafe extern "system" fn chat_wndproc(
                     Err(error) => crate::ui::chat::set_notice(Some(format!("停止失败：{error}"))),
                 },
                 // ── 浮层（2026-10-05 第二次改版；两段都在开口段之前匹配）──
-                // 把手上拉箭头：翻转浮层开合（入口之一 —— 带内空白处的按下走
-                // 上面 WM_LBUTTONDOWN 段；动作无载荷，模型侧同语义）。
-                BTN_HANDLE_ID => unsafe { toggle_inspector_ui() },
                 // 浮层关闭「✕」（浮层窗口把 WM_COMMAND 转到这里）。
                 INSPECTOR_CLOSE_ID => unsafe { close_inspector_ui() },
                 // 「发送」按钮：与 Enter 同一出口（WM_APP_SEND → send_from_input）。
@@ -5542,15 +5811,13 @@ fn update_send_enabled(state: &ChatWinState) {
     // 占位标签的可见性与发送可用态同源（都由输入文本决定）、同触发点（EN_CHANGE
     // 与各程序化清空/填入点一起刷新）——与 macOS `update_send_enabled` 同构。
     if state.input_placeholder != 0 {
-        // 占位是**叠在输入框上**的兄弟控件，只要输入框里有东西（文字 / IME 组合串）
-        // 就会盖住它。判定收起的三个条件：
-        // 1. 有文本 → 收（EN_CHANGE 驱动）；
-        // 2. 输入框拿到焦点 → 收：本机微软拼音是 TSF 系，**不发 `WM_IME_*`**，IMM 组合
-        //    串也读不到（两者都实测过），组合期没有任何可靠信号；而得焦点是组合的前提，
-        //    所以「聚焦即收起」是唯一不会盖住拼音串的确定性口径；
-        // 3. `state.composing`（IMM32 系输入法会发 `WM_IME_*`）→ 收。
-        let focused = unsafe { GetFocus() } == state.input;
-        let empty = text.is_empty() && !state.composing && !focused;
+        // 占位是**叠在输入框上**的兄弟控件，只要输入框里有东西（文字 / IMM 组合串）
+        // 就会盖住它。判定口径与 macOS 同源（`macos_chat::update_send_enabled`：
+        // `placeholder.setHidden(!empty)`，`empty` **只**看输入文本）—— 输入框空着
+        // 就显示占位，聚焦与否不影响（用户 2026-10-07 实拍：mac 里点进输入框后
+        // 「说点什么…」仍在，Windows 一聚焦就消失）。TSF 拼音的组合串由输入法自己
+        // 画在插入点，不写进控件文本，占位留在下面与 macOS 的表现一致。
+        let empty = text.is_empty();
         unsafe {
             ShowWindow(
                 state.input_placeholder,
@@ -6129,7 +6396,18 @@ fn draw_inline_button(item: &DrawItemStruct) -> bool {
             item.rcItem.right - item.rcItem.left,
             item.rcItem.bottom - item.rcItem.top,
         );
-        paint_win::draw_button(item.hDC, item.hwndItem, rect, &face, "", false, false);
+        // 图片占位 chip 挂画布：底走画布真实像素重放（与消息流背景对齐）。
+        let backdrop = unsafe { blit_button_backdrop(item, rect) };
+        paint_win::draw_button(
+            item.hDC,
+            item.hwndItem,
+            rect,
+            &face,
+            "",
+            false,
+            false,
+            backdrop,
+        );
         SetBkMode(item.hDC, TRANSPARENT);
         SetTextColor(item.hDC, paint_win::colorref(tokens.ink));
         let mut text_rect = item.rcItem;
@@ -6334,8 +6612,7 @@ unsafe fn build_message_controls(
             // （拟人化开启前的）也一条条显示，不再「一坨」。含代码块（```）的正文
             // 不拆（split_paragraphs 内部裁定），技术内容保持整条。
             let paragraphs = crate::ui::chat::panels::split_paragraphs(part);
-            let paragraph_count = paragraphs.len();
-            for (paragraph_index, paragraph) in paragraphs.iter().enumerate() {
+            for paragraph in &paragraphs {
                 let blocks = parse_blocks(paragraph);
                 let has_code = blocks
                     .iter()
@@ -6561,7 +6838,12 @@ unsafe fn flush_prose(
                 RTF_INK,
                 Some(CardKind::AssistantBubble),
             ),
-            Role::System | Role::Tool => (rich_bg(&tokens.panel_bg), RTF_INK, None),
+            // 系统条目与 mac 同口径（`macos_chat::BubbleTheme::for_role` 的
+            // `Role::System`）：**无卡、无底、`dim` 字** —— 旧实现给 ink 字 +
+            // 面板底，系统消息在消息流里读成「一条正常发言」。承载控件不能透明，
+            // 底仍取面板色（与画布同值、接缝不可见），只把字色改到 `dim`。
+            Role::System => (rich_bg(&tokens.panel_bg), RTF_DIM, None),
+            Role::Tool => (rich_bg(&tokens.panel_bg), RTF_INK, None),
         }
     };
     // 泡宽：内容自然宽（逐行估宽的最大值）夹在上下限之间；含代码块时直接给上限
@@ -6746,9 +7028,14 @@ unsafe fn create_rtf_control(
         // 气泡再让出 `BUBBLE_PAD_X/PAD_Y`（与 macOS 同源的泡内边距）—— 留白区由
         // 画布的气泡填充遮住（与控件底同色），不再露出面板底。
         let (inset_x, inset_y) = match card {
+            // 纵向内缩 = 边框留白 2 + **平台补偿后的泡内边距**：mac 侧的
+            // `BUBBLE_PAD_Y`（7）量的是**无行距余量的文本 extent**，而 Windows 的
+            // RichEdit 行盒自带 ~4px 行距余量（13px DengXian 行距 18、墨迹 12）——
+            // 直接复用 7 会让两行泡高到 62px（mac 46px，用户实拍「气泡太大」）。
+            // 7 - 4 = 3 才能与 mac 的泡高对齐（36 + 2×(2+3) = 46）。
             Some(CardKind::UserBubble) | Some(CardKind::AssistantBubble) => (
                 scaled_f(2.0 + BUBBLE_PAD_X, scale),
-                scaled_f(2.0 + BUBBLE_PAD_Y, scale),
+                scaled_f(2.0 + BUBBLE_PAD_Y - 4.0, scale),
             ),
             None => (0, 0),
         };
@@ -6892,7 +7179,10 @@ unsafe fn rich_edit_height(control: HWND, scale: f64) -> i32 {
     crate::ui::chat::stream_metrics::note_text_layout();
     let lines: i32 = unsafe { SendMessageW(control, EM_GETLINECOUNT, 0, 0) } as i32;
     let line_height = scaled(LINE_HEIGHT as i32, scale);
-    (lines.max(1) * line_height) + scaled(8, scale)
+    // 余量从 8 收到 2：`EM_GETLINECOUNT × 行距` 已经覆盖了默认行距下的最后一行
+    // （含降部），8px 的旧余量在气泡里表现为「文字下面空一大截」（用户实拍
+    // 「气泡太大」）。2px 只兜住四舍五入误差。
+    (lines.max(1) * line_height) + scaled(2, scale)
 }
 
 /// 流式尾巴（说话人标签 + 一个 RichEdit，末尾补竖线光标）。
@@ -6937,7 +7227,8 @@ unsafe fn build_tail_controls(
         // 末行后不追加 `\par`（同 `prose_to_rtf_colored` 的口径：尾随段落标记
         // 会被 `EM_GETLINECOUNT` 多算一行）；尾巴文本自带的光标 `▍` 落在末行上。
         let rtf = format!(
-            "{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0\\fnil\\fcharset134 Microsoft YaHei UI;}}}}{}\\pard\\f0\\fs20\\cf{RTF_INK} {}}}",
+            "{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0\\fnil\\fcharset134 {};}}}}{}\\pard\\f0\\fs20\\cf{RTF_INK} {}}}",
+            rtf_body_font_family(),
             palette.table,
             rtf_escape(&tail_text)
         );
@@ -7005,19 +7296,19 @@ unsafe fn update_tail(state: &mut ChatWinState, text: Option<&str>) {
 }
 
 /// 把手带状态行：**只显示中性系统回执 `notice`**（文案口径见 [`handle_status_label`]）；
-/// 圆点与文字同生共死 —— 可见性变化时补一次把手带重绘（圆点画在聊天窗底上、
-/// 不在 STATIC 上，只 SetWindowTextW 不会把它擦掉/点亮）。
+/// 圆点、文字与箭头都画在聊天窗底面上（单面绘制），文案或圆点可见性变化时补一次
+/// 把手带重绘。
 fn update_status(state: &mut ChatWinState, status: &StatusSnapshot) {
     let text = handle_status_label(status);
     let dot_was = handle_status_dot_visible(&state.handle_status_label);
     let dot_now = handle_status_dot_visible(&text);
+    let text_changed = text != state.handle_status_label;
     unsafe {
-        SetWindowTextW(state.status, wide(&text).as_ptr());
         // 主按钮槽按运行态换内容（2026-10-05 用户规则「与 demo 一致」）：运行中
         // 显示「停止」、收起「发送」（同一槽位；运行中仍可经 Enter 发送）。
         ShowWindow(state.stop, if status.running { SW_SHOW } else { SW_HIDE });
         ShowWindow(state.send, if status.running { SW_HIDE } else { SW_SHOW });
-        if dot_was != dot_now && !rect_is_empty(&state.paint.handle) {
+        if (dot_was != dot_now || text_changed) && !rect_is_empty(&state.paint.handle) {
             InvalidateRect(state.hwnd, &state.paint.handle, 0);
         }
     }
@@ -7042,6 +7333,11 @@ fn update_status(state: &mut ChatWinState, status: &StatusSnapshot) {
 /// 气泡**的估算行数都比实际多一行（底部多一条空行）；连接式生成后控件文本的
 /// 行数与 macOS 的「逐块一行」模型逐行对应（空段落 = 一条空行）。**新增生成
 /// 点时不要让正文以 `\par` 收尾**，否则 `rich_edit_height` 会重新多算一行。
+///
+/// 正文行距**没有**写 `\sl`：RichEdit 会把 `\sl` 夹到「字体自然行高」以上
+/// （2026-10-07 实机：`\sl260\slmult0`(13pt) 对 10pt 正文毫无效果，`\sl1200`
+/// 立刻生效 ⇒ 小值被夹住）。要做成 mac 那样更紧的行距只能换字体族，
+/// 见 `docs`/报告里的登记；这里保持默认口径。
 fn prose_to_rtf_colored(blocks: &[Block], default_color: u32) -> (String, Vec<(String, String)>) {
     let mut links = Vec::new();
     let mut chunks: Vec<String> = Vec::new();
@@ -7088,7 +7384,8 @@ fn prose_to_rtf_colored(blocks: &[Block], default_color: u32) -> (String, Vec<(S
     let body = chunks.join("\\par ");
     let palette = rtf_palette();
     let rtf = format!(
-        "{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0\\fnil\\fcharset134 Microsoft YaHei UI;}}{{\\f1\\fmodern Consolas;}}}}{}{body}}}",
+        "{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0\\fnil\\fcharset134 {};}}{{\\f1\\fmodern Consolas;}}}}{}{body}}}",
+        rtf_body_font_family(),
         palette.table
     );
     (rtf, links)
@@ -7453,29 +7750,15 @@ unsafe fn run_modal_dialog(spec: crate::ui::chat::dialog::DialogSpec) -> Result<
     }
 
     // 全局字体快照与聊天窗同口径（对话框不成为第二个字体定义点）。
-    let make_font = |height: i32, weight: i32, face: &str| unsafe {
-        CreateFontW(
-            -scaled(height, scale),
-            0,
-            0,
-            0,
-            weight,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            OUT_DEFAULT_PRECIS as u32,
-            CLIP_DEFAULT_PRECIS as u32,
-            0,
-            0,
-            wide(face).as_ptr(),
-        )
+    // 灰度抗锯齿（`create_ui_font`）：对话框与主界面同一字体口径，不用 ClearType。
+    let make_font = |height: i32, weight: i32, face: &str| {
+        paint_win::create_ui_font(-scaled(height, scale), weight, face)
     };
     let snapshot = crate::ui::font::snapshot();
     let ui_face = snapshot
         .family
         .clone()
-        .unwrap_or_else(|| "Microsoft YaHei UI".to_string());
+        .unwrap_or_else(paint_win::resolve_ui_font_family);
     let body_size = snapshot.scaled_size(13.0, 13.5).round() as i32;
     let detail_size = snapshot.scaled_size(11.0, 13.5).round() as i32;
     let body = make_font(body_size, FW_NORMAL as i32, &ui_face);
@@ -7734,6 +8017,51 @@ mod tests {
     use crate::ui::chat::panels::{PanelKind, PanelSurface, PanelView};
     use crate::ui::theme::ThemeId;
 
+    /// ownerdraw 按钮必须走**承载窗底重放**：token 近似补角/补底正是用户 2026-10-07
+    /// 实拍「按钮后面一块灰色矩形底」的根因（近似色比条区真实像素暗 20+ 灰阶）。
+    /// 源码级守门（与 `windows_settings` 的同名测试同款）：四条绘制入口都得先
+    /// `blit_button_backdrop` 再画药丸。
+    #[test]
+    fn ownerdraw按钮走承载窗底重放() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/ui/platform/windows_chat.rs"
+        ));
+        let production = &src[..src.find("#[cfg(test)]").expect("必须有测试段")];
+        assert!(
+            production.contains("unsafe fn blit_button_backdrop("),
+            "缺少承载窗底重放实现（底必须来自父窗真实像素）"
+        );
+        assert_eq!(
+            production
+                .matches("let backdrop = unsafe { blit_button_backdrop(item, rect) };")
+                .count(),
+            4,
+            "四条绘制入口（通用按钮 / 待发送 chip / 无缩略图 chip / 画布内图片 chip）都必须重放底"
+        );
+    }
+
+    /// 接触影不得画隐藏控件：隐藏窗口照样有矩形（`GetWindowRect` 有效），
+    /// `paint_button_shadows` 不看可见性就会在原位留一枚**没有按钮的灰药丸** ——
+    /// 用户 2026-10-07 实拍「上拉条上面一个莫名其妙的灰色气泡」正是隐藏的
+    /// 「↓ 新消息」按钮被画布一直补投影。
+    #[test]
+    fn 接触影跳过隐藏控件() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/ui/platform/windows_chat.rs"
+        ));
+        let production = &src[..src.find("#[cfg(test)]").expect("必须有测试段")];
+        let start = production
+            .find("unsafe fn paint_button_shadows")
+            .expect("paint_button_shadows 必须存在");
+        let body = &production[start..(start + 900).min(production.len())];
+        assert!(
+            body.contains("IsWindowVisible(control)"),
+            "投影前必须判控件可见性（否则隐藏按钮留下一枚无字灰药丸）"
+        );
+    }
+
     #[test]
     fn richedit_结构遵循_sdk_四字节对齐() {
         assert_eq!(std::mem::align_of::<EDITSTREAM>(), 4);
@@ -7955,19 +8283,19 @@ mod tests {
         assert_eq!(groups.anchored[0].kind, PanelKind::SessionHistory);
     }
 
-    /// 把手箭头：文案随浮层开合翻面（收着 = 上拉 ▴、开着 = 可往下收 ▾）。
+    /// 把手箭头：朝向随浮层开合翻面（收着 = 上拉 ▴、开着 = 可往下收 ▾）。
+    /// Windows 画的是**几何三角**（字体对这些字形的覆盖不可靠，实机把 ▴ 画成
+    /// 竖条），所以这里钉的是朝向布尔，不是文案。
     #[test]
-    fn 把手箭头_文案随开合翻面() {
-        assert_eq!(handle_arrow_label(false), "▴");
-        assert_eq!(handle_arrow_label(true), "▾");
-        assert_ne!(handle_arrow_label(false), handle_arrow_label(true));
+    fn 把手箭头_朝向随开合翻面() {
+        assert!(handle_arrow_up(false), "浮层收着 = 上拉 ▴");
+        assert!(!handle_arrow_up(true), "浮层开着 = 可往下收 ▾");
     }
 
-    /// 把手箭头按钮区域与共享字形框**同心**：`draw_button` 居中绘制文案，所以
-    /// 按钮（`HANDLE_ARROW_WIDTH` 宽的条区）的中心必须落在共享 10×10 字形框的
-    /// 中心上（多个宽度都验；按钮只是把点按区放大，不挪字形）。
+    /// 把手箭头字形框由**共享** `handle_arrow_frame` 给出：水平+垂直居中
+    /// （用户规则「上拉栏的箭头居中」）；绘制端在框内画三角，命中区是整条带。
     #[test]
-    fn 把手箭头_按钮区域与共享字形框同心() {
+    fn 把手箭头_共享字形框居中() {
         for logical_width in [200.0, 360.0, 460.0, 800.0] {
             let glyph = handle_arrow_frame(logical_width);
             // 共享几何第二版：字形**水平+垂直都居中**（用户规则「上拉栏的箭头居中」）。
@@ -7980,19 +8308,8 @@ mod tests {
                     <= 0.5,
                 "字形在带内垂直居中"
             );
-            let area = handle_arrow_area(glyph, 22, 1.0);
-            let area_center_x = f64::from(area.x) + f64::from(area.w) / 2.0;
-            let glyph_center_x = glyph.x + glyph.width / 2.0;
-            assert!(
-                (area_center_x - glyph_center_x).abs() <= 0.5,
-                "宽 {logical_width}: 按钮中心 {area_center_x} != 字形中心 {glyph_center_x}"
-            );
-            assert!(area.x >= 0, "按钮不许滚出左缘");
-            assert_eq!(area.h, 22, "按钮占满带高");
+            assert!(glyph.x >= 0.0, "字形不许滚出左缘");
         }
-        // 窄到放不下时钳到左缘，不产生负坐标。
-        let glyph = handle_arrow_frame(10.0);
-        assert!(handle_arrow_area(glyph, 22, 1.0).x >= 0);
         // 状态文字只占**左半侧**（箭头居中后中间那段让给箭头）；窄窗可压到 0。
         let left = crate::ui::chat::panels::handle_status_width(460.0);
         assert!(left < 230.0, "状态文字不许压过中线（实得 {left}）");
@@ -8052,7 +8369,8 @@ mod tests {
     }
 
     /// 把手带**整条可点**（2026-10-05 第三波）：聊天窗必须接住带内空白处的按下
-    /// 并开合浮层；状态文字必须命中穿透（否则「整条」被 STATIC 咬掉一段）。
+    /// 并开合浮层；带上的状态文字与箭头都是**单面绘制**（没有会咬掉命中的子控件，
+    /// 也没有会在同一次点击里开完又关的第二条通道）。
     #[test]
     fn 把手带整条可点_源码守门() {
         let production = production_source();
@@ -8065,9 +8383,12 @@ mod tests {
             "聊天窗必须按把手带矩形接住按下并开合浮层"
         );
         assert!(
-            production
-                .contains("SetWindowSubclass(status, Some(hit_transparent_subclass_proc), 2, 0)"),
-            "状态文字必须命中穿透（点文字也要能开合浮层）"
+            !production.contains("BTN_HANDLE_ID"),
+            "把手带不许再挂子按钮（一次点击进两条开合通道 = 开完又关）"
+        );
+        assert!(
+            production.contains("paint.handle_arrow") && production.contains("fill_triangle"),
+            "上拉箭头必须由聊天窗单面绘制（几何三角 + 共享字形框）"
         );
     }
 
@@ -8097,6 +8418,10 @@ mod tests {
 
     /// 底部锚定条区几何（2026-10-05 第二次改版）：**输入行贴底**、把手带在其上，
     /// 待发送条/面板依次向上让位。
+    ///
+    /// 2026-10-07 与 mac `chat_bands` 逐档对齐后的正文下沿：**无插入带时贴把手带
+    /// 上沿**（旧口径留一个 `PANE_GAP`，实机就是上拉条上方多一截空档，用户实拍）；
+    /// 有待发送条时贴条的上沿；有流内面板时面板上方留一个 `PANE_GAP`。
     #[test]
     fn 底部条区几何_输入贴底_把手带在其上() {
         let gap = 8;
@@ -8104,12 +8429,18 @@ mod tests {
         assert_eq!(stack.input_y, 584, "输入行贴客户区底");
         assert_eq!(stack.handle_y, 562);
         assert_eq!(stack.handle_y + 22, stack.input_y, "把手带紧贴输入行上方");
-        assert_eq!(stack.canvas_bottom, 554, "无待发送条时画布到带上方一个间距");
+        assert_eq!(
+            stack.canvas_bottom, 562,
+            "无插入带时正文下沿贴把手带上沿（不再留 PANE_GAP，与 mac chat_bands 同档）"
+        );
 
         let with_pending = bottom_stack(640, 56, 22, 30, 0, gap);
         assert_eq!(with_pending.pending_y, 524);
         assert_eq!(with_pending.panel_bottom, 516);
-        assert_eq!(with_pending.canvas_bottom, 516);
+        assert_eq!(
+            with_pending.canvas_bottom, 524,
+            "有待发送条时正文下沿贴条的上沿（条在 composer 面里，不另留缝）"
+        );
 
         let with_panel = bottom_stack(640, 56, 22, 0, 60, gap);
         assert_eq!(with_panel.panel_bottom, 554);
@@ -8429,10 +8760,11 @@ mod tests {
                 "生产代码里还留着已删符号：{needle}"
             );
         }
-        // 把手是浮层唯一入口：生产代码里必须有箭头按钮 ID 与共享几何的接线。
+        // 把手带是浮层唯一入口（单面绘制）：必须保留带区按下段与共享箭头几何。
         assert!(
-            production.contains("BTN_HANDLE_ID") && production.contains("handle_arrow_frame"),
-            "把手箭头入口必须接线（BTN_HANDLE_ID + 共享 handle_arrow_frame）"
+            production.contains("rect_contains(win_rect_of(&state.paint.handle)")
+                && production.contains("handle_arrow_frame"),
+            "把手开合必须接线（带区命中 + 共享 handle_arrow_frame）"
         );
         // 浮层开合直接吃快照（平台不维护镜像）。
         let rebuild =

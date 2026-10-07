@@ -149,6 +149,14 @@
 // 抽屉写处理器自身的全值域/拒绝用例（chat-intents-guards.test.ts）不带 caseId，按纪律不凭空
 // 登记 coverage。nui-01..nui-32 其余点逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源
 // 核对，非逐行行为审计）；sourceHash 按当前源码复算。
+// 2026-10-07 Windows 设置页「工具策略」撤下批次（analyze→generate）：sourceFiles 变化 ——
+// crates/native-host/src/ui/settings/panels.rs（新增 `renders_tools_panel`：工具页是否渲染某个
+// 管理面板的**两端共用**判定 —— 2026-10-05 用户规则「工具里面，不要显示工具列表了」此前只在
+// macOS 侧写了一份平台私有函数，Windows 工具页因此仍列着只读的「工具策略（声明）」列表；
+// 规则上收到共享层后 macOS 改为引用同一条，Windows 工具页按同一条过滤）。改动只在原生渲染层，
+// 不涉及任何请求/推送载荷：nui-01..nui-32 逐点核对实现点仍在、覆盖描述与当前实现一致
+// （描述/来源核对，非逐行行为审计）；本契约声明「平台手势与行渲染不在本契约范围」的口径不变，
+// 未修订覆盖点，sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const nativeUiContract: ModuleContract = {
@@ -196,7 +204,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "4fcc9815bafbe9744b4d02d6b117c7a6e191f1ad1c54a23a1b7d31a4fdfc27c2",
+  sourceHash: "355100ade11e5ae03685048915c6cf2b07200db90f6c58fd64b3468989e0cd19",
   coverage: [
     {
       id: "nui-01",

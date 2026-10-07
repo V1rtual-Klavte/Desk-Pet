@@ -30,9 +30,12 @@
 //! - **多层顺序**：`Sheen` / `Bevel` / 一组条纹的声明序 = CSS 序（**首项在最上**）；
 //!   GDI 顺序填充是「后画盖先画」，绘制时倒序迭代（[`paint_order_first_on_top`]），
 //!   与 macOS 侧 zPosition 递减同口径。
-//! - **`Elevation`（投影）**：GDI 没有投影。用「按 dy/spread 偏移扩散后的矩形 +
-//!   `AlphaBlend` 均匀半透明填充」近似（[`elevation_bands`]）；blur 被压缩成均匀 alpha，
-//!   没有衰减梯度。窗口非矩形时的精确投影需要 `UpdateLayeredWindow` 整窗合成路径
+//! - **`Elevation`（投影）**：GDI 没有高斯模糊。`blur` 按 [`shadow_steps`] 拆成最多
+//!   [`SHADOW_MAX_STEPS`] 层**同心圆角剪影**，由外向内叠画（单层 alpha 取 `1-(1-a)^(1/N)`，
+//!   层叠后中心 = 原 alpha）—— 外圈只剩一层、越往里层数越多，得到由外向内递增的衰减，
+//!   近似 CALayer 的模糊扩散。圆角元素必须传半径（[`draw_elevation_rounded`]）：旧实现
+//!   用「偏移后的实心矩形 + 均匀 alpha」，在按钮圆角处会露出四块硬色斑（2026-10-07 实机）。
+//!   窗口非矩形时的精确投影需要 `UpdateLayeredWindow` 整窗合成路径
 //!   （舞台子窗口已走该路径），聊天/顶栏这类矩形窗口不做。
 //! - **圆角**：`Radii` 只用在 ownerdraw 按钮上（`CreateRoundRectRgn` + `SetWindowRgn`），
 //!   圆角随 `WM_SIZE` 重设；气泡/输入框承载在 RichEdit 上（区域裁剪会与滚动条、
@@ -211,6 +214,73 @@ fn soften(alpha: f32, blur: f32) -> f32 {
     }
 }
 
+/// 投影分层的层数上限。层数越多衰减越细腻，代价是每层一次圆角区域裁剪 + `AlphaBlend`。
+pub const SHADOW_MAX_STEPS: i32 = 8;
+
+/// 一层投影 → 若干同心圆角剪影（纯逻辑，可测）；返回顺序 = 绘制顺序（最外层先画）。
+///
+/// 每项 `(圆角矩形, 圆角半径, 单层 alpha)`。`blur` 决定层数
+/// （`steps = clamp(ceil(blur * 2), 1, SHADOW_MAX_STEPS)`）与外扩范围（第 `k` 层外扩
+/// `round(blur * k / (steps - 1))`，最内层 = 剪影本身）。
+///
+/// 单层 alpha 不取均分：目标是「距剪影越远越淡」的**累计**曲线
+/// `A(k) = a · (1 - (k / steps)^P)`（`k = 0` 在剪影内、`k = steps` 为 0），
+/// 每层 alpha 由相邻累计值反解 `1 - (1 - A(k)) / (1 - A(k + 1))` —— 否则最外圈会顶着
+/// 一个可见的等 alpha 硬环（旧近似实机症状：按钮周围一圈灰晕）。
+///
+/// `P` 取 0.5（√ 衰减）：`P = 1.5` 时内侧衰减太慢，等于把 `--contact`（黑 30%、
+/// blur 2）画成一圈**硬环** —— 2026-10-07 实拍：标签条「＋/历史」白药丸侧缘被压到
+/// (159,165,172)，而 mac 录制同位置是 (206~230)，即 mac 的 Quartz 投影在 1px 外只剩
+/// ~10% 覆盖。√ 衰减在 1px 外给 `a·(1-√0.375) ≈ 0.12a`，与录制同量级。
+/// 该曲线同时供气泡/浮层投影，一并从「偏硬」回到「软晕」（录制里两者都是软影）。
+pub fn shadow_steps(shadow: &Shadow, rect: Rect, radius: i32) -> Vec<(Rect, i32, f32)> {
+    if rect.is_empty() || shadow.color.a <= 0.0 {
+        return Vec::new();
+    }
+    let spread = shadow.spread.round() as i32;
+    let dy = shadow.dy.round() as i32;
+    let blur = shadow.blur.max(0.0);
+    let steps = if blur <= 0.5 {
+        1
+    } else {
+        ((blur * 2.0).ceil() as i32).clamp(1, SHADOW_MAX_STEPS)
+    };
+    let alpha = shadow.color.a.clamp(0.0, 1.0);
+    let base = Rect::new(
+        rect.x - spread,
+        rect.y - spread + dy,
+        rect.w + spread * 2,
+        rect.h + spread * 2,
+    );
+    let base_radius = (radius + spread).max(0);
+    let mut out = Vec::with_capacity(steps as usize);
+    // 最外层之上没有层：A(steps) = 0。
+    let mut outer_accumulated = 0.0_f32;
+    for k in (0..steps).rev() {
+        // 最内层 = 剪影本身（grow 0），最外层外扩满 `blur`；单层时只有剪影。
+        let grow = if steps > 1 {
+            (blur * k as f32 / (steps - 1) as f32).round() as i32
+        } else {
+            0
+        };
+        let accumulated = alpha * (1.0 - (k as f32 / steps as f32).powf(0.5));
+        let layer_alpha = 1.0
+            - (1.0 - accumulated) / (1.0 - outer_accumulated).max(f32::EPSILON);
+        outer_accumulated = accumulated;
+        out.push((
+            Rect::new(
+                base.x - grow,
+                base.y - grow,
+                base.w + grow * 2,
+                base.h + grow * 2,
+            ),
+            base_radius + grow,
+            layer_alpha.clamp(0.0, 1.0),
+        ));
+    }
+    out
+}
+
 /// 一条内边缘线 → 色带。`side` 决定贴哪条边（顶/底占满全宽，左/右占满全高）。
 ///
 /// 主带厚度 = `ceil(width)`（至少 1px）；`blur > 0` 时在主带内侧追加最多 3 条 1px
@@ -332,35 +402,6 @@ pub fn paint_order_first_on_top(count: usize) -> impl ExactSizeIterator<Item = u
     (0..count).rev()
 }
 
-/// `Elevation` → 投影近似矩形（均匀半透明，见模块头「投影」条）。
-///
-/// 每层投影一张：`spread` 外扩（可为负 = 内缩），再向下偏移 `dy`。
-/// 投影画在承载元素**之前**（先影后物），矩形交叠部分会被元素自己盖住。
-pub fn elevation_bands(elevation: &Elevation, rect: Rect) -> Vec<Band> {
-    let mut bands = Vec::new();
-    for shadow in [elevation.contact, elevation.ambient].into_iter().flatten() {
-        if shadow.color.a <= 0.0 {
-            continue;
-        }
-        let spread = shadow.spread.round() as i32;
-        let dy = shadow.dy.round() as i32;
-        let band = Rect::new(
-            rect.x - spread,
-            rect.y - spread + dy,
-            rect.w + spread * 2,
-            rect.h + spread * 2,
-        );
-        if band.is_empty() {
-            continue;
-        }
-        bands.push(Band {
-            rect: band,
-            color: shadow.color,
-        });
-    }
-    bands
-}
-
 /// 开关滑块矩形（纯逻辑，两平台可测）：关态贴左、开态贴右。
 ///
 /// 轨道 32×17、滑块 13×13、距外缘 2px（1px 边框 + 1px 内距，与设计稿 `.sw i`
@@ -403,6 +444,21 @@ pub fn bitmap_dib_bytes(bitmap: &Bitmap) -> Vec<u8> {
     out
 }
 
+/// `Fill::Linear` 在比例 `t`（0..1，按声明停靠点插值）处的取样色。
+///
+/// 用途：GDI 画刷没有 alpha，ownerdraw 按钮的「圆角补角」必须知道按钮**所在行**
+/// 的真实底色 —— 调用方拿不到目标 DC 的像素，只能按渐变停靠点自己取样
+/// （`--ibg` 是 composer 整块面的渐变，按钮行与顶档色差肉眼可见：
+/// 2026-10-07 实机禁用「发送」四角漏出的浅色晕就是取了首档色）。
+/// 非线性填充回落 [`Fill::base_color`]。
+pub fn fill_sample(fill: &Fill, t: f64) -> Rgba {
+    // 停靠点插值的单一实现点是 [`sample_linear`]，这里只做 `Fill` → 停靠点的分派。
+    match fill {
+        Fill::Linear(stops) | Fill::Striped { stops, .. } => sample_linear(stops, t as f32),
+        other => other.base_color(),
+    }
+}
+
 /// ownerdraw 按钮的角色（决定用哪一族 token）。数值会存进 `GWLP_USERDATA`，
 /// 必须与 [`paint_win::gdi`] 的存取约定保持「小于 1<<24」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,12 +468,19 @@ pub enum ButtonRole {
     Normal = 1,
     /// 主按钮（发送 / 停止；`primary_bg` 族）。
     Primary = 2,
-    /// 顶栏关闭「×」：`btn_bg` 族 + `dim` 字，悬浮时底色换 `danger`。
+    /// 顶栏关闭「×」：与 macOS 顶栏同形的 `btn_bg` 实面（macOS
+    /// `paint.rs::style_button` 的 `Face::Normal`），悬浮时底色换 `danger`。
     Close = 3,
     /// 未选中的会话标签：无底、`dim` 字。
     TabOff = 4,
     /// 选中的会话标签（`tab_on_*` 族）。
     TabOn = 5,
+    /// 选中会话标签的**药丸底**：macOS 侧它不是按钮面，而是标签 pill 视图
+    /// （`macos_chat::rebuild_tabs` 的 `paint_backdrop`，底走**完整渐变**）；
+    /// 名字文字另叠一枚无底按钮。Windows 的 pill 与名字同一个 ownerdraw 控件，
+    /// 所以这里单列一个角色，既不把按钮的平色口径（`style_button` 的
+    /// `fill.base_color()`）套到 pill 上，也不反过来污染按钮。
+    TabPill = 6,
     /// 待发送条目 chip（`field_bg` 族）。
     Pending = 7,
     /// 标签上的小「×」：`btn_bg` 族 + `dim` 字（不换 danger，避免与主关闭混淆）。
@@ -439,6 +502,7 @@ impl ButtonRole {
             3 => ButtonRole::Close,
             4 => ButtonRole::TabOff,
             5 => ButtonRole::TabOn,
+            6 => ButtonRole::TabPill,
             7 => ButtonRole::Pending,
             8 => ButtonRole::TabClose,
             9 => ButtonRole::Link,
@@ -452,8 +516,25 @@ impl ButtonRole {
 pub struct ButtonFace {
     /// `None` = 无底（未选中标签落在条底上）。
     pub bg: Option<Fill>,
+    /// 底是否铺**完整渐变**（`true`）还是只落 `fill.base_color()` 平色（`false`）。
+    ///
+    /// 平色是 macOS `paint.rs::style_button`（按钮面）的口径；完整渐变留给
+    /// 用 `paint_backdrop` 画的**视图**型面（见 [`ButtonRole::TabPill`]）。
+    pub bg_full_gradient: bool,
     /// 底色的代表色（禁用字/文字投影的预合成背景）。
     pub bg_base: Rgba,
+    /// 按钮**坐落其上的表面**实色（GDI 画刷没有 alpha，补角/回填都要预合成底）：
+    /// 主按钮住在 composer 上（`--ibg` 首档），其余按钮落在面板底上。
+    /// 圆角补角必须用它而不是 `bg_base` —— 用按钮自身的底色会在禁用态漏出主色
+    /// （2026-10-07 实机：空输入的「发送」四周一圈粉环，正是主色首档）。
+    pub backdrop: Rgba,
+    /// 禁用态底（中性实色）：mac 侧是半透明 `strip_bg` 叠在按钮所在面上，GDI 画刷
+    /// 没有 alpha，按「黑 30% 叠该面」预合成 —— 录制里发送禁用态是**中灰药丸**，
+    /// 旧口径（浅底 + 全值 ink 字）实机读作可用按钮（用户 2026-10-07 实拍）。
+    pub disabled_bg: Rgba,
+    /// 禁用态字色：`ink` 压到 40% 再预合成到 [`Self::disabled_bg`]（mac 侧由
+    /// AppKit 对禁用标题整体压暗，约四成）。
+    pub disabled_ink: Rgba,
     pub ink: Rgba,
     pub edge: Option<Rgba>,
     pub bevel: Option<Bevel>,
@@ -491,13 +572,31 @@ pub fn button_face(
             tokens.primary_shadow,
             tokens.primary_text_shadow,
         ),
-        // 关闭「×」：**无面**（与 macOS 顶栏一致 —— 只有字，悬浮才整块转 `danger`；
-        // 顶栏是渐变底，给面就会补出一块白板，见 `draw_button` 的无底分支）。
-        ButtonRole::Close => (None, tokens.dim, None, None, Elevation::NONE, None),
+        // 关闭「×」：与 macOS 顶栏**同形**——那边两个入口都走 `Face::Normal`
+        // （`btn_bg` 实面 + 描边 + 立体线 + 投影），不是裸文字；悬浮才整块转
+        // `danger`（Windows 侧的既有悬浮口径，保留）。
+        ButtonRole::Close => (
+            Some(tokens.btn_bg),
+            tokens.btn_ink,
+            Some(tokens.btn_edge),
+            Some(tokens.btn_bevel),
+            tokens.btn_shadow,
+            tokens.btn_text_shadow,
+        ),
         // 未选中标签与文字链都无底无边：落在条底上，只出文字。
         ButtonRole::TabOff => (None, tokens.dim, None, None, Elevation::NONE, None),
         ButtonRole::Link => (None, tokens.ink, None, None, Elevation::NONE, None),
         ButtonRole::TabOn => (
+            Some(tokens.tab_on_bg),
+            tokens.ink,
+            Some(tokens.tab_on_edge),
+            Some(tokens.tab_on_bevel),
+            tokens.tab_on_shadow,
+            None,
+        ),
+        // 会话标签 pill：与上面同一族 token，但底走**完整渐变**
+        //（macOS 侧由 `paint_backdrop` 画，不是 `style_button`）。
+        ButtonRole::TabPill => (
             Some(tokens.tab_on_bg),
             tokens.ink,
             Some(tokens.tab_on_edge),
@@ -522,11 +621,24 @@ pub fn button_face(
             None,
         ),
     };
+    // 禁用态的两个实色（GDI 无 alpha，预合成；见字段注释）。背面取角色所在的面：
+    // 主按钮住在聊天 composer 上，其余按钮落在面板底上。
+    let backdrop = if role == ButtonRole::Primary {
+        tokens.input_bar_bg.base_color()
+    } else {
+        tokens.panel_bg.base_color()
+    };
+    let disabled_bg = composite_over(Rgba::black_alpha(0.30), backdrop);
+    let disabled_ink = composite_over(tokens.ink.with_alpha(0.40), disabled_bg);
     let mut face = ButtonFace {
         bg,
+        bg_full_gradient: role == ButtonRole::TabPill,
         bg_base: bg
             .map(|fill| fill.base_color())
             .unwrap_or_else(|| composite_over(tokens.strip_bg, tokens.panel_bg.base_color())),
+        backdrop,
+        disabled_bg,
+        disabled_ink,
         ink,
         edge,
         bevel,
@@ -552,41 +664,6 @@ pub fn button_face(
         face.overlay = Some(Rgba::black_alpha(0.16));
     }
     face
-}
-
-/// 禁用态按钮的实色等价（macOS `paint.rs::style_button` 的镜像口径：
-/// **底色降 50% 透明度 + 标题降 50%**；评审实机证据：只降标题色的旧口径
-/// 对比度只有 ~2:1，看起来像「配色错了的可用按钮」——2026-10-05）。
-///
-/// GDI 纯色画刷没有 alpha，两处都预合成为实色：
-/// - `wash`：面板底 50% 的一层覆盖 —— 绘制端先画实色 fill 再叠它，等价于
-///   `mix(fill, 面板底, 50%)`，同时保留渐变的下半强度（比把 fill 直接压成
-///   代表色更接近 macOS 的「底降透明度」观感）；
-/// - `washed_base`：冲洗后的底色实色（文字投影的预合成背景用）；
-/// - `ink`：标题色 50% 预合成到 `washed_base` 上的实色（`DrawTextW` 没有 alpha）。
-///
-/// `backdrop` 是按钮所在表面的底色（调用方给；聊天窗统一用面板底，
-/// 与 `flat_over_panel` 的兜底口径一致 —— 输入条上的按钮会有一档可见度差，
-/// 就地注明这一近似）。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DisabledFace {
-    /// 叠在已画实色 fill 上的 50% 面板底（`fill_color` 的 alpha 通路走 AlphaBlend）。
-    pub wash: Rgba,
-    /// 冲洗后的底色实色（标题/文字投影的预合成背景）。
-    pub washed_base: Rgba,
-    /// 预合成的标题实色。
-    pub ink: Rgba,
-}
-
-/// 角色面 + 表面底色 → 禁用态的实色等价（见 [`DisabledFace`]；纯函数，两平台可测）。
-pub fn disabled_face(face: &ButtonFace, backdrop: Rgba) -> DisabledFace {
-    let wash = backdrop.with_alpha(backdrop.a * 0.5);
-    let washed_base = composite_over(wash, face.bg_base);
-    DisabledFace {
-        wash,
-        washed_base,
-        ink: composite_over(face.ink.with_alpha(face.ink.a * 0.5), washed_base),
-    }
 }
 
 /// 语义文字角色（设置窗 / 编辑器窗的 STATIC 与文字按钮）。
@@ -627,14 +704,18 @@ mod gdi {
     use std::ffi::c_void;
     use std::ptr;
 
-    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
-        AlphaBlend, CreateCompatibleDC, CreateDIBSection, CreateEllipticRgn, CreateRoundRectRgn,
-        CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, FillRgn,
-        GetWindowRgn, InvalidateRect, RestoreDC, SaveDC, SelectClipRgn, SelectObject, SetBkMode,
-        SetTextColor, SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HBRUSH, HDC, HFONT,
-        HGDIOBJ, HRGN,
+        AlphaBlend, BitBlt, CombineRgn, CreateCompatibleDC, CreateDIBSection,
+        CreateFontW, CreateRoundRectRgn, CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject,
+        DrawTextW, FillRect, FillRgn, GetTextFaceW, InvalidateRect, RestoreDC, SaveDC,
+        SelectClipRgn, SelectObject, SetBkMode, SetTextColor, SetViewportOrgEx, SetWindowRgn,
+        ScreenToClient,
+        AC_SRC_ALPHA,
+        AC_SRC_OVER, SRCCOPY,
+        ANTIALIASED_QUALITY, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, CLIP_DEFAULT_PRECIS,
+        DEFAULT_CHARSET, DIB_RGB_COLORS, FW_NORMAL, HBITMAP, HBRUSH, HDC, HFONT, HGDIOBJ, HRGN,
+        OUT_DEFAULT_PRECIS, RGN_DIFF,
     };
     use windows_sys::Win32::UI::Controls::WM_MOUSELEAVE;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -642,21 +723,23 @@ mod gdi {
     };
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetClientRect, GetWindowLongPtrW, SendMessageW, SetWindowLongPtrW, GWLP_USERDATA,
+        GetClientRect, GetWindowLongPtrW, GetWindowRect, SendMessageW,
+        SetWindowLongPtrW, GWLP_USERDATA,
         WM_GETFONT, WM_MOUSEMOVE, WM_NCDESTROY, WM_SIZE,
     };
 
     use crate::ui::theme::noise::Bitmap;
+    use crate::{rust_info, rust_warn};
     // `Tex` 从 texture 模块直接取（`tokens` 里的 `Tex` 是私有导入，不能走那条路）。
     use crate::ui::theme::texture::{self, Tex};
     use crate::ui::theme::tokens::{
-        Bevel, EdgeLines, EdgeSide, Elevation, Fill, InsetLine, Layer, Rgba, Sheen,
+        Bevel, EdgeLines, EdgeSide, Elevation, Fill, InsetLine, Layer, Rgba, Shadow, Sheen,
     };
 
     use super::{
-        bevel_bands, bitmap_dib_bytes, colorref, composite_over, dib_height, disabled_face,
-        edge_bands, elevation_bands, paint_order_first_on_top, premul, rgba_from_colorref,
-        sample_linear, stripe_bands, ButtonFace, ButtonRole, Rect,
+        bevel_bands, bitmap_dib_bytes, colorref, composite_over, dib_height, edge_bands,
+        paint_order_first_on_top, premul, rgba_from_colorref, sample_linear, shadow_steps,
+        stripe_bands, ButtonFace, ButtonRole, Rect,
     };
 
     // ── GDI 文本常量（windows-sys 0.52 未登记 DT_*；与 windows_chat.rs 同款就地定义）──
@@ -889,6 +972,213 @@ mod gdi {
         });
     }
 
+    /// 实色三角（把手带的 ▴/▾）：字体对 U+25B4/U+25BE 的覆盖不可靠（实机把 ▴
+    /// 画成一根竖条），直接画几何；顶点顺序不敏感（GDI 自动闭合）。
+    pub fn fill_triangle(hdc: HDC, points: [(i32, i32); 3], color: Rgba) {
+        // 走覆盖率位图（4×4 超采样 + `AlphaBlend`）而不是 `Polygon`：mac 侧
+        // 字形是抗锯齿的，GDI 多边形在小尺寸下边缘成阶梯（实机 5×5 的 ▴
+        // 明显扎眼）；同一套原语与圆点共用。
+        let min_x = points.iter().map(|p| p.0).min().unwrap_or(0);
+        let max_x = points.iter().map(|p| p.0).max().unwrap_or(0);
+        let min_y = points.iter().map(|p| p.1).min().unwrap_or(0);
+        let max_y = points.iter().map(|p| p.1).max().unwrap_or(0);
+        let rect = Rect::new(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
+        if rect.is_empty() || color.a <= 0.0 {
+            return;
+        }
+        let (a, b, c) = (
+            (
+                (points[0].0 - min_x) as f32,
+                (points[0].1 - min_y) as f32,
+            ),
+            (
+                (points[1].0 - min_x) as f32,
+                (points[1].1 - min_y) as f32,
+            ),
+            (
+                (points[2].0 - min_x) as f32,
+                (points[2].1 - min_y) as f32,
+            ),
+        );
+        blit_coverage_shape(hdc, rect, color, |x, y| {
+            let d1 = cross(x, y, a, b);
+            let d2 = cross(x, y, b, c);
+            let d3 = cross(x, y, c, a);
+            let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+            let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+            !(has_neg && has_pos)
+        });
+    }
+
+    /// 点相对有向边 `a→b` 的叉积符号（点在三角形内 ⇔ 三条边同号）。
+    fn cross(px: f32, py: f32, a: (f32, f32), b: (f32, f32)) -> f32 {
+        (a.0 - px) * (b.1 - py) - (a.1 - py) * (b.0 - px)
+    }
+
+    /// 任意形状的覆盖率位图 → `AlphaBlend`：GDI 没有抗锯齿原语，小图形
+    /// （圆点/三角，≤64px）按 4×4 超采样算每个像素的覆盖率，生成 RGBA 位图后
+    /// 一次混合 —— 与 mac 侧的抗锯齿小图形同观感。
+    fn blit_coverage_shape(
+        hdc: HDC,
+        rect: Rect,
+        color: Rgba,
+        inside: impl Fn(f32, f32) -> bool,
+    ) {
+        if rect.is_empty() || color.a <= 0.0 || rect.w > 64 || rect.h > 64 {
+            return;
+        }
+        const SS: u32 = 4;
+        let mut pixels = vec![0u8; (rect.w * rect.h * 4) as usize];
+        for py in 0..rect.h {
+            for px in 0..rect.w {
+                let mut hits = 0u32;
+                for sy in 0..SS {
+                    for sx in 0..SS {
+                        let fx = px as f32 + (sx as f32 + 0.5) / SS as f32;
+                        let fy = py as f32 + (sy as f32 + 0.5) / SS as f32;
+                        if inside(fx, fy) {
+                            hits += 1;
+                        }
+                    }
+                }
+                let coverage = hits as f32 / (SS * SS) as f32;
+                let index = ((py * rect.w + px) * 4) as usize;
+                // `Bitmap` 是**直通** RGBA（`bitmap_dib_bytes` 负责预乘）。
+                pixels[index] = ch(color.r);
+                pixels[index + 1] = ch(color.g);
+                pixels[index + 2] = ch(color.b);
+                pixels[index + 3] = ch(color.a * coverage);
+            }
+        }
+        let bitmap = Bitmap {
+            width: rect.w as u32,
+            height: rect.h as u32,
+            pixels,
+        };
+        let Some(dib) = dib_from_bitmap(&bitmap) else {
+            rust_warn!("小图形覆盖率位图创建失败（DIB 为 NULL），本次不绘制");
+            return;
+        };
+        blend(
+            hdc,
+            rect,
+            dib.hdc,
+            Rect::new(0, 0, rect.w, rect.h),
+            255,
+        );
+    }
+
+    /// 圆角矩形**四角**的补底：`rect − roundrect(rect, radius)` 的差集铺 `color`。
+    ///
+    /// ownerdraw 按钮把面裁进圆角区域后，四角留下 BUTTON 类的系统擦除色（实机是
+    /// 一圈 `(168,168,168)` 灰）—— 这里用按钮所在表面的实色把角补平。
+    fn fill_rect_corners(hdc: HDC, rect: Rect, radius_px: i32, color: Rgba) {
+        if rect.is_empty() || radius_px <= 0 || color.a <= 0.0 {
+            return;
+        }
+        let r = radius_px.min(rect.w / 2).min(rect.h / 2).max(1);
+        let outer = unsafe {
+            CreateRectRgn(rect.x, rect.y, rect.right() + 1, rect.bottom() + 1)
+        };
+        if outer == 0 {
+            rust_warn!("圆角按钮补角区域创建失败（CreateRectRgn 返回 NULL）");
+            return;
+        }
+        let inner = unsafe {
+            CreateRoundRectRgn(
+                rect.x,
+                rect.y,
+                rect.right() + 1,
+                rect.bottom() + 1,
+                r * 2,
+                r * 2,
+            )
+        };
+        if inner == 0 {
+            unsafe { DeleteObject(outer) };
+            rust_warn!("圆角按钮补角区域创建失败（CreateRoundRectRgn 返回 NULL）");
+            return;
+        }
+        // 差集失败时不要静默：四角会保持系统灰（正是本函数要修的症状）。
+        if unsafe { CombineRgn(outer, outer, inner, RGN_DIFF) } == 0 {
+            rust_warn!("圆角按钮补角差集失败（CombineRgn = ERROR）；四角保留系统灰");
+        } else {
+            let brush = solid_brush(color);
+            unsafe { FillRgn(hdc, outer, brush) };
+        }
+        unsafe {
+            DeleteObject(inner);
+            DeleteObject(outer);
+        }
+    }
+
+    /// 控件矩形（**父窗客户区坐标**；右/下开区间口径）。
+    ///
+    /// `GetWindowRect` + `ScreenToClient`；任一步失败返回 `None`，调用方按旧口径回落。
+    pub fn control_rect_in_parent(control: HWND, parent: HWND) -> Option<Rect> {
+        if control == 0 || parent == 0 {
+            return None;
+        }
+        unsafe {
+            let mut rect: RECT = std::mem::zeroed();
+            if GetWindowRect(control, &mut rect) == 0 {
+                return None;
+            }
+            let mut top_left = POINT {
+                x: rect.left,
+                y: rect.top,
+            };
+            if ScreenToClient(parent, &mut top_left) == 0 {
+                return None;
+            }
+            Some(Rect::new(
+                top_left.x,
+                top_left.y,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            ))
+        }
+    }
+
+    /// 把「控件底下那层**真实像素**」重放并贴到控件 DC 上（见 [`draw_button`] 的
+    /// `backdrop_painted`）。
+    ///
+    /// 为什么不能再用近似色：ownerdraw 子控件不是透明窗口 —— 控件矩形里的一切都
+    /// 必须由控件自己画出来；而用 token 预合成的「表面色」在渐变 / sheen / 颗粒 /
+    /// 投影叠出来的面上必差 10~30 灰阶，实机就是「按钮后面一块灰色矩形底」（用户
+    /// 2026-10-07 实拍）。这里改走**重放**：在内存位图里用父窗自己的绘制例程画
+    /// 一遍，再把结果 SRCCOPY 到 `hdc` 的 (0,0)。`origin` = 控件左上角在**被重放
+    /// 坐标空间**（父窗客户区）里的位置；`paint` 闭包按该坐标空间绘制。
+    ///
+    /// 返回 `false` = 内存位图建不出来 / 贴图失败（调用方回落旧近似填充）。
+    pub fn blit_backdrop<F>(hdc: HDC, rect: Rect, origin: (i32, i32), paint: F) -> bool
+    where
+        F: FnOnce(HDC),
+    {
+        if hdc == 0 || rect.is_empty() {
+            return false;
+        }
+        let Some(dib) = Dib::new(rect.w, rect.h) else {
+            rust_warn!("按钮底重放：内存位图创建失败，本次回落近似底色");
+            return false;
+        };
+        // SaveDC 在 SelectObject(DIB) 之后：RestoreDC 复原到「DIB 仍在 DC 里」的
+        // 状态，随后的 BitBlt 源才是刚画好的位图（顺序不能反）。
+        let saved = unsafe { SaveDC(dib.hdc) };
+        unsafe {
+            SetViewportOrgEx(dib.hdc, -origin.0, -origin.1, ptr::null_mut());
+        }
+        paint(dib.hdc);
+        if saved != 0 {
+            unsafe { RestoreDC(dib.hdc, saved) };
+        }
+        let ok = unsafe { BitBlt(hdc, 0, 0, rect.w, rect.h, dib.hdc, 0, 0, SRCCOPY) } != 0;
+        if !ok {
+            rust_warn!("按钮底重放：BitBlt 失败，本次回落近似底色");
+        }
+        ok
+    }
+
     /// 竖向渐变：逐行取样写 1×H 预乘条，再整块 `AlphaBlend` 拉伸。
     ///
     /// **不走 `GradientFill`**：见模块头「渐变」条 —— 它在窗口 DC 上会静默不写像素。
@@ -958,50 +1248,33 @@ mod gdi {
 
     /// 实心圆点（状态指示：设计稿顶栏状态位前的 `--acc` 圆点）。
     ///
-    /// 用「椭圆区域 + `FillRgn`」而不是 `Ellipse`：后者要同时改 DC 的笔/刷再恢复，
-    /// 这里只要一次填充，区域路线对 DC 状态的打扰更少。区域由本函数创建、
-    /// `FillRgn` 后立即释放（系统不接管）。
+    /// 走覆盖率位图（[`blit_coverage_shape`]）：GDI 的 `CreateEllipticRgn`/`Ellipse`
+    /// 都是**无抗锯齿**填充，6px 直径的圆点实机退化成菱形/星形（2026-10-07 用户
+    /// 实拍顶栏与把手带圆点）；位图路线与 mac 的圆点同观感。
+    /// `_backdrop` 仅为兼容既有调用点的签名保留：颜色已由 `AlphaBlend` 逐像素
+    /// 合成，不再需要调用方预给底。
     pub fn draw_dot(
         hdc: HDC,
         center_x: i32,
         center_y: i32,
         radius: i32,
         color: Rgba,
-        backdrop: Rgba,
+        _backdrop: Rgba,
     ) {
         if radius <= 0 || color.a <= 0.0 {
             return;
         }
-        // 区域填充没有 alpha 通路：半透明时按给定底预合成（圆点只有几像素，误差不可见）。
-        let opaque = if color.a >= 0.999 {
-            color
-        } else {
-            composite_over(color, backdrop)
-        };
-        unsafe {
-            let region: HRGN = CreateEllipticRgn(
-                center_x - radius,
-                center_y - radius,
-                center_x + radius,
-                center_y + radius,
-            );
-            if region == 0 {
-                return;
-            }
-            let brush = with_cache(|cache| {
-                let key = colorref(opaque);
-                match cache.brushes.get(&key) {
-                    Some(&brush) => brush,
-                    None => {
-                        let brush = CreateSolidBrush(key);
-                        cache.brushes.insert(key, brush);
-                        brush
-                    }
-                }
-            });
-            FillRgn(hdc, region, brush);
-            DeleteObject(region);
-        }
+        let r = radius as f32;
+        blit_coverage_shape(
+            hdc,
+            Rect::new(center_x - radius, center_y - radius, radius * 2, radius * 2),
+            color,
+            |x, y| {
+                let dx = x - r;
+                let dy = y - r;
+                dx * dx + dy * dy <= r * r
+            },
+        );
     }
 
     /// 主题开关：轨道（`switch_off_*` / `switch_on_*` 的 Fill + 1px 边）+ 滑块。
@@ -1083,12 +1356,205 @@ mod gdi {
         }
     }
 
-    /// `Elevation` 投影近似（均匀半透明矩形；GDI 无模糊，见模块头）。
+    /// `Elevation` 投影绘制（**矩形剪影**：无圆角的条/面板用）。
+    ///
+    /// 圆角元素（按钮 / 气泡 / chip）必须用 [`draw_elevation_rounded`]：矩形剪影会在
+    /// 圆角之外露出硬色斑（2026-10-07 实机，顶栏「设置 / ×」四角）。
     pub fn draw_elevation(hdc: HDC, rect: Rect, elevation: &Elevation) {
-        for band in elevation_bands(elevation, rect) {
-            fill_color(hdc, band.rect, band.color);
+        draw_elevation_rounded(hdc, rect, elevation, 0);
+    }
+
+    /// `Elevation` 投影绘制（圆角剪影版；`radius_px` = 元素自身的圆角半径）。
+    ///
+    /// 每层投影按 [`shadow_steps`] 拆成同心圆角剪影、由外向内叠画（见模块头
+    /// 「`Elevation`」条）；投影画在元素**之前**（先影后物）。
+    pub fn draw_elevation_rounded(hdc: HDC, rect: Rect, elevation: &Elevation, radius_px: i32) {
+        for shadow in [elevation.contact, elevation.ambient].into_iter().flatten() {
+            for (layer, radius, alpha) in shadow_steps(&shadow, rect, radius_px) {
+                fill_round_alpha(hdc, layer, radius, shadow.color.with_alpha(alpha));
+            }
         }
     }
+
+    /// **接触投影单层版**（父窗通道画子按钮的投影用）：只画按 `dy` 下移一层圆角
+    /// 剪影，不做同心分层。
+    ///
+    /// 为什么按钮不直接复用 [`draw_elevation_rounded`]：分层版在 1px 内累计到
+    /// ~15% 覆盖、四边都可见（按钮的 DC 又画不到窗口外，只能压在内侧）—— 实机就是
+    /// 「药丸四周一圈硬环 + 底部一条黑线」。mac 的 `--contact`（`0 1px 2px rgba
+    /// (0,0,0,.30)`）在 1px 外只剩几个百分点、侧缘几乎不可见；父窗通道里按
+    /// **一层 dy 偏移剪影**画，可见部分就是药丸正下方那 1px 软影，与录制同观感。
+    pub fn draw_contact_shadow(hdc: HDC, rect: Rect, radius_px: i32, shadow: &Shadow) {
+        if rect.is_empty() || shadow.color.a <= 0.0 {
+            return;
+        }
+        let dy = shadow.dy.round() as i32;
+        let spread = shadow.spread.round() as i32;
+        let layer = Rect::new(
+            rect.x - spread,
+            rect.y + dy - spread,
+            rect.w + spread * 2,
+            rect.h + spread * 2,
+        );
+        let radius = (radius_px + spread).max(0);
+        // 单层按录制**校准过系数**：CSS 的 `0 1px 2px rgba(0,0,0,.30)` 把 30% 摊在
+        // 约 2px 的模糊带上，正下方 1px 只落到一小部分覆盖；GDI 直接铺一层 30% 会
+        // 得到比录制深 4 倍的硬线（实测 (153) vs 录制 (220→205) 一带）。取 0.30
+        // 系数后该带 ≈(200)，与录制的接触影同量级（同为录制校准量，注释留痕）。
+        let alpha = shadow.color.a * 0.30;
+        fill_round_alpha(hdc, layer, radius, shadow.color.with_alpha(alpha));
+    }
+
+    /// 圆角矩形 + 半透明填充（`radius_px <= 0` 退化为矩形）。
+    fn fill_round_alpha(hdc: HDC, rect: Rect, radius_px: i32, color: Rgba) {
+        if rect.is_empty() || color.a <= 0.0 {
+            return;
+        }
+        if radius_px <= 0 {
+            fill_alpha(hdc, rect, color);
+            return;
+        }
+        let r = radius_px.min(rect.w / 2).min(rect.h / 2).max(1);
+        let region = unsafe {
+            CreateRoundRectRgn(
+                rect.x,
+                rect.y,
+                rect.right() + 1,
+                rect.bottom() + 1,
+                r * 2,
+                r * 2,
+            )
+        };
+        if region == 0 {
+            fill_alpha(hdc, rect, color);
+            return;
+        }
+        let saved = unsafe { SaveDC(hdc) };
+        if saved != 0 {
+            unsafe { SelectClipRgn(hdc, region) };
+        }
+        fill_alpha(hdc, rect, color);
+        if saved != 0 {
+            unsafe { RestoreDC(hdc, saved) };
+        }
+        unsafe { DeleteObject(region) };
+    }
+
+    /// UI 字体（**灰度抗锯齿**）。
+    ///
+    /// 用 `ANTIALIASED_QUALITY` 而不是系统缺省的 ClearType：macOS 侧是灰度抗锯齿，
+    /// ClearType 的彩色次像素在浅底圆角控件上会被读成「脏边」（2026-10-07 实机对比）。
+    /// `height` 为**负值**（字符高度口径，与各窗口既有 `CreateFontW(-h, …)` 同）。
+    pub fn create_ui_font(height: i32, weight: i32, face: &str) -> HFONT {
+        let face = wide(face);
+        unsafe {
+            CreateFontW(
+                height,
+                0,
+                0,
+                0,
+                weight,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                ANTIALIASED_QUALITY as u32,
+                0,
+                face.as_ptr(),
+            )
+        }
+    }
+
+    /// 正文族回退链（Windows 侧单一定义点）：`MiSans → Noto Sans SC → Microsoft YaHei UI`。
+    ///
+    /// 前两档是「贴 mac PingFang 观感」的首选（同字号下行高系数更接近 1.18~1.3），
+    /// 系统没装就落到雅黑。**不能靠 `CreateFontW` 是否成功判断装没装**：GDI 对缺失族
+    /// 会静默替换，只有把字体选进 DC 用 `GetTextFaceW` 读回**实际族名**才能确认。
+    /// 解析结果缓存（字体环境在进程生命周期内不变），并只在首次解析时留一条日志。
+    pub fn resolve_ui_font_family() -> String {
+        use std::sync::OnceLock;
+        static RESOLVED: OnceLock<String> = OnceLock::new();
+        RESOLVED
+            .get_or_init(|| {
+                for group in UI_FONT_FALLBACKS {
+                    // 组内任一名（正名或本地化名）命中即算这一族装了，但**返回正名**给
+                    // `CreateFontW`（两名字指同一族，不会产生两套字体）。
+                    if group.iter().any(|name| font_family_installed(name)) {
+                        let candidate = group[0];
+                        rust_info!(
+                            "正文字体族解析命中：{candidate}（回退链 DengXian/等线 → MiSans → Noto Sans SC → Microsoft YaHei UI）"
+                        );
+                        return candidate.to_string();
+                    }
+                }
+                rust_info!(
+                    "正文字体族回退链均未安装，回落 {}",
+                    UI_FONT_FALLBACK
+                );
+                UI_FONT_FALLBACK.to_string()
+            })
+            .clone()
+    }
+
+    /// 系统是否真的装了 `family`：建一支该族字体选进内存 DC，读回实际族名比对。
+    fn font_family_installed(family: &str) -> bool {
+        let face = wide(family);
+        unsafe {
+            let hdc = CreateCompatibleDC(0);
+            if hdc == 0 {
+                return false;
+            }
+            let font = CreateFontW(
+                -12,
+                0,
+                0,
+                0,
+                FW_NORMAL as i32,
+                0,
+                0,
+                0,
+                DEFAULT_CHARSET as u32,
+                OUT_DEFAULT_PRECIS as u32,
+                CLIP_DEFAULT_PRECIS as u32,
+                ANTIALIASED_QUALITY as u32,
+                0,
+                face.as_ptr(),
+            );
+            let old = SelectObject(hdc, font);
+            let mut buffer = [0u16; 64];
+            let written = GetTextFaceW(hdc, buffer.len() as i32, buffer.as_mut_ptr());
+            SelectObject(hdc, old);
+            DeleteObject(font);
+            DeleteDC(hdc);
+            if written <= 1 {
+                return false;
+            }
+            let actual = String::from_utf16_lossy(&buffer[..(written as usize - 1)]);
+            actual.eq_ignore_ascii_case(family)
+        }
+    }
+
+    /// 正文族回退链（顺序即优先级）。
+    /// 正文/界面字体的回退链（2026-10-07 定序，**顺序即优先级**）。
+    ///
+    /// **DengXian（等线）排头**：RichEdit 的行高由字体度量决定、且不接受低于自然行高的
+    /// `\sl` 设置（root 的独立 harness 实测），三族在 13px em 下的 RichEdit 行距为
+    /// **DengXian 18px / MiSans 23px / Noto Sans SC 25px**，mac 录制折算本窗 ≈17px
+    /// ⇒ 只有 DengXian 能对上 mac 的气泡行距；且它是 Windows 10/11 自带族，不依赖
+    /// 用户额外安装。MiSans / Noto Sans SC 依次兜底（装了 MiSans 的机器此前观感更
+    /// 接近 PingFang，但行距会回到 23px，属已知取舍）。
+    /// 每项 = **同一族的别名组**：首项是交给 `CreateFontW` 的正名，其余是
+    /// `GetTextFaceW` 在本地化系统上可能回的名字（英文名 `DengXian` 在中文系统上回
+    /// 「等线」—— 只用正名比对会把已装的族误判成没装，2026-10-07 实机日志踩到）。
+    pub const UI_FONT_FALLBACKS: &[&[&str]] = &[
+        &["DengXian", "等线"],
+        &["MiSans"],
+        &["Noto Sans SC"],
+    ];
+    /// 回退链全不命中时的兜底族（中文 UI 基线）。
+    pub const UI_FONT_FALLBACK: &str = "Microsoft YaHei UI";
 
     /// 卡片/气泡外框：1px 描边 + 内侧立体线（承载控件按 2px 内缩，两条线才露得出来）。
     pub fn draw_frame(hdc: HDC, rect: Rect, edge: Rgba, bevel: &Bevel) {
@@ -1161,6 +1627,11 @@ mod gdi {
     // ==========================================
 
     /// ownerdraw 按钮绘制（聊天窗与主窗顶栏共用；字体从控件自己的 `WM_GETFONT` 取）。
+    ///
+    /// `backdrop_painted` = 调用方已把**控件矩形下的真实父窗像素**贴满 `hdc`
+    /// （见 [`blit_backdrop`]）。为真时本函数只画「药丸」本身，不再用 token
+    /// 预合成色补底/补角 —— 那两条近似路径正是实机「按钮后面一块灰色矩形底」
+    /// 的来源（近似色比条底暗 20+ 灰阶，用户 2026-10-07 实拍）。
     pub fn draw_button(
         hdc: HDC,
         hwnd: HWND,
@@ -1169,26 +1640,70 @@ mod gdi {
         label: &str,
         pressed: bool,
         disabled: bool,
+        backdrop_painted: bool,
     ) {
         if rect.is_empty() {
             return;
         }
-        // 禁用态：底 + 标题都降 50%（macOS `style_button` 的口径）。
-        // GDI 没有 alpha：底是「实色 fill 画满后叠一层 50% 面板底」，标题是预合成
-        // 实色（见 [`disabled_face`]）—— 只降标题色的旧口径对比度 ~2:1，像「配色
-        // 错了的可用按钮」（评审实机证据 2026-10-05）。
-        let disabled_state = if disabled {
-            Some(disabled_face(
-                face,
-                crate::ui::theme::tokens().panel_bg.base_color(),
-            ))
-        } else {
-            None
-        };
-        // 投影先画（先影后物）：交叠部分由按钮自己盖住，只露外面一圈。
-        draw_elevation(hdc, rect, &face.shadow);
-        if let Some(bg) = &face.bg {
-            fill_rect(hdc, rect, bg);
+        // 圆角外的四角补底：ownerdraw 的面只在**圆角区域内**着色，四角留着系统擦底
+        // 的灰块（用户 2026-10-07 实拍「新会话药丸后面一个矩形灰底」）。这里先用
+        // 控件登记过的**表面色**铺满整矩形（= 它实际坐在哪层底上），再进圆角剪切
+        // 画面 —— 四角与周围条底同色，且不依赖窗口区域 `SetWindowRgn`（实机不生效）。
+        if !backdrop_painted {
+            if let Some(surface) = surface_color_of(hwnd) {
+            // 条面是竖向渐变：整矩形按**表面上下两行**铺同一段渐变，四角才与条底
+            // 逐像素同色（单色近似会露出一块差几灰阶的矩形，用户实拍「矩形灰底」）。
+            match surface_rows_of(hwnd) {
+                Some((top, bottom)) if top != bottom => {
+                    fill_gradient(hdc, rect, &[(0.0, top), (1.0, bottom)]);
+                }
+                _ => fill_color(hdc, rect, surface),
+            }
+            }
+        }
+        // 与 macOS `paint.rs::style_button` 同口径（两端看同一张设计稿）：
+        // - 底一律取 `fill.base_color()` 的**平色**，不铺渐变 —— 渐变是面板/气泡
+        //   这类大面积的画法，按钮面上的 `Fill::Linear` 在 mac 侧只落首档色
+        //   （Chrome 的 `btn_bg` 首档是纯白，Windows 铺整条渐变就成了灰蓝药丸，
+        //   实机与录制不符）；
+        // - 禁用态：底换中性实色（`ButtonFace::disabled_bg`）+ 无描边/立体线/外投影，
+        //   标题取预压暗的 `disabled_ink`（AppKit 会对禁用标题整体压暗，见
+        //   `style_button` 注释）。
+        // 圆角：窗口区域（`SetWindowRgn`）在实机被观察到不生效（见
+        // `apply_round_region` 的失败留痕），所以绘制端再走一次 **DC 剪切区域**
+        // ——与 `draw_bar_entry` 同款，圆角是画出来的、不押在窗口区域上。
+        let radius = button_radius_of(hwnd);
+        // 按钮**不在这里画投影**：ownerdraw 的 DC 被裁在按钮窗口矩形内，投影只能
+        // 压在药丸边内侧成一条「贴边硬环」（实机：侧缘被压到 (162,166,172)，而
+        // mac 录制同位置 ≈(206~230)）。投影改由父窗通道画（聊天窗
+        // `paint_button_shadows` / 顶栏 `draw_bar_entry`），落在按钮矩形之外才可见，
+        // 与 mac 的 CALayer 层外扩散同口径。
+        let saved = if radius > 0 { unsafe { SaveDC(hdc) } } else { 0 };
+        let mut region: HRGN = 0;
+        if radius > 0 {
+            let r = radius.min(rect.w / 2).min(rect.h / 2).max(1);
+            region = unsafe {
+                CreateRoundRectRgn(
+                    rect.x,
+                    rect.y,
+                    rect.right() + 1,
+                    rect.bottom() + 1,
+                    r * 2,
+                    r * 2,
+                )
+            };
+            if region != 0 {
+                unsafe { SelectClipRgn(hdc, region) };
+            }
+        }
+        if disabled {
+            fill_color(hdc, rect, face.disabled_bg);
+        } else if let Some(bg) = &face.bg {
+            if face.bg_full_gradient {
+                fill_rect(hdc, rect, bg);
+            } else {
+                fill_color(hdc, rect, bg.base_color());
+            }
         } else {
             // 无底角色（`TabOff` / `Link`）：系统会先把 ownerdraw 控件擦成**默认按钮面**
             // （浅灰/白块），所以「无底」不能真的不画 —— 必须显式盖回它坐在哪层底上，
@@ -1196,19 +1711,21 @@ mod gdi {
             // （用户 2026-10-07 实拍）。`bg_base` 在无底角色上就是「条底压面板底」的
             // 代表色，正是这层表面色。
             // 调用方记过表面色就用它（顶栏/把手带的底色与 `bg_base` 不同）。
-            fill_color(hdc, rect, surface_color_of(hwnd).unwrap_or(face.bg_base));
+            // 重放路径（`backdrop_painted`）不需要这层：控件 DC 上已是真像素，
+            // 再盖一层近似色反而把四角重新染出色差矩形。
+            if !backdrop_painted {
+                fill_color(hdc, rect, surface_color_of(hwnd).unwrap_or(face.bg_base));
+            }
         }
-        if let Some(state) = &disabled_state {
-            // 50% 面板底「冲洗」压在实色 fill 上：等价于 mix(fill, 面板底, 50%)。
-            fill_color(hdc, rect, state.wash);
-        }
-        if let Some(edge) = face.edge {
-            draw_frame(hdc, rect, edge, &face.bevel.unwrap_or(Bevel::NONE));
-        } else if let Some(bevel) = &face.bevel {
-            draw_bevel(hdc, rect, bevel);
-        }
-        if let Some(overlay) = face.overlay {
-            fill_color(hdc, rect, overlay);
+        if !disabled {
+            if let Some(edge) = face.edge {
+                draw_frame(hdc, rect, edge, &face.bevel.unwrap_or(Bevel::NONE));
+            } else if let Some(bevel) = &face.bevel {
+                draw_bevel(hdc, rect, bevel);
+            }
+            if let Some(overlay) = face.overlay {
+                fill_color(hdc, rect, overlay);
+            }
         }
         let font = unsafe { SendMessageW(hwnd, WM_GETFONT, 0, 0) } as HFONT;
         let old = if font != 0 {
@@ -1218,18 +1735,17 @@ mod gdi {
         };
         let text = wide(label);
         let shift = i32::from(pressed);
-        let base = disabled_state
-            .as_ref()
-            .map(|state| state.washed_base)
-            .unwrap_or(face.bg_base);
-        let ink = disabled_state
-            .as_ref()
-            .map(|state| state.ink)
-            .unwrap_or(face.ink);
+        let base = if disabled {
+            face.disabled_bg
+        } else {
+            face.bg_base
+        };
+        let ink = if disabled { face.disabled_ink } else { face.ink };
+        let text_shadow = if disabled { None } else { face.text_shadow };
         let flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS;
         unsafe {
             SetBkMode(hdc, TRANSPARENT);
-            if let Some(shadow) = face.text_shadow {
+            if let Some(shadow) = text_shadow {
                 let dy = shadow.dy.round() as i32 + shift;
                 let mut r = win_rect(rect.offset(shift, dy));
                 SetTextColor(hdc, colorref(composite_over(shadow.color, base)));
@@ -1242,18 +1758,70 @@ mod gdi {
                 SelectObject(hdc, old);
             }
         }
+        if saved != 0 {
+            unsafe { RestoreDC(hdc, saved) };
+        }
+        if region != 0 {
+            unsafe { DeleteObject(region) };
+        }
+        // 圆角外那四个角：裁剪面把角让出来，而 BUTTON 类的擦除色留在那里
+        //（实机是一圈 `(168,168,168)` 系统灰）。用按钮所在表面的实色把
+        // `矩形 − 圆角矩形` 的差集铺掉，圆角才干净。
+        if radius > 0 && !backdrop_painted {
+            let backdrop = surface_color_of(hwnd).unwrap_or(face.backdrop);
+            fill_rect_corners(hdc, rect, radius, backdrop);
+        }
     }
 
-    /// 单面顶栏的条内入口（设置 /「×」）：直接画在条面上，**无面时什么都不画**。
+    /// 自绘按钮的「真实父窗底 + 药丸」一体绘制 —— **子控件坐在渐变/纹理面上的
+    /// 唯一正确口径**（ownerdraw 子控件是不透明表面，矩形里的一切都得控件自己画；
+    /// 用 token 预合成的「表面色」在渐变 / sheen / 颗粒叠出的面上必差 10~30 灰阶，
+    /// 实机就是「药丸后面一块灰色矩形底」，用户 2026-10-07 实拍）。
+    ///
+    /// 做法：按控件在父窗客户区里的左上角作原点，用父窗**自己的绘制例程**把该处
+    /// 的真实像素重放到控件 DC（见 [`blit_backdrop`]），再按 `backdrop_painted = true`
+    /// 画药丸 —— 四角与圆角外不再需要近似补色。
+    ///
+    /// `parent` 与 `paint` 必须同源：`paint` 在父窗客户区坐标系里画整面（输出被
+    /// 位图裁剪），因此禁止传「另一个窗口」的绘制例程。控件矩形取不到、位图建不出
+    /// 或贴图失败时自动回落旧近似路径（`draw_button(..., backdrop_painted = false)`），
+    /// **两种情况下药丸都已画完**，调用方无需再补画。
+    ///
+    /// 返回值 = 是否走成重放路径（false = 已按旧近似口径画完，供调用方留痕/测试）。
+    pub fn draw_button_on_backdrop<F>(
+        hdc: HDC,
+        hwnd: HWND,
+        parent: HWND,
+        rect: Rect,
+        face: &ButtonFace,
+        label: &str,
+        pressed: bool,
+        disabled: bool,
+        paint: F,
+    ) -> bool
+    where
+        F: FnOnce(HDC),
+    {
+        let origin = control_rect_in_parent(hwnd, parent);
+        // `origin` 取不到时不调 `paint`：闭包按父窗坐标空间作画，没有原点就不能贴。
+        let backdrop = match origin {
+            Some(origin) => blit_backdrop(hdc, rect, (origin.x, origin.y), paint),
+            None => false,
+        };
+        draw_button(hdc, hwnd, rect, face, label, pressed, disabled, backdrop);
+        backdrop
+    }
+
+    /// 单面顶栏的条内入口（设置 /「×」）：直接画在条面上。
     ///
     /// 顶栏不再用子控件承载这些入口 —— 子窗口是不透明表面，条底渐变透不过来
     /// （实机症状：STATIC 白板 + 按钮深色方板，2026-10-07）。与 [`draw_button`]
     /// 的差异：
-    /// - 无底角色**不补表面色**：面就是条底本身，什么都不画即为正确；
+    /// - 投影在无剪切的状态下先画（macOS 的 `--bsh` 非 inset 部分落在按钮外沿）；
     /// - 圆角走 **DC 剪切区域**（`SelectClipRgn`，只作用于本次绘制、随 `RestoreDC`
     ///   复原），不依赖窗口区域 `SetWindowRgn`（实机观察到窗口区域未生效，见
     ///   `apply_round_region` 的失败留痕）；
-    /// - 省略文字投影：条内角色（`TabOff` / `Close`）的 `text_shadow` 都是 `None`。
+    /// - 省略文字投影：条内入口的 `text_shadow` 目前都是 `None`。
     pub fn draw_bar_entry(
         hdc: HDC,
         rect: Rect,
@@ -1266,6 +1834,9 @@ mod gdi {
         if rect.is_empty() {
             return;
         }
+        // 投影先画（先影后物）：必须在挂剪切区域**之前**落笔，否则外沿的
+        // 一圈阴影会被圆角区域裁掉；剪影按入口自身的圆角走。
+        draw_elevation_rounded(hdc, rect, &face.shadow, radius_px);
         let saved = unsafe { SaveDC(hdc) };
         let mut region: HRGN = 0;
         if radius_px > 0 {
@@ -1284,8 +1855,10 @@ mod gdi {
                 unsafe { SelectClipRgn(hdc, region) };
             }
         }
+        // 与 [`draw_button`] 同一口径：macOS `style_button` 的按钮底是
+        // `fill.base_color()` 平色，不铺渐变。
         if let Some(bg) = &face.bg {
-            fill_rect(hdc, rect, bg);
+            fill_color(hdc, rect, bg.base_color());
         }
         if let Some(edge) = face.edge {
             draw_frame(hdc, rect, edge, &face.bevel.unwrap_or(Bevel::NONE));
@@ -1388,6 +1961,13 @@ mod gdi {
     /// 子类 id（控件内唯一；输入框子类用的是 1，且不在同一控件上，互不影响）。
     const BUTTON_SUBCLASS_ID: usize = 0x57_54;
 
+    /// 控件所在表面的上下两行实色（见 `set_surface_rows`）。
+    #[derive(Clone, Copy)]
+    struct SurfaceRows {
+        top: Rgba,
+        bottom: Rgba,
+    }
+
     thread_local! {
         static HOVERED: RefCell<HashSet<HWND>> = RefCell::new(HashSet::new());
         /// 「这个控件坐在哪一层底色上」（无底角色的自绘底用）。
@@ -1396,22 +1976,47 @@ mod gdi {
         /// 而底色是渐变或条底时，返回实色刷子照样补出一块异色板 —— 用户实拍的
         /// 「莫名其妙的白底白框」就是这个。所以：**绘制端**读这里的表面色把底
         /// 盖回去（顶栏条内入口已改单面绘制、不走这条路，见 `windows_main.rs`）。
-        static SURFACE_COLORS: RefCell<HashMap<HWND, Rgba>> = RefCell::new(HashMap::new());
+        static SURFACE_COLORS: RefCell<HashMap<HWND, SurfaceRows>> = RefCell::new(HashMap::new());
+        /// 每只 ownerdraw 按钮的圆角半径（物理像素）。`WM_DRAWITEM` 的绘制端
+        /// 用它挂 **DC 剪切区域** 画圆角 —— 窗口区域在实机被观察到不生效
+        /// （见 `apply_round_region`），圆角不能再押在它上面。
+        static BUTTON_RADII: RefCell<HashMap<HWND, i32>> = RefCell::new(HashMap::new());
     }
 
     /// 记录控件所在的表面底色（无底按钮的「底」；`WM_NCDESTROY` 时自动清除）。
     pub fn set_surface_color(hwnd: HWND, color: Rgba) {
+        set_surface_rows(hwnd, color, color);
+    }
+
+    /// 记录控件所在表面的**上下两行实色**：条面是竖向渐变，圆角外补底按同一渐变
+    /// 铺才不会在四角露出一块与条底差几灰阶的矩形（用户 2026-10-07 实拍「药丸后面
+    /// 一块矩形灰底」）。单色场景用 [`set_surface_color`]（上下同色）。
+    pub fn set_surface_rows(hwnd: HWND, top: Rgba, bottom: Rgba) {
         if hwnd == 0 {
             return;
         }
         SURFACE_COLORS.with(|cell| {
-            cell.borrow_mut().insert(hwnd, color);
+            cell.borrow_mut().insert(hwnd, SurfaceRows { top, bottom });
         });
     }
 
     /// 读回控件所在表面底色；从未写过 → `None`（绘制端回落 `bg_base`）。
     pub fn surface_color_of(hwnd: HWND) -> Option<Rgba> {
-        SURFACE_COLORS.with(|cell| cell.borrow().get(&hwnd).copied())
+        SURFACE_COLORS
+            .with(|cell| cell.borrow().get(&hwnd).copied())
+            .map(|rows| rows.top)
+    }
+
+    /// 读回控件的表面上下两行实色（补角用渐变口径）。
+    pub fn surface_rows_of(hwnd: HWND) -> Option<(Rgba, Rgba)> {
+        SURFACE_COLORS
+            .with(|cell| cell.borrow().get(&hwnd).copied())
+            .map(|rows| (rows.top, rows.bottom))
+    }
+
+    /// 该控件的圆角半径（未登记 = 0，直角）。
+    pub fn button_radius_of(hwnd: HWND) -> i32 {
+        BUTTON_RADII.with(|cell| cell.borrow().get(&hwnd).copied().unwrap_or(0))
     }
 
     pub fn button_hovered(hwnd: HWND) -> bool {
@@ -1423,6 +2028,9 @@ mod gdi {
         if hwnd == 0 {
             return;
         }
+        BUTTON_RADII.with(|cell| {
+            cell.borrow_mut().insert(hwnd, radius_px.max(0));
+        });
         unsafe {
             SetWindowSubclass(
                 hwnd,
@@ -1455,30 +2063,11 @@ mod gdi {
             }
             // 成功时区域归系统所有；失败时还归我们，必须自己释放（漏 = GDI 句柄泄漏）。
             if SetWindowRgn(hwnd, region, 1) == 0 {
-                // 实机诊断（2026-10-07）：区域被系统拒绝时控件按直角渲染。本轮实机
-                // 观察到所有 ownerdraw 按钮圆角整体失效（发送/会话标签/顶栏按钮全
-                // 直角）；这一行把「API 拒绝」与「区域生效但绘制端没吃它」切开，
-                // 实机日志一读即可定案。
+                // 区域被系统拒绝时控件按直角渲染。这一条把「API 拒绝」与「区域生效
+                // 但绘制端没吃它」切开，实机日志一读即可定案（2026-10-07 实机：
+                // ownerdraw 按钮圆角整体失效时，就是靠这条与探针分辨出来的）。
                 crate::rust_warn!("按钮圆角区域被系统拒绝（hwnd={hwnd}），本次按直角渲染");
                 DeleteObject(region);
-            } else {
-                // 一次性实机探针（2026-10-07，**读到一行即定案、随后删除**）：
-                // 「区域被接受、按钮却仍是直角」时要区分「区域被系统丢掉」与
-                // 「区域在、绘制端没吃它」。只探第一只控件，避免 WM_SIZE 风暴刷屏。
-                // 读法：2/3 = 区域在（SIMPLEREGION/COMPLEXREGION）；1 = NULLREGION
-                //（没保住）；0 = ERROR。
-                static PROBED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !PROBED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    let probe: HRGN = CreateRectRgn(0, 0, 1, 1);
-                    if probe != 0 {
-                        let kind = GetWindowRgn(hwnd, probe);
-                        DeleteObject(probe);
-                        crate::rust_info!(
-                            "圆角区域实机探针（一次性）：hwnd={hwnd} GetWindowRgn={kind}（2=SIMPLEREGION / 3=COMPLEXREGION / 1=NULLREGION / 0=ERROR）"
-                        );
-                    }
-                }
             }
         }
     }
@@ -1520,6 +2109,9 @@ mod gdi {
                 // 表面色按句柄记账：控件销毁时必须一起销账（句柄会被复用，
                 // 留着会让下一个控件继承上一个的底）。
                 SURFACE_COLORS.with(|cell| {
+                    cell.borrow_mut().remove(&hwnd);
+                });
+                BUTTON_RADII.with(|cell| {
                     cell.borrow_mut().remove(&hwnd);
                 });
                 unsafe {
@@ -1871,7 +2463,7 @@ mod tests {
     }
 
     #[test]
-    fn 投影_偏移扩散与负扩散() {
+    fn 投影_圆角剪影分层与偏移扩散() {
         let rect = Rect::new(10, 20, 100, 50);
         let contact = Shadow {
             dy: 1.0,
@@ -1879,18 +2471,30 @@ mod tests {
             spread: 0.0,
             color: Rgba::black_alpha(0.3),
         };
-        let bands = elevation_bands(
-            &Elevation {
-                contact: Some(contact),
-                ambient: None,
-            },
-            rect,
-        );
-        assert_eq!(bands.len(), 1);
-        assert_eq!(
-            bands[0].rect,
-            Rect::new(10, 21, 100, 50),
-            "dy 下移、spread 0 不变宽"
+        // blur 2 → 4 层：最内层 = 剪影（grow 0），最外层外扩满 2px。
+        let layers = shadow_steps(&contact, rect, 6);
+        assert_eq!(layers.len(), 4);
+        assert_eq!(layers[0].0, Rect::new(8, 19, 104, 54), "先画最外层（外扩 2）");
+        assert_eq!(layers[0].1, 8, "外层圆角随外扩增大");
+        assert_eq!(layers[3].0, Rect::new(10, 21, 100, 50), "最后画剪影本身（dy 1）");
+        assert_eq!(layers[3].1, 6, "剪影圆角 = 元素圆角");
+        // 累计曲线 A(k)=a·(1-(k/N)^1.5)：逐圈递增，剪影内回到原 alpha（0.3）——
+        // 不出现「最外圈等 alpha 硬环」。
+        let mut kept = 1.0_f32;
+        let mut accumulations = Vec::new();
+        for (_, _, layer_alpha) in &layers {
+            kept *= 1.0 - layer_alpha;
+            accumulations.push(1.0 - kept);
+        }
+        for pair in accumulations.windows(2) {
+            assert!(pair[0] < pair[1], "累计 alpha 必须逐圈递增：{accumulations:?}");
+        }
+        let stacked = *accumulations.last().expect("至少一层");
+        assert!((stacked - 0.3).abs() < 0.01, "叠四层回到原 alpha：{stacked}");
+        assert!(
+            accumulations[0] < 0.12,
+            "最外圈累计 alpha 应接近 0：{}",
+            accumulations[0]
         );
 
         let ambient = Shadow {
@@ -1899,21 +2503,30 @@ mod tests {
             spread: -14.0,
             color: Rgba::black_alpha(0.55),
         };
-        let bands = elevation_bands(
-            &Elevation {
-                contact: None,
-                ambient: Some(ambient),
-            },
-            rect,
-        );
-        // 负 spread = 四周内缩 14（x+14、y+14），再按 dy=10 下移 ⇒ y = 20 + 14 + 10 = 44。
+        let layers = shadow_steps(&ambient, rect, 0);
+        assert_eq!(layers.len(), SHADOW_MAX_STEPS as usize, "blur 24 夹到层数上限");
+        // 负 spread = 四周内缩 14（x+14、y+14），再按 dy=10 下移 ⇒ 剪影 y = 20+14+10。
         assert_eq!(
-            bands[0].rect,
+            layers.last().expect("至少一层").0,
             Rect::new(24, 44, 72, 22),
-            "负 spread 内缩、dy 下移"
+            "最内层 = 负 spread 内缩 + dy 下移后的剪影"
         );
-
-        assert!(elevation_bands(&Elevation::NONE, rect).is_empty());
+        assert!(
+            layers[0].0.w > layers.last().unwrap().0.w,
+            "最外层必须外扩"
+        );
+        // blur 0（硬投影）只画剪影一层、alpha 全值。
+        let hard = Shadow {
+            dy: 1.0,
+            blur: 0.0,
+            spread: 0.0,
+            color: Rgba::black_alpha(0.3),
+        };
+        let layers = shadow_steps(&hard, rect, 4);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].0, Rect::new(10, 21, 100, 50));
+        assert!((layers[0].2 - 0.3).abs() < f32::EPSILON);
+        assert!(shadow_steps(&hard, Rect::new(0, 0, 0, 0), 4).is_empty());
     }
 
     /// **行序钉子**：Bitmap 第 0 行（顶行）原样落在 DIB 缓冲开头，配合负 `biHeight`
@@ -2009,18 +2622,27 @@ mod tests {
                 button_face(tokens, ButtonRole::TabOff, false, false).ink,
                 tokens.dim
             );
-            // 关闭「×」是**无面**入口（与 macOS 顶栏一致：只有字，悬浮整块转
-            // `danger`，由下一测试钉住）。这里钉的是「无面」契约本身：退回
-            // `btn_bg` 按钮面 = 在顶栏渐变上补一块白板（实机症状）。
+            // 关闭「×」与 macOS 顶栏同形：`Face::Normal` 的 `btn_bg` 实面
+            // （那边两个入口都走 `style_button(Face::Normal)`），悬浮整块转
+            // `danger` 由下一测试钉住。
             let close = button_face(tokens, ButtonRole::Close, false, false);
-            assert!(
-                close.bg.is_none(),
-                "{id:?} 关闭键为无面文字入口（与 macOS 顶栏一致）"
+            match close.bg {
+                Some(fill) => assert_eq!(
+                    fill.base_color(),
+                    tokens.btn_bg.base_color(),
+                    "{id:?} 关闭键取 btn_bg 实面（与 macOS 顶栏同为 Face::Normal）"
+                ),
+                None => panic!("{id:?} 关闭键必须有底"),
+            }
+            assert_eq!(close.ink, tokens.btn_ink, "{id:?} 关闭键默认字色取 btn_ink");
+            assert_eq!(
+                close.edge,
+                Some(tokens.btn_edge),
+                "{id:?} 关闭键取 btn_edge 描边"
             );
-            assert_eq!(close.ink, tokens.dim, "{id:?} 关闭键默认字色取 dim");
             assert!(
-                close.edge.is_none() && close.bevel.is_none(),
-                "{id:?} 关闭键无描边/立体线（无面）"
+                close.bevel.is_some(),
+                "{id:?} 关闭键取 btn_bevel 立体线"
             );
         }
     }
@@ -2144,36 +2766,25 @@ mod tests {
         assert_eq!(ButtonRole::Link.code(), 9);
     }
 
-    /// 禁用态：底与标题都降 50%（macOS `style_button` 的口径）。钉两条公式：
-    /// 冲洗层 = 面板底 50%；标题 = 原字色 50% 合成在**冲洗后的底**上（不是原底）。
-    /// 只降标题色的旧口径必须不再可能（标题必须区别于可用态字色）。
+    /// 按钮底面的画法口径（源码级守门）：macOS `style_button` 对按钮底一律取
+    /// `fill.base_color()` **平色**，禁用态换中性 `strip_bg` —— 本侧若铺渐变
+    /// （`fill_rect`）或退回「50% 冲洗」自造口径，实机与 mac 录制就不一致
+    /// （Chrome 主题的 `btn_bg` 首档纯白，铺渐变会得到灰蓝药丸）。
     #[test]
-    fn 禁用态_底与标题都降五十() {
-        for id in ThemeId::ALL {
-            let tokens = id.tokens();
-            let backdrop = tokens.panel_bg.base_color();
-            let face = button_face(tokens, ButtonRole::Primary, false, false);
-            let disabled = disabled_face(&face, backdrop);
+    fn 按钮底取平色_禁用态换中性条底() {
+        let src = include_str!("paint_win.rs");
+        let end = src.find("#[cfg(test)]").expect("必须有测试段");
+        let production = &src[..end];
+        for needle in ["bg.base_color()", "tokens.strip_bg"] {
             assert!(
-                (disabled.wash.a - backdrop.a * 0.5).abs() < 1e-6,
-                "{id:?} 冲洗层 = 面板底 50%"
-            );
-            let washed = composite_over(disabled.wash, face.bg_base);
-            assert_eq!(disabled.washed_base, washed, "{id:?} 冲洗后底色公式");
-            assert_eq!(
-                disabled.ink,
-                composite_over(face.ink.with_alpha(face.ink.a * 0.5), washed),
-                "{id:?} 标题 = 50% 字色合成在冲洗后的底上"
-            );
-            assert_ne!(
-                disabled.ink, face.ink,
-                "{id:?} 禁用标题必须区别于可用态（只降底不降字的旧口径）"
-            );
-            assert_ne!(
-                disabled.washed_base, face.bg_base,
-                "{id:?} 禁用底必须被面板底冲洗（只降标题的旧口径）"
+                production.contains(needle),
+                "按钮绘制必须保留 `{needle}`（与 mac `style_button` 同口径）"
             );
         }
+        assert!(
+            !production.contains("disabled_face"),
+            "禁用态的 50% 冲洗公式已废弃（mac 口径：底换 strip_bg 平色）"
+        );
     }
 
     /// 按钮外投影槽位：`--bsh` / `--ssh` / `--tabonsh` 各自的 `var(--contact)`

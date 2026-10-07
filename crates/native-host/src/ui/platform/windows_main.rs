@@ -27,9 +27,9 @@ use std::cell::RefCell;
 
 use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontW, DeleteObject, DrawTextW, EndPaint, InvalidateRect, ScreenToClient,
-    SelectObject, SetBkMode, SetTextColor, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_END_ELLIPSIS,
-    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS,
+    BeginPaint, DeleteObject, DrawTextW, EndPaint, InvalidateRect, ScreenToClient, SelectObject,
+    SetBkMode, SetTextColor, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+    FW_BOLD, FW_NORMAL, HDC, HFONT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 // `WM_MOUSELEAVE` 在本版本的 windows-sys 里登记在 Controls 子模块（与
@@ -93,8 +93,11 @@ const TRANSPARENT: i32 = 1;
 /// **绘制与命中共用同一份**。
 struct TitlebarUi {
     bar: HWND,
-    /// 顶栏字体（随全局字体快照刷新时整只替换）。
+    /// 顶栏常规字体（状态位与「设置 / ×」；随全局字体快照刷新时整只替换）。
     font: HFONT,
+    /// 品牌字字体（**粗体**，对齐 macOS `boldSystemFontOfSize(11)`；见
+    /// [`create_titlebar_font`] 的 `bold` 参数）。
+    brand_font: HFONT,
     /// 条内矩形（客户区物理像素；`WM_SIZE` 时重算）。
     brand: paint_win::Rect,
     status: paint_win::Rect,
@@ -118,6 +121,7 @@ enum BarHit {
 /// `paint_titlebar` 的一次性快照（绘制期间不持有 `TITLEBAR` 借用的拷贝）。
 struct TitlebarPaint {
     font: HFONT,
+    brand_font: HFONT,
     brand: paint_win::Rect,
     status: paint_win::Rect,
     hide: paint_win::Rect,
@@ -474,10 +478,12 @@ pub(crate) fn teardown(layout: &mut MainLayout) {
     }
     // 顶栏随主窗销毁（子窗口）；这里对状态快照兜底清理（顶栏字体整只释放），
     // 防陈旧 HWND/字体句柄被复用。正常路径下顶栏自己的 WM_DESTROY 已先行清理。
-    let font = TITLEBAR.with(|cell| cell.borrow_mut().take().map(|ui| ui.font));
-    if let Some(font) = font {
-        if font != 0 {
-            unsafe { DeleteObject(font) };
+    let fonts = TITLEBAR.with(|cell| cell.borrow_mut().take().map(|ui| (ui.font, ui.brand_font)));
+    if let Some(fonts) = fonts {
+        for handle in [fonts.0, fonts.1] {
+            if handle != 0 {
+                unsafe { DeleteObject(handle) };
+            }
         }
     }
 }
@@ -582,13 +588,15 @@ unsafe fn paint_titlebar(bar: HWND, hdc: HDC) {
             paint_win::Rect::new(0, height - 1, width, 1),
             t.bar_edge,
         );
-        // 状态位前的强调圆点（`--acc`；x 与状态位锚点同源，圆点画在锚点左侧 ——
-        // Windows 的渲染口径与 macOS 不同：那边圆点坐在锚点上、文字右移）。
+        // 状态位前的强调圆点（`--acc`）：与 macOS 同口径 —— 圆点坐在锚点
+        // `titlebar::status_x()` 上（`centered_y(DOT_SIZE)`，直径 6），状态文字
+        // 右移到锚点 + `DOT_SIZE + DOT_GAP`（见 [`layout_titlebar`]）。
         let scale = dpi_scale(bar);
         paint_win::draw_dot(
             hdc,
-            scaled_f(titlebar::status_x(), scale) - scaled(10, scale),
-            height / 2,
+            scaled_f(titlebar::status_x(), scale) + scaled_f(titlebar::DOT_SIZE / 2.0, scale),
+            scaled_f(titlebar::centered_y(titlebar::DOT_SIZE), scale)
+                + scaled_f(titlebar::DOT_SIZE / 2.0, scale),
             scaled_f(titlebar::DOT_SIZE / 2.0, scale),
             t.accent,
             t.bar_bg.base_color(),
@@ -599,6 +607,7 @@ unsafe fn paint_titlebar(bar: HWND, hdc: HDC) {
     let snap = TITLEBAR.with(|cell| {
         cell.borrow().as_ref().map(|ui| TitlebarPaint {
             font: ui.font,
+            brand_font: ui.brand_font,
             brand: ui.brand,
             status: ui.status,
             hide: ui.hide,
@@ -610,12 +619,16 @@ unsafe fn paint_titlebar(bar: HWND, hdc: HDC) {
     });
     let Some(snap) = snap else { return };
     unsafe {
-        draw_bar_text(hdc, snap.brand, titlebar::BRAND_TEXT, t.dim, snap.font);
+        // 品牌字 `ink` + 粗体（macOS：`boldSystemFontOfSize(11)`、色取 `tokens.ink`）；
+        // 状态位 `dim` + 常规字重（macOS：`resolve_font(HELP_BASE_SIZE)`）。
+        draw_bar_text(hdc, snap.brand, titlebar::BRAND_TEXT, t.ink, snap.brand_font);
         draw_bar_text(hdc, snap.status, &snap.status_text, t.dim, snap.font);
     }
     let radius = scaled(t.radii.btn.round() as i32, dpi_scale(bar));
     for (hit, rect, role, label) in [
-        (BarHit::Settings, snap.settings, ButtonRole::TabOff, "设置"),
+        // 两个入口与 macOS 同形：`Face::Normal` 的 `btn_bg` 实面 + 描边 + 投影
+        //（那边 `paint_chrome` 对两个导航按钮都调 `style_button(Face::Normal)`）。
+        (BarHit::Settings, snap.settings, ButtonRole::Normal, "设置"),
         (BarHit::Hide, snap.hide, ButtonRole::Close, "×"),
     ] {
         let face = paint_win::button_face(t, role, snap.hover == hit, snap.pressed == hit);
@@ -686,11 +699,16 @@ pub(crate) fn apply_theme() {
 
 /// 顶栏 `WM_CREATE`：建字体并把展示状态存进 `TITLEBAR`（**不建子控件** —— 单面绘制）。
 unsafe fn init_titlebar(bar: HWND) {
-    let font = create_titlebar_font(bar);
+    let font = create_titlebar_font(bar, false);
+    let brand_font = create_titlebar_font(bar, true);
+    if font == 0 || brand_font == 0 {
+        rust_warn!("顶栏字体创建失败（品牌/常规任一为空，顶栏文字回退系统缺省字体）");
+    }
     TITLEBAR.with(|cell| {
         *cell.borrow_mut() = Some(TitlebarUi {
             bar,
             font,
+            brand_font,
             brand: paint_win::Rect::default(),
             status: paint_win::Rect::default(),
             hide: paint_win::Rect::default(),
@@ -721,16 +739,23 @@ unsafe fn layout_titlebar(bar: HWND) {
         scaled_f(titlebar::brand_width(), scale),
         nav_h,
     );
+    // 状态位锚点坐圆点，文字右移到 `DOT_SIZE + DOT_GAP` 之后（与 macOS
+    // `macos_main.rs::relayout` 的 `status_x` 算式同源）。
     let status = paint_win::Rect::new(
-        scaled_f(titlebar::status_x(), scale),
-        y,
         scaled_f(
+            titlebar::status_x() + titlebar::DOT_SIZE + titlebar::DOT_GAP,
+            scale,
+        ),
+        y,
+        (scaled_f(
             titlebar::status_slot_width(
                 f64::from(width) / scale,
                 f64::from(TITLEBAR_RIGHT_RESERVE),
-            ),
+            ) - titlebar::DOT_SIZE
+                - titlebar::DOT_GAP,
             scale,
-        ),
+        ))
+        .max(0),
         nav_h,
     );
     // 右侧入口从右到左：×、设置（与 macOS 同序）。
@@ -763,7 +788,8 @@ unsafe fn layout_titlebar(bar: HWND) {
 /// 命中的条内入口（客户区坐标）。入口之外的区域归拖动（`HTCAPTION`）。
 fn titlebar_hit(x: i32, y: i32) -> BarHit {
     TITLEBAR.with(|cell| {
-        let Some(ui) = cell.borrow().as_ref() else {
+        let ui_state = cell.borrow();
+        let Some(ui) = ui_state.as_ref() else {
             return BarHit::None;
         };
         if ui.settings.contains(x, y) {
@@ -777,32 +803,24 @@ fn titlebar_hit(x: i32, y: i32) -> BarHit {
 }
 
 /// 顶栏字体（全局快照族名 + 小号字；族名缺省回落既有中文 UI 字体）。
-fn create_titlebar_font(bar: HWND) -> HFONT {
+///
+/// `bold = true` 只用于品牌字：macOS 的品牌字是 `boldSystemFontOfSize(11)`，
+/// 状态位与右侧入口走常规字重（`resolve_font(HELP_BASE_SIZE)`）。
+fn create_titlebar_font(bar: HWND, bold: bool) -> HFONT {
     let scale = dpi_scale(bar);
     let snapshot = crate::ui::font::snapshot();
     let face = snapshot
         .family
         .clone()
-        .unwrap_or_else(|| "Microsoft YaHei UI".to_string());
+        .unwrap_or_else(paint_win::resolve_ui_font_family);
     let size = snapshot.scaled_size(11.0, 13.5).round() as i32;
-    unsafe {
-        CreateFontW(
-            -scaled(size, scale),
-            0,
-            0,
-            0,
-            FW_NORMAL as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            OUT_DEFAULT_PRECIS as u32,
-            CLIP_DEFAULT_PRECIS as u32,
-            0,
-            0,
-            wide(&face).as_ptr(),
-        )
-    }
+    // 统一走 `paint_win::create_ui_font`（灰度抗锯齿）：条面文字与 macOS 的
+    // 灰度 AA 同口径，避免 ClearType 的彩色次像素在浅底圆角按钮上读成脏边。
+    paint_win::create_ui_font(
+        -scaled(size, scale),
+        if bold { FW_BOLD as i32 } else { FW_NORMAL as i32 },
+        &face,
+    )
 }
 
 /// 顶栏状态位文本刷新（`windows.rs::refresh_titlebar` 调用；顶栏是状态位的唯一
@@ -837,26 +855,36 @@ pub(crate) fn set_titlebar_text(text: &str) {
 pub(crate) fn apply_titlebar_font() {
     let bar = TITLEBAR.with(|cell| cell.borrow().as_ref().map(|ui| ui.bar));
     let Some(bar) = bar else { return };
-    let font = create_titlebar_font(bar);
-    if font == 0 {
+    let font = create_titlebar_font(bar, false);
+    let brand_font = create_titlebar_font(bar, true);
+    if font == 0 || brand_font == 0 {
         rust_warn!("顶栏字体创建失败，保留旧字体");
         return;
     }
     let old = TITLEBAR.with(|cell| {
         cell.borrow_mut().as_mut().map(|ui| {
-            let old = ui.font;
+            let old = (ui.font, ui.brand_font);
             ui.font = font;
+            ui.brand_font = brand_font;
             old
         })
     });
     match old {
         Some(old) => {
-            if old != 0 {
-                unsafe { DeleteObject(old) };
+            for handle in [old.0, old.1] {
+                if handle != 0 {
+                    unsafe { DeleteObject(handle) };
+                }
             }
             unsafe { InvalidateRect(bar, std::ptr::null(), 1) };
         }
-        None => unsafe { DeleteObject(font) },
+        None => {
+            for handle in [font, brand_font] {
+                if handle != 0 {
+                    unsafe { DeleteObject(handle) };
+                }
+            }
+        }
     }
 }
 
@@ -1029,10 +1057,13 @@ unsafe extern "system" fn titlebar_wndproc(
         }
         WM_DESTROY => {
             // 字体不随窗口销毁自动回收：整只释放（换字体路径也是整只替换旧只）。
-            let font = TITLEBAR.with(|cell| cell.borrow_mut().take().map(|ui| ui.font));
-            if let Some(font) = font {
-                if font != 0 {
-                    unsafe { DeleteObject(font) };
+            let fonts =
+                TITLEBAR.with(|cell| cell.borrow_mut().take().map(|ui| (ui.font, ui.brand_font)));
+            if let Some(fonts) = fonts {
+                for handle in [fonts.0, fonts.1] {
+                    if handle != 0 {
+                        unsafe { DeleteObject(handle) };
+                    }
                 }
             }
             0

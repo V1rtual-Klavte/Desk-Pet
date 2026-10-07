@@ -19,10 +19,12 @@
 //! ## 主题接线（范围 c：设置窗）
 //!
 //! - **窗底**自绘（类的画刷留空，见 `windows.rs` 的附属窗类注册）：用
-//!   `tokens().field_bg` 而不是 `panel_bg`。设置窗是整块「工作表」，没有聊天面板
-//!   「浮在舞台上的玻璃/金属板」那套语义（纹理、外描边、投影、内立体线都不该铺满
-//!   整窗）；`field_bg` 是三套主题里最「下沉」的中性工作面色（与输入框/待发 chip
-//!   同族），`ink`/`dim` 文字与系统控件落在它上面的对比度在三套主题里都稳定。
+//!   `tokens().panel_bg`（**2026-10-07 改口径**，原为 `field_bg`）。理由：mac 设置窗
+//!   是**蓝灰工作材质**、字段是白药丸（用户实拍 + mac 录制逐点核对）；原口径拿
+//!   `field_bg`（近白）铺满整窗后，白色字段与窗底几乎同色，只剩 `WS_BORDER` 的两条
+//!   深色横线 —— 实机观感就是用户报的「莫名其妙的**白底矩形**」。
+//!   `panel_bg` 与聊天列/浮层同族（三套主题都是中性蓝灰），白字段落在它上面才读得出
+//!   「输入面」；文字对比度仍由 `ink`/`dim` 单独保证。
 //! - **左竖栏**：`rail_bg` 铺到右缘 1px `rail_edge` 分界线；行按钮是 ownerdraw
 //!   （选中 `TabOn`、未选中 `TabOff`，圆角随 `radii.sm`）。
 //! - **分隔线**取 `bar_edge`：底部固定条的上边线一条（原顶部 Tab 带随竖栏改造删除；
@@ -39,7 +41,8 @@
 //!   输入面族、清单条目取 `field_bg` + 选中覆盖；真下拉语义保留（键盘 / `CBN_*` /
 //!   `CB_GETCURSEL` 等读写路径零改动）。条目高度用 `CB_SETITEMHEIGHT(-1, h)` 设定
 //!   （内容面也接 `WM_MEASUREITEM`，字段区与列表高度分别显式设置）。
-//! - **可编辑 `EDIT`**：`WM_CTLCOLOREDIT`（底 `field_bg`、字 `ink`、插入符随字色）由
+//! - **可编辑 `EDIT`**：`WM_CTLCOLOREDIT`（底 `field_bg`、字 `ink`、插入符随字色；控件
+//!   面贴 `radii.sm` 圆角区域，见 [`apply_field_region`]）由
 //!   `windows.rs` 的 `aux_wndproc` 按窗口 code 转发到 [`edit_ctlcolor`]（2026-10-06
 //!   路由归位：原先用设置窗父窗子类兜住，是因为当时 `windows.rs` 不在改动范围内）。
 //! - **Bool 开关**：`paint_win::draw_switch` 自绘轨道+滑块；开/关读
@@ -148,8 +151,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetClientRect, GetCursorPos, GetDlgItem, GetForegroundWindow, GetMessageW, GetParent,
-    GetScrollInfo, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetClassNameW, GetClientRect, GetCursorPos, GetDlgItem, GetForegroundWindow, GetMessageW,
+    GetParent, GetScrollInfo, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     IsDialogMessageW, IsWindow, KillTimer, MessageBoxW, MoveWindow, PeekMessageW, PostQuitMessage,
     RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
     SetWindowTextW, ShowWindow, TranslateMessage, BN_CLICKED, BS_DEFPUSHBUTTON, BS_OWNERDRAW,
@@ -170,8 +173,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::ui::settings::panels::{
-    mcp_form_rows, mcp_save_from_values, ListPanel, McpFieldControl, McpFieldRow,
-    MemoryDetailState, MemoryEvidenceState, PanelRow, RowAction, RowPick, MCP_FORM_FIELD_COUNT,
+    mcp_form_rows, mcp_save_from_values, renders_tools_panel, ListPanel, McpFieldControl,
+    McpFieldRow, MemoryDetailState, MemoryEvidenceState, PanelRow, RowAction, RowPick,
+    MCP_FORM_FIELD_COUNT,
 };
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
@@ -705,10 +709,12 @@ unsafe extern "system" fn content_wndproc(
 
 fn paint_content_background(hwnd: HWND, hdc: HDC) {
     let (width, height) = client_size(hwnd);
+    // 内容面与窗底同源（`panel_bg`，见模块头「主题接线」的 2026-10-07 改口径说明）：
+    // 这一层是滚动视口，用户看到的「设置页底色」就是它，不能用 `field_bg`（近白）。
     paint_win::fill_rect(
         hdc,
         paint_win::Rect::new(0, 0, width, height),
-        &theme::tokens().field_bg,
+        &theme::tokens().panel_bg,
     );
 }
 
@@ -984,7 +990,7 @@ fn client_size(hwnd: HWND) -> (i32, i32) {
 
 /// 窗底 + 左竖栏 + 底部 `bar_edge` 分隔线（WM_ERASEBKGND 与 WM_PAINT 共用；物理像素）。
 ///
-/// 底取 `tokens().field_bg`（选型理由见模块头「主题接线」）；左竖栏止于底部固定条
+/// 底取 `tokens().panel_bg`（2026-10-07 改口径，理由见模块头「主题接线」）；左竖栏止于底部固定条
 /// 上缘（`rail_bg` + 右缘 1px `rail_edge`）；分隔线只剩底部固定条的上边线（原顶部
 /// Tab 带随竖栏改造删除）。类画刷在 `windows.rs` 的附属窗类注册里已留空，
 /// 这里的自绘是唯一的底来源（换主题不必重注册窗口类）。
@@ -998,7 +1004,7 @@ pub(crate) fn paint_background(hwnd: HWND, hdc: HDC) {
     paint_win::fill_rect(
         hdc,
         paint_win::Rect::new(0, 0, width, height),
-        &tokens.field_bg,
+        &tokens.panel_bg,
     );
     // 竖栏底：右缘分界线是 1px 独立矩形（主题 `Fill` 的 EdgeSide 只有上下边）。
     let rail_h = (height - scaled(BOTTOM_H, scale)).max(0);
@@ -1062,6 +1068,66 @@ pub(crate) fn edit_ctlcolor(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     paint_win::solid_brush(base) as LRESULT
 }
 
+/// 控件所属窗口类名（`GetClassNameW`；取不到返回空串）。
+fn window_class_name(hwnd: HWND) -> String {
+    let mut buffer = [0u16; 128];
+    let len = unsafe { GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if len <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..len as usize])
+}
+
+/// ownerdraw 按钮的绘制入口：先把**父窗真实像素**重放到控件矩形，再画药丸面。
+///
+/// 为什么不能继续用 token 近似补角：ownerdraw 子控件是不透明表面，矩形里的一切
+/// 都得控件自己画；而近似色在「竖栏底 / 内容面 / 页脚」这类各自换过底色的区域必然
+/// 差十几到三十灰阶 —— 实机就是用户 2026-10-07 实拍的两类症状：未选中 Tab 变成
+/// 「灰色药丸 + 灰色矩形底」、页脚按钮四周一圈异色矩形。重放走父窗**自己的绘制
+/// 例程**（`paint_background` / `paint_content_background`），四角与周围逐像素同色。
+///
+/// 只认这两族父窗（根窗 `AUX_CLASS`、内容滚动面 `CONTENT_CLASS`）；弹窗/浮层的
+/// 父窗这次不接，返回 `false` = 已按旧近似口径画完（与
+/// [`paint_win::draw_button_on_backdrop`] 的约定一致）。
+fn draw_button_on_parent_backdrop(
+    item: &DrawItemStruct,
+    rect: paint_win::Rect,
+    face: &paint_win::ButtonFace,
+    label: &str,
+    pressed: bool,
+    disabled: bool,
+) -> bool {
+    let parent = unsafe { GetParent(item.hwndItem) };
+    if parent == 0 {
+        return false;
+    }
+    let class = window_class_name(parent);
+    let painter: fn(HWND, HDC) = if class == CONTENT_CLASS {
+        paint_content_background
+    } else if class == super::windows::AUX_CLASS {
+        paint_background
+    } else if class == DOC_DIALOG_CLASS {
+        // 弹窗底是 `field_bg` 平色；同源重放后「复制 / 关闭」的四角与弹窗底同色
+        // （用户 2026-10-07 实拍 Card 模版弹窗的浅色矩形底）。
+        |hwnd, hdc| unsafe { paint_doc_dialog_background(hwnd, hdc) }
+    } else {
+        return false;
+    };
+    unsafe {
+        paint_win::draw_button_on_backdrop(
+            item.hDC,
+            item.hwndItem,
+            parent,
+            rect,
+            face,
+            label,
+            pressed,
+            disabled,
+            |hdc| painter(parent, hdc),
+        )
+    }
+}
+
 /// `WM_DRAWITEM`：ownerdraw 按钮 / 开关 / 组合框条目绘制。
 /// 返回是否已处理（`false` = 不是本模块登记的自绘控件，交回 DefWindowProc）。
 pub(crate) fn on_drawitem(lparam: LPARAM) -> bool {
@@ -1109,17 +1175,9 @@ pub(crate) fn on_drawitem(lparam: LPARAM) -> bool {
     let pressed = item.itemState & ODS_SELECTED != 0;
     let face = paint_win::button_face(tokens, role, hovered, pressed);
     let label = window_text(item.hwndItem);
-    unsafe {
-        paint_win::draw_button(
-            item.hDC,
-            item.hwndItem,
-            rect,
-            &face,
-            &label,
-            pressed,
-            disabled,
-        )
-    };
+    // 底走父窗真实像素重放（`draw_button_on_parent_backdrop` 内部失败时回落旧近似
+    // 口径并在 `blit_backdrop` 里留痕）；无论走哪条路，药丸都已画完。
+    let _ = draw_button_on_parent_backdrop(item, rect, &face, &label, pressed, disabled);
     draw_focus_ring(item, rect);
     true
 }
@@ -1282,6 +1340,16 @@ pub(crate) fn apply_theme() {
                 paint_win::install_button(
                     slot.hwnd,
                     scaled(tokens.radii.btn.round() as i32, scale),
+                );
+            }
+            // 字段面（EDIT / COMBOBOX）的圆角半径随 `radii.sm` 变化：重贴区域即可换肤
+            // （与按钮的 `radii.btn` 分开，见 `is_field_surface`）。
+            if slot.kind.as_ref().map_or(false, is_field_surface) {
+                apply_field_region(
+                    slot.hwnd,
+                    scaled(slot.w, scale),
+                    scaled(slot.h, scale),
+                    scale,
                 );
             }
             unsafe { InvalidateRect(slot.hwnd, std::ptr::null(), 1) };
@@ -1783,7 +1851,10 @@ fn rebuild_tab() {
                     ),
                     FieldKind::Number { .. } => (
                         "EDIT",
-                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
+                        // 不挂 `WS_BORDER`：系统边框是「上下两条深色横线」，与 mac 的圆角
+                        // 白药丸字段完全不同（2026-10-07 实拍对照）。字段的边界感交给
+                        // 白面 + `apply_field_region` 的圆角在 `panel_bg` 窗底上的对比。
+                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
                         "",
                     ),
                     // 数值档位：一个 ownerdraw 按钮画整排互斥段（`paint_win::draw_*` 之外
@@ -1800,7 +1871,6 @@ fn rebuild_tab() {
                         WS_CHILD
                             | WS_VISIBLE
                             | WS_TABSTOP
-                            | WS_BORDER
                             | ES_AUTOHSCROLL as u32
                             | (if secret { ES_PASSWORD as u32 } else { 0 }),
                         "",
@@ -1821,7 +1891,6 @@ fn rebuild_tab() {
                         WS_CHILD
                             | WS_VISIBLE
                             | WS_TABSTOP
-                            | WS_BORDER
                             | WS_VSCROLL
                             | ES_AUTOVSCROLL as u32
                             | ES_MULTILINE as u32
@@ -1868,6 +1937,13 @@ fn rebuild_tab() {
                     )
                 };
                 unsafe { SendMessageW(control, WM_SETFONT, body as WPARAM, 1) };
+                // 字段面圆角：`EDIT` / `COMBOBOX` 是系统控件、天生直角，而 mac 设置窗
+                // 的字段是圆角面 —— 贴 `radii.sm` 区域后与输入框/按钮同一口径。
+                // 症状（2026-10-07 用户实拍「设置页那些字段有莫名其妙的白底矩形」）：
+                // 纯白直角面压在渐变窗底上，上白下灰像是随机贴上去的方块。
+                if is_field_surface(&field.kind) {
+                    apply_field_region(control, field_w, field_h, scale);
+                }
                 if matches!(field.kind, FieldKind::Bool) {
                     // 圆角 = 半高（设计 `.sw` 的胶囊）；样式位已在创建时给。
                     paint_win::install_button(control, scaled(SWITCH_H / 2, scale));
@@ -2187,13 +2263,17 @@ fn build_panel_controls(state: &mut SettingsState) {
     let mut y = state.panel_base_y;
     match TABS[state.tab].id {
         "tools" => {
-            for (index, panel) in settings_ui().tools_panels().iter().enumerate() {
-                // 「刷新」按钮挂在本页第一个面板的标题行（一次拉取覆盖三个面板）。
-                let refresh = if index == 0 {
-                    Some(REFRESH_TOOLS)
-                } else {
-                    None
-                };
+            // 「刷新」按钮挂在本页第一个**渲染中**面板的标题行（一次拉取覆盖全部面板）；
+            // 撤下的面板（工具策略（声明））不参与计数 —— 与 macOS 同一条口径，
+            // 规则本身在共享层 [`renders_tools_panel`]（用户规则 2026-10-05，两端同源）。
+            let mut first = true;
+            for panel in settings_ui()
+                .tools_panels()
+                .iter()
+                .filter(|panel| renders_tools_panel(&panel.id))
+            {
+                let refresh = if first { Some(REFRESH_TOOLS) } else { None };
+                first = false;
                 y = build_panel(state, panel, refresh, content_w, y, body, small, bold);
             }
         }
@@ -3247,6 +3327,22 @@ fn present_mcp_form_dialog(
 }
 
 /// 弹窗窗口过程：保存读值、关闭/× 收尾，都在销毁前落进 [`DocDialogState`]。
+/// 文档弹窗（Card 模版 / MCP 编辑等）的整面底：`field_bg` 铺满客户区。
+///
+/// WM_ERASEBKGND 与 WM_PAINT 两个入口共用一份 —— 也是弹窗内按钮「底重放」的
+/// 绘制源（`draw_button_on_parent_backdrop` 的 DOC_DIALOG_CLASS 分支），三处同源，
+/// 按钮四角才不会与弹窗底差色（用户 2026-10-07 实拍：Card 模版弹窗的「复制 /
+/// 关闭」后面一块浅色矩形）。
+unsafe fn paint_doc_dialog_background(hwnd: HWND, hdc: HDC) {
+    let mut client: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(hwnd, &mut client) };
+    paint_win::fill_rect(
+        hdc,
+        paint_win::Rect::new(0, 0, client.right - client.left, client.bottom - client.top),
+        &theme::tokens().field_bg,
+    );
+}
+
 unsafe extern "system" fn doc_dialog_wndproc(
     hwnd: HWND,
     msg: u32,
@@ -3383,13 +3479,7 @@ unsafe extern "system" fn doc_dialog_wndproc(
             }
         }
         WM_ERASEBKGND => {
-            let mut client: RECT = unsafe { std::mem::zeroed() };
-            unsafe { GetClientRect(hwnd, &mut client) };
-            paint_win::fill_rect(
-                wparam as HDC,
-                paint_win::Rect::new(0, 0, client.right - client.left, client.bottom - client.top),
-                &theme::tokens().field_bg,
-            );
+            unsafe { paint_doc_dialog_background(hwnd, wparam as HDC) };
             1
         }
         WM_PAINT => {
@@ -3397,18 +3487,7 @@ unsafe extern "system" fn doc_dialog_wndproc(
             unsafe {
                 let mut ps: PAINTSTRUCT = std::mem::zeroed();
                 let hdc = BeginPaint(hwnd, &mut ps);
-                let mut client: RECT = std::mem::zeroed();
-                GetClientRect(hwnd, &mut client);
-                paint_win::fill_rect(
-                    hdc,
-                    paint_win::Rect::new(
-                        0,
-                        0,
-                        client.right - client.left,
-                        client.bottom - client.top,
-                    ),
-                    &theme::tokens().field_bg,
-                );
+                paint_doc_dialog_background(hwnd, hdc);
                 EndPaint(hwnd, &ps);
             }
             0
@@ -5496,6 +5575,46 @@ fn measure_notice_text(text: &str, max_w: i32) -> (i32, i32) {
 }
 
 /// 浮层圆角区域（半径随主题 `radii.btn`；`SetWindowRgn` 成功后区域归系统所有）。
+/// 字段面（承载输入/下拉的系统控件）判据：这些控件的窗口天生直角，需要
+/// [`apply_field_region`] 贴圆角区域才能与 mac 设置窗的圆角字段同形
+/// （2026-10-07 用户实拍「字段有莫名其妙的白底矩形」）。
+///
+/// 单一定义点：创建路径与换主题重贴路径共用，避免两处各列一遍字段种类。
+fn is_field_surface(kind: &FieldKind) -> bool {
+    matches!(
+        kind,
+        FieldKind::Text { .. }
+            | FieldKind::Number { .. }
+            | FieldKind::Multiline
+            | FieldKind::Enum(_)
+            | FieldKind::FontFamily
+            | FieldKind::CardChoice
+            | FieldKind::ProfileChoice
+    )
+}
+
+/// 字段面圆角区域（半径随主题 `radii.sm`；`SetWindowRgn` 成功后区域归系统所有）。
+///
+/// 尺寸取**物理像素**的字段可见区（下拉列表是独立窗口，区域只按字段区给即可）。
+/// 失败不致命也不静默：区域建不出来或系统拒收时留 warning，控件退化为直角
+/// （与 [`apply_notice_region`] 同口径）。
+fn apply_field_region(control: HWND, w: i32, h: i32, scale: f64) {
+    if control == 0 || w <= 0 || h <= 0 {
+        return;
+    }
+    let radius = scaled(theme::tokens().radii.sm.round() as i32, scale).max(0);
+    let region = unsafe { CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2) };
+    if region == 0 {
+        rust_warn!("设置字段圆角区域创建失败（本字段退化为直角）");
+        return;
+    }
+    if unsafe { SetWindowRgn(control, region, 1) } == 0 {
+        // 失败时区域仍归调用方，必须自行释放（成功时系统接管）。
+        unsafe { DeleteObject(region) };
+        rust_warn!("设置字段圆角区域设置失败（本字段退化为直角）");
+    }
+}
+
 fn apply_notice_region(overlay: HWND, w: i32, h: i32, scale: f64) {
     if overlay == 0 || w <= 0 || h <= 0 {
         return;
@@ -6545,6 +6664,51 @@ mod tests {
         assert!(
             rects[args_index].1.h > rects[0].1.h,
             "args 是多行控件高度，name 是单行"
+        );
+    }
+
+    /// 工具页必须按**共享口径**过滤面板：Windows 侧曾漏掉这条规则，工具策略
+    /// （声明）列表照常渲染（用户 2026-10-07 实机截图「设置怎么多了这些工具列表？
+    /// mac 没有啊」）。判据放共享层 [`renders_tools_panel`]，两端同源；这里再钉一条
+    /// 源码级守门，防止平台侧又自写一份过滤判据。
+    #[test]
+    fn 工具页按共享口径过滤面板() {
+        use crate::ui::settings::panels::{PANEL_MCP, PANEL_POLICIES, PANEL_SKILLS};
+        assert!(
+            !renders_tools_panel(PANEL_POLICIES),
+            "「工具策略（声明）」只读列表按用户规则 2026-10-05 撤下"
+        );
+        assert!(renders_tools_panel(PANEL_MCP), "MCP 服务器列表保留");
+        assert!(renders_tools_panel(PANEL_SKILLS), "Skill 列表保留");
+
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/ui/platform/windows_settings.rs"
+        ));
+        let production = &src[..src.find("#[cfg(test)]").expect("必须有测试段")];
+        assert!(
+            production.contains(".filter(|panel| renders_tools_panel(&panel.id))"),
+            "工具页面板过滤必须走共享 `renders_tools_panel`（平台自写判据 = 第二定义点）"
+        );
+    }
+
+    /// ownerdraw 按钮必须走**父窗底重放**：token 近似补角正是用户 2026-10-07 实拍
+    /// 「按钮后面一块灰色矩形底」的根因（近似色与真实条底差十几到三十灰阶）。
+    /// 源码级守门：生产段不得再直接调 `paint_win::draw_button(` 的近似路径。
+    #[test]
+    fn ownerdraw按钮走父窗底重放() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/ui/platform/windows_settings.rs"
+        ));
+        let production = &src[..src.find("#[cfg(test)]").expect("必须有测试段")];
+        assert!(
+            production.contains("draw_button_on_parent_backdrop("),
+            "按钮绘制必须接父窗底重放（否则四角回到近似色 = 灰色矩形）"
+        );
+        assert!(
+            !production.contains("paint_win::draw_button("),
+            "按钮不得回落到 token 近似补角（用户实拍症状的根因）"
         );
     }
 

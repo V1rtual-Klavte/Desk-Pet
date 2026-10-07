@@ -572,15 +572,21 @@ pub(crate) fn on_drawitem(lparam: LPARAM) -> bool {
         item.rcItem.right - item.rcItem.left,
         item.rcItem.bottom - item.rcItem.top,
     );
+    // 底走编辑器窗**真实像素**重放（与聊天/设置窗同一口径）：token 近似色在
+    // 预览区（`stage_bg`）与右侧面板（`field_bg`）两种底上必差色，按钮四角会
+    // 出现异色矩形（用户 2026-10-07 实拍「按钮后面一块矩形底」的同族症状）。
+    let parent = unsafe { GetParent(item.hwndItem) };
     unsafe {
-        paint_win::draw_button(
+        paint_win::draw_button_on_backdrop(
             item.hDC,
             item.hwndItem,
+            parent,
             rect,
             &face,
             &label,
             pressed,
             disabled,
+            |hdc| paint_background(parent, hdc),
         )
     };
     true
