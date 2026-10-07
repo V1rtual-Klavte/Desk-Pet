@@ -42,6 +42,8 @@ fn main() {
         std::fs::write(&rc, "1 ICON \"app-icon.ico\"\n1 24 \"app.manifest\"\n")
             .expect("写 app.rc 失败");
 
-        embed_resource::compile(&rc, embed_resource::NONE);
+        // `CompilationResult` 标了 `#[must_use]`（Windows 构建日志里原有一条 unused 告警）；
+        // 它只是编译产物路径，失败本身会 panic（内部 `compile_impl` 的 expect），忽略安全。
+        let _ = embed_resource::compile(&rc, embed_resource::NONE);
     }
 }
