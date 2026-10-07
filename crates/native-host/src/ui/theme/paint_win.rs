@@ -630,9 +630,9 @@ mod gdi {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
         AlphaBlend, CreateCompatibleDC, CreateDIBSection, CreateEllipticRgn, CreateRoundRectRgn,
-        CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, FillRgn, InvalidateRect,
-        RestoreDC, SaveDC, SelectClipRgn, SelectObject, SetBkMode, SetTextColor, SetWindowRgn,
-        AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+        CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, FillRgn,
+        GetWindowRgn, InvalidateRect, RestoreDC, SaveDC, SelectClipRgn, SelectObject, SetBkMode,
+        SetTextColor, SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
         BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HBRUSH, HDC, HFONT,
         HGDIOBJ, HRGN,
     };
@@ -1461,6 +1461,24 @@ mod gdi {
                 // 实机日志一读即可定案。
                 crate::rust_warn!("按钮圆角区域被系统拒绝（hwnd={hwnd}），本次按直角渲染");
                 DeleteObject(region);
+            } else {
+                // 一次性实机探针（2026-10-07，**读到一行即定案、随后删除**）：
+                // 「区域被接受、按钮却仍是直角」时要区分「区域被系统丢掉」与
+                // 「区域在、绘制端没吃它」。只探第一只控件，避免 WM_SIZE 风暴刷屏。
+                // 读法：2/3 = 区域在（SIMPLEREGION/COMPLEXREGION）；1 = NULLREGION
+                //（没保住）；0 = ERROR。
+                static PROBED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !PROBED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    let probe: HRGN = CreateRectRgn(0, 0, 1, 1);
+                    if probe != 0 {
+                        let kind = GetWindowRgn(hwnd, probe);
+                        DeleteObject(probe);
+                        crate::rust_info!(
+                            "圆角区域实机探针（一次性）：hwnd={hwnd} GetWindowRgn={kind}（2=SIMPLEREGION / 3=COMPLEXREGION / 1=NULLREGION / 0=ERROR）"
+                        );
+                    }
+                }
             }
         }
     }

@@ -722,6 +722,12 @@ struct ChatWinState {
     /// 浮层是否开着，**直接来自 `ChatSnapshot::inspector_open`**（每次整帧同步；
     /// 布局在无快照的路径上读它）。平台层不翻转本地镜像 —— 开合由模型状态驱动。
     inspector_open: bool,
+    /// 浮层**本次开启的时刻**（false→true 边沿写入；同击竞态护栏用）。
+    ///
+    /// 实机症状（2026-10-07）：点把手开的浮层被同一次手势的后续消息立刻收起
+    /// （「闪一下就消失」）。`toggle_inspector_ui` / `close_inspector_ui` 对开启后
+    /// ≤500ms 内的再开合/收起一律忽略并留痕 —— 护栏触发行即真实关闭来源的实机证据。
+    inspector_opened_at: Option<std::time::Instant>,
     // ── 会话历史锚定弹层（挂在标签条「历史」按钮下方；脱离布局流）──
     /// 弹层承载窗口（与浮层共用 `LAYER_CLASS`；盖住消息流区域，盒锚在层顶）。
     history_layer: HWND,
@@ -1599,6 +1605,26 @@ unsafe extern "system" fn overlay_layer_wndproc(
 /// （`ChatSnapshot::inspector_open` 就是开合的唯一输入，见字段注释）。
 /// 模型随后排的刷新因版本号未变会被丢弃，这里的立即重建才是当帧生效点。
 unsafe fn toggle_inspector_ui() {
+    // 同击竞态护栏（2026-10-07 实机「浮层闪一下就消失」）：浮层刚开（≤500ms）时
+    // 到达的「再点一次」若是同一次手势的残留消息，会立刻把它又合上 —— 按竞态忽略
+    // 并留痕；护栏触发行即真实来源证据（过了窗口期的再点照常开合）。
+    let young_open = CHAT.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .and_then(|state| {
+                if state.inspector_open {
+                    state.inspector_opened_at
+                } else {
+                    None
+                }
+            })
+            .map(|at| at.elapsed() < std::time::Duration::from_millis(500))
+            .unwrap_or(false)
+    });
+    if young_open {
+        rust_info!("浮层开启后 500ms 内收到再次开合请求，已按同击竞态忽略（护栏；来源=把手/箭头）");
+        return;
+    }
     if let Err(error) = crate::ui::chat::apply_panel_action(PanelAction::ToggleInspector) {
         // 纯显示动作在共享层提前返回、正常到不了这里；失败如实留痕（不重建，
         // 界面保持与模型一致）。
@@ -1618,6 +1644,20 @@ unsafe fn close_inspector_ui() {
     });
     if !open {
         return; // 已经收着：空操作（与共享层 `close_inspector` 同义）
+    }
+    // 同击竞态护栏（2026-10-07 实机「浮层闪一下就消失」）：✕ 与遮罩两条关闭路都
+    // 汇到这里；开启后 ≤500ms 内到达的收起请求按同一次手势的残留消息忽略并留痕
+    //（护栏触发行即真实关闭来源的实机证据；过窗后的正常收起不受影响）。
+    let young = CHAT.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .and_then(|state| state.inspector_opened_at)
+            .map(|at| at.elapsed() < std::time::Duration::from_millis(500))
+            .unwrap_or(false)
+    });
+    if young {
+        rust_info!("浮层开启后 500ms 内收到收起请求，已按同击竞态忽略（护栏；来源=✕/遮罩路径）");
+        return;
     }
     if let Err(error) = crate::ui::chat::apply_panel_action(PanelAction::CloseInspector) {
         rust_warn!("浮层收起动作未送达共享层: {error}");
@@ -2520,6 +2560,12 @@ pub(crate) fn chat_apply(update: ChatRenderUpdate) {
 unsafe fn apply_full(state: &mut ChatWinState, snapshot: &crate::ui::chat::ChatSnapshot) {
     unsafe {
         // 浮层开合直接取快照（唯一真相源在模型；平台不翻转本地状态）。
+        if snapshot.inspector_open && !state.inspector_open {
+            // false→true 边沿：记开启时刻（同击竞态护栏的时间基准，见字段注释）。
+            state.inspector_opened_at = Some(std::time::Instant::now());
+        } else if !snapshot.inspector_open {
+            state.inspector_opened_at = None;
+        }
         state.inspector_open = snapshot.inspector_open;
         update_handle_arrow(state);
         if state.active_session != snapshot.active_session {
@@ -4342,6 +4388,7 @@ unsafe fn build_children(hwnd: HWND) {
             inspector_scroll_y: 0,
             inspector_box: paint_win::Rect::new(0, 0, 0, 0),
             inspector_open: false,
+            inspector_opened_at: None,
             history_layer,
             history_children: Vec::new(),
             history_height: 0,
