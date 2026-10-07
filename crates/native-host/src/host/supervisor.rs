@@ -644,6 +644,16 @@ async fn launch_generation_inner(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        // **必须无控制台**：node.exe 是控制台程序，GUI 进程 spawn 它时系统会**新建一个控制台窗口**
+        // 并挂在本进程上 —— 实机症状是一个常驻的 `node.exe` 黑窗（2026-10-07 用户截图）。
+        // 更糟的是那个窗口可被关闭：关它 = 给 Node 送 CTRL_CLOSE_EVENT，Node 以
+        // 0xC000013A（STATUS_CONTROL_C_EXIT）退出，宿主按崩溃路径重启它（实机日志两次）。
+        // CREATE_NO_WINDOW 让子进程不带控制台启动，stdout/stderr 仍是我们接的管道。
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     let mut child = command.spawn().map_err(|e| {
         AppError::Other(format!(
             "随包 Node 拉起失败（{}）: {e}",
