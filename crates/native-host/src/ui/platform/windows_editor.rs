@@ -245,10 +245,32 @@ struct EditorState {
 
 thread_local! {
     static STATE: RefCell<Option<EditorState>> = const { RefCell::new(None) };
+    /// `with_state` 被重入跳过的累计次数（只用于告警限流）。
+    static EDITOR_REENTRY_COUNT: Cell<u32> = const { Cell::new(0) };
 }
 
+/// 借用编辑器状态执行 `f`；窗口未建立（STATE 为 None）时返回 `None`。
+///
+/// **不得在另一个 `with_state` 借用里调用**（含间接：闭包里调用的 helper 自己又借
+/// STATE，如 [`layout`]）。窗口过程会在持借用时同步收到消息（绘制/命令），所以这里用
+/// `try_borrow_mut()` 兜底：重入时不 panic —— panic 落在 `extern "system"` 回调里无法
+/// unwind，Rust 直接 abort（Windows 上进程静默消失，与 `windows.rs::with_ui` 同一族），
+/// 而是按「这一次没有状态可用」返回 `None` 并留一条限流告警。**丢的那次内容不会自己
+/// 回来**，正确写法仍是「先在借用里取出值，出借用再调用」（源码级守门测试盯着直接嵌套）。
 fn with_state<R>(f: impl FnOnce(&mut EditorState) -> R) -> Option<R> {
-    STATE.with(|cell| cell.borrow_mut().as_mut().map(|state| f(state)))
+    STATE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut borrowed) => borrowed.as_mut().map(|state| f(state)),
+        Err(_) => {
+            EDITOR_REENTRY_COUNT.with(|count| {
+                let times = count.get() + 1;
+                count.set(times);
+                if times <= 5 || times % 100 == 0 {
+                    rust_warn!("with_state 重入被跳过（外层借用未释放），累计 {times} 次");
+                }
+            });
+            None
+        }
+    })
 }
 
 fn make_font(scale: f64, base: i32, bold: bool) -> HFONT {
@@ -624,6 +646,9 @@ fn rebuild_tabs() {
 
 /// 摆放控件（顶部层 tab 栏 + 左侧预览大区 + 右侧属性面板 + 底部状态行；
 /// 与 macOS 的版面同构）。
+///
+/// **自己借 STATE**：调用方不得在 `with_state` 借用里调它（嵌套即丢内容，理由见
+/// [`with_state`] 的说明）—— 先 `with_state(|state| state.hwnd)` 取句柄、出借用再调。
 fn layout(hwnd: HWND) {
     with_state(|state| {
         let scale = dpi_scale(hwnd);
@@ -1557,7 +1582,11 @@ pub(crate) fn refresh_ui() {
     });
     if profile_changed.unwrap_or(false) {
         rebuild_tabs();
-        with_state(|state| layout(state.hwnd));
+        // 句柄先在借用里取出、排布在借用外调：`layout` 自己还要借 STATE（见其顶部），
+        // 在借用里调它会**嵌套**同一个 RefCell（裸借用时是 abort 级故障）。
+        if let Some(hwnd) = with_state(|state| state.hwnd) {
+            layout(hwnd);
+        }
     }
     with_state(|state| {
         // 窗口标题跟随 Profile 名（与 macOS 同一文案来源；载入完成前保持建窗文案）。
@@ -1859,6 +1888,35 @@ fn window_text(hwnd: HWND) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 源码级守门：`with_state` 的闭包里不得再借 STATE（与 `windows_settings.rs` 同款，
+    /// 扫描器共用 [`crate::ui::platform::windows::source_guard`]）。
+    ///
+    /// 2026-10-07 修掉的一处真实缺陷就是这个形状（切 Profile 后的重排在借用里调了
+    /// [`layout`]）—— 嵌套时 `try_borrow_mut` 落回 `None`：不再 abort，但那一次排布丢。
+    /// **间接嵌套扫不出来**，靠「先取 hwnd、出借用再 layout」的形状约束 + [`layout`] 顶部说明。
+    #[test]
+    fn with_state_不得在借用里再借_state() {
+        let source = include_str!("windows_editor.rs");
+        // 拆开拼接，避免断言文本命中自身。
+        let needle = concat!("with_", "state(");
+        assert!(
+            source.matches(needle).count() > 1,
+            "扫描前提：本文件确实在使用 with_state",
+        );
+        let nested = crate::ui::platform::windows::source_guard::nested_call_sites(source, needle);
+        assert!(
+            nested.is_empty(),
+            "with_state 闭包里又借了一次 STATE（外层行, 内层行）：{nested:?} —— 拆成「先取值、出借用再调」",
+        );
+        assert_eq!(
+            source
+                .matches(concat!("|state| layout(", "state.hwnd)"))
+                .count(),
+            0,
+            "[layout] 自己借 STATE：必须在借用里先取 hwnd、出借用再调",
+        );
+    }
 
     #[test]
     fn 编辑器只有保存贴主按钮面其余保持系统外观() {

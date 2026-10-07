@@ -8,7 +8,12 @@
 //! - 竖栏行按钮用 `BUTTON` 替代 `NSButton`（ownerdraw，`TabOn`/`TabOff` 两态面）；
 //! - Bool 开关是 `BS_OWNERDRAW` 按钮 + 状态镜像表（不承载 `BM_SETCHECK` 语义）；
 //! - 数字用 `EDIT` 文本输入（macOS 侧同类），不引入 Trackbar；
-//! - 滚动由设置窗自身的 `WS_VSCROLL` 承担，内容控件按滚动量整体位移。
+//! - 滚动由设置窗自身的 `WS_VSCROLL` 承担，内容控件按滚动量整体位移；
+//! - **标准编辑快捷键（复制/粘贴/剪切/全选）由系统 `EDIT` 控件原生承担**：Ctrl+C /
+//!   Ctrl+V / Ctrl+X（多行 `ES_MULTILINE` 另有 Ctrl+A）。本模块不拦键盘消息，消息循环
+//!   （`windows.rs`）也没有加速键表或 `IsDialogMessage`，所以这些键原样落到焦点控件。
+//!   与 macOS 侧正相反 —— 那边应用无主菜单、标准编辑键无处派发，必须由
+//!   `macos_widgets::handle_standard_edit_shortcut` 在窗口层接住（2026-10-07 实机问题）。
 //! 本文件全部代码只在 UI 主线程运行。
 //!
 //! ## 主题接线（范围 c：设置窗）
@@ -554,10 +559,33 @@ thread_local! {
     /// `ui/settings::SwitchStates`）。独立于 `STATE`：`WM_DRAWITEM` 在绘制期同步到达，
     /// 走 `with_state` 会与正在持借用者的调用路径重入（AGENTS §5.1 的 RefCell 纪律）。
     static SWITCH_STATES: RefCell<SwitchStates> = RefCell::new(SwitchStates::default());
+    /// `with_state` 被重入跳过的累计次数（只用于告警限流）。
+    static SETTINGS_REENTRY_COUNT: Cell<u32> = const { Cell::new(0) };
 }
 
+/// 借用设置窗状态执行 `f`；窗口未建立（STATE 为 None）时返回 `None`。
+///
+/// **不得在另一个 `with_state` 借用里调用**（含间接：闭包里调用的 helper 自己又借
+/// STATE，如 [`layout`]）。窗口过程常常在持借用时同步收到消息（WM_DRAWITEM 在绘制期
+/// 到达是既有例子，见 `SWITCH_STATES` 的说明），所以这里用 `try_borrow_mut()` 兜底：
+/// 重入时不 panic —— panic 落在 `extern "system"` 回调里无法 unwind，Rust 直接 abort
+/// （Windows 上进程静默消失，与 `windows.rs::with_ui` 同一族），而是按「这一次没有
+/// 状态可用」返回 `None` 并留一条限流告警。**丢的那次内容不会自己回来**，所以正确
+/// 写法仍是「先在借用里取出值，出借用再调用」，源码级守门测试盯着直接嵌套。
 fn with_state<R>(f: impl FnOnce(&mut SettingsState) -> R) -> Option<R> {
-    STATE.with(|cell| cell.borrow_mut().as_mut().map(|state| f(state)))
+    STATE.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut borrowed) => borrowed.as_mut().map(|state| f(state)),
+        Err(_) => {
+            SETTINGS_REENTRY_COUNT.with(|count| {
+                let times = count.get() + 1;
+                count.set(times);
+                if times <= 5 || times % 100 == 0 {
+                    rust_warn!("with_state 重入被跳过（外层借用未释放），累计 {times} 次");
+                }
+            });
+            None
+        }
+    })
 }
 
 /// 创建字体：族名来自全局快照，缺省回落到 W8a 既有的中文 UI 字体。
@@ -3981,7 +4009,10 @@ fn build_memory_evidence(state: &mut SettingsState, content_w: i32, mut y: i32, 
     }
 }
 
-/// 按滚动量摆放全部控件（含固定控件）。
+/// 按当前滚动量与状态重排全部控件（含固定控件）。
+///
+/// **自己借 STATE**：调用方不得在 `with_state` 借用里调它（嵌套即丢内容，理由见
+/// [`with_state`] 的说明）—— 先 `with_state(|state| state.hwnd)` 取句柄、出借用再调。
 fn layout(hwnd: HWND) {
     with_state(|state| {
         let scale = dpi_scale(hwnd);
@@ -4399,7 +4430,12 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
             });
             if changed.unwrap_or(false) {
                 rebuild_tab();
-                with_state(|state| layout(state.hwnd));
+                // 句柄先在借用里取出、排布在借用外调：`layout` 自己还要借 STATE（见上一条
+                // 纪律与 `layout` 顶部），在借用里调它会**嵌套**同一个 RefCell —— 那是裸
+                // `borrow_mut`，panic 又发生在窗口过程里（无法 unwind）→ 进程直接 abort。
+                if let Some(hwnd) = with_state(|state| state.hwnd) {
+                    layout(hwnd);
+                }
                 refresh_ui();
             }
             if TABS[tab].id == "general" {
@@ -5140,7 +5176,10 @@ pub(crate) fn refresh_ui() {
     // 文档弹窗（②）与页面控件是两条独立通道：随文档加载状态开合（模态）。
     sync_document_dialog(&view);
     // 管理面重建会新建控件：统一重排一次（面板区按滚动量整体位移）。
-    with_state(|state| layout(state.hwnd));
+    // 句柄先在借用里取出、排布在借用外调 —— `layout` 自己借 STATE，嵌套即 abort（见其顶部）。
+    if let Some(hwnd) = with_state(|state| state.hwnd) {
+        layout(hwnd);
+    }
     // 通知分档（①）在借用之外：错误档要跑模态消息循环，不能再借 STATE。
     present_notice(&view);
 }
@@ -5722,6 +5761,37 @@ pub(crate) fn apply_font() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 源码级守门：`with_state` 的闭包里不得再借 STATE。
+    ///
+    /// 嵌套时 `with_state` 会落回 `None`（重入不再 abort），但**那一次的内容会丢**：
+    /// 设置页刷新、切 Tab、滚动重排丢一次就是可见残缺。两处真实缺陷（`refresh_ui`
+    /// 与切 Tab 的排布都在借用里调了 [`layout`]，2026-10-07 修复）都是这个形状，
+    /// 所以守在这一层。
+    /// **间接嵌套扫不出来**（闭包里调用的 helper 自己借 STATE），靠「先取 hwnd、
+    /// 出借用再 layout」的形状约束 + [`layout`] 顶部的就地说明。
+    #[test]
+    fn with_state_不得在借用里再借_state() {
+        let source = include_str!("windows_settings.rs");
+        // 拆开拼接，避免断言文本命中自身。
+        let needle = concat!("with_", "state(");
+        assert!(
+            source.matches(needle).count() > 1,
+            "扫描前提：本文件确实在使用 with_state",
+        );
+        let nested = crate::ui::platform::windows::source_guard::nested_call_sites(source, needle);
+        assert!(
+            nested.is_empty(),
+            "with_state 闭包里又借了一次 STATE（外层行, 内层行）：{nested:?} —— 拆成「先取值、出借用再调」",
+        );
+        assert_eq!(
+            source
+                .matches(concat!("|state| layout(", "state.hwnd)"))
+                .count(),
+            0,
+            "[layout] 自己借 STATE：必须在借用里先取 hwnd、出借用再调",
+        );
+    }
 
     #[test]
     fn 提交类贴主按钮面其余走普通面() {

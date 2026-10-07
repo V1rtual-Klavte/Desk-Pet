@@ -291,6 +291,32 @@ fn with_ui<R>(f: impl FnOnce(&mut WinUi) -> R) -> AppResult<R> {
     })
 }
 
+/// 是否有窗口过程正持有 UI 借用（同步重入判定；只给 [`with_ui_repost`] 用）。
+fn ui_borrow_held() -> bool {
+    UI.with(|cell| cell.try_borrow().is_err())
+}
+
+/// 窗口过程里借 UI 状态；被**同步重入**跳过时把这条消息异步重投，等借用释放后再走一遍。
+///
+/// 只用于「丢了就可见残缺」的消息（主窗 `WM_SIZE` 的舞台/聊天列排布）；鼠标移动这类
+/// 高频且幂等的消息不需要（下一帧自然还有一条）。
+///
+/// 只在「确认是重入」时重投：`with_ui` 的另一种失败是「UI 未初始化」，那属于启动顺序
+/// 问题，重投会变成死循环。重投的消息在消息队列里执行时无人持借用，因此不会再重入、
+/// 也不自激。
+fn with_ui_repost(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    f: impl FnOnce(&mut WinUi),
+) {
+    if with_ui(f).is_err() && ui_borrow_held() {
+        // PostMessageW 入队即返回，不会在本次调用里再进窗口过程。
+        unsafe { PostMessageW(hwnd, msg, wparam, lparam) };
+    }
+}
+
 /// 记录呼出前的前台窗口（`0` = 没有可交还的目标）。
 ///
 /// 前台是本进程自己的窗口（设置窗等）时不记录：收起后本进程仍在前台，保持现状
@@ -957,7 +983,18 @@ unsafe extern "system" fn main_wndproc(
             0
         }
         WM_HOTKEY => {
-            rust_debug!("收到 WM_HOTKEY 全局快捷键");
+            // **info 级别**（与 macOS 的 `rust_debug!` 有意不对称）：2026-10-07 用户实机反馈
+            // 「Win 上要松开全部按键再按组合键才生效，mac 上按住修饰键连按主键即可循环」，
+            // 而默认日志级别是 info —— debug 级的这一行在实机日志里根本看不到，无法区分
+            // 「系统没投递 WM_HOTKEY」与「投递了但被状态机护栏忽略」。先把它变成可见证据，
+            // 定位后再决定是否回落到 debug（不要在没有证据时改热键机制）。
+            // 一行一次按键，频率等于用户按键，不构成日志噪声。
+            rust_info!(
+                "收到 WM_HOTKEY（wparam={}，修饰位=0x{:x}，键码=0x{:x}）",
+                wparam,
+                lparam & 0xFFFF,
+                (lparam >> 16) & 0xFFFF
+            );
             let _ = with_ui(|ui| ui.begin_toggle());
             0
         }
@@ -973,7 +1010,10 @@ unsafe extern "system" fn main_wndproc(
         }
         WM_SIZE => {
             // W9a：主窗尺寸变化 → 舞台子窗口与聊天列同步重排。
-            let _ = with_ui(|ui| {
+            // 程序性改尺寸（`set_popup_size` 的 SetWindowPos）会**同步**把这个消息送回来，
+            // 那时外层 `with_ui` 还握着借用 —— 被跳过的那一轮改走异步重投补上，
+            // 否则「窗口已变、布局没跟」会一直留到下一次尺寸消息（见 `with_ui_repost`）。
+            with_ui_repost(hwnd, msg, wparam, lparam, |ui| {
                 ui.relayout_main();
                 ui.submit_frame(1.0);
             });
@@ -1986,5 +2026,96 @@ mod tests {
             2,
             "除 UI 初始化与销毁外不应出现裸借用（会在窗口过程重入时 panic）：{bare:#?}"
         );
+    }
+}
+
+/// 源码级守门的共用扫描器（测试专用）。
+///
+/// `with_state` / `with_ui` 这类「借状态执行闭包」的函数**不得在借用里再借一次**
+/// （Windows 上是 abort 级故障，见 `with_ui` 的注释）。静态扫描只认一个形状：
+/// 同一次调用的实参里又出现同名调用 —— 闭包里调用的 helper 自己借状态（间接嵌套）
+/// 扫不出来，那类靠各模块的就地说明与形状约束（先取值、出借用再调）。
+#[cfg(test)]
+pub(crate) mod source_guard {
+    /// 返回「嵌套调用」的行号对（外层行、内层行）。`needle` 必须含左括号，
+    /// 例如 `"with_state("`。
+    ///
+    /// 只做括号配对，不做语法解析：跳过 `//`、`/* */` 与字符串字面量。
+    /// **前提是源文件里没有「含括号的字符字面量」**（如 `'('`）；有的话这里会先红，
+    /// 再改扫描器。注释与字符串里出现的 `needle`（例如解释性引用）也会被当成调用，
+    /// 所以引用这个形状时不要写成可匹配的原文（各模块的守门测试都吃过这条）。
+    pub(crate) fn nested_call_sites(source: &str, needle: &str) -> Vec<(usize, usize)> {
+        let line_of = |offset: usize| source[..offset].matches('\n').count() + 1;
+        let mut nested = Vec::new();
+        let mut from = 0;
+        while let Some(found) = source[from..].find(needle) {
+            let start = from + found;
+            from = start + needle.len();
+            let bytes = source.as_bytes();
+            let mut depth = 0usize;
+            let mut index = start + needle.len() - 1;
+            while index < bytes.len() {
+                match bytes[index] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                        while index < bytes.len() && bytes[index] != b'\n' {
+                            index += 1;
+                        }
+                    }
+                    b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                        index += 2;
+                        while index + 1 < bytes.len()
+                            && !(bytes[index] == b'*' && bytes[index + 1] == b'/')
+                        {
+                            index += 1;
+                        }
+                        index += 1;
+                    }
+                    b'"' => {
+                        index += 1;
+                        while index < bytes.len() {
+                            if bytes[index] == b'\\' {
+                                index += 2;
+                                continue;
+                            }
+                            if bytes[index] == b'"' {
+                                break;
+                            }
+                            index += 1;
+                        }
+                    }
+                    _ => {}
+                }
+                index += 1;
+            }
+            if index >= bytes.len() {
+                continue;
+            }
+            if let Some(inner) = source[start + needle.len()..index].find(needle) {
+                nested.push((line_of(start), line_of(start + needle.len() + inner)));
+            }
+        }
+        nested
+    }
+
+    /// 自证有用：干净片段无嵌套，注入嵌套必报出对应行。
+    #[test]
+    fn 扫描器能认出嵌套调用() {
+        let needle = concat!("with_", "state(");
+        assert!(nested_call_sites("with_state(|s| f(s));", needle).is_empty());
+        assert!(nested_call_sites("// with_state(|s| s) 说明\nwith_state(|s| s.x);", needle).is_empty());
+        assert!(nested_call_sites(
+            "with_state(|s| {\n    let v = 1;\n});",
+            needle
+        )
+        .is_empty());
+        let injected = "let a = with_state(|s| with_state(|t| t));";
+        assert_eq!(nested_call_sites(injected, needle), vec![(1, 1)]);
     }
 }
