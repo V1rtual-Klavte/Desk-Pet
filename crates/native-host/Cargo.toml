@@ -139,3 +139,9 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Memory",              # 剪贴板文本内存块：GlobalAlloc / GlobalLock / GlobalUnlock
     "Win32_Storage_FileSystem",         # 单实例守卫：CreateFileW 独占共享打开（single_instance.rs）
 ] }
+
+[target.'cfg(windows)'.build-dependencies]
+# exe 资源段的应用图标（资源 ID 1；任务栏 / Alt-Tab / 托盘按它取，见 ui/platform/windows.rs）。
+# cargo-packager 只把图标用在安装器与快捷方式上、不写 exe 资源，只有编译期能嵌；
+# 选它而不是 winres：只编译我们给的 .rc，不额外注入自带 manifest（DPI 口径不动）。见 build.rs。
+embed-resource = "3.0.12"
