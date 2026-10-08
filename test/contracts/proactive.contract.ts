@@ -52,6 +52,13 @@
 // 14:11 失败的规划尝试把全局 claim 门永久锁死）+ 回归单测
 // 「租约过期的unresolved不堵claim而租约内仍堵」。pr-* 各点核对：claim 的其余门禁
 // （间隔/配额/冷却/未回复阈值）与结算语义未变；未修订覆盖点，sourceHash 按当前源码复算。
+// 2026-10-08 定向复核（本批刷新）：sourceFiles 变化 = `src/services/proactive/scanner.ts`。
+// 唯一改动是**去掉 `pet_hidden` 门禁**（用户裁定：主动消息就是主动发消息，没有「必须当面」
+// 的要求；桌宠收起时发的消息躺在会话里、展开就能看到）。这是既有分支的**语义删除**，按
+// README 本该升级完整 /analyze；实际按定向口径逐条核对本契约覆盖点后未发现需要修订的项：
+// pr-01..pr-17 无任何一条描述「可见性门禁」或跳过原因枚举（全文 grep `pet_hidden` /
+// `isPetVisible` 零命中），门禁清单本身不是覆盖点声明的行为面，跳过原因的变化由 trace
+// 证据承担（口径已写进 `docs/current/proactive.md`）。覆盖点未修订、无 caseId 迁移。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-04 名字变量改造（frontmatter nameVar / activeCardName 跟随 / 池代际读取点）触达
@@ -250,7 +257,7 @@ import type { ModuleContract } from "../host/types"
 // `setOverride + flushConfig` 组合（抽屉/设置/主动斜杠等）的写盘次数由 2 降为 1（内容不变），
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "96f579fc600803e0ad244c371b4e22119b7267ef92d59b7fc15e8dcfe5776597",
+  module:"proactive",sourceHash: "f510533c64efda34535ccaa966564a7bcf3c569c1142f358384e02299e01dab2",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

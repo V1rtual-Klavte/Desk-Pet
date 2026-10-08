@@ -48,6 +48,19 @@
 // 链路）、src/services/engine/harness/runtime.ts（思考/安全的会话级覆盖机制删除后直读 CONFIG；
 // hz-01..hz-04 的行为面不含这两条读取路径）。逐点核对实现点仍在、覆盖描述与当前实现一致
 //（描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
+// 2026-10-08 本批改动（本批刷新）：sourceFiles 变化 = `src/services/humanizer/protocol.ts`
+// 与 `src/services/engine/harness/runtime.ts`。
+// ① **提示词重写**（用户裁定：拟人化碰上知识问题按「**压形式、不压内容**」；且 humanizer
+//    只管形式，人设归 Card 的 `# 语言风格` —— 职责分离）：点名禁 markdown 标题与加粗、
+//    点名禁「学界叫…」「说白了就是…」「XX 是一种…」「不是 A 那种 B」这类定义句与对比句；
+//    task 档从「不卖萌、不拆条、不沉默」改为「结果准确优先、**语气照旧**」；另加两组负例
+//    （直接取自 2026-10-08 实机翻车：`## Feign 是什么` 那条、以及「你可能是压力太大了」那条）。
+// ② **分泡**：原「含 ``` 就整条不拆」是一刀切，带代码的讲解会整条一大块（用户实机反馈）
+//    —— 改为**围栏感知的分段**：围栏内空行不是断点，围栏前后的说话照常各自成泡。
+//    判据已写进 `humanizer-blank-line-split`（新增「围栏内空行不成断点」的反向断言）。
+// ③ **续跑补接线**：`continueInterruptedRun` 的三处装配原本没传 `humanizerEnabled`，导致
+//    「中断后继续」那一轮的可见正文既不注入提示词、也不做分泡/沉默处理，与主回合口径不一致。
+// 覆盖点未修订、无 caseId 迁移。
 import type { ModuleContract } from "../host/types"
 
 export const humanizerContract: ModuleContract = {
@@ -66,7 +79,7 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "e2229b767e224d1bc6067ddac1abb9aeb43ce1de743dbb769df54b7ecfbe5825",
+  sourceHash: "e0b0a82f8574d279b5bbd1917c5ee1c6c8cb623a4e8432e4d7d6c358c49068f6",
   coverage: [
     {
       id: "hz-01",

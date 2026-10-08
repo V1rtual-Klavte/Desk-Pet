@@ -133,6 +133,11 @@
 // 适配层）按既有 standard-setup 口径跳过并留痕（无后端 = 没有可清的记忆，跳过是准确结论而非
 // 放行），其余错误照旧如实抛出；修复了清画像链路在 L3 触达 memory_status 的 UnsupportedInNode
 // 崩溃（画像采集落盘用例双红）。未修订覆盖点，sourceHash 按当前源码复算。
+// 2026-10-08 定向复核（本批刷新）：sourceFiles 变化 = `src/services/engine/harness/runtime.ts`。
+// 该文件是本契约的枢纽文件之一；本批对它的改动**只在 `continueInterruptedRun` 的三处请求
+// 装配上补 `humanizerEnabled`**（让「中断后继续」的拟人化口径与主回合对齐）—— 不碰记忆投影、
+// 召回、候选准入、遗忘与整理链的任何实现点（该路径连 `runtimeDataReminder` 都是既有分支）。
+// 逐条核对本契约覆盖点后未发现需要修订的项，无 caseId 迁移。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-06 实测反馈收口（本批刷新）：sourceFiles 变化仅限 context/builder.ts 的计划提议指引
@@ -264,7 +269,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "7325ae62e5e13f757bd3404c157f3eaaf5c694f7e4749ac8080ade2deb998afa",
+  sourceHash: "a78333a2dab7757dfa92a23b67ca766d38404f79b32a78443cd95661f1221e58",
   coverage: [
     { id: "mm-01", feature: "记忆来源准入（两类通道，不混池）", description: "准入分两条互不混淆的通道：用户事实只收 origin=user + taint=trusted_user + eligibleForMemory=true 的已提交条目（助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局）；系统观察只收 origin=derived_behavior + taint=derived + eligibleForMemory=true 的系统观察来源（画像稳定结论与静默了解观察摘要两个子类，见 mm-47），错配（如 derived_behavior+trusted_user）拒收。投递时刻冻结的 cardId 随来源落盘；派生来源独立登记（合成会话 behavior、身份含内容文本 hash），不冒充用户事实", why: "「谁说的」是记忆的准入判据：把工具/助手来源放进去，模型的一次措辞就会被当成用户长期事实；把系统观察混进用户事实池，归纳出的推断会被说成「你告诉过我」", layer: "integration", depth: "deep", scenarios: ["memory-source-admission", "derived-behavior-source-registration", "derived-behavior-gate-blocks-registration", "derived-behavior-new-source-version"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },

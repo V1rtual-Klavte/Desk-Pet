@@ -133,6 +133,12 @@
 // 裁决）。ar-01..ar-37 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行
 // 行为审计）：本批改动面（计划步骤报告分支）不在任何 ar-* 描述的行为面内 —— 该行为的契约
 // 登记在 planner 的 pl-06（已按新口径修订）。未修订覆盖点，sourceHash 按当前源码复算。
+// 2026-10-08 定向复核（本批刷新）：sourceFiles 变化 = `src/services/engine/harness/runtime.ts`
+// 与 `src/services/humanizer/protocol.ts`。前者只在 `continueInterruptedRun` 的三处请求装配
+// 补 `humanizerEnabled`；后者是拟人化提示词重写与分泡口径修正。两者都**不在回合循环、上下文
+// 压缩、取消恢复与工具治理**的实现面上 —— 拟人化只作用于可见正文的后处理，不参与协议检测
+//（同一函数里 `runtimeDataReminder` 那句「主动表达回合不注入」正是这条边界的旁证）。
+// 覆盖点未修订、无 caseId 迁移。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-06 实测反馈收口（本批刷新）：sourceFiles 变化仅限 context/builder.ts 的计划提议指引
@@ -220,7 +226,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "c74c083ccdae32ae751ba8f557a2d36e104e68ab13fe8166234b0433c9a0e96a",
+  sourceHash: "174896542615e16c6007677d34bcbc471ea064ad7800062d33e7311fd8c02db3",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

@@ -219,6 +219,18 @@
 //    （新增包无版本冲突、不经 feature unification 影响既有 crate）。
 // 对照已核实：把 `crates/native-host/Cargo.toml` 换回上一版（git HEAD）复算，恰好等于上一版
 // 声明的 sourceHash —— 即本契约上一轮审查已覆盖当时工作树里的其它并发改动，本次增量只此一项。
+// 2026-10-08 定向复核（本批刷新）：sourceFiles 变化 = `src/services/observation/scheduler.ts`。
+// 本批在该文件只动**留痕**，不改批次资格与产出：① 批次资格函数改成「返回第一道没过关名」，
+// 把关名 + 门禁快照（窗口 / 屏幕 / 观察龄 / 上次尝试）交回调用方留痕 —— 过去每道关都直接
+// `return false` 不留痕，实机无法判断是本小时「没到点」还是「被挡住」（2026-10-08 用户报
+// 「静默了解一批都没跑过」，正是卡在这里）；② `observeBatch` 的两处静默早退补同样留痕
+//（它们走不到 `markAuxiliaryAttemptAt`，是「批批判开跑却不落盘、每分钟重来」的入口）。
+// ob-01..ob-10 的实现点与描述均不变，无 caseId 迁移。
+// 附注（不在 sourceFiles，但确实改变行为时机）：同批把 `crates/native-host/src/monitor/thread.rs`
+// 的观察线程改为**启动即首采** —— 原实现首轮判不出 generation 变化就直接睡到下一个平台事件，
+// 于是「应用启动到用户第一次切窗口」之间窗口观察恒为空，静默了解第 5 关（要求有当前窗口观察）
+// 整轮不过；15 分钟追赶窗下启动落在后半段就必然错过（实测就绪时间 ~2 分钟 → 0.5 秒）。
+// 本契约 watched 的是 `monitor/mod.rs`，故 hash 不含该文件。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -279,7 +291,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "e73fc586c17f28698ca3cc14f500e552cc7b120e86560fd8fb6e4e9670438667",
+  sourceHash: "3ffeacc3cee8632608f2d4f22c0322c94c2c97d8f6d53f604636e7d09a889b66",
   coverage: [
     {
       id: "ob-01",
