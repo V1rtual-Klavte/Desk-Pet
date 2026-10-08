@@ -2818,6 +2818,9 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       unansweredCount: 0, thinkingEffort,
       contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
       tools: frozenTools.map(toToolDeclaration),
+      // 续跑同样是可见正文，必须与主回合同口径 —— 漏了它，同一句话在「正常回」与
+      // 「中断后继续」两条路上会长得不一样（2026-10-08 影响面复核发现）。
+      humanizerEnabled: humanizerConfig.enabled,
       ...(runtimeDataReminder ? { runtimeDataReminder } : {}),
     }, card, pool)
     const kernel = createTurnKernel({
@@ -2825,6 +2828,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
       blocks: context.blocks, allocations: context.allocations, budgetDrops: context.budgetDrops,
       transientUserInput: false, persistSnapshots: false, card, generation,
+      humanizerEnabled: humanizerConfig.enabled,
       toolRun: {
         sessionId, runGeneration: generation,
         isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
@@ -2834,6 +2838,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const spec = createTurnSpec(kernel, {
       prompt: recoveryInput,
       activeToolNames,
+      humanizerEnabled: humanizerConfig.enabled,
       timeoutMs: loopConfig.turnTimeoutMs,
       // 中断续跑仍是主聊天回合：不传计数上限（与 driveAdmitted 同口径）。
       projectToolResults: true,

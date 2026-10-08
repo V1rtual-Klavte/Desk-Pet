@@ -16,8 +16,14 @@ describe("humanizer protocol", () => {
     // 段内单个换行（同一段折行）不分条。
     expect(transformHumanizerText("first line\nsecond line").parts).toEqual(["first line\nsecond line"])
     expect(transformHumanizerText("first line\nsecond line").split).toBe(false)
-    // 含代码块的消息不拆（技术内容保持整条）。
-    expect(transformHumanizerText("看这个\n\n```ts\nconst a = 1\n```").parts).toEqual(["看这个\n\n```ts\nconst a = 1\n```"])
+    // 代码块**整块不拆**（块内空行不是断点），但它前后的说话各自成泡 ——
+    // 2026-10-08 用户裁定：「拟人化开了就像人发消息一样讲解，不会一大条过来」。
+    // 原口径是「含 ``` 就整条不拆」，一刀切把代码前后的说话也冻成一大块。
+    expect(transformHumanizerText("看这个\n\n```ts\nconst a = 1\n```").parts)
+      .toEqual(["看这个", "```ts\nconst a = 1\n```"])
+    // 判据：围栏**内部**的空行绝不能成为断点（否则代码会被劈成两泡）。
+    expect(transformHumanizerText("看这个\n\n```ts\nconst a = 1\n\nconst b = 2\n```\n\n完事").parts)
+      .toEqual(["看这个", "```ts\nconst a = 1\n\nconst b = 2\n```", "完事"])
     // task 流不受空行分段影响，保持整条。
     expect(transformHumanizerText("one\n\ntwo", "task").parts).toEqual(["one\n\ntwo"])
   })
