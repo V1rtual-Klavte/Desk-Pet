@@ -5472,7 +5472,9 @@ unsafe extern "system" fn chat_wndproc(
             let standalone =
                 CHAT.with(|cell| cell.borrow().as_ref().is_some_and(|state| !state.pane));
             if standalone && crate::ui::chat::chat_ui().is_window_open() {
-                let visible = wparam != SIZE_MINIMIZED && unsafe { IsWindowVisible(hwnd) != 0 };
+                // `WPARAM` 是 `usize`、`SIZE_MINIMIZED` 是 `u32`：显式转型，不靠推断
+                //（漏了它本机编不出来 —— Windows 分支在 macOS 上被 cfg 掉）。
+                let visible = wparam != SIZE_MINIMIZED as usize && unsafe { IsWindowVisible(hwnd) != 0 };
                 let was_visible = crate::ui::chat::is_surface_visible("chat");
                 if !visible {
                     with_chat(|state| unsafe { release_canvas(state) });
