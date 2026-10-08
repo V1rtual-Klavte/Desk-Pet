@@ -1176,7 +1176,8 @@ pub(crate) fn on_drawitem(lparam: LPARAM) -> bool {
     let face = paint_win::button_face(tokens, role, hovered, pressed);
     let label = window_text(item.hwndItem);
     // 底走父窗真实像素重放（`draw_button_on_parent_backdrop` 内部失败时回落旧近似
-    // 口径并在 `blit_backdrop` 里留痕）；无论走哪条路，药丸都已画完。
+    // 口径；该回落 2026-10-08 起静默降噪，见 `paint_win::blit_backdrop` 内注释）；
+    // 无论走哪条路，药丸都已画完。
     let _ = draw_button_on_parent_backdrop(item, rect, &face, &label, pressed, disabled);
     draw_focus_ring(item, rect);
     true
@@ -5596,8 +5597,9 @@ fn is_field_surface(kind: &FieldKind) -> bool {
 /// 字段面圆角区域（半径随主题 `radii.sm`；`SetWindowRgn` 成功后区域归系统所有）。
 ///
 /// 尺寸取**物理像素**的字段可见区（下拉列表是独立窗口，区域只按字段区给即可）。
-/// 失败不致命也不静默：区域建不出来或系统拒收时留 warning，控件退化为直角
-/// （与 [`apply_notice_region`] 同口径）。
+/// 失败不致命：区域建不出来或系统拒收时控件退化为直角 —— 逐字段（创建 / 换主题
+/// 重贴）回落，2026-10-08 起静默降噪（稳态留痕会随重建刷屏，见各回落后注释；
+/// 通知浮层 [`apply_notice_region`] 是一次性窗口，仍留 warning）。
 fn apply_field_region(control: HWND, w: i32, h: i32, scale: f64) {
     if control == 0 || w <= 0 || h <= 0 {
         return;
@@ -5605,13 +5607,15 @@ fn apply_field_region(control: HWND, w: i32, h: i32, scale: f64) {
     let radius = scaled(theme::tokens().radii.sm.round() as i32, scale).max(0);
     let region = unsafe { CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2) };
     if region == 0 {
-        rust_warn!("设置字段圆角区域创建失败（本字段退化为直角）");
+        // 逐字段回落（创建 / 换主题重贴期；本字段退化为直角）：静默——降噪 2026-10-08
+        // 用户裁定（稳态留痕会随重建刷屏）；绘制端回落由实机像素取证覆盖。
         return;
     }
     if unsafe { SetWindowRgn(control, region, 1) } == 0 {
         // 失败时区域仍归调用方，必须自行释放（成功时系统接管）。
         unsafe { DeleteObject(region) };
-        rust_warn!("设置字段圆角区域设置失败（本字段退化为直角）");
+        // 逐字段回落（创建 / 换主题重贴期；本字段退化为直角）：静默——降噪 2026-10-08
+        // 用户裁定（稳态留痕会随重建刷屏）；绘制端回落由实机像素取证覆盖。
     }
 }
 

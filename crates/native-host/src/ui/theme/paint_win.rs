@@ -729,7 +729,7 @@ mod gdi {
     };
 
     use crate::ui::theme::noise::Bitmap;
-    use crate::{rust_info, rust_warn};
+    use crate::rust_info;
     // `Tex` 从 texture 模块直接取（`tokens` 里的 `Tex` 是私有导入，不能走那条路）。
     use crate::ui::theme::texture::{self, Tex};
     use crate::ui::theme::tokens::{
@@ -1056,7 +1056,9 @@ mod gdi {
             pixels,
         };
         let Some(dib) = dib_from_bitmap(&bitmap) else {
-            rust_warn!("小图形覆盖率位图创建失败（DIB 为 NULL），本次不绘制");
+            // 绘制期逐控件回落，静默（降噪 2026-10-08 用户裁定——稳态留痕会随重绘刷屏）。
+            // DIB 字节序/行序由测试 `位图_dib_行序与负高度声明`、`位图_dib_预乘与尺寸`
+            // 钉住；本条回落由实机像素取证覆盖。
             return;
         };
         blend(
@@ -1081,7 +1083,8 @@ mod gdi {
             CreateRectRgn(rect.x, rect.y, rect.right() + 1, rect.bottom() + 1)
         };
         if outer == 0 {
-            rust_warn!("圆角按钮补角区域创建失败（CreateRectRgn 返回 NULL）");
+            // 绘制期逐控件回落，静默（降噪 2026-10-08 用户裁定——稳态留痕会随重绘刷屏）；
+            // 四角保留系统灰正是本函数要修的症状，绘制端回落由实机像素取证覆盖。
             return;
         }
         let inner = unsafe {
@@ -1096,12 +1099,14 @@ mod gdi {
         };
         if inner == 0 {
             unsafe { DeleteObject(outer) };
-            rust_warn!("圆角按钮补角区域创建失败（CreateRoundRectRgn 返回 NULL）");
+            // 绘制期逐控件回落，静默（降噪 2026-10-08 用户裁定——稳态留痕会随重绘刷屏）；
+            // 四角保留系统灰，绘制端回落由实机像素取证覆盖。
             return;
         }
-        // 差集失败时不要静默：四角会保持系统灰（正是本函数要修的症状）。
         if unsafe { CombineRgn(outer, outer, inner, RGN_DIFF) } == 0 {
-            rust_warn!("圆角按钮补角差集失败（CombineRgn = ERROR）；四角保留系统灰");
+            // 差集失败时四角保留系统灰（正是本函数要修的症状）：绘制期逐控件回落，
+            // 静默（降噪 2026-10-08 用户裁定——稳态留痕会随重绘刷屏）。
+            // 绘制端回落由实机像素取证覆盖。
         } else {
             let brush = solid_brush(color);
             unsafe { FillRgn(hdc, outer, brush) };
@@ -1159,7 +1164,8 @@ mod gdi {
             return false;
         }
         let Some(dib) = Dib::new(rect.w, rect.h) else {
-            rust_warn!("按钮底重放：内存位图创建失败，本次回落近似底色");
+            // 绘制期逐控件回落（返回 false，调用方回落旧近似填充）：静默（降噪
+            // 2026-10-08 用户裁定——稳态留痕会随重绘刷屏）；绘制端回落由实机像素取证覆盖。
             return false;
         };
         // SaveDC 在 SelectObject(DIB) 之后：RestoreDC 复原到「DIB 仍在 DC 里」的
@@ -1174,7 +1180,8 @@ mod gdi {
         }
         let ok = unsafe { BitBlt(hdc, 0, 0, rect.w, rect.h, dib.hdc, 0, 0, SRCCOPY) } != 0;
         if !ok {
-            rust_warn!("按钮底重放：BitBlt 失败，本次回落近似底色");
+            // 绘制期逐控件回落（返回 false，调用方回落旧近似填充）：静默（降噪
+            // 2026-10-08 用户裁定——稳态留痕会随重绘刷屏）；绘制端回落由实机像素取证覆盖。
         }
         ok
     }
@@ -1670,7 +1677,7 @@ mod gdi {
         //   标题取预压暗的 `disabled_ink`（AppKit 会对禁用标题整体压暗，见
         //   `style_button` 注释）。
         // 圆角：窗口区域（`SetWindowRgn`）在实机被观察到不生效（见
-        // `apply_round_region` 的失败留痕），所以绘制端再走一次 **DC 剪切区域**
+        // `apply_round_region` 的静默回落注释），所以绘制端再走一次 **DC 剪切区域**
         // ——与 `draw_bar_entry` 同款，圆角是画出来的、不押在窗口区域上。
         let radius = button_radius_of(hwnd);
         // 按钮**不在这里画投影**：ownerdraw 的 DC 被裁在按钮窗口矩形内，投影只能
@@ -1787,7 +1794,8 @@ mod gdi {
     /// 或贴图失败时自动回落旧近似路径（`draw_button(..., backdrop_painted = false)`），
     /// **两种情况下药丸都已画完**，调用方无需再补画。
     ///
-    /// 返回值 = 是否走成重放路径（false = 已按旧近似口径画完，供调用方留痕/测试）。
+    /// 返回值 = 是否走成重放路径（false = 已按旧近似口径画完；该回落 2026-10-08 起
+    /// 静默降噪，见 [`blit_backdrop`] 内注释）。
     pub fn draw_button_on_backdrop<F>(
         hdc: HDC,
         hwnd: HWND,
@@ -1820,7 +1828,7 @@ mod gdi {
     /// - 投影在无剪切的状态下先画（macOS 的 `--bsh` 非 inset 部分落在按钮外沿）；
     /// - 圆角走 **DC 剪切区域**（`SelectClipRgn`，只作用于本次绘制、随 `RestoreDC`
     ///   复原），不依赖窗口区域 `SetWindowRgn`（实机观察到窗口区域未生效，见
-    ///   `apply_round_region` 的失败留痕）；
+    ///   `apply_round_region` 的静默回落注释）；
     /// - 省略文字投影：条内入口的 `text_shadow` 目前都是 `None`。
     pub fn draw_bar_entry(
         hdc: HDC,
@@ -2063,10 +2071,10 @@ mod gdi {
             }
             // 成功时区域归系统所有；失败时还归我们，必须自己释放（漏 = GDI 句柄泄漏）。
             if SetWindowRgn(hwnd, region, 1) == 0 {
-                // 区域被系统拒绝时控件按直角渲染。这一条把「API 拒绝」与「区域生效
-                // 但绘制端没吃它」切开，实机日志一读即可定案（2026-10-07 实机：
-                // ownerdraw 按钮圆角整体失效时，就是靠这条与探针分辨出来的）。
-                crate::rust_warn!("按钮圆角区域被系统拒绝（hwnd={hwnd}），本次按直角渲染");
+                // 区域被系统拒绝时控件按直角渲染（创建/换主题/`WM_SIZE` 重设期逐控件
+                // 回落）：静默——降噪 2026-10-08 用户裁定（稳态留痕会随重设刷屏）。
+                // 2026-10-07 实机曾靠这条日志与探针把「API 拒绝」与「区域生效但绘制端
+                // 没吃它」切开；诊断需要时临时加回 `rust_warn!`，绘制端回落由实机像素取证覆盖。
                 DeleteObject(region);
             }
         }

@@ -206,4 +206,5 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
   窗口过程记账（`windows_main.rs` 的 `BarHit`），**绘制与命中共用同一份矩形**
   （`layout_titlebar` 是唯一写入点）；悬浮圆角走 **DC 剪切区域**（`SelectClipRgn`
   + `SaveDC`/`RestoreDC`）—— 窗口区域 `SetWindowRgn` 对子控件在实机未生效
-  （同批观察；失败留痕见 `paint_win::apply_round_region`，定案前别把圆角押在它上）。
+  （同批观察；当时的判据是 `paint_win::apply_round_region` 的失败留痕，该留痕已随
+  2026-10-08 绘制期降噪删除，口径见 [工程参考](../../docs/current/development.md) 的日志段）。

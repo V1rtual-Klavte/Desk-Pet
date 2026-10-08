@@ -1351,7 +1351,8 @@ unsafe fn paint_canvas_shell(state: &ChatWinState, hdc: HDC) {
                     paint_win::draw_bevel(hdc, rect.deflate(1), &t.bubble_user_bevel);
                 }) };
                 if !rounded {
-                    rust_warn!("用户气泡圆角区域创建失败，保留方角描边");
+                    // 绘制期逐控件回落（保留方角描边）：静默——降噪 2026-10-08 用户裁定
+                    // （稳态留痕会随重绘刷屏）；绘制端回落由实机像素取证覆盖。
                     paint_win::draw_frame(hdc, rect, t.bubble_user_edge, &t.bubble_user_bevel);
                 }
             }
@@ -1361,7 +1362,8 @@ unsafe fn paint_canvas_shell(state: &ChatWinState, hdc: HDC) {
                     paint_win::fill_color(hdc, rect, flat_over_panel(&t.bubble_ai_bg));
                 }) };
                 if !rounded {
-                    rust_warn!("助手气泡圆角区域创建失败，保留方角描边");
+                    // 绘制期逐控件回落（保留方角描边）：静默——降噪 2026-10-08 用户裁定
+                    // （稳态留痕会随重绘刷屏）；绘制端回落由实机像素取证覆盖。
                     paint_win::draw_frame(hdc, rect, t.bubble_ai_edge, &Bevel::NONE);
                 }
             }
@@ -1493,7 +1495,8 @@ unsafe fn paint_inspector_box(hdc: HDC, panel_box: paint_win::Rect, radius: i32,
         })
     };
     if !ok {
-        rust_warn!("浮层圆角区域创建失败，退化为方角绘制");
+        // 绘制期逐帧回落（退化为方角绘制）：静默——降噪 2026-10-08 用户裁定
+        // （稳态留痕会随每次重绘刷屏）；绘制端回落由实机像素取证覆盖。
         unsafe { paint_win::draw_frame(hdc, panel_box, t.outline, &Bevel::NONE) };
         return;
     }
@@ -1512,7 +1515,8 @@ unsafe fn paint_inspector_box(hdc: HDC, panel_box: paint_win::Rect, radius: i32,
 ///
 /// 区域建不出去/差集失败（极罕见，内存压力）时跳过本帧、保持绘制顺序原样：
 /// 这是纯加固步骤，不吞内容也不改盒体本身的绘制；逐帧绘制路径不刷 warn 级，
-/// 留痕走统一的 `rust_debug!`（与 `with_round_box` 的建失败 `rust_warn!` 同族）。
+/// 留痕走统一的 `rust_debug!`（同族的盒体绘制 `with_round_box` 的建失败回落
+/// 自 2026-10-08 起也已静默降噪，见那里的注释）。
 unsafe fn corner_notch_over_scrim(hdc: HDC, rect: paint_win::Rect, radius: i32) {
     unsafe {
         // 区域边界与 `with_round_box` 同口径（右/下各 +1：GDI 区域不含右/下边界，
@@ -2145,7 +2149,8 @@ fn button_backdrop_owner(
 /// 四角与周围逐像素同色。
 ///
 /// 失败（`CHAT` 重建持借期间、控件不属于这两个承载窗、位图建不出）返回 `false`：
-/// 调用方按旧近似口径画完并留痕，不静默变形。
+/// 调用方按旧近似口径画完（该回落 2026-10-08 起静默降噪，见
+/// `paint_win::blit_backdrop` 内注释），不静默变形。
 unsafe fn blit_button_backdrop(item: &DrawItemStruct, rect: paint_win::Rect) -> bool {
     let control = item.hwndItem;
     CHAT.with(|cell| {
@@ -2440,7 +2445,8 @@ unsafe fn draw_themed_card(item: &DrawItemStruct) {
     };
     if !ok {
         // 区域创建失败（极罕见）：底已在裁剪前照常画出，这里补方角描边。
-        rust_warn!("卡片底板圆角区域创建失败，退化为方角描边");
+        // 绘制期逐控件回落：静默——降噪 2026-10-08 用户裁定（稳态留痕会随重绘刷屏）；
+        // 绘制端回落由实机像素取证覆盖。
         unsafe { paint_win::draw_frame(item.hDC, rect, tokens.btn_edge, &Bevel::NONE) };
     }
 }
@@ -2875,8 +2881,9 @@ fn invalidate_overlay_layers() {
             )
         };
         if ok == 0 {
-            // 不静默：失败就是这一帧浮层不上屏（与本函数要修的症状一致）。
-            rust_warn!("浮层子树失效失败（RedrawWindow 返回 0）；本帧浮层可能不重画");
+            // 绘制期逐帧回落（本帧浮层可能不重画）：静默——降噪 2026-10-08 用户裁定
+            // （稳态留痕会随每次刷新刷屏）；本函数的 `RDW_UPDATENOW` 取舍由 2026-10-07
+            // 实机逐像素取证覆盖（见上方注释），失败再现时临时加回日志/探针。
         }
     }
 }

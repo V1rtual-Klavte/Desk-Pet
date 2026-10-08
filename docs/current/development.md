@@ -98,6 +98,8 @@ Rust 对应日志宏位于 [macros.rs](../../crates/native-host/src/macros.rs)�
 
 **Node 日志单一出口（2026-10-07）**：TS 侧 `createLogger` **不再同时写进程 console** —— 集成运行时子进程的 stdout/stderr 归监督器的 stdio 采集器采集，console 那一路会被二次采集，同一条日志进文件两次。stdio 采集器保留，给裸 stderr / 崩溃输出兜底；转发失败仍由 logger 模块里唯一的 console 调用兜底（[保留已登记 §4.2]）。Rust 侧沿用 `DESKPET_LOG_LEVEL` / 构建默认级别；为定位跟随卡顿加的 `[诊断·*]` 临时探针与「主线程任务队列清空」逐条留痕已随定位结束删除。
 
+**绘制期失败回落不逐条留痕（2026-10-08）**：Windows 绘制路径里「逐控件 / 逐帧」的失败回落——角区创建与差集失败、按钮底重放回落、小图形覆盖率位图失败、圆角区域被系统拒绝、气泡 / 盒体与卡片底板 / 设置字段的圆角、浮层重画失败——一律**就地注释说明后静默**，不再发 `rust_warn!`。判据是频率面：它们随每次重绘成比例放大，而回落分支本身已自证失败；保留的是窗口 / 初始化级的**一次性**失败警告（主窗圆角与系统边框、透明度提交、顶栏字体创建、RichEdit 装载、编辑器初始化、设置滚动面、聊天窗口补绘）。新增绘制期失败分支按同口径处理，不要退回逐条 warn；`paint_win::apply_round_region` 的失败留痕属本批被删的一员，它的历史结论见 [native-host AGENTS](../../crates/native-host/AGENTS.md#9-双端-ui-的写法本域踩过的)。
+
 生效级别由 [config.ts](../../src/services/config.ts) 的 computeLogLevel 计算：开发模式一律 debug → 生产配置值。开发模式的判据是宿主运行模式端口（Node = ServerWelcome、旧壳 = Vite 构建模式，见 [host/ports.ts](../../src/services/host/ports.ts)），不再是 `import.meta.env`；`.env` 的 VITE_* 覆写已随端口化删除（运行期调参走 CONFIG/开发配置）。Rust 启动时有自己的构建默认值与 DESKPET_LOG_LEVEL，前端初始化后推送统一级别。引导期在 `runDomainBootstrap` 的 `initConfig()` 之后立即应用（`applyLogLevel()`）：`computeLogLevel()` 需要真实运行模式与已加载配置，不应用则 logger 停在保守默认 `info`，主动链路的 debug 证据整段丢失；刻意不放进 `initConfig()` 内部——它被多个 L2 用例直接调用，放进去会给每次调用加一次 `set_log_config` 下行请求与噪声。领域引导序列用例断言引导后 `getLogLevel() === computeLogLevel()`。下发失败只 `log.debug` 留痕、不阻断启动：后果是两端过滤级别不一致，Rust 侧按其构建默认值过滤（根因留痕在 `applyLogLevel`，T4.41）。
 
 `generalConfig.loggingLevel` 是设置读写接口；`computeLogLevel()` 是运行期派生值。保存设置时使用前者，避免把 dev 强制 debug 误写入用户 YAML。
