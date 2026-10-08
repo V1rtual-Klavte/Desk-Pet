@@ -8829,8 +8829,9 @@ mod tests {
     /// 「记住这条」右键菜单接线守门（第二形态：气泡按钮退场后入口由消息右键承接）。
     /// Windows 形态 = 消息 RichEdit 挂子类接管 `WM_CONTEXTMENU` + 自建弹出菜单 +
     /// 经唯一出口 `dispatch_panel_action` 派发；文案必须引用共享常量
-    /// `REMEMBER_MENU_ITEM_LABEL`（平台文件不许硬编码字面量）；事件身份表必须随
-    /// `rebuild_canvas` 的 `links` 一并清理（旧控件句柄不得留影成死菜单）。
+    /// `REMEMBER_MENU_ITEM_LABEL`（平台文件不许硬编码字面量）；事件身份表与消息菜单
+    /// 目标表必须在 `release_canvas` 里一并清理，且 `rebuild_canvas` 必须经它
+    /// （旧控件句柄不得留影成死菜单）。
     #[test]
     fn 消息右键菜单接线_源码守门() {
         let production = production_source();
@@ -8857,11 +8858,24 @@ mod tests {
             !production.contains("\"记住这条\""),
             "平台文件不许硬编码「记住这条」字符串字面量（唯一来源见共享常量）"
         );
+        // 两张表在 `release_canvas` 里一并清（`message_menu_targets` 紧挨 `links`）：
+        // 释放路径只有这一条 —— 重建走它、隐藏与关闭也走它，比「只在重建里清」覆盖更宽。
+        // 所以这里钉的是**整条链**：rebuild → release_canvas → 两张表都清。
+        let release =
+            function_body(production, "unsafe fn release_canvas").expect("release_canvas 必须存在");
+        assert!(
+            release.contains("state.message_menu_targets.clear()"),
+            "释放画布必须清掉消息菜单目标表（旧控件句柄不得留影成死菜单）"
+        );
+        assert!(
+            release.contains("state.links.clear()"),
+            "释放画布必须清掉事件身份表（与消息菜单目标表同批清）"
+        );
         let rebuild =
             function_body(production, "unsafe fn rebuild_canvas").expect("rebuild_canvas 必须存在");
         assert!(
-            rebuild.contains("state.message_menu_targets.clear()"),
-            "重建画布必须随 links 清理消息菜单目标表（旧控件句柄不得留影）"
+            rebuild.contains("release_canvas(state)"),
+            "重建画布必须经 release_canvas，否则控件释放与两张表的清理会被绕过"
         );
         assert_eq!(
             production
