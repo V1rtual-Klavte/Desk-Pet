@@ -182,6 +182,29 @@
 // 补 `saveQueued` 复检 —— `flushConfig()` 接管排队保存（先清标志再原子写）后那条微任务必须
 // 退场，否则同一份内容被重复写盘；纯 setOverride（无 flush）路径不变。观察链覆盖点行为面
 // 不受影响（观察到的是配置现值，非写盘次数）；sourceHash 按当前源码复算。
+// 2026-10-08 v0.20.5 发布后全量复算（本批刷新）：上一条声明的 sourceHash 复算失配，逐字节
+// 对账 —— 自 cebb2b5 起被改过的 sourceFiles 共 8 个，其中 aacbabb「抽屉三控件与设置页同键写
+// CONFIG」批次的 5 个（src/services/config.ts、agent/runner.ts、engine/harness/runtime.ts、
+// ui/settings/schema.rs、native-ui/host-requests.ts）当前内容已计入上一条声明的 hash（上批
+// 刷新时的工作树已含该批改动；在案注释与该批 diff 逐条核对一致：三键唯一真相源回 CONFIG，
+// 观察决策、静默了解与话题链不消费它们 —— 观察决策经 completePiText 不传 thinkingEffort）。
+// 相对声明 hash 的新增变化仅三处：crates/native-host/src/paths/security.rs（ef45e60：
+// allowed_file_roots 补入应用自身数据根候选，供通用文件能力边界在数据根落到 $HOME 之外时
+// 不再 PATH_ESCAPE；ob-03 的读取终裁不经过它 —— observation_cmd.rs 的 read_one_target 仍以
+// paths.data_root 直接判「数据根之外」，语义未动）、crates/native-host/Cargo.toml（0571a79 /
+// 9236888：Windows 构建期 embed-resource 嵌 exe 图标与 Win32_Graphics_Dwm feature 去主窗
+// 系统边框）与 Cargo.lock（同一批构建依赖新增与 0.20.0–0.20.5 发版的 native-host 版本号位）：
+// 三处均不在观察行为面内。ob-01..ob-10 逐条按当前源码复核实现点仍在、描述与当前实现一致
+// （ob-03 整机只读边界与 CANCELLED 终裁、ob-04 名额 4/8/12 与 fail-closed 解析、ob-05 的
+// 64 条滚动记账、ob-09/ob-10 的钟点表与 15 分钟追赶窗口逐项对照），未修订覆盖点，仅按当前
+// 源码刷新 sourceHash。
+// 2026-10-08 同批收口（用户裁定）：① **`Cargo.lock` 移出 sourceFiles** —— 它含 native-host
+// 版本号行、发版即变，本契约因此自 v0.20.0 起连续五代挂着（0.20.0–0.20.5 每个 release 提交
+// 都改 Cargo.lock，而 release 提交不刷契约）。版本号对观察行为零意义；依赖增删的告警由
+// `crates/native-host/Cargo.toml` 与 CI 构建承担，那份保留（它用 `version.workspace = true`，
+// 发版不改它）。② **ob-04 描述收紧**：原文「字段非法、相对路径、重复路径一律退化为空清单」
+// 比实现严 —— 实现是逐条跳过、重复路径保留首现，只有没有任何合法目标时结果才为空（与 L2
+// 用例的实际断言一致）。①动了 sourceFiles ⇒ sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -231,7 +254,9 @@ export const observationContract: ModuleContract = {
     "crates/native-host/src/paths/security.rs",
     "crates/native-host/src/monitor/mod.rs",
     "crates/native-host/Cargo.toml",
-    "Cargo.lock",
+    // `Cargo.lock` 于 2026-10-08 移出 sourceFiles：它含 native-host 版本号行、发版即变，
+    // 每次发版都会把本契约打过期（0.20.0–0.20.5 连续五代）。依赖增删由上面那份
+    // `crates/native-host/Cargo.toml` 与 CI 构建承担告警，版本号行对观察行为零意义。
     // 原 `src/App.vue`（跨窗口观察治理生命周期；按 silentAccess 应用 setMonitorEnabled）随 WebView
     // 删壳退役：观察订阅与总闸应用已由 window/monitor.ts 的 initWindowObservation 接回（两者都在列）；
     // 跨窗口治理形态在单 Node 架构下取消，本地应用即真相源（见 observation/ownership.ts）。
@@ -240,7 +265,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "8c6ba18d589bd005e42cb4546a08528761394a0e7186e8b1e1e39e1102c5dde3",
+  sourceHash: "78c5510acb51a8767ac7aa62db9b4cfc8a47dd96c80e4b710c49b7e6bf842237",
   coverage: [
     {
       id: "ob-01",
@@ -272,7 +297,7 @@ export const observationContract: ModuleContract = {
     {
       id: "ob-04",
       feature: "静默了解的目标决策与读取名额",
-      description: "读什么由 AI 决策：决策调用输出 {targets:[{path,kind,why}]}（绝对路径），解析器对围栏 JSON、非数组、字段非法、相对路径、重复路径一律退化为空清单（本批只截图、不报错崩批）；单批目标数不设硬上限（W1 起删除 ≤3 截断；单批读取量以剩余每小时名额为界），每小时读取名额（上限取静默了解档位表的 `silentTierLimits(tier).maxReadsPerHour`＝4/8/12，窗口 `READ_WINDOW_MS` 一小时；判定/扣减是纯函数 `readSlotsAvailable`，2026-10-06 订正：旧常量名 MAX_READS_PER_HOUR 已不存在）在批次开始前扣减，超限即跳过决策与读取。决策输入的基础块在同层按界断言：Card 人设有界摘要（名字/描述/角色设定截断）与带时区的可读本地时间；完整输入矩阵与降级由 ob-08（L3）覆盖；决策提示词的范围口径按 2026-10-06 用户裁决改整机只读（放开系统/应用配置目录，保留凭据/密钥禁令与只读语义）。",
+      description: "读什么由 AI 决策：决策调用输出 {targets:[{path,kind,why}]}（绝对路径），解析器逐条跳过坏目标（围栏 JSON、非数组、字段非法、相对路径），重复路径保留首现，只有没有任何合法目标时结果才为空清单（本批只截图、不报错崩批）；单批目标数不设硬上限（W1 起删除 ≤3 截断；单批读取量以剩余每小时名额为界），每小时读取名额（上限取静默了解档位表的 `silentTierLimits(tier).maxReadsPerHour`＝4/8/12，窗口 `READ_WINDOW_MS` 一小时；判定/扣减是纯函数 `readSlotsAvailable`，2026-10-06 订正：旧常量名 MAX_READS_PER_HOUR 已不存在）在批次开始前扣减，超限即跳过决策与读取。决策输入的基础块在同层按界断言：Card 人设有界摘要（名字/描述/角色设定截断）与带时区的可读本地时间；完整输入矩阵与降级由 ob-08（L3）覆盖；决策提示词的范围口径按 2026-10-06 用户裁决改整机只读（放开系统/应用配置目录，保留凭据/密钥禁令与只读语义）。",
       why: "用户已撤销「指定目录」配置，读目标改由模型判断；决策输出是不可信输入，解析必须 fail-closed 且不能把坏 JSON 变成崩溃或乱读；输入块只读有界才能既把决定权交给模型，又不让每条链各自造证据或撑爆请求预算。",
       layer: "unit",
       depth: "shallow",

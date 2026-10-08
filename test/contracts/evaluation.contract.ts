@@ -81,12 +81,21 @@
 // 2026-10-06 Windows CI 修复（本批刷新）：crates/native-host/src/paths/mod.rs 只在测试模块内
 // 增目录符号链接助手（symlink_dir）并换用于中间目录场景 —— 产品路径裁决逻辑未动，评测与
 // trace 路径不受影响；sourceHash 按当前源码复算。
+// 2026-10-07 便携与安装目录数据根批次（本批刷新）：sourceFiles 变化 ——
+// crates/native-host/src/paths/mod.rs（便携标记 `portable.txt` 判定 `portable_data_root`；
+// Windows 生产数据根改 `<安装目录>/userdata`（`SIDE_DATA_DIR` / `side_data_root` /
+// `installation_side_dir`）；`AppPaths::init` 注入 `DATA_ROOT`、安全允许根跟随真实数据根）。
+// 评测、trace、保留与性能路径不在改动面内：E2E 数据根分支（`DESKPET_E2E_DATA_ROOT` →
+// `test/.tmp/e2e-*` 容纳校验）与 `is_e2e()` 双闸未动，新函数只服务生产启动选根（main.rs）与
+// `allowed_file_roots`（security.rs 归 safety 契约）；trace 落盘仍直接钉在 data_root 下、
+// release 存储基准仍用 `DESKPET_MEMORY_PERF_ROOT` 独立根。eval-01..eval-09 逐点核对实现点仍在、
+// 覆盖描述与当前实现一致（定点对照当前源码，非逐行行为审计）；未修订覆盖点，sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const evaluationContract: ModuleContract = {
   module: "evaluation",
   sourceFiles: ["test/host/standard-setup.ts", "vite.config.ts", "src/services/engine/runtime/trace.ts", "src/services/engine/harness/harness-slot.ts", "src/services/engine/harness/runtime.ts", "src/services/engine/harness/model-gateway.ts", "src/services/agent/memory/provider.ts", "src/services/agent/memory/dreaming.ts", "crates/native-host/src/e2e_trace.rs", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/host/dispatch.rs", "test/host/trace-observer.ts", "test/trace/evidence.ts", "scripts/report-retention.mjs", "scripts/trace-evidence.mjs", "scripts/contract-layers.mjs", "scripts/e2e-test.mjs", "test/memory-quality/dataset.mjs", "test/memory-quality/index.mjs", "test/memory-quality/live-adapter.ts", "scripts/memory-quality-review.mjs", "scripts/memory-performance.mjs", "test/e2e/eval-models.ts", "test/eval-models.json", "test/e2e/memory-performance.ts", "test/host/performance.ts", "test/e2e/native-main.ts", "test/e2e/scene-runner.ts"],
-  sourceHash: "8e923436aa5469f59b2cb24cf462da3afbeba7ac3ff8000bc414b591f68e1fbf",
+  sourceHash: "8db2a43caab82af02b029787eeaea66ae6718c17775797803f0f0c407f8acdc5",
   coverage: [
     {"id": "eval-01", "feature": "生产 trace 提交线路", "description": "真实 sendMessage 经过 Rust IPC：输入、host/Pi关联、Provider span、首文本生成与 JSONL assistant entry commit 一致；消息结束不冒充提交或UI首显", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "e2e", "depth": "deep", "scenarios": ["trace-production-commit"]},
     {"id": "eval-02", "feature": "惰性与隔离观测", "description": "无订阅者不计算payload；listener异常隔离、event冻结、spread context共享单调序号；正文与工具参数结果不进入允许字段，主动/行为事件只保留结构字段（应用身份、标题与任务正文被白名单挡下）", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-lazy-off", "trace-listener-isolation", "trace-sequence-redaction", "trace-preview", "trace-scope-candidates", "trace-memory-rendered-schema", "trace-proactive-behavior-schema"]},

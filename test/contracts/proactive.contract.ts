@@ -1,3 +1,18 @@
+// 2026-10-08 存量债收口（本批刷新）：本次 STALE 是历史挂账的延续，不是新改动 —— 声明值
+// c5a0f52… 不等于 cebb2b5 自身提交树的哈希（671a6490…），而等于其刷新时工作区（含另会话
+// 在飞改动）的状态：与 1 分钟后提交的 aacbabb、与 3b46be7 前一刻的树逐字一致。漂移起点为
+// 3b46be7 —— 它改了 `src/services/engine/slash/commands/proactive.ts`（`/proactive on` 恢复
+// 档位 medium→high，对齐出厂默认「高」）并把 sourceHash 挂账「留待收口波统一刷新」；
+// 6642e92 只改 pr-14 描述与测试基线、未动 hash，该收口波从未发生 —— 真实哈希自 3b46be7 起
+// 为 9af980aa…，6642e92..HEAD 再无 sourceFiles 变化。漂移窗口内另三个文件（config.ts 安全
+// 模式读取期收拢 + 写队列合并、agent/runner.ts 繁忙投递意图显式选择整链删除、
+// engine/harness/runtime.ts 思考强度直读 + 计划步骤提示收窄）属 aacbabb 的改动，已被声明值
+// 的在飞口径与「抽屉 CONFIG 写批次」「写队列合并修复」「观察判据与计划报告批次」三条注记
+// 覆盖；slash 的默认档位改动不触及任何覆盖点声称的行为（pr-11 的「档位是唯一开关」与档位表未动，pr-14 已按出厂
+// 默认 0/0 对齐）。本批逐点核对 pr-01..pr-17 实现点仍在、覆盖描述与当前实现一致（按源码
+// 核对 time / tiers / scanner / opportunities / planner / index / 治理工具 / usage /
+// store.rs 门禁与冷却快照 / init 引导单次闩 / observation scheduler 锁屏批 / runner+delivery+
+// read-model 回执链），未修订覆盖点；sourceFiles 未增删。sourceHash 按当前源码复算。
 // 2026-10-06 出厂默认对齐批次（本批登记，未跑 analyze→generate）：sourceFiles 变化 ——
 // `src/services/engine/slash/commands/proactive.ts`（`/proactive on` 恢复档位 medium→high，
 // description 与头注释同步；出厂值同步点写在头注释）。sourceHash 留待收口波统一刷新。
@@ -235,7 +250,7 @@ import type { ModuleContract } from "../host/types"
 // `setOverride + flushConfig` 组合（抽屉/设置/主动斜杠等）的写盘次数由 2 降为 1（内容不变），
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "c5a0f520a04f7a90993ce47eb3e7cfe4699fdafcf90056dd361254214fe1d8db",
+  module:"proactive",sourceHash: "9af980aab5863847ff116948cc7187bf2676cde9ad9af817047f805d33b0959c",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",
