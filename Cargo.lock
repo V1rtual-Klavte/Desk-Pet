@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "native-host"
-version = "0.20.5"
+version = "0.20.6"
 dependencies = [
  "base64",
  "chrono",
