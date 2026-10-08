@@ -328,14 +328,14 @@ pub(crate) fn open_chat_window() {
         }
         return;
     }
+    let mut announce = false;
     WINDOW_CONTROLLER.with(|cell| {
         let mut slot = cell.borrow_mut();
         if let Some(existing) = slot.as_ref() {
             if let Some(window) = existing.window() {
                 window.makeKeyAndOrderFront(None);
                 super::macos::activate_app();
-                crate::ui::chat::set_chat_window_open(true);
-                crate::ui::chat::set_chat_window_visible(true);
+                announce = true;
                 return;
             }
         }
@@ -345,12 +345,17 @@ pub(crate) fn open_chat_window() {
             Ok(controller) => {
                 controller.show();
                 *slot = Some(controller);
-                crate::ui::chat::set_chat_window_open(true);
-                crate::ui::chat::set_chat_window_visible(true);
+                announce = true;
             }
             Err(error) => rust_warn!("聊天窗创建失败: {error}"),
         }
     });
+    // 同 `mount_main_pane`：共享可见边沿会同步回调 `chat_apply`，而它要读
+    // `WINDOW_CONTROLLER` —— 报边沿必须在 `borrow_mut()` 之外。
+    if announce {
+        crate::ui::chat::set_chat_window_open(true);
+        crate::ui::chat::set_chat_window_visible(true);
+    }
 }
 
 /// 关闭聊天窗（关闭即释放窗口资源，可再次打开；主窗面板不受影响）。
@@ -377,6 +382,7 @@ pub(crate) fn mount_main_pane(container: &Retained<NSView>) {
         rust_warn!("聊天面板必须在 UI 主线程挂载");
         return;
     };
+    let mut mounted = false;
     MAIN_PANE.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_some() {
@@ -386,15 +392,21 @@ pub(crate) fn mount_main_pane(container: &Retained<NSView>) {
         match ChatContentController::new_embedded(mtm, container) {
             Ok(controller) => {
                 *slot = Some(controller);
-                crate::ui::chat::chat_ui().set_main_pane_open(true);
-                let visible = container.window().is_some_and(|window| window.isVisible())
-                    && !container.isHidden();
-                crate::ui::chat::set_main_pane_visible(visible);
-                rust_info!("聊天面板已挂入主窗（与角色舞台同窗合成）");
+                mounted = true;
             }
             Err(error) => rust_warn!("主窗聊天面板创建失败: {error}"),
         }
     });
+    // 共享可见边沿（`refresh_visible_views`）会**同步**投递一次渲染 → `chat_apply`
+    // → 又要读 `MAIN_PANE`。在 `borrow_mut()` 期间报边沿必 panic（RefCell 不得重入，
+    // AGENTS §5.1）；所以挂载与报边沿分两步：先出借用，再报。
+    if mounted {
+        crate::ui::chat::chat_ui().set_main_pane_open(true);
+        let visible = container.window().is_some_and(|window| window.isVisible())
+            && !container.isHidden();
+        crate::ui::chat::set_main_pane_visible(visible);
+        rust_info!("聊天面板已挂入主窗（与角色舞台同窗合成）");
+    }
 }
 
 /// 主窗尺寸变化：面板重排；宽度真的变了才重建消息视图（避免无谓重排）。
