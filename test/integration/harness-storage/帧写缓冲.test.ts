@@ -46,7 +46,7 @@ import type { Context, JsonlSessionMetadata, Result, Session } from "@earendil-w
 import { appendList, pendingAssistantFrames } from "@earendil-works/pi-agent-core/harness/session"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
-import { setTestDataRoot } from "../../host/node-ipc"
+import { logByteMark, readLogLines, setTestDataRoot } from "../../host/node-ipc"
 import {
   createPiSessionRepo,
   FRAME_BUFFER_MAX_BYTES,
@@ -60,6 +60,7 @@ import { isFrameAppendTransaction } from "@/services/engine/harness/session-fram
 import type { PiSessionRepo } from "@/services/engine/harness"
 import { acquirePiSession, createPiSession, deletePiSession, releasePiSession } from "@/services/session"
 import { getPiSessionRepo } from "@/services/session/repo"
+import { flushLogs } from "@/services/logger"
 import { initPaths, runtimePath } from "@/services/paths"
 import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
@@ -426,12 +427,12 @@ describe("帧写缓冲", () => {
         const batch = [0, 1, 2].map(index => delta("fail", index, 200))
         const follow = delta("fail-follow", 0, 200)
 
-        // `logger.error` 无条件走 `console.error`（logger/index.ts 的 error 实现），
-        // 所以捕获法成立；替换必须在 finally 里恢复。
-        const captured: string[] = []
-        const originalConsoleError = console.error
-        console.error = (...args: unknown[]) => { captured.push(args.map(String).join(" ")) }
-        try {
+        // 统一留痕的取证点 = logger 的唯一出口（HostBridge → Rust 日志内核，
+        // `logger/index.ts`）；L3 下由 `test/host/node-ipc.ts` 落到 `{logs}/deskpet.log`。
+        // **不能再 spy `console.*`**：2026-10-07 起 createLogger 不再写进程 console。
+        // 读之前必须 `await flushLogs()`——队列是定时 flush，只有 error 级或满 32 条才立即刷。
+        const logMark = logByteMark()
+        {
           for (const [index, frameDelta] of batch.entries()) {
             expectOk(await decorated.appendFile(path, frameLine("op-fail", "resp-fail", frameDelta, index + 1), context), "decorated.appendFile")
           }
@@ -440,9 +441,11 @@ describe("帧写缓冲", () => {
           for (const frameDelta of batch) {
             expect(failing.attempts[0]?.content.includes(frameDelta), `失败批应整批在一次尝试里（含 ${frameDelta.slice(0, 20)}…）`).toBe(true)
           }
+          await flushLogs()
+          const firstRead = readLogLines(logMark)
           expect(
-            captured.some(line => line.includes(FRAME_FLUSH_FAILURE_MARK)),
-            `帧落盘失败必须留痕（应包含 ${FRAME_FLUSH_FAILURE_MARK}）：捕获 ${captured.length} 行`,
+            firstRead.some(line => line.includes(FRAME_FLUSH_FAILURE_MARK)),
+            `帧落盘失败必须留痕（应包含 ${FRAME_FLUSH_FAILURE_MARK}）：捕获 ${firstRead.length} 行`,
           ).toBe(true)
 
           // 再推一条（未跨阈值）+ 显式 flush：不抛、只多一次尝试；失败批被丢弃、不重放。
@@ -459,10 +462,9 @@ describe("帧写缓冲", () => {
           // 失败批被丢弃的唯一真实证据就是上面两条 attempts 内容断言：
           // FailingEnv 的 appendFile 恒失败且从不落盘，任何「盘上有没有文件」的断言都不可能独立失败
           // （原场景 :452 的 D9 因此被删除）。
-          const marks = captured.filter(line => line.includes(FRAME_FLUSH_FAILURE_MARK)).length
+          await flushLogs()
+          const marks = readLogLines(logMark).filter(line => line.includes(FRAME_FLUSH_FAILURE_MARK)).length
           expect(marks, `两次失败应各留痕一次（不重试、不重复记）`).toBe(2)
-        } finally {
-          console.error = originalConsoleError
         }
       } finally {
         expectOk(await plain.remove(root, { recursive: true, force: true }, context), "remove(root)")

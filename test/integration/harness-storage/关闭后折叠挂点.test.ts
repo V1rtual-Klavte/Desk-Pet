@@ -38,8 +38,9 @@ import { pendingAssistantFrames } from "@earendil-works/pi-agent-core/harness/se
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { NodeHostBridge } from "../../host/node-host-bridge"
-import { setTestDataRoot } from "../../host/node-ipc"
+import { logByteMark, readLogLines, setTestDataRoot } from "../../host/node-ipc"
 import { initConfig } from "@/services/config"
+import { flushLogs } from "@/services/logger"
 import { setHostBridge } from "@/services/host"
 import { FOLD_POLICY } from "@/services/engine/harness"
 import { initPaths } from "@/services/paths"
@@ -216,7 +217,11 @@ describe("关闭后折叠挂点（releasePiSession 的真实 release 路径）",
       return realRenameFile.call(this, sourcePath, destinationPath, context)
     })
 
-    const warnSpy = vi.spyOn(console, "warn")
+    // 统一留痕的取证点 = logger 唯一出口（HostBridge → Rust 日志内核）；L3 下由
+    // `test/host/node-ipc.ts` 落到 `{logs}/deskpet.log`。**不能再 spy `console.*`**：
+    // 2026-10-07 起 createLogger 不再写进程 console。读前必须 `await flushLogs()`
+    // ——队列是定时 flush，不刷会漏掉刚写的行。
+    const logMark = logByteMark()
     try {
       await expect(releasePiSession(created.id), "折叠失败不得破坏释放语义（release 必须 resolve）").resolves.toBeUndefined()
     } finally {
@@ -229,12 +234,12 @@ describe("关闭后折叠挂点（releasePiSession 的真实 release 路径）",
     // ② 失败兜底：原文件逐字未变、没有半成品。
     expect(readFileSync(created.path, "utf8"), "折叠失败改动了原文件（原子替换保证被破坏）").toBe(snapshot)
     // ③ 统一留痕：失败事实与「原文件逐字完好」出现在日志（logger 通道 PiSession/Fold）。
-    const warnLines = warnSpy.mock.calls.map(args => args.map(String).join(" "))
+    await flushLogs()
+    const warnLines = readLogLines(logMark)
     expect(
       warnLines.some(line => line.includes("折叠替换失败") && line.includes("原文件逐字完好")),
       `折叠失败没有统一留痕：${warnLines.filter(line => line.includes("折叠")).join(" | ")}`,
     ).toBe(true)
-    warnSpy.mockRestore()
 
     // ④ 恢复路径：故障解除后会话照常打开（open 前兜底完成上次未成的折叠）、还能继续写入。
     const reopened = await acquirePiSession(created.id)

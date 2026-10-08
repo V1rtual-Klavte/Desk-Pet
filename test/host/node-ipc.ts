@@ -259,6 +259,41 @@ function appendLogLine(line: string): void {
   appendFileSync(join(logs, "deskpet.log"), `${line}\n`, "utf8")
 }
 
+// ── 统一日志的取证入口 ──
+//
+// `@/services/logger` 自 2026-10-07 起只走 HostBridge 单出口（不再写进程 console，
+// 见 `src/services/logger/index.ts`），所以断言「统一留痕」的用例不能再 spy `console.*`
+// —— 取证点就是本适配层落盘的 `{logs}/deskpet.log`。
+//
+// 读之前**必须先 `await flushLogs()`**：logger 的队列有 60ms 定时 flush，
+// 只有 error 级或攒满 32 条才立即刷，不刷就读会漏掉刚写的行。典型用法：
+//   const mark = logByteMark()
+//   …触发被测行为…
+//   await flushLogs()
+//   const lines = readLogLines(mark)
+
+/** `{logs}/deskpet.log` 当前字节数（文件还不存在记 0）—— 标记「从这里之后的日志」。 */
+export function logByteMark(): number {
+  const file = join(paths().logs, "deskpet.log")
+  return existsSync(file) ? statSync(file).size : 0
+}
+
+/**
+ * 读取 `{logs}/deskpet.log` 自 `since` **字节**起的非空行。
+ *
+ * 切在 Buffer 上而不是先 `toString()` 再切：`logByteMark()` 给的是字节数，
+ * 而日志正文多为中文（UTF-8 三字节 / 单 UTF-16 单元），按字符串下标切会错位。
+ */
+export function readLogLines(since = 0): string[] {
+  const file = join(paths().logs, "deskpet.log")
+  if (!existsSync(file)) return []
+  return readFileSync(file)
+    .subarray(since)
+    .toString("utf8")
+    .split("\n")
+    .filter(line => line !== "")
+}
+
 // ── Skill 目录指纹（commands/skill_cmd.rs）──
 
 const SKILL_FILE = "SKILL.md"

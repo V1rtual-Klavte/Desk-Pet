@@ -28,10 +28,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
-import { setTestDataRoot } from "../../host/node-ipc"
+import { logByteMark, readLogLines, setTestDataRoot } from "../../host/node-ipc"
 import { stopIdleDreamingSchedulerAndWait } from "@/services/agent/memory"
 import { computeLogLevel } from "@/services/config"
-import { getLogLevel } from "@/services/logger"
+import { flushLogs, getLogLevel } from "@/services/logger"
 import { stopSilentUnderstanding } from "@/services/observation"
 import { stop as stopProactive } from "@/services/proactive"
 import { debug } from "@/services/debug"
@@ -200,9 +200,11 @@ describe("领域引导序列", () => {
     expect(debug.registeredTools.length, "前置：工具列表在引导前已非空").toBe(0)
     expect(getActiveSessionId(), "前置：引导前已有活跃会话").toBe("")
 
-    // 捕获 console.warn（call-through，不改产品输出）：跳过留痕只在引导运行中出现一次，
-    // 必须在引导前安装、恢复前采证（mockRestore 会清掉调用记录）。
-    const warnSpy = vi.spyOn(console, "warn")
+    // 跳过留痕只在引导运行中出现一次：必须在引导前打标、引导后采证。
+    // 取证点 = logger 的唯一出口（HostBridge → Rust 日志内核）；L3 下由
+    // `test/host/node-ipc.ts` 落到 `{logs}/deskpet.log`。**不能再 spy `console.*`**：
+    // 2026-10-07 起 createLogger 不再写进程 console。
+    const logMark = logByteMark()
     let warnLines: string[] = []
     try {
       // 同一进程的两次调用必须并入同一次运行（闩失效会产生两套引导状态）
@@ -211,8 +213,9 @@ describe("领域引导序列", () => {
       expect(second, "重复调用没有并入同一次运行").toBe(first)
       await Promise.all([first, second])
     } finally {
-      warnLines = warnSpy.mock.calls.map((args) => args.map(String).join(" "))
-      warnSpy.mockRestore()
+      // 读前 flush：logger 队列是定时 flush，不刷会漏掉刚写的行。
+      await flushLogs()
+      warnLines = readLogLines(logMark)
     }
 
     // 无事件通道的宿主：原生 UI 桥跳过并留痕（错误既不能穿到调用方，也不能无声跳过）；
