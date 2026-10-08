@@ -58,7 +58,8 @@ import { stopIdleDreamingSchedulerAndWait } from "@/services/agent/memory"
 import { stop as stopProactive } from "@/services/proactive"
 import { stopSilentUnderstanding } from "@/services/observation"
 import { disconnectWindowObservation, setMonitorEnabled } from "@/services/window"
-import { stopNativeUiBridge } from "@/services/native-ui"
+import { drainHostRequestHandlers, stopHostRequestHandlers, stopNativeUiBridge } from "@/services/native-ui"
+import { flushConfig } from "@/services/config"
 import { errorDetail, formatError } from "@/services/error"
 
 const EXIT_OK = 0
@@ -202,6 +203,9 @@ async function flushForShutdown(_context: HarnessContext): Promise<FlushReport> 
       return fallback
     }
   }
+  // Reject new UI work immediately. Existing handlers drain after producers stop and
+  // Harness slots are aborted, so run-bound requests cannot hold shutdown open by themselves.
+  await attempt("host request admission", async () => { stopHostRequestHandlers() }, undefined)
   if (domainInitialization) {
     await attempt("domain initialization", () => domainInitialization!, undefined)
   }
@@ -214,6 +218,13 @@ async function flushForShutdown(_context: HarnessContext): Promise<FlushReport> 
   const behaviorFlushed = await attempt("monitor disable", () => setMonitorEnabled(false), true)
   await attempt("window observation unsubscribe", async () => disconnectWindowObservation(), undefined)
   const runtime = await attempt("Harness runs and audit", () => harnessSlots.prepareForShutdown(), { unresolvedRuns: 0, pendingAudit: 0 })
+  const hostRequests = await attempt(
+    "host request drain",
+    drainHostRequestHandlers,
+    { completed: 0, failures: ["宿主请求 drain 未完成"] },
+  )
+  for (const failure of hostRequests.failures) failures.push(`host request: ${failure}`)
+  await attempt("CONFIG write queue", flushConfig, undefined)
   await attempt("UI subscriptions", async () => {
     stopNativeUiBridge()
     disposePlanConfirmationReceipts()

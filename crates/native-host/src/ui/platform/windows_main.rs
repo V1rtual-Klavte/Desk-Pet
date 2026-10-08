@@ -40,11 +40,12 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetClientRect, GetParent, GetWindowRect, RegisterClassW,
-    SendMessageW, SetWindowPos, CS_HREDRAW, CS_VREDRAW, HTCAPTION, HTCLIENT, HWND_TOP,
-    SWP_NOACTIVATE, SWP_NOZORDER, WM_CAPTURECHANGED, WM_CREATE, WM_DESTROY, WM_ERASEBKGND,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_PAINT, WM_SIZE,
-    WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, GetClientRect, GetParent, GetWindowRect, IsWindowVisible,
+    RegisterClassW, SendMessageW, SetWindowPos, CS_HREDRAW, CS_VREDRAW, HTCAPTION, HTCLIENT,
+    HWND_TOP, SWP_NOACTIVATE, SWP_NOZORDER, WM_CAPTURECHANGED, WM_CREATE, WM_DESTROY,
+    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_NCLBUTTONDOWN,
+    WM_PAINT, WM_SIZE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED,
+    WS_VISIBLE,
 };
 
 use crate::error::{AppError, AppResult};
@@ -390,7 +391,7 @@ pub(crate) fn set_chat_visible(layout: &mut MainLayout, main: HWND, visible: boo
         return;
     }
     layout.chat_visible = visible;
-    windows_chat::set_main_pane_visible(main, visible);
+    windows_chat::set_main_pane_visible(main, visible && unsafe { IsWindowVisible(main) != 0 });
     relayout(layout, main);
     rust_info!("主窗聊天列{}", if visible { "展开" } else { "收起" });
 }
@@ -621,7 +622,13 @@ unsafe fn paint_titlebar(bar: HWND, hdc: HDC) {
     unsafe {
         // 品牌字 `ink` + 粗体（macOS：`boldSystemFontOfSize(11)`、色取 `tokens.ink`）；
         // 状态位 `dim` + 常规字重（macOS：`resolve_font(HELP_BASE_SIZE)`）。
-        draw_bar_text(hdc, snap.brand, titlebar::BRAND_TEXT, t.ink, snap.brand_font);
+        draw_bar_text(
+            hdc,
+            snap.brand,
+            titlebar::BRAND_TEXT,
+            t.ink,
+            snap.brand_font,
+        );
         draw_bar_text(hdc, snap.status, &snap.status_text, t.dim, snap.font);
     }
     let radius = scaled(t.radii.btn.round() as i32, dpi_scale(bar));
@@ -818,7 +825,11 @@ fn create_titlebar_font(bar: HWND, bold: bool) -> HFONT {
     // 灰度 AA 同口径，避免 ClearType 的彩色次像素在浅底圆角按钮上读成脏边。
     paint_win::create_ui_font(
         -scaled(size, scale),
-        if bold { FW_BOLD as i32 } else { FW_NORMAL as i32 },
+        if bold {
+            FW_BOLD as i32
+        } else {
+            FW_NORMAL as i32
+        },
         &face,
     )
 }

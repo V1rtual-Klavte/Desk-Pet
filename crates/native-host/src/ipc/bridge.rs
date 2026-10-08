@@ -274,6 +274,20 @@ pub struct HostBridge {
     inner: Arc<BridgeInner>,
 }
 
+/// 关停分两阶段：停止宿主入口后，Node 仍须经原分派器完成已准入请求与持久化。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Open,
+    Draining,
+    Closed,
+}
+
+enum NormalFrame {
+    Bytes(Vec<u8>),
+    /// 关停前交付已准入普通帧；不改变取消等控制帧的优先级。
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
 struct BridgeInner {
     config: BridgeConfig,
     app_epoch: String,
@@ -281,15 +295,15 @@ struct BridgeInner {
     blobs: Arc<BlobRegistry>,
     dispatcher: RwLock<Arc<dyn CommandDispatcher>>,
     control_tx: mpsc::Sender<Vec<u8>>,
-    normal_tx: mpsc::Sender<Vec<u8>>,
+    normal_tx: mpsc::Sender<NormalFrame>,
     binary_tx: mpsc::Sender<BinaryJob>,
     pending: StdMutex<HashMap<u64, tokio::sync::oneshot::Sender<Result<Value, WireError>>>>,
     dispatches: StdMutex<HashMap<u64, Arc<AtomicBool>>>,
     next_request_id: AtomicU64,
     events: broadcast::Sender<EventEnvelope>,
     event_seq: AtomicU64,
-    /// 关停闸门：false 时拒绝新请求（封新 admission）。
-    admission_open: Arc<AtomicBool>,
+    /// 唯一 admission 状态；Draining 只保留 Node 收尾所需的入站 RPC。
+    admission: StdMutex<Admission>,
     closed: Arc<AtomicBool>,
     closed_tx: watch::Sender<bool>,
     closed_rx: watch::Receiver<bool>,
@@ -376,7 +390,7 @@ impl HostBridge {
             next_request_id: AtomicU64::new(1),
             events,
             event_seq: AtomicU64::new(0),
-            admission_open: Arc::new(AtomicBool::new(true)),
+            admission: StdMutex::new(Admission::Open),
             closed: Arc::new(AtomicBool::new(false)),
             closed_tx,
             closed_rx,
@@ -463,13 +477,17 @@ impl HostBridge {
             .unwrap_or_else(|e| e.into_inner()) = dispatcher;
     }
 
-    /// 封新 admission（关停序列第 1 步）：新请求一律回 `SHUTTING_DOWN`。
+    /// 完全封闭 admission；Node 排空报告返回后不再接收任何新 RPC。
     pub fn close_admission(&self) {
-        self.inner.admission_open.store(false, Ordering::SeqCst);
+        *self
+            .inner
+            .admission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Admission::Closed;
     }
 
     pub fn admission_open(&self) -> bool {
-        self.inner.admission_open.load(Ordering::SeqCst)
+        self.inner.admission_state() == Admission::Open
     }
 
     /// 宿主 → Node 的请求。`deadline` 到点即发 cancel 并回 `TIMEOUT`（不静默等待）。
@@ -494,7 +512,7 @@ impl HostBridge {
             .unwrap_or_else(|e| e.into_inner())
             .insert(request_id, tx);
         let frame = ControlFrame::request(request_id, scope, method, args);
-        if let Err(err) = self.inner.send_normal_frame(frame).await {
+        if let Err(err) = self.inner.send_host_request_frame(frame).await {
             self.inner
                 .pending
                 .lock()
@@ -541,11 +559,20 @@ impl HostBridge {
         if self.is_closed() {
             return Err(AppError::Other("HostBridge 已断开".into()));
         }
+        // 与关停边沿共用锁：已准入事件必须在排空屏障之前入队。
+        let admission = self
+            .inner
+            .admission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if *admission != Admission::Open {
+            return Err(AppError::Other("宿主正在关停，拒绝新事件".into()));
+        }
         let seq = self.inner.event_seq.fetch_add(1, Ordering::SeqCst) + 1;
         let frame = ControlFrame::event(scope, event, seq, payload);
         let bytes =
             transport::encode_control_frame(&frame, self.inner.config.control_frame_max_bytes)?;
-        match self.inner.normal_tx.try_send(bytes) {
+        match self.inner.normal_tx.try_send(NormalFrame::Bytes(bytes)) {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(_)) => {
                 Err(AppError::Other("控制通道写队列已满，事件未投递".into()))
@@ -563,7 +590,23 @@ impl HostBridge {
 
     /// 关停序列：请求 Node 停止收新工作并在期限内 flush 后退出。
     pub async fn request_shutdown(&self, reason: &str, flush_deadline: Duration) -> AppResult<()> {
-        self.close_admission();
+        {
+            let mut admission = self
+                .inner
+                .admission
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match *admission {
+                Admission::Open => *admission = Admission::Draining,
+                Admission::Draining => return Ok(()),
+                Admission::Closed => return Err(AppError::Other("宿主 admission 已关闭".into())),
+            }
+        }
+        // 先交付普通队列中已准入请求，Node 才能将其纳入 handler drain。
+        // 写端阻塞沿用 flush_deadline，超时如实失败，不跳过已准入工作。
+        tokio::time::timeout(flush_deadline, self.inner.flush_normal_queue())
+            .await
+            .map_err(|_| AppError::Timeout)??;
         self.inner
             .send_control_frame(ControlFrame::control(ControlPayload::Shutdown {
                 reason: reason.to_string(),
@@ -605,12 +648,33 @@ impl HostBridge {
 }
 
 impl BridgeInner {
-    async fn send_normal_frame(&self, frame: ControlFrame) -> AppResult<()> {
+    fn admission_state(&self) -> Admission {
+        *self.admission.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    async fn send_host_request_frame(&self, frame: ControlFrame) -> AppResult<()> {
         let bytes = transport::encode_control_frame(&frame, self.config.control_frame_max_bytes)?;
-        self.normal_tx
-            .send(bytes)
+        let permit = self
+            .normal_tx
+            .reserve()
             .await
-            .map_err(|_| AppError::Other("控制通道已关闭".into()))
+            .map_err(|_| AppError::Other("控制通道已关闭".into()))?;
+        let admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        if *admission != Admission::Open {
+            return Err(AppError::Other("宿主正在关停，拒绝新请求".into()));
+        }
+        permit.send(NormalFrame::Bytes(bytes));
+        Ok(())
+    }
+
+    async fn flush_normal_queue(&self) -> AppResult<()> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.normal_tx
+            .send(NormalFrame::Flush(tx))
+            .await
+            .map_err(|_| AppError::Other("控制通道已关闭".into()))?;
+        rx.await
+            .map_err(|_| AppError::Other("控制通道排空中断".into()))
     }
 
     async fn send_control_frame(&self, frame: ControlFrame) -> AppResult<()> {
@@ -622,6 +686,7 @@ impl BridgeInner {
     }
 
     fn close_local(&self, reason: &str) {
+        *self.admission.lock().unwrap_or_else(|e| e.into_inner()) = Admission::Closed;
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -673,7 +738,7 @@ impl BridgeInner {
         let frame = ControlFrame::ok(request_id, result);
         match transport::encode_control_frame(&frame, self.config.control_frame_max_bytes) {
             Ok(bytes) => {
-                let _ = self.normal_tx.send(bytes).await;
+                let _ = self.normal_tx.send(NormalFrame::Bytes(bytes)).await;
             }
             Err(err) => {
                 // 只可能是超长/序列化失败：如实回结构化错误，绝不截断或沉默。
@@ -716,7 +781,7 @@ impl BridgeInner {
         if let Ok(bytes) =
             transport::encode_control_frame(&frame, self.config.control_frame_max_bytes)
         {
-            let _ = self.normal_tx.send(bytes).await;
+            let _ = self.normal_tx.send(NormalFrame::Bytes(bytes)).await;
         }
     }
 
@@ -821,7 +886,7 @@ impl BridgeInner {
             .await;
             return;
         }
-        if !self.admission_open.load(Ordering::SeqCst) {
+        if self.admission_state() == Admission::Closed {
             self.respond_err(request_id, "SHUTTING_DOWN", "宿主正在关停，拒绝新请求")
                 .await;
             return;
@@ -1110,6 +1175,7 @@ impl BridgeInner {
                 pending,
                 detail,
             } => {
+                *self.admission.lock().unwrap_or_else(|e| e.into_inner()) = Admission::Closed;
                 *self.flush_report.lock().unwrap_or_else(|e| e.into_inner()) = Some(FlushReport {
                     flushed,
                     pending,
@@ -1157,7 +1223,7 @@ impl BridgeInner {
                 .await;
             return;
         }
-        if !self.admission_open.load(Ordering::SeqCst) {
+        if self.admission_state() == Admission::Closed {
             let _ = self
                 .send_control_frame(ControlFrame::control(reject(
                     "SHUTTING_DOWN",
@@ -1311,7 +1377,7 @@ impl BridgeInner {
 async fn run_control_writer<W: AsyncWrite + Unpin>(
     mut out: W,
     mut control_rx: mpsc::Receiver<Vec<u8>>,
-    mut normal_rx: mpsc::Receiver<Vec<u8>>,
+    mut normal_rx: mpsc::Receiver<NormalFrame>,
     mut closed: watch::Receiver<bool>,
 ) {
     let mut control_done = false;
@@ -1327,7 +1393,11 @@ async fn run_control_writer<W: AsyncWrite + Unpin>(
                 None => control_done = true,
             },
             message = normal_rx.recv(), if !normal_done => match message {
-                Some(bytes) => { if out.write_all(&bytes).await.is_err() { break; } }
+                Some(NormalFrame::Bytes(bytes)) => { if out.write_all(&bytes).await.is_err() { break; } }
+                Some(NormalFrame::Flush(done)) => {
+                    if out.flush().await.is_err() { break; }
+                    let _ = done.send(());
+                }
                 None => normal_done = true,
             },
             _ = closed.changed() => {},
@@ -1571,7 +1641,10 @@ mod tests {
         let (control_tx, control_rx) = mpsc::channel(4);
         let (normal_tx, normal_rx) = mpsc::channel(8);
         for _ in 0..8 {
-            normal_tx.send(vec![b'N']).await.unwrap();
+            normal_tx
+                .send(NormalFrame::Bytes(vec![b'N']))
+                .await
+                .unwrap();
         }
         control_tx.send(vec![b'C']).await.unwrap();
 
@@ -1721,6 +1794,122 @@ mod tests {
         fn dispatch(&self, _ctx: &DispatchContext, args: Value) -> AppResult<Value> {
             Ok(args)
         }
+    }
+
+    #[tokio::test]
+    async fn 关停先封宿主新工作但保留写盘与回执直到flush报告() {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut h = setup("shutdown-drain", 0, Arc::new(EchoDispatcher)).await;
+            for request_id in 0..3 {
+                h.bridge
+                    .publish_event(
+                        "deskpet-host-request",
+                        json!({"requestId": request_id, "method": "settings_commit"}),
+                        h.bridge.default_scope(),
+                    )
+                    .unwrap();
+            }
+            h.bridge
+                .request_shutdown("测试退出", Duration::from_secs(2))
+                .await
+                .unwrap();
+            for request_id in 0..3 {
+                let queued = transport::read_control_frame(&mut h.control, 64 * 1024)
+                    .await
+                    .unwrap();
+                let FramePayload::Event(event) = queued.payload else {
+                    panic!("Shutdown 不得越过已经准入的宿主请求");
+                };
+                assert_eq!(event.event, "deskpet-host-request");
+                assert_eq!(event.payload["requestId"], request_id);
+            }
+            let frame = transport::read_control_frame(&mut h.control, 64 * 1024)
+                .await
+                .unwrap();
+            assert!(matches!(
+                frame.payload,
+                FramePayload::Control(ControlPayload::Shutdown { .. })
+            ));
+            assert!(!h.bridge.admission_open());
+            assert!(h
+                .bridge
+                .publish_event("deskpet-host-request", json!({}), h.bridge.default_scope())
+                .is_err());
+            assert!(h
+                .bridge
+                .call("settings_read", json!({}), None, None)
+                .await
+                .is_err());
+
+            // 大 CONFIG / 会话正文收尾仍可上传并走原来的分派与 scope 校验。
+            transport::write_control_frame(
+                &mut h.control,
+                &ControlFrame::control(ControlPayload::BlobOpen {
+                    blob_id: "flush-config".into(),
+                    bytes: 5,
+                    kind: super::super::transport::BlobKind::Text,
+                }),
+                64 * 1024,
+            )
+            .await
+            .unwrap();
+            let ready = transport::read_control_frame(&mut h.control, 64 * 1024)
+                .await
+                .unwrap();
+            assert!(matches!(
+                ready.payload,
+                FramePayload::Control(ControlPayload::BlobReady { .. })
+            ));
+            transport::write_binary_chunk(&mut h.binary, 0, true, b"saved", 64 * 1024)
+                .await
+                .unwrap();
+            request(
+                &mut h.control,
+                1,
+                None,
+                "write_runtime_config",
+                json!({"content": blob::upload_marker("flush-config", WireBlobKind::Text)}),
+            )
+            .await;
+            let response = read_response(&mut h.control).await;
+            assert!(response.ok, "{response:?}");
+            assert_eq!(response.result.unwrap()["content"], "saved");
+            request(
+                &mut h.control,
+                2,
+                None,
+                "host_request_result",
+                json!({"ok": true}),
+            )
+            .await;
+            assert!(read_response(&mut h.control).await.ok);
+
+            transport::write_control_frame(
+                &mut h.control,
+                &ControlFrame::control(ControlPayload::ShutdownFlush {
+                    flushed: true,
+                    pending: 0,
+                    detail: Some("设置与回执已完成".into()),
+                }),
+                64 * 1024,
+            )
+            .await
+            .unwrap();
+            let flushed = h
+                .bridge
+                .wait_flush_report(Duration::from_secs(1))
+                .await
+                .unwrap();
+            assert!(flushed.flushed);
+            assert_eq!(flushed.pending, 0);
+            request(&mut h.control, 3, None, "write_runtime_config", json!({})).await;
+            let response = read_response(&mut h.control).await;
+            assert!(!response.ok);
+            assert_eq!(response.error.unwrap().code, "SHUTTING_DOWN");
+            h.bridge.close_local("测试结束");
+        })
+        .await
+        .expect("关停排空协议不得死锁");
     }
 
     struct BigTextDispatcher;

@@ -140,6 +140,8 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 读取只经 `appearanceConfig.chatImagePreview`（读取缺省 false 只在该 getter，设置窗 schema 与消费方都不复制默认值），设置窗字段在 [schema.rs](../../crates/native-host/src/ui/settings/schema.rs) 的「外观 → 角色展示」区、保存映射走 settings_commit；宿主侧落点是 [crates/native-host/src/images/inline.rs](../../crates/native-host/src/images/inline.rs) 的 `InlinePreviewManager`（关闭零预读、只按可见集合加载）。该开关只影响聊天历史的内联呈现：模型看图（`hydrateImageMessages`/`loadRequestImage` 的请求投影）、图片选择/发送、截图、`read` 图片工具与 JSONL 里的原路径都不受它影响；独立查看器有自己的 owner/关闭动作，不依赖本开关。本批未同步真实 `CONFIG-DEV.yaml`。
 
+聊天面按独立窗与主窗聊天列分别登记挂载和实际可见状态。收起主窗或聊天列会释放正文控件、内联像素与加载登记；后台事件继续更新共享显示模型，但隐藏面不重建、不重新签发图片加载票据。图片工作线程的晚到刷新按当前可见面检查，重新显示时从模型重建最新整帧；另一张仍可见的聊天面不受影响。
+
 ## 路径与文件布局
 
 ```text

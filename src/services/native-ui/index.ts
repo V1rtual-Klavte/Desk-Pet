@@ -105,10 +105,12 @@ export {
   HOST_REQUEST_RESULT_METHOD,
   collectSettingsSnapshot,
   dispatchHostRequest,
+  drainHostRequestHandlers,
   initHostRequestHandlers,
   stopHostRequestHandlers,
   normalizeSettingValue,
   __resetHostRequestHandlersForTest,
+  type HostRequestDrainReport,
 } from "./host-requests"
 
 import { createLogger } from "@/services/logger"

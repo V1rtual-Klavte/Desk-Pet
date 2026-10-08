@@ -334,6 +334,8 @@ pub(crate) fn open_chat_window() {
             if let Some(window) = existing.window() {
                 window.makeKeyAndOrderFront(None);
                 super::macos::activate_app();
+                crate::ui::chat::set_chat_window_open(true);
+                crate::ui::chat::set_chat_window_visible(true);
                 return;
             }
         }
@@ -343,6 +345,8 @@ pub(crate) fn open_chat_window() {
             Ok(controller) => {
                 controller.show();
                 *slot = Some(controller);
+                crate::ui::chat::set_chat_window_open(true);
+                crate::ui::chat::set_chat_window_visible(true);
             }
             Err(error) => rust_warn!("聊天窗创建失败: {error}"),
         }
@@ -381,9 +385,11 @@ pub(crate) fn mount_main_pane(container: &Retained<NSView>) {
         }
         match ChatContentController::new_embedded(mtm, container) {
             Ok(controller) => {
-                controller.rebuild_from_model();
                 *slot = Some(controller);
                 crate::ui::chat::chat_ui().set_main_pane_open(true);
+                let visible = container.window().is_some_and(|window| window.isVisible())
+                    && !container.isHidden();
+                crate::ui::chat::set_main_pane_visible(visible);
                 rust_info!("聊天面板已挂入主窗（与角色舞台同窗合成）");
             }
             Err(error) => rust_warn!("主窗聊天面板创建失败: {error}"),
@@ -401,16 +407,17 @@ pub(crate) fn layout_main_pane() {
 
 /// 聊天列展开/收起：收起时释放消息视图（窗口隐藏/收起的产品语义）。
 pub(crate) fn set_main_pane_visible(visible: bool) {
+    if !visible {
+        crate::ui::chat::set_main_pane_visible(false);
+    }
     MAIN_PANE.with(|cell| match cell.borrow().as_ref() {
-        Some(controller) => {
-            if visible {
-                controller.rebuild_from_model();
-            } else {
-                controller.release_content();
-            }
-        }
+        Some(controller) if !visible => controller.release_content(),
+        Some(_) => {} // The shared visibility edge schedules one latest Full snapshot.
         None => {}
     });
+    if visible {
+        crate::ui::chat::set_main_pane_visible(true);
+    }
 }
 
 /// 呼出后聚焦主窗聊天输入框（对齐旧壳 `handleDockPopup` 的 `focusInput`）。
@@ -436,13 +443,17 @@ pub(crate) fn apply_theme() {
         controller.apply_theme();
     };
     WINDOW_CONTROLLER.with(|cell| {
-        if let Some(controller) = cell.borrow().as_ref() {
-            apply(controller);
+        if crate::ui::chat::is_surface_visible("chat") {
+            if let Some(controller) = cell.borrow().as_ref() {
+                apply(controller);
+            }
         }
     });
     MAIN_PANE.with(|cell| {
-        if let Some(controller) = cell.borrow().as_ref() {
-            apply(controller);
+        if crate::ui::chat::is_surface_visible("main-chat") {
+            if let Some(controller) = cell.borrow().as_ref() {
+                apply(controller);
+            }
         }
     });
 }
@@ -453,13 +464,17 @@ pub(crate) fn apply_chat_font() {
         controller.refresh_fonts();
     };
     WINDOW_CONTROLLER.with(|cell| {
-        if let Some(controller) = cell.borrow().as_ref() {
-            apply(controller);
+        if crate::ui::chat::is_surface_visible("chat") {
+            if let Some(controller) = cell.borrow().as_ref() {
+                apply(controller);
+            }
         }
     });
     MAIN_PANE.with(|cell| {
-        if let Some(controller) = cell.borrow().as_ref() {
-            apply(controller);
+        if crate::ui::chat::is_surface_visible("main-chat") {
+            if let Some(controller) = cell.borrow().as_ref() {
+                apply(controller);
+            }
         }
     });
 }
@@ -467,18 +482,22 @@ pub(crate) fn apply_chat_font() {
 /// 渲染更新（主线程队列调度）：独立窗与主窗面板各取一份（同一投影，两份视图）。
 pub(crate) fn chat_apply(update: ChatRenderUpdate) {
     let mut delivered = false;
-    WINDOW_CONTROLLER.with(|cell| {
-        if let Some(controller) = cell.borrow().as_ref() {
-            controller.apply(update.clone());
-            delivered = true;
-        }
-    });
-    MAIN_PANE.with(|cell| {
-        if let Some(controller) = cell.borrow().as_ref() {
-            controller.apply(update);
-            delivered = true;
-        }
-    });
+    if crate::ui::chat::is_surface_visible("chat") {
+        WINDOW_CONTROLLER.with(|cell| {
+            if let Some(controller) = cell.borrow().as_ref() {
+                controller.apply(update.clone());
+                delivered = true;
+            }
+        });
+    }
+    if crate::ui::chat::is_surface_visible("main-chat") {
+        MAIN_PANE.with(|cell| {
+            if let Some(controller) = cell.borrow().as_ref() {
+                controller.apply(update);
+                delivered = true;
+            }
+        });
+    }
     if !delivered {
         rust_debug!("聊天视图不在（独立窗与主窗面板都未打开），渲染更新丢弃");
     }
@@ -1619,6 +1638,17 @@ define_class!(
     unsafe impl NSObjectProtocol for ChatContentController {}
 
     unsafe impl NSWindowDelegate for ChatContentController {
+        #[unsafe(method(windowDidMiniaturize:))]
+        fn window_did_miniaturize(&self, _notification: &NSNotification) {
+            self.release_content();
+            crate::ui::chat::set_chat_window_visible(false);
+        }
+
+        #[unsafe(method(windowDidDeminiaturize:))]
+        fn window_did_deminiaturize(&self, _notification: &NSNotification) {
+            crate::ui::chat::set_chat_window_visible(true);
+        }
+
         #[unsafe(method(windowShouldClose:))]
         fn window_should_close(&self, _sender: &NSWindow) -> bool {
             true
@@ -1640,6 +1670,7 @@ define_class!(
             *self.ivars().window.borrow_mut() = None;
             // 本控制器只可能是独立窗模式（面板模式没有窗口、不设 delegate）：
             // 关闭独立窗后，若主窗面板仍在，聊天面不视为关闭（释放逻辑在 ChatUi）。
+            crate::ui::chat::set_chat_window_open(false);
             crate::ui::chat::note_chat_window_closed();
             // 关闭即销毁控制器，但不能在本回调内 drop（对象正在自身方法里执行）：
             // 排一个零延迟单次计时器，回调返回后在下一拍释放线程内引用。
@@ -2989,10 +3020,7 @@ impl ChatContentController {
         if self.ivars().nav_embedded.get() {
             if let Some(tabs) = self.ivars().tabs_strip.get() {
                 tabs.setFrame(NSRect::new(
-                    NSPoint::new(
-                        band_x,
-                        height - crate::ui::titlebar::HEIGHT - TABS_HEIGHT,
-                    ),
+                    NSPoint::new(band_x, height - crate::ui::titlebar::HEIGHT - TABS_HEIGHT),
                     NSSize::new(band_w, TABS_HEIGHT),
                 ));
             }
@@ -3470,7 +3498,6 @@ impl ChatContentController {
                 window.makeFirstResponder(Some(input));
             }
         }
-        self.rebuild_from_model();
         rust_info!("聊天窗已显示（独立顶层窗；输入框已取 first responder）");
     }
 
@@ -5651,7 +5678,6 @@ fn text_layout_extent(view: &NSTextView) -> Option<(f64, f64)> {
     }
     Some((max_width, max_bottom))
 }
-
 
 // ==========================================
 // 消息正文视图（右键「记住这条」入口）

@@ -25,7 +25,7 @@ use crate::{rust_debug, rust_info, rust_warn};
 
 use super::events::ChatEvent;
 use super::intents::{
-    ChatIntent, ChatIntentPort, NullChatIntentPort, ChoiceResolution, PermissionConfirmation,
+    ChatIntent, ChatIntentPort, ChoiceResolution, NullChatIntentPort, PermissionConfirmation,
     PlanConfirmMode, PlanConfirmResult, PlanStepDecision,
 };
 use super::model::{
@@ -103,8 +103,12 @@ pub struct ChatUi {
     rendered: Mutex<Revisions>,
     /// 独立聊天窗（能力保留）是否打开。
     window_open: AtomicBool,
+    /// 窗口存在不代表窗口在屏幕上；平台在实际显隐边沿更新此状态。
+    window_visible: AtomicBool,
     /// 主窗内的聊天面板是否已挂载（W9a 的产品形态；与独立窗任一存在即可渲染）。
     main_pane_open: AtomicBool,
+    /// 主窗聊天列可见性（独立于面板是否已挂载）。
+    main_pane_visible: AtomicBool,
     /// 查看器代际（打开/关闭递增；`Arc` 与动画 worker 共享）。
     viewer_generation: Arc<AtomicU64>,
     viewer: Mutex<ViewerState>,
@@ -138,7 +142,9 @@ impl ChatUi {
             refresh_pending: AtomicBool::new(false),
             rendered: Mutex::new(Revisions::default()),
             window_open: AtomicBool::new(false),
+            window_visible: AtomicBool::new(false),
             main_pane_open: AtomicBool::new(false),
+            main_pane_visible: AtomicBool::new(false),
             viewer_generation: Arc::new(AtomicU64::new(0)),
             viewer: Mutex::new(ViewerState::default()),
             inline_visible: Mutex::new(std::collections::HashMap::new()),
@@ -181,14 +187,86 @@ impl ChatUi {
     }
 
     fn refresh_visible_views(&self) {
-        let snapshot = self.snapshot();
         self.run_on_ui(move || {
-            crate::ui::platform::chat_imp::chat_apply(ChatRenderUpdate::Full(snapshot));
+            let ui = chat_ui();
+            ui.refresh_visible_views_now(crate::ui::platform::chat_imp::chat_apply);
         });
+    }
+
+    fn refresh_visible_views_now(&self, apply: impl FnOnce(ChatRenderUpdate)) -> bool {
+        if !self.any_surface_visible() {
+            return false;
+        }
+        apply(ChatRenderUpdate::Full(self.snapshot()));
+        true
+    }
+
+    fn dispatch_if_visible(
+        &self,
+        update: ChatRenderUpdate,
+        apply: impl FnOnce(ChatRenderUpdate),
+    ) -> bool {
+        if !self.any_surface_visible() {
+            return false;
+        }
+        apply(update);
+        true
+    }
+
+    fn any_surface_visible(&self) -> bool {
+        self.is_surface_visible("chat") || self.is_surface_visible("main-chat")
+    }
+
+    /// 平台在独立窗实际显隐后调用。显示边沿从模型重建最新整帧。
+    pub fn set_window_visible(&self, visible: bool) {
+        let changed = self.window_visible.swap(visible, Ordering::SeqCst) != visible;
+        if !visible {
+            self.sync_inline_visible("chat", Vec::new());
+        } else if changed {
+            self.refresh_visible_views();
+        }
+    }
+
+    pub fn set_window_open(&self, open: bool) {
+        let changed = self.window_open.swap(open, Ordering::SeqCst) != open;
+        if !open {
+            self.set_window_visible(false);
+        } else if changed && self.window_visible.load(Ordering::SeqCst) {
+            self.refresh_visible_views();
+        }
+    }
+
+    /// 平台在主窗聊天面实际显隐后调用；挂载状态由 `set_main_pane_open` 独立维护。
+    pub fn set_main_pane_visible(&self, visible: bool) {
+        let changed = self.main_pane_visible.swap(visible, Ordering::SeqCst) != visible;
+        if !visible {
+            self.sync_inline_visible("main-chat", Vec::new());
+        } else if changed {
+            self.refresh_visible_views();
+        }
+    }
+
+    /// `chat_apply` 在平台层按面过滤，避免可见面更新时把快照灌入隐藏的另一个面。
+    pub fn is_surface_visible(&self, surface: &str) -> bool {
+        match surface {
+            "chat" => {
+                self.window_open.load(Ordering::SeqCst)
+                    && self.window_visible.load(Ordering::SeqCst)
+            }
+            "main-chat" => {
+                self.main_pane_open.load(Ordering::SeqCst)
+                    && self.main_pane_visible.load(Ordering::SeqCst)
+            }
+            _ => false,
+        }
     }
 
     /// 标记「有变化」并调度一次渲染（在途任务即合并）。
     fn schedule_refresh(&self) {
+        if !self.any_surface_visible() {
+            self.refresh_pending.store(false, Ordering::SeqCst);
+            return;
+        }
         if self.refresh_pending.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -242,11 +320,7 @@ impl ChatUi {
         // —— 数字口径与用法见 `stream_metrics` 模块文档；release 里整段被剪掉。
         #[cfg(debug_assertions)]
         let render_key = super::stream_metrics::RenderKey::of(&update);
-        let visible =
-            self.window_open.load(Ordering::SeqCst) || self.main_pane_open.load(Ordering::SeqCst);
-        if visible {
-            crate::ui::platform::chat_imp::chat_apply(update);
-        }
+        let visible = self.dispatch_if_visible(update, crate::ui::platform::chat_imp::chat_apply);
         #[cfg(debug_assertions)]
         {
             if visible {
@@ -270,7 +344,6 @@ impl ChatUi {
     pub fn open_window(&self) {
         self.run_on_ui(|| {
             crate::ui::platform::chat_imp::open_chat_window();
-            chat_ui().window_open.store(true, Ordering::SeqCst);
         });
     }
 
@@ -283,7 +356,7 @@ impl ChatUi {
 
     /// 平台窗口关闭回调（windowWillClose / WM_DESTROY）。
     pub fn note_window_closed(&self) {
-        self.window_open.store(false, Ordering::SeqCst);
+        self.set_window_open(false);
         self.sync_inline_visible("chat", Vec::new());
         // 主窗内的聊天面板仍在时（产品形态），不释放查看器资源 —— 收起的是一个窗口，
         // 不是聊天面本身。
@@ -302,7 +375,7 @@ impl ChatUi {
     pub fn set_main_pane_open(&self, open: bool) {
         self.main_pane_open.store(open, Ordering::SeqCst);
         if !open {
-            self.sync_inline_visible("main-chat", Vec::new());
+            self.set_main_pane_visible(false);
         }
         if !open && !self.window_open.load(Ordering::SeqCst) {
             self.close_viewer(true);
@@ -311,6 +384,9 @@ impl ChatUi {
 
     /// 同步每个 Native 聊天面的可见图片集合；滚出视口的像素由共享 manager 立即释放。
     pub fn sync_inline_visible(&self, surface: &str, images: Vec<InlineVisibleImage>) {
+        if !images.is_empty() && !self.is_surface_visible(surface) {
+            return;
+        }
         let by_surface = {
             let mut visible = Self::lock(&self.inline_visible);
             if images.is_empty() {
@@ -667,9 +743,7 @@ impl ChatUi {
                 PanelTransition::PermissionResolved { request_id } => {
                     model.permission_decided(&request_id)
                 }
-                PanelTransition::ChoiceResolved { request_id } => {
-                    model.choice_remove(&request_id)
-                }
+                PanelTransition::ChoiceResolved { request_id } => model.choice_remove(&request_id),
                 PanelTransition::None => false,
             }
         };
@@ -828,7 +902,9 @@ impl ChatUi {
                         request_id: request_id.clone(),
                         result: ChoiceResolution::Picked { index: *index },
                     },
-                    PanelTransition::ChoiceResolved { request_id: request_id.clone() },
+                    PanelTransition::ChoiceResolved {
+                        request_id: request_id.clone(),
+                    },
                 )
             }
             PanelAction::ChoiceOther { request_id } => {
@@ -838,7 +914,9 @@ impl ChatUi {
                         request_id: request_id.clone(),
                         result: ChoiceResolution::Other,
                     },
-                    PanelTransition::ChoiceResolved { request_id: request_id.clone() },
+                    PanelTransition::ChoiceResolved {
+                        request_id: request_id.clone(),
+                    },
                 )
             }
             PanelAction::ChoiceCancel { request_id } => {
@@ -848,7 +926,9 @@ impl ChatUi {
                         request_id: request_id.clone(),
                         result: ChoiceResolution::Cancelled,
                     },
-                    PanelTransition::ChoiceResolved { request_id: request_id.clone() },
+                    PanelTransition::ChoiceResolved {
+                        request_id: request_id.clone(),
+                    },
                 )
             }
             PanelAction::WithdrawQueued { entry_id } => (
@@ -1374,6 +1454,60 @@ mod tests {
     }
 
     #[test]
+    fn hidden_surfaces_skip_render_and_inline_registration_then_show_latest_full() {
+        let ui = ChatUi::new();
+        ui.main_pane_open.store(true, Ordering::SeqCst);
+        ui.apply_projection(projection("s1", "最新内容"));
+        assert!(
+            !ui.refresh_pending.load(Ordering::SeqCst),
+            "隐藏模型更新不能投进主线程刷新队列"
+        );
+        let mut dispatched = false;
+        assert!(!ui.dispatch_if_visible(
+            ChatRenderUpdate::StreamOnly {
+                text: Some("hidden".into())
+            },
+            |_| dispatched = true,
+        ));
+        assert!(!dispatched, "隐藏更新不能进入平台刷新队列");
+        ui.window_open.store(true, Ordering::SeqCst);
+        ui.window_visible.store(true, Ordering::SeqCst);
+        assert!(ui.is_surface_visible("chat"));
+        assert!(!ui.is_surface_visible("main-chat"));
+
+        ui.sync_inline_visible(
+            "main-chat",
+            vec![InlineVisibleImage {
+                owner: crate::images::preview::PreviewOwner {
+                    window_id: "main-chat".into(),
+                    view_generation: 1,
+                    session_id: "s1".into(),
+                    entry_id: "e1".into(),
+                    image_index: 0,
+                },
+                path: "/unused/hidden.png".into(),
+            }],
+        );
+        assert!(
+            ChatUi::lock(&ui.inline_visible).is_empty(),
+            "隐藏面不能登记 inline owner"
+        );
+
+        ui.window_visible.store(false, Ordering::SeqCst);
+        ui.window_open.store(false, Ordering::SeqCst);
+        ui.main_pane_visible.store(true, Ordering::SeqCst);
+        let mut rendered = None;
+        assert!(ui.refresh_visible_views_now(|update| rendered = Some(update)));
+        let Some(ChatRenderUpdate::Full(snapshot)) = rendered else {
+            panic!("显示边沿必须投递完整的最新快照");
+        };
+        assert_eq!(
+            snapshot.messages[0].visible_parts,
+            vec!["最新内容".to_string()]
+        );
+    }
+
+    #[test]
     fn 未注入端口时派发如实报错() {
         let ui = ChatUi::new();
         let error = ui
@@ -1521,8 +1655,14 @@ mod tests {
 
         // 合法图片：进入待发送区；重复添加按路径去重。用**托管**条目（粘贴入口同款）：
         // 发送若误走 Discard 语义会删掉这个文件，下面的「文件必须保留」才真能变红。
-        assert_eq!(ui.add_managed_pending_images(vec![good.clone()]).unwrap(), 1);
-        assert_eq!(ui.add_managed_pending_images(vec![good.clone()]).unwrap(), 0);
+        assert_eq!(
+            ui.add_managed_pending_images(vec![good.clone()]).unwrap(),
+            1
+        );
+        assert_eq!(
+            ui.add_managed_pending_images(vec![good.clone()]).unwrap(),
+            0
+        );
         assert_eq!(ui.pending_image_paths().len(), 1);
 
         // 发送成功 = 释放（§5.3）；发送失败保留由 dispatch 的错误路径保证（这里验证成功路径）。
@@ -1810,12 +1950,16 @@ mod tests {
         for (request_id, action, expected) in [
             (
                 "choice-other",
-                PanelAction::ChoiceOther { request_id: "choice-other".into() },
+                PanelAction::ChoiceOther {
+                    request_id: "choice-other".into(),
+                },
                 serde_json::json!({"requestId":"choice-other","result":{"kind":"other"}}),
             ),
             (
                 "choice-cancel",
-                PanelAction::ChoiceCancel { request_id: "choice-cancel".into() },
+                PanelAction::ChoiceCancel {
+                    request_id: "choice-cancel".into(),
+                },
                 serde_json::json!({"requestId":"choice-cancel","result":{"kind":"cancelled"}}),
             ),
         ] {
@@ -1832,7 +1976,11 @@ mod tests {
             if request_id == "choice-other" {
                 // 「其它」要把焦点交回输入框（用户下一条消息就是自由回答）——
                 // 平台层据此调用聚焦；这里钉住动作结果的形态。
-                assert_eq!(outcome, PanelOutcome::FocusInput, "「其它」没有请求聚焦输入框");
+                assert_eq!(
+                    outcome,
+                    PanelOutcome::FocusInput,
+                    "「其它」没有请求聚焦输入框"
+                );
             }
         }
     }
@@ -1846,8 +1994,14 @@ mod tests {
                 index: 0,
             })
             .unwrap_err();
-        assert!(error.to_string().contains("没有待答复的提问"), "文案：{error}");
-        assert!(recorder.seen.lock().unwrap().is_empty(), "失败的派发不得送出回执");
+        assert!(
+            error.to_string().contains("没有待答复的提问"),
+            "文案：{error}"
+        );
+        assert!(
+            recorder.seen.lock().unwrap().is_empty(),
+            "失败的派发不得送出回执"
+        );
     }
 
     #[test]
@@ -2119,7 +2273,7 @@ mod tests {
             "尾巴清空帧必须做收尾汇总（A/B 的取样边界）"
         );
         assert!(
-            body.contains("chat_apply(update)"),
+            body.contains("dispatch_if_visible(update, crate::ui::platform::chat_imp::chat_apply)"),
             "取键与计时不得挤掉真正的渲染交付"
         );
     }

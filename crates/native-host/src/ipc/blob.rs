@@ -31,7 +31,7 @@ use crate::rust_warn;
 /// 上限存在的意义是防止本地误用/失控分配，而不是业务额度）。
 pub const BLOB_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
-/// 未被消费的 blob 在注册表里最多停留的时长（从最近一次触碰起算）。
+/// 未被消费的 blob 的空闲期限；后续签发、上传或读取时机会回收，不另开常驻计时器。
 pub const BLOB_IDLE_TTL: Duration = Duration::from_secs(300);
 
 /// 结果/参数中的 blob 标记键（两个方向各一枚，形状固定，两侧唯一约定）：
@@ -102,6 +102,7 @@ impl BlobRegistry {
         }
         let id = super::transport::random_hex(16)?;
         let now = Instant::now();
+        self.purge_expired(now);
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.entries.insert(
             id.clone(),
@@ -138,6 +139,7 @@ impl BlobRegistry {
             )));
         }
         let now = Instant::now();
+        self.purge_expired(now);
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if inner.entries.contains_key(upload_id) {
             return Err(AppError::Other("上传 id 与已有句柄冲突".into()));
@@ -184,6 +186,7 @@ impl BlobRegistry {
 
     /// 读取宿主签发的句柄。scope 不匹配时**拒绝并归还句柄**。
     pub fn open_read(&self, blob_id: &str, requester: &RunScope) -> AppResult<Arc<[u8]>> {
+        self.purge_expired(Instant::now());
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entry) = inner.entries.get_mut(blob_id) else {
             return Err(AppError::Other("blob 句柄不存在或已归还".into()));
@@ -455,6 +458,34 @@ mod tests {
             .register_upload(&blob.id, scope(), vec![2], WireBlobKind::Bytes)
             .is_err());
         assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn 新签发会回收旧孤儿而保留新句柄() {
+        let registry = BlobRegistry::new();
+        let abandoned = registry.issue_host_blob(scope(), vec![1], None).unwrap();
+        registry
+            .register_upload("unused-upload", scope(), vec![2], WireBlobKind::Bytes)
+            .unwrap();
+        // 只推进夹具的过期时间，不靠 sleep；触发入口必须是生产签发函数。
+        let expired = Instant::now() - BLOB_IDLE_TTL - Duration::from_secs(1);
+        for entry in registry
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .values_mut()
+        {
+            entry.touched_at = expired;
+        }
+        let current = registry.issue_host_blob(scope(), vec![7, 8], None).unwrap();
+        assert_eq!(registry.len(), 1, "宿主孤儿和未消费上传都应被回收");
+        assert!(registry.open_read(&abandoned.id, &scope()).is_err());
+        assert!(registry.take_upload("unused-upload", &scope()).is_err());
+        assert_eq!(
+            &*registry.open_read(&current.id, &scope()).unwrap(),
+            &[7, 8]
+        );
     }
 
     #[test]

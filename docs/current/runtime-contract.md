@@ -47,6 +47,8 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 - **UI → Node 回执**：计划确认、步骤裁决、权限确认、提问选择四条走 `UiReceiptMap`（`deskpet-plan-confirm-resolved` / `deskpet-plan-step-decision` / `deskpet-permission-confirm-resolved` / `deskpet-choice-resolved`）。回执源是 Node 侧专属订阅（`connectHostBridge` 注册；harness 引导调 `initPlanConfirmationReceipts()` 与 `initChoiceConfirmationReceipts()`）。原生 UI 经 HostLink 的裸事件投递，语义是单向投递：未知或重复 key 一律 no-op，结算只发生一次；提问没有等待超时（用户裁决 2026-10-06），归宿只来自明确事件（回执 / 取消信号 / 会话生命周期 / 下发失败），迟到回执不复活结算。[ui-events.ts](../../src/services/host/ui-events.ts)
 - **宿主 → Node 请求面**：宿主投 `deskpet-host-request` 事件（`{requestId, method, args}`），Node 处理体在 [native-ui/host-requests.ts](../../src/services/native-ui/host-requests.ts)，经 `host_request_result` 命令回执。三种提交纪律：有界 `request`（设置读写、编辑器 I/O、会话管理六条、决策类里有确定结果的写）、非阻塞 `notify`（发送/停止/slash 与「结算点在整个计划/回合收尾」的恢复动作）与裸事件（回执方向）。超时与业务失败分开（`TIMEOUT` 不伪装成成功），迟到回执按归宿丢弃并留痕。[ui/ports.rs](../../crates/native-host/src/ui/ports.rs)
 
+关停时先关闭宿主新工作入口，并把关闸前排入普通队列的请求交付后再发送优先 Shutdown 帧。Node 同步退订新的宿主请求，停止生产者与取消 Harness，再等待此前全部 handler、回执和后续投影完成，刷写 CONFIG/会话/审计/日志；在途处理、写盘或回执失败进入 `shutdownFlush` 的真实失败报告。排空期间 Node → Rust 的 RPC 与 blob 上传仍走原 scope、权限及命令分派；收到报告后完全封闭 admission。队列交付、排空或子进程退出超时均由监督器如实记为中断，不假报已完成。退出通知的缓存与等待登记共用锁，代际 reset 不撤销已经交付给旧等待者的报告。
+
 ### 投影帧（apply_chat_projection）
 
 会话与正文的读模型以**整帧**下发：`apply_chat_projection` 的载荷是 Rust [`TranscriptProjection`](../../crates/native-host/src/ui/chat/projection.rs) 的会话侧子集 + 正文，帧形状的权威定义在 Rust；Node 侧唯一组装点是 [session-projection.ts](../../src/services/native-ui/session-projection.ts) 的 `buildSessionProjection`。

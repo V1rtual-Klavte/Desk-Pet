@@ -28,8 +28,10 @@ import {
   HOST_REQUEST_RESULT_METHOD,
   collectSettingsSnapshot,
   dispatchHostRequest,
+  drainHostRequestHandlers,
   initHostRequestHandlers,
   normalizeSettingValue,
+  stopHostRequestHandlers,
   __resetHostRequestHandlersForTest,
 } from "@/services/native-ui"
 
@@ -90,7 +92,11 @@ interface RecordedCall {
 /** 最小合法 Card：frontmatter 的 id/name/description 逐项可断言（无前导空行，正则从 `---` 起）。 */
 const DEMO_CARD = "---\nid: demo\nname: Demo\ndescription: 测试卡\nversion: 1\n---\n正文\n"
 
-function fakeBridge(options: { failMethod?: string } = {}) {
+function fakeBridge(options: {
+  failMethod?: string
+  writeRuntimeConfig?: (content: string) => Promise<void>
+  beforeHostRequestResult?: () => Promise<void>
+} = {}) {
   const calls: RecordedCall[] = []
   const listeners = new Map<string, (payload: unknown) => void>()
   let writtenConfig: string | null = null
@@ -105,6 +111,7 @@ function fakeBridge(options: { failMethod?: string } = {}) {
         case "read_runtime_config":
           return CONFIG_YAML
         case "write_runtime_config":
+          await options.writeRuntimeConfig?.(String(args.content ?? ""))
           writtenConfig = String(args.content ?? "")
           return null
         case "profile_file_read":
@@ -115,6 +122,9 @@ function fakeBridge(options: { failMethod?: string } = {}) {
           return ["demo.md"]
         case "personality_file_read":
           return new TextEncoder().encode(DEMO_CARD)
+        case HOST_REQUEST_RESULT_METHOD:
+          await options.beforeHostRequestResult?.()
+          return null
         default:
           return null
       }
@@ -145,8 +155,8 @@ beforeEach(() => {
   setHostBridge(null)
 })
 
-afterEach(() => {
-  __resetHostRequestHandlersForTest()
+afterEach(async () => {
+  await __resetHostRequestHandlersForTest()
   setHostBridge(null)
 })
 
@@ -370,6 +380,110 @@ describe("请求订阅与回执", () => {
     listeners.get(HOST_REQUEST_EVENT)!({ method: "settings_read" })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(recorded(calls, HOST_REQUEST_RESULT_METHOD).length).toBe(repliesBefore)
+  })
+
+  it("关停 drain 等待已准入的慢 settings_commit 和回执，并拒绝 drain 后的新请求 [native-ui-host-request-drain]", async () => {
+    let startedWrite!: () => void
+    const writeStarted = new Promise<void>((resolve) => { startedWrite = resolve })
+    let releaseWrite!: () => void
+    const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve })
+    const { bridge, calls, listeners } = fakeBridge({
+      writeRuntimeConfig: async () => {
+        startedWrite()
+        await writeGate
+      },
+    })
+    setHostBridge(bridge)
+    await reloadConfig()
+    initHostRequestHandlers()
+    const listener = listeners.get(HOST_REQUEST_EVENT)!
+
+    listener({ requestId: 71, method: "settings_commit", args: { changes: [{ key: "general.popup.chatWidth", value: 241 }] } })
+    await writeStarted
+    listener({ requestId: 74, method: "set_chat_width", args: { width: 244 } })
+    const drain = drainHostRequestHandlers()
+    let drainSettled = false
+    void drain.then(() => { drainSettled = true })
+    await Promise.resolve()
+    expect(drainSettled).toBe(false)
+
+    // 已保存的 listener 引用模拟关停边沿到达的后续事件；admission 已关闭，不再启动写入。
+    listener({ requestId: 72, method: "settings_commit", args: { changes: [{ key: "general.popup.chatWidth", value: 242 }] } })
+    listener({ requestId: 75, method: "set_chat_width", args: { width: 245 } })
+    expect(recorded(calls, "write_runtime_config")).toHaveLength(1)
+
+    releaseWrite()
+    const report = await drain
+    expect(report).toEqual({ completed: 2, failures: [] })
+    const reply = recorded(calls, HOST_REQUEST_RESULT_METHOD).find((call) => call.args.requestId === 71)
+    expect(reply?.args).toMatchObject({ requestId: 71, ok: true })
+    const widthReply = recorded(calls, HOST_REQUEST_RESULT_METHOD).find((call) => call.args.requestId === 74)
+    expect(widthReply?.args).toMatchObject({ requestId: 74, ok: true })
+    expect(recorded(calls, HOST_REQUEST_RESULT_METHOD).some((call) => call.args.requestId === 72 || call.args.requestId === 75)).toBe(false)
+  })
+
+  it("已准入 settings_commit 失败时发送失败回执并把 handler 错误交给 flush report [native-ui-host-request-drain-failure]", async () => {
+    let startedWrite!: () => void
+    const writeStarted = new Promise<void>((resolve) => { startedWrite = resolve })
+    let rejectWrite!: (error: Error) => void
+    const writeGate = new Promise<void>((_resolve, reject) => { rejectWrite = reject })
+    const { bridge, calls, listeners } = fakeBridge({
+      writeRuntimeConfig: async () => {
+        startedWrite()
+        await writeGate
+      },
+    })
+    setHostBridge(bridge)
+    await reloadConfig()
+    initHostRequestHandlers()
+    listeners.get(HOST_REQUEST_EVENT)!({
+      requestId: 73,
+      method: "settings_commit",
+      args: { changes: [{ key: "general.popup.chatWidth", value: 243 }] },
+    })
+    await writeStarted
+    const drain = drainHostRequestHandlers()
+    rejectWrite(Object.assign(new Error("设置落盘失败"), { code: "IO" }))
+
+    const report = await drain
+    expect(report.completed).toBe(1)
+    expect(report.failures.some((failure) => failure.includes("settings_commit handler 失败"))).toBe(true)
+    const reply = recorded(calls, HOST_REQUEST_RESULT_METHOD).find((call) => call.args.requestId === 73)
+    expect(reply?.args).toMatchObject({ requestId: 73, ok: false })
+    expect(reply?.args.error).toMatchObject({ code: "IO" })
+  })
+
+  it("drain 等待普通在途请求的回执，stop 后不再接收新请求 [native-ui-host-request-drain-reply]", async () => {
+    let startedReply!: () => void
+    const replyStarted = new Promise<void>((resolve) => { startedReply = resolve })
+    let releaseReply!: () => void
+    const replyGate = new Promise<void>((resolve) => { releaseReply = resolve })
+    const { bridge, calls, listeners } = fakeBridge({
+      beforeHostRequestResult: async () => {
+        startedReply()
+        await replyGate
+      },
+    })
+    setHostBridge(bridge)
+    await reloadConfig()
+    initHostRequestHandlers()
+    const listener = listeners.get(HOST_REQUEST_EVENT)!
+    listener({ requestId: 76, method: "settings_read", args: {} })
+    await replyStarted
+
+    stopHostRequestHandlers()
+    const drain = drainHostRequestHandlers()
+    let drainSettled = false
+    void drain.then(() => { drainSettled = true })
+    await Promise.resolve()
+    expect(drainSettled).toBe(false)
+
+    listener({ requestId: 77, method: "settings_read", args: {} })
+    expect(recorded(calls, HOST_REQUEST_RESULT_METHOD)).toHaveLength(1)
+    releaseReply()
+    const report = await drain
+    expect(report).toEqual({ completed: 1, failures: [] })
+    expect(recorded(calls, HOST_REQUEST_RESULT_METHOD).find((call) => call.args.requestId === 76)?.args.ok).toBe(true)
   })
 
   it("未知方法经分派口如实报错（不返回空结果冒充成功）[native-ui-host-request-unknown]", async () => {

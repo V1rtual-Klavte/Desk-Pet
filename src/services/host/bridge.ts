@@ -15,6 +15,9 @@ import type { HostBlobRef, HostCommandMap, HostEventMap, RunScope } from "./type
 import { HostConnection, readLaunchInfo, type FlushReport, type LaunchInfo } from "./connection"
 import { HOST_BLOB_MARKER_KEY, HostProtocolError, parseHostBlobMarker } from "./wire"
 import { installNodeHostPorts } from "./node-ports"
+import { createLogger } from "@/services/logger"
+
+const log = createLogger("HostBridge")
 
 export type { FlushReport, LaunchInfo } from "./connection"
 
@@ -70,7 +73,38 @@ export class HostBridgeImpl implements HostBridgeRuntime {
     options?: { signal?: AbortSignal; scope?: RunScope },
   ): Promise<HostCommandMap[K]["result"]> {
     const raw = await this.connection.request(method as string, args, options)
-    return (await this.materializeResult(raw)) as HostCommandMap[K]["result"]
+    const blobs = new Map<string, HostBlobRef>()
+    let result: unknown
+    let operationFailed = false
+    let operationFailure: unknown
+    let cleanupFailed = false
+    let cleanupFailure: unknown
+
+    try {
+      const collectionFailures: unknown[] = []
+      this.collectBlobRefs(raw, blobs, collectionFailures)
+      if (collectionFailures.length > 0) throw collectionFailures[0]
+      result = await this.materializeResult(raw, options?.signal)
+    } catch (error) {
+      operationFailed = true
+      operationFailure = error
+    } finally {
+      for (const ref of blobs.values()) {
+        try {
+          await this.connection.releaseBlob(ref)
+        } catch (error) {
+          log.warn("自动物化后归还 blob 句柄失败", error)
+          if (!cleanupFailed) {
+            cleanupFailed = true
+            cleanupFailure = error
+          }
+        }
+      }
+    }
+
+    if (operationFailed) throw operationFailure
+    if (cleanupFailed) throw cleanupFailure
+    return result as HostCommandMap[K]["result"]
   }
 
   subscribe<K extends keyof HostEventMap>(
@@ -136,20 +170,57 @@ export class HostBridgeImpl implements HostBridgeRuntime {
    * - 否则 → `Uint8Array`（字节语义，不退回 number[]）。
    * 形状无效的标记是协议错误（不静默放行给业务层）。
    */
-  private async materializeResult(value: unknown): Promise<unknown> {
+  private collectBlobRefs(value: unknown, refs: Map<string, HostBlobRef>, failures: unknown[]): void {
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        try {
+          this.collectBlobRefs(value[index], refs, failures)
+        } catch (error) {
+          failures.push(error)
+        }
+      }
+      return
+    }
+    if (typeof value !== "object" || value === null) return
+
+    let marker: ReturnType<typeof parseHostBlobMarker> = null
+    try {
+      marker = parseHostBlobMarker(value)
+    } catch (error) {
+      failures.push(error)
+    }
+    if (marker) {
+      if (!refs.has(marker.ref.id)) refs.set(marker.ref.id, marker.ref)
+      return
+    }
+
+    let keys: string[]
+    try {
+      keys = Object.keys(value)
+    } catch (error) {
+      failures.push(error)
+      return
+    }
+    for (const key of keys) {
+      try {
+        this.collectBlobRefs((value as Record<string, unknown>)[key], refs, failures)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+  }
+
+  private async materializeResult(value: unknown, signal?: AbortSignal): Promise<unknown> {
     if (Array.isArray(value)) {
       const out: unknown[] = []
-      for (const item of value) out.push(await this.materializeResult(item))
+      for (const item of value) out.push(await this.materializeResult(item, signal))
       return out
     }
     if (typeof value === "object" && value !== null) {
       const marker = parseHostBlobMarker(value)
       if (marker) {
-        const bytes = await this.connection.readBlob(marker.ref)
-        if (marker.encoding === "utf8") {
-          return Buffer.from(bytes).toString("utf8")
-        }
-        return bytes
+        const bytes = await this.connection.readBlob(marker.ref, { signal })
+        return marker.encoding === "utf8" ? Buffer.from(bytes).toString("utf8") : bytes
       }
       if (HOST_BLOB_MARKER_KEY in (value as Record<string, unknown>)) {
         throw new HostProtocolError(
@@ -159,7 +230,7 @@ export class HostBridgeImpl implements HostBridgeRuntime {
       }
       const out: Record<string, unknown> = {}
       for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-        out[key] = await this.materializeResult(item)
+        out[key] = await this.materializeResult(item, signal)
       }
       return out
     }

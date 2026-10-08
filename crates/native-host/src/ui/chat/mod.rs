@@ -130,6 +130,26 @@ pub fn note_chat_window_closed() {
     chat_ui().note_window_closed();
 }
 
+/// 平台在独立聊天窗实际显隐边沿更新；挂载与可见分别记账。
+pub fn set_chat_window_visible(visible: bool) {
+    chat_ui().set_window_visible(visible);
+}
+
+/// 平台在独立聊天窗创建/销毁后更新挂载状态。
+pub fn set_chat_window_open(open: bool) {
+    chat_ui().set_window_open(open);
+}
+
+/// 平台在主窗聊天列实际显隐边沿更新；挂载与可见分别记账。
+pub fn set_main_pane_visible(visible: bool) {
+    chat_ui().set_main_pane_visible(visible);
+}
+
+/// 平台刷新时按 surface 隔离可见窗体，防止把更新灌入隐藏面。
+pub fn is_surface_visible(surface: &str) -> bool {
+    chat_ui().is_surface_visible(surface)
+}
+
 /// 查看器窗被关闭（平台窗口回调）。
 pub fn note_viewer_window_closed() {
     chat_ui().note_viewer_window_closed();

@@ -50,8 +50,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_HOTKEY, WM_HSCROLL, WM_LBUTTONDOWN,
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_PAINT,
     WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW, WS_CLIPCHILDREN,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_THICKFRAME,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::audio::AudioCue;
@@ -599,7 +599,7 @@ impl WinUi {
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
         }
-        super::windows_chat::main_window_visibility_changed(true);
+        super::windows_chat::main_window_visibility_changed(true, self.main_chat_visible());
         self.start_frame_timer();
         // 呼出后聚焦聊天输入框（对齐 macOS 与旧壳 handleDockPopup 的 focusInput）；
         // 只在聊天列展开时做，桌宠形态不把面板拉出来。
@@ -1476,7 +1476,7 @@ fn frame_tick() {
             let _ = with_ui(|ui| {
                 ui.stop_frame_timer();
                 ui.set_stage_visible(false);
-                super::windows_chat::main_window_visibility_changed(false);
+                super::windows_chat::main_window_visibility_changed(false, false);
                 // 收起完成：交还前台（焦点回到呼出前的应用；须在 SW_HIDE 之前，
                 // 理由见函数注释），随后隐藏主窗并清掉记录。
                 hand_back_foreground(ui);
@@ -1715,6 +1715,7 @@ pub fn window_show(window: WindowId, focus: bool) -> AppResult<()> {
             // W9a：主窗重新显示 → 布局重排 + 舞台恢复（帧循环与光标跟踪）。
             ui.relayout_main();
             ui.set_stage_visible(true);
+            super::windows_chat::main_window_visibility_changed(true, ui.main_chat_visible());
         }
         Ok(())
     })?
@@ -2096,7 +2097,9 @@ mod tests {
             "with_ui 必须用 try_borrow_mut（窗口过程重入时不 panic）"
         );
         assert!(
-            body.chars().filter(|c| !c.is_whitespace()).collect::<String>()
+            body.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
                 .contains("cell.try_borrow().ok()"),
             "窗口过程路径的读侧必须用 try_borrow"
         );

@@ -90,12 +90,12 @@ use std::ffi::c_void;
 
 use windows_sys::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateRectRgn,
-    CreateRoundRectRgn, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRgn, FrameRgn, GetDIBits,
-    GetPixel, InvalidateRect, RedrawWindow, ScreenToClient, SelectClipRgn, SelectObject, SetBkMode,
+    BeginPaint, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateRectRgn, CreateRoundRectRgn,
+    DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRgn, FrameRgn, GetDIBits, GetPixel,
+    InvalidateRect, RedrawWindow, ScreenToClient, SelectClipRgn, SelectObject, SetBkMode,
     SetTextColor, SetWindowRgn, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_BITFIELDS, BI_RGB,
-    DIB_RGB_COLORS, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT,
-    RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RGN_DIFF, SRCCOPY,
+    DIB_RGB_COLORS, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT, RDW_ALLCHILDREN, RDW_ERASE,
+    RDW_INVALIDATE, RDW_UPDATENOW, RGN_DIFF, SRCCOPY,
 };
 use windows_sys::Win32::System::DataExchange::{
     CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
@@ -107,8 +107,8 @@ use windows_sys::Win32::UI::Controls::{
 };
 use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows_sys::Win32::UI::Input::Ime::{
-    GCS_COMPSTR, GCS_CURSORPOS, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
-    ImmSetCandidateWindow, CANDIDATEFORM, CFS_CANDIDATEPOS,
+    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCandidateWindow,
+    CANDIDATEFORM, CFS_CANDIDATEPOS, GCS_COMPSTR, GCS_CURSORPOS,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetActiveWindow, GetFocus, GetKeyState, SetFocus, VK_CONTROL, VK_DOWN, VK_ESCAPE,
@@ -123,25 +123,23 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     DestroyWindow, DispatchMessageW, GetAncestor, GetCaretPos, GetClientRect, GetCursorPos,
     GetMessageW, GetParent, GetScrollInfo, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsWindow, IsWindowVisible, KillTimer,
-    MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
-    SetForegroundWindow,
+    MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
     SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TrackPopupMenu,
     TranslateMessage, WindowFromPoint, BS_DEFPUSHBUTTON, CBN_SELENDOK, CBS_DROPDOWNLIST,
     CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GA_ROOT, GWL_STYLE,
-    HMENU, HTTRANSPARENT, HWND_BOTTOM, HWND_TOP, IDCANCEL, IDOK, MF_SEPARATOR, MF_STRING, MSG,
-    SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK,
-    SB_TOP, SB_VERT, SCROLLINFO, SIF_ALL, SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE,
-    WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_DROPFILES,
-    WM_ERASEBKGND, WM_GETMINMAXINFO, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
-    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
-    WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_PASTE, WM_SETFONT, WM_SIZE, WM_TIMER,
-    WM_KILLFOCUS, WM_SETFOCUS, WM_VSCROLL, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-    WS_CLIPSIBLINGS,
-    WS_EX_CLIENTEDGE, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
-    WS_VISIBLE, WS_VSCROLL,
+    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GA_ROOT, GWL_STYLE, HMENU,
+    HTTRANSPARENT, HWND_BOTTOM, HWND_TOP, IDCANCEL, IDOK, MF_SEPARATOR, MF_STRING, MSG, SB_BOTTOM,
+    SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP,
+    SB_VERT, SCROLLINFO, SIF_ALL, SIF_PAGE, SIF_POS, SIF_RANGE, SIZE_MINIMIZED, SM_CXSCREEN,
+    SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY,
+    WM_CREATE, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM,
+    WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION,
+    WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_MOUSEHWHEEL,
+    WM_MOUSEWHEEL, WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_PASTE, WM_SETFOCUS,
+    WM_SETFONT, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::host::WindowId;
@@ -1222,8 +1220,7 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
             }
             // 状态文字：只显示中性通知（[`handle_status_label`]），左对齐在
             // 圆点之后；字体与字色复用静态文字的小号/`dim` 口径。
-            if !state.handle_status_label.is_empty() && !rect_is_empty(&state.paint.handle_status)
-            {
+            if !state.handle_status_label.is_empty() && !rect_is_empty(&state.paint.handle_status) {
                 let font = state.fonts.get(1).copied().unwrap_or(0);
                 let old = if font != 0 {
                     unsafe { SelectObject(hdc, font) }
@@ -1346,10 +1343,18 @@ unsafe fn paint_canvas_shell(state: &ChatWinState, hdc: HDC) {
                 paint_win::draw_elevation(hdc, rect, &t.bubble_user_shadow);
                 // 泡底由画布填（泡内留白区不再被承载控件盖住，见 `create_rtf_control`
                 // 的 inset）：与控件底同值，接缝不可见。
-                let rounded = unsafe { with_round_box(hdc, rect, scaled_f(f64::from(t.radii.md), dpi_scale(state.canvas)), t.bubble_user_edge, || {
+                let rounded = unsafe {
+                    with_round_box(
+                        hdc,
+                        rect,
+                        scaled_f(f64::from(t.radii.md), dpi_scale(state.canvas)),
+                        t.bubble_user_edge,
+                        || {
                     paint_win::fill_color(hdc, rect, flat_over_panel(&t.bubble_user_bg));
                     paint_win::draw_bevel(hdc, rect.deflate(1), &t.bubble_user_bevel);
-                }) };
+                        },
+                    )
+                };
                 if !rounded {
                     // 绘制期逐控件回落（保留方角描边）：静默——降噪 2026-10-08 用户裁定
                     // （稳态留痕会随重绘刷屏）；绘制端回落由实机像素取证覆盖。
@@ -1358,9 +1363,17 @@ unsafe fn paint_canvas_shell(state: &ChatWinState, hdc: HDC) {
             }
             CardKind::AssistantBubble => {
                 // 轻气泡：无投影、无立体线（`Bevel::NONE`），只有底 + 描边。
-                let rounded = unsafe { with_round_box(hdc, rect, scaled_f(f64::from(t.radii.md), dpi_scale(state.canvas)), t.bubble_ai_edge, || {
+                let rounded = unsafe {
+                    with_round_box(
+                        hdc,
+                        rect,
+                        scaled_f(f64::from(t.radii.md), dpi_scale(state.canvas)),
+                        t.bubble_ai_edge,
+                        || {
                     paint_win::fill_color(hdc, rect, flat_over_panel(&t.bubble_ai_bg));
-                }) };
+                        },
+                    )
+                };
                 if !rounded {
                     // 绘制期逐控件回落（保留方角描边）：静默——降噪 2026-10-08 用户裁定
                     // （稳态留痕会随重绘刷屏）；绘制端回落由实机像素取证覆盖。
@@ -1960,12 +1973,7 @@ unsafe fn sample_dc_color(hdc: HDC, x: i32, y: i32) -> Option<theme::Rgba> {
 /// **逐控件按自己的中心采样**：条面带 sheen（横向渐变），整条共用一个探针点时
 /// 远离探针的按钮会差 ~7 灰阶 —— 实机就是「药丸后面一块比条底亮的矩形」
 /// （用户 2026-10-07 实拍「新会话」）。`fallback` 只在控件矩形取不到时用。
-unsafe fn register_band_surface(
-    _hdc: HDC,
-    owner: HWND,
-    _fallback: (i32, i32),
-    controls: &[HWND],
-) {
+unsafe fn register_band_surface(_hdc: HDC, owner: HWND, _fallback: (i32, i32), controls: &[HWND]) {
     // **不能用 `GetPixel` 采 DC**：WM_PAINT 期间 DC 被更新区裁剪，采样点落在
     // 更新区之外就返回 `CLR_INVALID` —— 实机日志显示每个按钮的采样都失败，表面色
     // 从未登记上，四角只能落回与条底差 ~35 灰阶的 `bg_base`（用户实拍「药丸后面
@@ -2168,12 +2176,9 @@ unsafe fn blit_button_backdrop(item: &DrawItemStruct, rect: paint_win::Rect) -> 
             return false;
         };
         unsafe {
-            paint_win::blit_backdrop(
-                item.hDC,
-                rect,
-                (origin.x, origin.y),
-                |hdc| painter(state, hdc),
-            )
+            paint_win::blit_backdrop(item.hDC, rect, (origin.x, origin.y), |hdc| {
+                painter(state, hdc)
+            })
         }
     })
 }
@@ -2466,9 +2471,7 @@ unsafe fn ctlcolor_static(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let placeholder = CHAT.with(|cell| {
         cell.try_borrow()
             .ok()
-            .and_then(|cell| {
-                cell.as_ref().map(|state| state.input_placeholder)
-            })
+            .and_then(|cell| cell.as_ref().map(|state| state.input_placeholder))
             .unwrap_or(0)
     });
     let color = paint_win::text_color_of(control).unwrap_or(tokens.ink);
@@ -2531,10 +2534,18 @@ pub(crate) fn open_chat_window() {
                 SetForegroundWindow(hwnd);
             }
         }
+        if !pane {
+            crate::ui::chat::set_chat_window_open(true);
+            crate::ui::chat::set_chat_window_visible(true);
+        }
         return;
     }
-    if let Err(error) = unsafe { create_chat_window() } {
-        rust_warn!("聊天窗创建失败: {error}");
+    match unsafe { create_chat_window() } {
+        Ok(()) => {
+            crate::ui::chat::set_chat_window_open(true);
+            crate::ui::chat::set_chat_window_visible(true);
+        }
+        Err(error) => rust_warn!("聊天窗创建失败: {error}"),
     }
 }
 
@@ -2589,6 +2600,8 @@ pub(crate) fn mount_main_pane(parent: HWND) {
         return;
     }
     crate::ui::chat::chat_ui().set_main_pane_open(true);
+    let visible = unsafe { IsWindowVisible(hwnd) != 0 };
+    crate::ui::chat::set_main_pane_visible(visible);
     rust_info!("聊天面板已挂入主窗（Windows：子窗口 + 同一套控件）");
 }
 
@@ -2616,25 +2629,22 @@ pub(crate) fn set_main_pane_visible(_parent: HWND, visible: bool) {
             .map(|state| state.hwnd)
     });
     let Some(pane) = pane else { return };
+    if !visible {
+        crate::ui::chat::set_main_pane_visible(false);
+    }
     unsafe {
         ShowWindow(pane, if visible { SW_SHOW } else { SW_HIDE });
     }
-    if visible {
-        chat_apply(ChatRenderUpdate::Full(crate::ui::chat::snapshot()));
-    } else {
+    if !visible {
         // 收起时停掉面板期限定时器（聊天面不在时不需要本地收纳；展开时重建会重新布点）。
         with_chat(|state| unsafe {
             KillTimer(state.hwnd, TIMER_DEADLINE);
-            for target in &mut state.image_targets {
-                target.frame = None;
-                DRAW_IMAGES.with(|images| {
-                    if let Some(draw) = images.borrow_mut().get_mut(&target.hwnd) {
-                        draw.frame = None;
-                    }
-                });
-            }
+            release_canvas(state);
             crate::ui::chat::sync_inline_visible("main-chat", Vec::new());
         });
+    }
+    if visible {
+        crate::ui::chat::set_main_pane_visible(true);
     }
 }
 
@@ -2689,15 +2699,20 @@ pub(crate) fn clear_inline_previews() {
 }
 
 /// 主窗收起/呼出只改变顶层窗口可见性，保持聊天列开合状态并相应释放/恢复可见图片。
-pub(crate) fn main_window_visibility_changed(visible: bool) {
+pub(crate) fn main_window_visibility_changed(visible: bool, chat_column_expanded: bool) {
     if visible {
-        with_chat(|state| {
-            if state.pane && unsafe { IsWindowVisible(state.hwnd) } != 0 {
-                let snapshot = crate::ui::chat::snapshot();
-                unsafe { apply_full(state, &snapshot) };
-            }
+        let parent = CHAT.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .filter(|state| state.pane)
+                .map(|state| unsafe { GetParent(state.hwnd) })
+                .unwrap_or(0)
         });
+        if parent != 0 {
+            set_main_pane_visible(parent, chat_column_expanded);
+        }
     } else {
+        crate::ui::chat::set_main_pane_visible(false);
         with_chat(|state| {
             if state.pane {
                 for target in &mut state.image_targets {
@@ -2830,9 +2845,12 @@ pub(crate) fn apply_chat_font() {
 
 /// 渲染更新（主线程队列调度；窗口不在时按 debug 丢弃 —— ChatUi 已按 window_open 门禁）。
 pub(crate) fn chat_apply(update: ChatRenderUpdate) {
-    let exists = CHAT.with(|cell| cell.borrow().is_some());
-    if !exists {
-        rust_debug!("聊天窗未打开，渲染更新丢弃");
+    let visible = CHAT.with(|cell| {
+        cell.borrow().as_ref().is_some_and(|state| {
+            crate::ui::chat::is_surface_visible(if state.pane { "main-chat" } else { "chat" })
+        })
+    });
+    if !visible {
         return;
     }
     match update {
@@ -4694,8 +4712,6 @@ unsafe fn build_children(hwnd: HWND) {
     }
 
     layout_panes();
-    let snapshot = crate::ui::chat::snapshot();
-    with_chat(|state| unsafe { apply_full(state, &snapshot) });
     unsafe {
         SetFocus(input);
     }
@@ -5451,9 +5467,23 @@ unsafe extern "system" fn chat_wndproc(
             0
         }
         WM_SIZE => {
-            // 宽度变化会改变正文换行高度与面板按钮排布：从模型整帧重建（投影是唯一正文来源）。
-            let snapshot = crate::ui::chat::snapshot();
-            with_chat(|state| unsafe { apply_full(state, &snapshot) });
+            // 宽度变化会改变正文换行高度与面板按钮排布。共用可见面门禁；隐藏期间
+            // 只更新模型，面板重新显示时由共享边沿投递最新 Full。
+            let standalone =
+                CHAT.with(|cell| cell.borrow().as_ref().is_some_and(|state| !state.pane));
+            if standalone && crate::ui::chat::chat_ui().is_window_open() {
+                let visible = wparam != SIZE_MINIMIZED && unsafe { IsWindowVisible(hwnd) != 0 };
+                let was_visible = crate::ui::chat::is_surface_visible("chat");
+                if !visible {
+                    with_chat(|state| unsafe { release_canvas(state) });
+                }
+                crate::ui::chat::set_chat_window_visible(visible);
+                if was_visible && visible {
+                    chat_apply(ChatRenderUpdate::Full(crate::ui::chat::snapshot()));
+                }
+            } else {
+                chat_apply(ChatRenderUpdate::Full(crate::ui::chat::snapshot()));
+            }
             0
         }
         WM_LBUTTONDOWN => {
@@ -6492,22 +6522,7 @@ unsafe fn rebuild_canvas(state: &mut ChatWinState, snapshot: &crate::ui::chat::C
         let previous_content = state.content_height;
         let was_at_bottom =
             scroll_at_bottom(state.scroll_y, state.viewport_height, state.content_height);
-        for child in &state.children {
-            DestroyWindow(child.hwnd);
-        }
-        state.children.clear();
-        state.links.clear();
-        // 消息菜单目标表随控件一起清理（查表的是活控件；旧句柄不得留影）。
-        state.message_menu_targets.clear();
-        DRAW_IMAGES.with(|images| {
-            let mut images = images.borrow_mut();
-            for target in &state.image_targets {
-                images.remove(&target.hwnd);
-            }
-        });
-        state.image_targets.clear();
-        state.card_frames.clear();
-        state.tail = None;
+        release_canvas(state);
 
         let scale = dpi_scale(state.hwnd);
         let mut client: RECT = std::mem::zeroed();
@@ -6544,6 +6559,30 @@ unsafe fn rebuild_canvas(state: &mut ChatWinState, snapshot: &crate::ui::chat::C
         apply_scroll(state);
         // 卡片框（气泡外框）在画布上，重建后要整块重画。
         InvalidateRect(state.canvas, std::ptr::null(), 0);
+    }
+}
+
+/// 隐藏/重建时释放聊天正文控件与平台像素登记；模型快照仍是正文的唯一来源。
+unsafe fn release_canvas(state: &mut ChatWinState) {
+    unsafe {
+        for child in &state.children {
+            DestroyWindow(child.hwnd);
+        }
+        state.children.clear();
+        state.links.clear();
+        state.message_menu_targets.clear();
+        DRAW_IMAGES.with(|images| {
+            let mut images = images.borrow_mut();
+            for target in &state.image_targets {
+                images.remove(&target.hwnd);
+            }
+        });
+        state.image_targets.clear();
+        state.card_frames.clear();
+        state.tail = None;
+        state.content_height = 0;
+        state.base_height = 0;
+        state.scroll_y = 0;
     }
 }
 
@@ -7085,7 +7124,10 @@ unsafe fn create_rtf_control(
             // 正文按完整高度落位后才贴圆角区域；没有内部滚动条，滚动/选择由
             // RichEdit 与外层 canvas 保持原生语义。输入框的 IME 路径不经过这里。
             MoveWindow(control, x + inset_x, y + inset_y, inner_w, height, 0);
-            set_round_region(control, scaled_f(f64::from(theme::tokens().radii.md), scale));
+            set_round_region(
+                control,
+                scaled_f(f64::from(theme::tokens().radii.md), scale),
+            );
         }
         if let Some(entry) = state
             .children

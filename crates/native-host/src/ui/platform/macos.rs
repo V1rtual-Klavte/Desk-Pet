@@ -199,7 +199,9 @@ pub(crate) fn activate_app() {
 /// 不走资源根装配：为一张小图加一条分发链不划算（与主题噪声「能算就别打包」
 /// 同口径的极简版）。模板图（template）由系统按菜单栏明暗模式自动染色。
 fn tray_template_image() -> Option<Retained<NSImage>> {
-    let data = NSData::with_bytes(include_bytes!("../../../../../resources/icons/mascot-tray-44.png"));
+    let data = NSData::with_bytes(include_bytes!(
+        "../../../../../resources/icons/mascot-tray-44.png"
+    ));
     let image = NSImage::initWithData(NSImage::alloc(), &data)?;
     image.setSize(NSSize::new(22.0, 22.0));
     image.setTemplate(true);
@@ -1170,7 +1172,7 @@ impl UiController {
         } else {
             false
         };
-        super::macos_chat::set_main_pane_visible(true);
+        super::macos_chat::set_main_pane_visible(chat_visible);
         // 呼出后聚焦聊天输入框（对齐旧壳 handleDockPopup 的 focusInput）。只在聊天列
         // 展开时做：桌宠形态（列收起）不把面板拉出来，也不聚焦不可见的输入框。
         if chat_visible {
@@ -1484,7 +1486,14 @@ impl UiController {
                 macos_main::on_window_resized(layout, &win);
                 macos_main::set_stage_visible(layout, true);
             }
-            super::macos_chat::set_main_pane_visible(true);
+            let chat_visible = self
+                .ivars()
+                .main_layout
+                .borrow()
+                .as_ref()
+                .map(macos_main::chat_visible)
+                .unwrap_or(false);
+            super::macos_chat::set_main_pane_visible(chat_visible);
             self.start_track_timer();
         }
         Ok(())

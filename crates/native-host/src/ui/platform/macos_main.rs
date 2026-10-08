@@ -463,7 +463,10 @@ pub(crate) fn install(window: &NSWindow) -> AppResult<MainLayout> {
     let status_dot = NSView::initWithFrame(
         NSView::alloc(mtm),
         NSRect::new(
-            NSPoint::new(titlebar::status_x(), titlebar::centered_y(titlebar::DOT_SIZE)),
+            NSPoint::new(
+                titlebar::status_x(),
+                titlebar::centered_y(titlebar::DOT_SIZE),
+            ),
             NSSize::new(titlebar::DOT_SIZE, titlebar::DOT_SIZE),
         ),
     );
@@ -609,7 +612,10 @@ fn relayout(layout: &mut MainLayout, window: &NSWindow) {
         NSSize::new(titlebar::brand_width(), BRAND_HEIGHT),
     ));
     layout.status_dot.setFrame(NSRect::new(
-        NSPoint::new(titlebar::status_x(), titlebar::centered_y(titlebar::DOT_SIZE)),
+        NSPoint::new(
+            titlebar::status_x(),
+            titlebar::centered_y(titlebar::DOT_SIZE),
+        ),
         NSSize::new(titlebar::DOT_SIZE, titlebar::DOT_SIZE),
     ));
     let status_x = titlebar::status_x() + titlebar::DOT_SIZE + titlebar::DOT_GAP;
@@ -728,14 +734,16 @@ pub(crate) fn set_chat_visible(layout: &mut MainLayout, window: &NSWindow, visib
         return;
     }
     layout.chat_visible = visible;
-    if visible {
-        // 展开时按最新投影重建（收起期间释放过消息视图）。
-        macos_chat::set_main_pane_visible(true);
-    } else {
+    let surface_visible = visible && window.isVisible();
+    if !surface_visible {
         // 收起时释放消息视图（§6.4 的资源纪律：不可见的内容不占绘制资源）。
         macos_chat::set_main_pane_visible(false);
     }
     relayout(layout, window);
+    if surface_visible {
+        // 展开并完成原生布局后，从模型重建最新快照。
+        macos_chat::set_main_pane_visible(true);
+    }
     rust_info!(
         "主窗聊天列{}{}",
         if visible { "展开" } else { "收起" },
@@ -879,7 +887,10 @@ mod tests {
         );
         assert!(
             TITLEBAR_RIGHT_RESERVE
-                >= titlebar::RIGHT_MARGIN + NAV_CLOSE_WIDTH + titlebar::BUTTON_GAP + NAV_BUTTON_WIDTH,
+                >= titlebar::RIGHT_MARGIN
+                    + NAV_CLOSE_WIDTH
+                    + titlebar::BUTTON_GAP
+                    + NAV_BUTTON_WIDTH,
             "右侧保留区容不下「×」+「设置」按钮链"
         );
     }

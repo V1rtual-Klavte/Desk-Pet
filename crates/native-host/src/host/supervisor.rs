@@ -241,42 +241,63 @@ pub struct RotationReport {
 // 共享状态
 // ==========================================
 
+#[derive(Default)]
+struct ExitWatchState {
+    last: Option<NodeExitReport>,
+    next_waiter: u64,
+    waiters: Vec<(u64, std::sync::mpsc::Sender<NodeExitReport>)>,
+}
+
 struct ExitWatch {
-    waiters: StdMutex<Vec<std::sync::mpsc::Sender<NodeExitReport>>>,
-    last: StdMutex<Option<NodeExitReport>>,
+    state: StdMutex<ExitWatchState>,
 }
 
 impl ExitWatch {
     fn new() -> Self {
         Self {
-            waiters: StdMutex::new(Vec::new()),
-            last: StdMutex::new(None),
+            state: StdMutex::new(ExitWatchState::default()),
         }
     }
 
     fn publish(&self, report: NodeExitReport) {
-        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(report.clone());
-        let waiters = std::mem::take(&mut *self.waiters.lock().unwrap_or_else(|e| e.into_inner()));
-        for waiter in waiters {
+        let waiters = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.last = Some(report.clone());
+            std::mem::take(&mut state.waiters)
+        };
+        // 报告已经归每个等待者所有；下一代 reset 不会撤掉已交付的退出事实。
+        for (_, waiter) in waiters {
             let _ = waiter.send(report.clone());
         }
     }
 
-    /// 等到「下一次」退出或超时。已发生的退出不会自动满足下一次等待（轮换后清空）。
+    /// 等当前代际退出；新代际 reset 仅清缓存，不撤销已经发布给等待者的报告。
     fn wait(&self, timeout: Duration) -> Option<NodeExitReport> {
-        if let Some(report) = self.last.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            return Some(report);
-        }
         let (tx, rx) = std::sync::mpsc::channel();
-        self.waiters
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(tx);
-        rx.recv_timeout(timeout).ok()
+        let id = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(report) = &state.last {
+                return Some(report.clone());
+            }
+            // 检查与登记共用一把锁，publish 不可能插入通知空窗。
+            let id = state.next_waiter;
+            state.next_waiter = state.next_waiter.wrapping_add(1);
+            state.waiters.push((id, tx));
+            id
+        };
+        let result = rx.recv_timeout(timeout).ok();
+        if result.is_none() {
+            self.state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .waiters
+                .retain(|(waiting, _)| *waiting != id);
+        }
+        result
     }
 
     fn reset(&self) {
-        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).last = None;
     }
 }
 
@@ -484,7 +505,7 @@ impl NodeSupervisor {
 
     /// 关停序列（§4.3 第 5 条）。同步阻塞，必须从工作线程调用。
     ///
-    /// 1. 封新 admission（新请求立刻被拒）；
+    /// 1. 封宿主新工作入口，保留 Node 的已准入请求与持久化 RPC；
     /// 2. 请求 Node 停止收新工作并在 `flush_deadline` 内 flush；
     /// 3. 等 Node 的 flush **真实报告**（没等到就是中断，不伪报）；
     /// 4. 等子进程在 `shutdown_grace` 内退出；超时 → 强杀 + 等 2s；
@@ -495,7 +516,6 @@ impl NodeSupervisor {
         let mut detail = String::new();
         let mut node_flush = None;
         if let Some(bridge) = &bridge {
-            bridge.close_admission();
             let reason = "宿主退出";
             let request = bridge.request_shutdown(reason, self.config.flush_deadline);
             if let Err(err) = self.runtime.block_on(request) {
@@ -1020,6 +1040,72 @@ impl Drop for WindowsJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 退出报告覆盖并发等待且重置后不复用旧代际() {
+        let watch = Arc::new(ExitWatch::new());
+        let report = NodeExitReport {
+            node_epoch: 7,
+            pid: Some(42),
+            detail: "正常退出".into(),
+            crash: false,
+        };
+        // 发布先到：后来等待者也必须拿到本代际的报告。
+        watch.publish(report.clone());
+        assert_eq!(watch.wait(Duration::ZERO), Some(report.clone()));
+        watch.reset();
+        assert_eq!(watch.wait(Duration::ZERO), None);
+        assert!(
+            watch
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .waiters
+                .is_empty(),
+            "超时不残留等待者"
+        );
+
+        // 同时竞争登记与发布；所有消费者都读取同一个退出事实，不能漏通知。
+        let ready = Arc::new(std::sync::Barrier::new(9));
+        let waiters: Vec<_> = (0..8)
+            .map(|_| {
+                let watch = watch.clone();
+                let ready = ready.clone();
+                std::thread::spawn(move || {
+                    ready.wait();
+                    watch.wait(Duration::from_secs(2))
+                })
+            })
+            .collect();
+        ready.wait();
+        watch.publish(report.clone());
+        for waiter in waiters {
+            assert_eq!(waiter.join().unwrap(), Some(report.clone()));
+        }
+        assert_eq!(watch.wait(Duration::ZERO), Some(report));
+    }
+
+    #[test]
+    fn 新代际重置不撤销已交付给等待者的退出报告() {
+        let watch = ExitWatch::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        watch
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .waiters
+            .push((0, tx));
+        let report = NodeExitReport {
+            node_epoch: 3,
+            pid: None,
+            detail: "上一代已退出".into(),
+            crash: true,
+        };
+        watch.publish(report.clone());
+        watch.reset();
+        assert_eq!(rx.recv_timeout(Duration::ZERO).unwrap(), report);
+        assert_eq!(watch.wait(Duration::ZERO), None, "新等待者不复用旧代际缓存");
+    }
     use crate::ipc::protocol::RunScope;
 
     fn supervisor_config(

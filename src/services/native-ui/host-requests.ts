@@ -174,52 +174,112 @@ const POPUP_SIZE_MAX = 4000
 
 let registered = false
 let unsubscribe: (() => void) | null = null
+let draining = false
+let drainResult: Promise<HostRequestDrainReport> | null = null
+let stoppedRequests: Promise<readonly string[]>[] | null = null
+let admissionFailures: string[] = []
+const pendingRequests = new Set<Promise<readonly string[]>>()
+
+export interface HostRequestDrainReport {
+  completed: number
+  failures: string[]
+}
 
 /** 订阅宿主请求（幂等；由 `initNativeUiBridge` 在领域引导收口调用一次）。 */
 export function initHostRequestHandlers(): void {
   if (registered) return
+  if (draining) throw new Error("宿主请求处理器已进入关停排空，不能重新注册")
   const bridge = getHostBridge()
   // 事件名不在 HostEventMap（那是 Node/宿主 → UI 的读模型矩阵）：与 UI 回执
   // （ui-events.ts 的 UiReceiptMap）同款，经运行时收窄后订阅。宿主按同名事件投递。
   unsubscribe = bridge.subscribe(
     HOST_REQUEST_EVENT as unknown as keyof import("@/services/host/types").HostEventMap,
     (payload) => {
-      void handleEnvelope(payload as unknown as HostRequestEnvelope)
+      if (draining) {
+        log.warn("Node 关停排空期间收到新的宿主请求，按 admission 关闭拒绝")
+        return
+      }
+      const envelope = payload as unknown as HostRequestEnvelope
+      const task = handleEnvelope(envelope)
+      pendingRequests.add(task)
+      void task.then(() => {
+        pendingRequests.delete(task)
+      })
     },
   )
   registered = true
 }
 
-/** 关停或测试拆卸：解除宿主请求订阅，可安全再次装配。 */
+/** 关闭新宿主请求 admission；关停时与 Harness 取消并行调用，不等待在途 handler。 */
 export function stopHostRequestHandlers(): void {
+  if (draining) return
+  draining = true
   const stop = unsubscribe
   unsubscribe = null
   registered = false
-  stop?.()
+  stoppedRequests = [...pendingRequests]
+  try {
+    stop?.()
+  } catch (error) {
+    admissionFailures.push(`宿主请求 unsubscribe 失败：${formatError(error)}`)
+  }
+}
+
+/** 关闭新请求 admission，并等待所有此前已启动 handler 与回执完成。 */
+export function drainHostRequestHandlers(): Promise<HostRequestDrainReport> {
+  stopHostRequestHandlers()
+  if (drainResult) return drainResult
+  const pending = stoppedRequests ?? [...pendingRequests]
+  drainResult = Promise.all(pending).then((results) => ({
+    completed: pending.length,
+    failures: [...admissionFailures, ...results.flatMap((result) => result)],
+  }))
+  return drainResult
 }
 
 /** 测试拆卸。 */
-export function __resetHostRequestHandlersForTest(): void {
-  stopHostRequestHandlers()
+export async function __resetHostRequestHandlersForTest(): Promise<void> {
+  await drainHostRequestHandlers()
+  drainResult = null
+  draining = false
+  stoppedRequests = null
+  admissionFailures = []
 }
 
-async function handleEnvelope(envelope: HostRequestEnvelope): Promise<void> {
+async function handleEnvelope(envelope: HostRequestEnvelope): Promise<readonly string[]> {
   if (!envelope || typeof envelope.requestId !== "number" || typeof envelope.method !== "string") {
     log.warn("收到形状无效的宿主请求（缺 requestId/method），按协议违规丢弃")
-    return
+    return []
   }
+  const failures: string[] = []
+  let result: unknown
+  let handlerFailed = false
   try {
-    const result = await dispatchHostRequest(envelope.method, envelope.args)
-    await reply(envelope.requestId, true, result)
+    result = await dispatchHostRequest(envelope.method, envelope.args)
   } catch (error) {
-    await reply(envelope.requestId, false, undefined, {
+    handlerFailed = true
+    const detail = formatError(error)
+    failures.push(`宿主请求 ${envelope.method} handler 失败：${detail}`)
+    const delivered = await reply(envelope.requestId, false, undefined, {
       code: errorCode(error) ?? "OTHER",
-      message: formatError(error),
+      message: detail,
     })
+    if (!delivered) failures.push(`宿主请求 ${envelope.method} 失败回执未送达`)
+  }
+  if (!handlerFailed) {
+    const delivered = await reply(envelope.requestId, true, result)
+    if (!delivered) failures.push(`宿主请求 ${envelope.method} 成功回执未送达`)
   }
   // A2：回执发出之后补投影推送（顺序有语义：宿主侧「读取中」在回执后登记、
   // 在投影帧到达时清除；见 chat-intents 文件头）。只对视情况方法动作，失败只留痕。
-  await runChatAfterReplyPush(envelope.method)
+  try {
+    await runChatAfterReplyPush(envelope.method)
+  } catch (error) {
+    const detail = formatError(error)
+    log.warn(`宿主请求 ${envelope.method} 回执后的投影推送失败：${detail}`)
+    failures.push(`宿主请求 ${envelope.method} 回执后处理失败：${detail}`)
+  }
+  return failures
 }
 
 async function reply(
@@ -227,13 +287,15 @@ async function reply(
   ok: boolean,
   result?: unknown,
   error?: { code: string; message: string },
-): Promise<void> {
+): Promise<boolean> {
   try {
     await getHostBridge().request(HOST_REQUEST_RESULT_METHOD, { requestId, ok, result, error })
+    return true
   } catch (sendError) {
     // 宿主已断开/超时归宿由宿主侧负责（TIMEOUT 与业务失败分开）——这里补发没有意义，
     // 如实留痕即可，不吞掉原因。
     log.warn(`宿主请求回执发送失败（requestId=${requestId}）：${formatError(sendError)}`)
+    return false
   }
 }
 
