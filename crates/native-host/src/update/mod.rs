@@ -38,6 +38,7 @@
 pub mod helper;
 pub mod http;
 pub mod manifest;
+pub mod proxy;
 pub mod stage;
 pub mod verify;
 

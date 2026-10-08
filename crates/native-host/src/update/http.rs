@@ -11,11 +11,15 @@
 // - 响应体由调用方给上限（feed 与制品上限不同，见 manifest::FeedLimits）；
 //   超限**报错**而不是截断 —— 截断的 JSON / 制品后续关卡的报错会掩盖真实原因。
 // - 超时是硬性的（连接/读/写），更新流程不允许挂死宿主。
+// - 代理在装配时定一次（`super::proxy`：环境变量 → 系统设置 → 直连，来源留痕）。
+//   ureq 自己的 `Proxy::try_from_system` 只读环境变量，而 GUI App 拿不到 shell 的
+//   `HTTPS_PROXY` —— 只靠它会让「系统设置里配了代理」的用户永远直连（2026-10-08 实机）。
 
 use std::io::Read;
 use std::time::Duration;
 
 use crate::error::AppResult;
+use crate::rust_info;
 
 use super::manifest::{update_error, E_INSECURE_URL, E_NETWORK, E_TOO_LARGE};
 
@@ -33,8 +37,12 @@ pub struct UreqHttp {
 }
 
 impl UreqHttp {
+    /// 生产装配（进程内一次）。代理在这里定死：`super::proxy::resolve()` 给出
+    /// 环境变量 → 系统设置 → 直连，来源写进日志 —— 用户报「检查更新失败」时，
+    /// 那一行直接区分「这台机器没代理」与「有代理却连不上」。
     pub fn new() -> Self {
-        let agent = ureq::AgentBuilder::new()
+        let resolved = super::proxy::resolve();
+        let mut builder = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(15))
             .timeout_read(Duration::from_secs(60))
             .timeout_write(Duration::from_secs(30))
@@ -42,9 +50,13 @@ impl UreqHttp {
             .user_agent(concat!(
                 "v1rtual-desk-pet-updater/",
                 env!("CARGO_PKG_VERSION")
-            ))
-            .build();
-        Self { agent }
+            ));
+        // 没有代理就不设：ureq 在未显式设置时会自己再查一遍环境变量，而那时它必然也是空的。
+        if let Some(proxy) = &resolved.proxy {
+            builder = builder.proxy(proxy.clone());
+        }
+        rust_info!("更新网络出口: 代理来源={}", resolved.note());
+        Self { agent: builder.build() }
     }
 }
 

@@ -109,6 +109,16 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = ["
 # 版本 0.3.1（经 objc2 家族）对齐，不新增版本；feature 保持与现有编译配置一致
 # （alloc），不引入默认的 block2/std/objc2 面，避免扩大依赖图。
 dispatch2 = { version = "0.3", default-features = false, features = ["alloc"] }
+# 系统代理（update/proxy.rs）：`SCDynamicStoreCopyProxies` 读 macOS「网络 → 代理」设置。
+# 只认环境变量是不够的：GUI App 由 launchd 启动，拿不到 shell 里的 HTTPS_PROXY，
+# 于是「系统里明明配了代理却永远直连」（2026-10-08 实机：github.com 直连时通时不通，
+# 而 ureq 自己的 `Proxy::try_from_system` 名字像系统代理、实际只读 env）。也是 reqwest
+# 在 macOS 上的同一选型（不换 reqwest 的理由见 update/http.rs 顶部）。
+system-configuration = "0.8"
+# `get_proxies()` 返回的 CFDictionary 要用它取值（CFString/CFNumber/CFType 的转型）。
+# 版本与 system-configuration 0.8 的传递依赖对齐（树上已有 0.10.1），显式提升为直接依赖、
+# 不引入新生态 —— 与上面 objc2-core-graphics 同一做法。
+core-foundation = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 # feature 覆盖 monitor / commands / ui（W5 原生薄层）平台代码用到的每个符号
@@ -138,6 +148,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_Security",                   # CreateJobObjectW 的 SECURITY_ATTRIBUTES 参数类型（传 null）
     "Win32_System_DataExchange",        # 提示对话框「复制详情」：OpenClipboard / SetClipboardData（W8c）
     "Win32_System_Memory",              # 剪贴板文本内存块：GlobalAlloc / GlobalLock / GlobalUnlock
+    "Win32_Networking_WinHttp",         # 系统代理（update/proxy.rs）：WinHttpGetIEProxyConfigForCurrentUser
     "Win32_Storage_FileSystem",         # 单实例守卫：CreateFileW 独占共享打开（single_instance.rs）
 ] }
 
