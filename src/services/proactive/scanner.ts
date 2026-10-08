@@ -246,7 +246,10 @@ export async function tick(now=Date.now()):Promise<void> {
     // 锁屏 = 用户离开，不是不可观察：locked 与 observed 同样放行；只有真不可知 (unavailable) 才丢弃。
     // 窗口类机会仍由 jobRequiresWindow 的当前窗口检查约束，锁屏下自然因 window_unavailable 失效。
     const screenUsable=activity.screenState==="observed"||activity.screenState==="locked"
-    const guardReason=muted?"muted":isQuietTime(now,timezone)?"quiet_time":!activity.isPetVisible?"pet_hidden"
+    // 桌宠是否可见**不再是**主动消息的门禁（2026-10-08 用户裁定）：主动消息就是主动发消息，
+    // 没有「必须当面」的要求 —— 收起时发的消息躺在会话里、展开就能看到，那是正常形态，
+    // 不是需要拦掉的打扰。（`pet_hidden` 这个关名随之下线。）
+    const guardReason=muted?"muted":isQuietTime(now,timezone)?"quiet_time"
       :!screenUsable?"observation_unavailable":now-activity.observedAt>OBSERVATION_MAX_AGE_MS?"stale_observation"
       :typeof scan.budget.cooldownUntil==="number"&&scan.budget.cooldownUntil>now?"cooldown":isAIGenerating()?"ai_generating":laneBusy?"lane_busy"
       :scan.budget.successfulMessages>=successLimit?"daily_quota"
@@ -335,7 +338,8 @@ export async function tick(now=Date.now()):Promise<void> {
         const activity=await getRuntimeActivity(),time=Date.now()
         // 与主门禁同口径：locked（用户离开）不额外加严，只有 unavailable 才是观察不可用。
         const screenUsable=activity.screenState==="observed"||activity.screenState==="locked"
-        const activityReason=!activity.isPetVisible?"pet_hidden":!screenUsable?"observation_unavailable"
+        // 同主门禁：可见性不参与（2026-10-08 用户裁定，见上方注释）。
+        const activityReason=!screenUsable?"observation_unavailable"
           :time-activity.observedAt>OBSERVATION_MAX_AGE_MS?"stale_observation":isQuietTime(time,timezone)?"quiet_time":null
         if(activityReason){trace(context,"proactive_skipped",()=>({reason:activityReason,ruleId:selected.ruleId}),{requestId});return false}
         if(scan.budget.successfulMessages>=successLimit
