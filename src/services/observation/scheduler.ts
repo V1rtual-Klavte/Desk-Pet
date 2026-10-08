@@ -100,6 +100,8 @@ let started = false
 let timer: ReturnType<typeof setInterval> | undefined
 let busy = false
 let controller: AbortController | undefined
+/** 上一次留痕过的未开跑关名：只在原因变化时再记一条，避免钟点小时内每分钟刷屏。 */
+let lastSkipReason = ""
 let lifecycleGeneration = 0
 let activeRun: Promise<void> | undefined
 
@@ -134,31 +136,59 @@ function screenUsable(state: RuntimeActivity["screenState"]): boolean {
 
 /**
  * 批次资格：固定钟点触发（2026-10-06 用户裁决——不再要求系统空闲，允许用户使用电脑时
- * 进行「类似后台了解」），保留的护栏自外向内依次为：
+ * 进行「类似后台了解」），护栏自外向内依次为：
  * - 应用运行（started）且本调度无在飞批次（busy）；
  * - 到点：本地时刻落在档位钟点表的追赶窗口内，且该钟点本轮未跑过（`scheduledSlotDue`，
  *   判定纯函数在 `proactive/schedule.ts`）；
  * - 防重间隔：距上一次辅助尝试（跨重启持久，见 store 的 `lastAuxiliaryAttemptAt`）
  *   未满一个档位间隔不开（同钟点重复与时钟回拨的兜底）；
- * - 屏幕可用（observed/locked；unavailable 跳过本轮）且前台不是桌宠。
+ * - 有「当前窗口观察」且屏幕可用（observed/locked；unavailable 跳过本轮），前台不是桌宠。
  * 「会话忙碌 / AI 生成中」的排除已随固定钟点裁决去掉：批次与主回合并发由各自通道
  * （辅助预算准入、模型网关）自持，不再以用户是否在用电脑门禁。
+ *
+ * 返回 `null` = 可以开跑；否则是**第一道没过**的关名 —— 过去每道关都直接 `return false`
+ * 不留痕，实机验收时无从判断是「没到点」还是「被挡住了」。2026-10-08 实机踩到：档位 high、
+ * 13:10 启动正落在 13:00 的追赶窗内，而 `understanding.json` 两天没动、
+ * `lastAuxiliaryAttemptAt` 仍是 0，日志里却一个字都没有。关名交回调用方留痕
+ * （见 `runAvailableBatch`）。
  */
-async function eligibleForBatch(): Promise<boolean> {
+async function batchSkipReason(): Promise<string | null> {
   await loadObservationStore()
   await pruneExpiredObservationData()
   const tier = silentAccessFrequency()
-  if (tier === "off") return false
+  if (tier === "off") return "tier_off"
   const now = Date.now()
   const limits = silentTierLimits(tier)
-  if (!started || busy) return false
-  if (!scheduledSlotDue(limits.hours, now, getLastAuxiliaryAttemptAt())) return false
-  if (now - getLastAuxiliaryAttemptAt() < limits.minBatchGapMs) return false
+  if (!started) return "not_started"
+  if (busy) return "busy"
+  if (!scheduledSlotDue(limits.hours, now, getLastAuxiliaryAttemptAt())) return "past_catchup"
+  if (now - getLastAuxiliaryAttemptAt() < limits.minBatchGapMs) return "min_gap"
   const observation = getLatestWindowObservation()
-  if (!observation || !isCurrentObservation(observation) || observation.isPetForeground) return false
+  if (!observation) return "no_window_observation"
+  if (!isCurrentObservation(observation)) return `observation_${observation.observationState}`
+  if (observation.isPetForeground) return "pet_foreground"
   const activity = await getRuntimeActivity()
-  return screenUsable(activity.screenState) && !activity.isPetForeground
-    && Date.now() - activity.observedAt <= OBSERVATION_MAX_AGE_MS
+  if (!screenUsable(activity.screenState)) return `screen_${activity.screenState}`
+  if (activity.isPetForeground) return "pet_foreground"
+  if (Date.now() - activity.observedAt > OBSERVATION_MAX_AGE_MS) return "stale_observation"
+  return null
+}
+
+/** 本小时是不是档位钟点（诊断留痕只在钟点小时内出——其余时间这条链本来就该静默）。 */
+function inSlotHour(tier: ReturnType<typeof silentAccessFrequency>): boolean {
+  return tier !== "off" && silentTierLimits(tier).hours.includes(new Date().getHours())
+}
+
+/** 钟点小时内的门禁快照，随未开跑原因一起留痕：一眼看穿是「没到点」还是「有东西挡着」。 */
+async function gateSnapshot(): Promise<string> {
+  const observation = getLatestWindowObservation()
+  const activity = await getRuntimeActivity()
+  const window = observation
+    ? `${observation.appId || "?"}/${observation.observationState}`
+    : "无"
+  const last = getLastAuxiliaryAttemptAt()
+  return `窗口=${window} 屏幕=${activity.screenState} 观察龄=${Date.now() - activity.observedAt}ms`
+    + ` 上次尝试=${last ? new Date(last).toLocaleTimeString("zh-CN") : "从未"}`
 }
 
 function matchesObservationSource(current: ReturnType<typeof getLatestWindowObservation>, source: NonNullable<ReturnType<typeof getLatestWindowObservation>>): boolean {
@@ -229,13 +259,26 @@ async function readDecidedTargets(targets: DecidedTarget[], inputs: ObservationI
 async function observeBatch(signal: AbortSignal, generation: number): Promise<void> {
   const window = getLatestWindowObservation()
   const tier = silentAccessFrequency()
-  if (!window || !isCurrentObservation(window) || tier === "off" || signal.aborted || !started || generation !== lifecycleGeneration) return
+  // 这些早退**不会**执行到 `markAuxiliaryAttemptAt`（本函数末尾）—— 没有痕迹就无法解释
+  // 「批批判开跑却不落盘」：2026-10-08 实机连续两轮报「门禁全过」，而 attempt 时间恒为 0、
+  // 存储文件 mtime 未动，每 60 秒重来一次。只记「运行期真的不满足」的那几种；
+  // 关停类（signal / started / generation）是正常路径，不记。
+  if (!window || !isCurrentObservation(window)) {
+    log.debug(`静默了解批次内部早退：窗口观察不可用（${window ? window.observationState : "无"}）`)
+    return
+  }
+  if (tier === "off" || signal.aborted || !started || generation !== lifecycleGeneration) return
   // 本批的数值上限在入口冻结（档位运行期可变）；每次 await 之后只复核「是否已关档/退役」。
   const limits = silentTierLimits(tier)
   // 进入批次前再取一次即时屏幕状态：批次资格可能在等待期间变化；unavailable 真不可知时不跑。
   const activity = await getRuntimeActivity()
   if (signal.aborted || !started || generation !== lifecycleGeneration) return
-  if (!screenUsable(activity.screenState) || activity.isPetForeground) return
+  if (!screenUsable(activity.screenState) || activity.isPetForeground) {
+    // 资格函数刚刚判过同样两项却放行了 —— 走到这里说明两次 `getRuntimeActivity()` 之间
+    // 状态翻了（桌宠被切到前台是典型）。值记全，下次一眼可判。
+    log.debug(`静默了解批次内部早退：屏幕=${activity.screenState} 桌宠前台=${activity.isPetForeground}`)
+    return
+  }
   const locked = activity.screenState === "locked"
   busy = true
   const inputs: ObservationInput[] = []
@@ -381,8 +424,25 @@ async function observeBatch(signal: AbortSignal, generation: number): Promise<vo
 }
 
 async function runAvailableBatch(): Promise<void> {
-  if (!await eligibleForBatch()) return
+  const skip = await batchSkipReason()
+  if (skip) {
+    // 只在「本小时是档位钟点」且原因变化时留痕：其余时间这条链本来就该静默，不值得刷屏；
+    // 而钟点小时内的第一道关名 + 门禁快照，正是实机验收要的那一条证据。
+    const tier = silentAccessFrequency()
+    if (inSlotHour(tier) && skip !== lastSkipReason) {
+      lastSkipReason = skip
+      log.debug(`静默了解本小时未开跑：${skip}｜${await gateSnapshot()}`)
+    }
+    return
+  }
+  lastSkipReason = ""
   if (!started || silentAccessFrequency() === "off") return
+  // 开跑留痕：这条链过去**成功也不留痕**，实机根本无法确认它到底跑没跑（2026-10-08 用户
+  // 拿 `understanding.json` 两天没动来反推，就是因为日志里没有任何正面证据）。
+  // 每天最多 6 条（high 档钟点数），不构成噪音。
+  if (inSlotHour(silentAccessFrequency())) {
+    log.info(`静默了解本批开跑（档位钟点整点已到，门禁全过）｜${await gateSnapshot()}`)
+  }
   const generation = lifecycleGeneration
   const snapshot = getUnderstandingSnapshot()
   const runController = new AbortController()

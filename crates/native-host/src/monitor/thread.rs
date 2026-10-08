@@ -30,7 +30,13 @@ pub fn spawn_monitor_thread(
     events::prepare(&state);
     thread::spawn(move || {
         rust_info!("窗口 observation 线程已启动（事件驱动）");
-        let mut generation = 0;
+        // 初值刻意取一个不可能相等的哨兵：本线程**纯事件驱动**，若从 0 起步、又恰好等于
+        // `state.generation` 的初值，首次循环判不出变化就会直接睡下去 —— 应用启动到用户
+        // 第一次切窗口之间一条观察都不发，窗口观察恒为 null。静默了解的第 5 关要求「有当前
+        // 窗口观察」，于是整轮被挡（2026-10-08 实测：启动后约 2 分钟才有第一条，其实是用户
+        // 切窗口触发的；追赶窗只有 15 分钟，启动落在窗后半段就整轮错过）。
+        // 用哨兵让首次循环必定采一次，代价只是一次开机采样。
+        let mut generation = u64::MAX;
         let mut generation_started = Instant::now();
         let mut disabled_generation = None;
 
