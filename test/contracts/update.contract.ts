@@ -78,7 +78,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "9bbf3901d8e0ec091c6f719151b3ac76a2c47143b497f4f430610160ee2029fb",
+  sourceHash: "78bf51af52d9d455829872045cfa291debb071f16d523fb8026f806cce564e8d",
   coverage: [
     {
       id: "up-01",

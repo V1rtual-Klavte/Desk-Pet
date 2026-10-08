@@ -171,6 +171,7 @@ export const nativeUiContract: ModuleContract = {
     "src/services/native-ui/decision-intents.ts",
     "src/services/native-ui/host-requests.ts",
     "src/services/native-ui/index.ts",
+    "src/harness/main.ts",
     "src/services/native-ui/management-intents.ts",
     "src/services/native-ui/permission-confirm.ts",
     "src/services/native-ui/pushes.ts",
@@ -204,8 +205,17 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "355100ade11e5ae03685048915c6cf2b07200db90f6c58fd64b3468989e0cd19",
+  sourceHash: "8767829e8b4c48dec141007af850b71b622346519ee20331acc41bbe7a70fa60",
   coverage: [
+    {
+      id: "nui-33",
+      feature: "关停排空已准入宿主请求与回执",
+      description: "stop 同步关闭宿主请求订阅与 admission；drain 等待此前全部 handler 及成功/失败回执完成，设置写与普通请求的回执都不提前报告完成。关停后的请求不再执行；处理、回执或退订失败进入 drain 的失败结果，供 Harness 的 CONFIG/会话/日志收尾报告消费。共享可见性与两平台隐藏释放由 Rust 内联单测和平台接线核对，不冒充 Node 侧界面实测",
+      why: "提前退出会漏掉已经接收的设置写盘或回执；把失败丢出 drain 会错误地报告持久化完成",
+      layer: "unit",
+      depth: "deep",
+      scenarios: ["native-ui-host-request-drain", "native-ui-host-request-drain-failure", "native-ui-host-request-drain-reply"],
+    },
     {
       id: "nui-01",
       feature: "状态推送的值一律经现有 getter（不复制默认值）",

@@ -69,8 +69,8 @@ jobs:
       # FLAKY 棘轮：只缩不放，观测到基线（test/flaky-baseline.json）之外的新 FLAKY 即失败
       - run: node scripts/check-flaky-ratchet.mjs
 
-  # 打包配置守卫：秒级、不装 Rust、不跑构建。Release 模式构建在 macOS runner 上按 10 倍
-  # 计费，所以平时的 push/PR 只用静态检查守住配置漂移；真正的双平台构建在 release.yml。
+  # 秒级静态守卫：打包配置与 Contract sourceHash 均在 Ubuntu 单跑，不装 Rust、不跑构建；
+  # 避免在 Windows/macOS 验证矩阵里重复付同一份 hash 校验成本。
   bundle-config:
     name: bundle-config
     runs-on: ubuntu-latest
@@ -88,3 +88,6 @@ jobs:
       # 只有 GITHUB_REF_TYPE === "tag" 时它才是 tag，脚本据此决定是否校验版本一致性
       #（见 scripts/check-bundle-config.mjs 的 resolveTag）。
       - run: pnpm run check:bundle
+
+      # Contract 的 sourceFiles hash 校验复用 E2E 启动预检实现；stale 输出模块与声明/当前 hash 并失败。
+      - run: pnpm run check:contract-hashes

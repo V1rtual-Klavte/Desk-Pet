@@ -138,6 +138,7 @@ Desk-Pet/
 
 装完之后不用手动追版本：应用启动约 30 秒后会自动检查一次更新，也可以随时到
 设置 → 通用 的「检查更新」手动检查。发现新版本后只需确认一次，应用会自动完成
+需要开启代理 确保能连上github
 下载、校验、重启与安装（安装由退出后的独立 helper 完成，全程无需手动步骤）；
 安装包与临时文件会在新版本首次启动时清理。
 
@@ -190,6 +191,7 @@ macOS 的窗口观察需要在「系统设置 → 隐私与安全性 → 辅助�
 | 本机打包 | 见[工作流说明](.github/workflows/README.md)「本机想验一次打包」；正式产物由 tag 触发 release.yml 构建 |
 | `pnpm run test:types` | TypeScript 类型检查与 Rust 编译检查 |
 | `pnpm run test:rust` | Rust 单元测试 |
+| `pnpm run check:contract-hashes` | 秒级契约源码校验；CI 与 E2E 共用同一检查入口 |
 | `pnpm run test:e2e -- --module <模块>` | 运行指定模块的 E2E 场景 |
 | `pnpm run test:memory-quality` | 真实记忆质量采集，独立审阅后判定 |
 | `pnpm run test:memory-bench:prepare` | 安装外部记忆基准数据（锁定版本 → 指定目录；数据集不进仓库） |

@@ -98,7 +98,7 @@ export const plannerContract: ModuleContract = {
   // plan-execution-stop-settlement 覆盖执行期取消的结算，plan-step-gate-each-step 覆盖逐步门）。
   // 计划条目本身的写入机制归 agent-runtime 契约（engine/plan/checkpoint-store.ts 在它的 sourceFiles 里），
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
-  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts",
+  sourceFiles: ["src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts",
     // 2026-10-06 提议入口批次补入：模型提议计划的执行相位（相位与自动入口共用确认/执行机制）。
     // 2026-10-06 去超时批次：plan/limits.ts 整文件删除（常量无消费者）；等待期预算豁免的
     // 唯一登记点补入（计划时限按累计等待扣除）。
@@ -106,7 +106,7 @@ export const plannerContract: ModuleContract = {
     // 2026-10-06 验收批次补入：计划结算原语（pl-14）—— 两条入口共享的写盘降级 / 收尾 /
     // 取消归宿的唯一实现（此前 runtime.ts 与 proposal.ts 各存一份同形复刻）。
     "src/services/engine/plan/settlement.ts"],
-  sourceHash: "8a6b68d3659ff6311602be703b951dc43477cad7b662ec565c75f3b3b4fed775",
+  sourceHash: "46bd16c05594e7bfabab3ecc52a165d2917cd3b835b0ceb951cae7effb338b54",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", layer: "integration", depth: "shallow", scenarios: ["plan-keyword-trigger"] },

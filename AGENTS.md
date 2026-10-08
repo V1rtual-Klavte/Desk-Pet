@@ -63,7 +63,7 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
   （规则入口与维护义务表）；命令与保留细节见其 [README](test/README.md)。本文件不重复测试域规则。
 - pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
   `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
-- CI 分两条线：push/PR 走 `ci.yml`（双平台验证 + `bundle-config` 配置校验，不做构建）；
+- CI 分两条线：push/PR 走 `ci.yml`（双平台验证 + `bundle-config` 配置与契约源码校验，不做构建）；
   tag `v*` 走 `release.yml`（双平台打包并发布到 GitHub Release）。
   发版前先跑 `pnpm run version:set <x.y.z>`，tag 与三处 version（根 `Cargo.toml`、
   `package.json`、`packaging/desktop.json`）由 CI 校验一致。

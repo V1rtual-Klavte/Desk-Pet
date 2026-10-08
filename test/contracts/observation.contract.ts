@@ -205,6 +205,20 @@
 // 发版不改它）。② **ob-04 描述收紧**：原文「字段非法、相对路径、重复路径一律退化为空清单」
 // 比实现严 —— 实现是逐条跳过、重复路径保留首现，只有没有任何合法目标时结果才为空（与 L2
 // 用例的实际断言一致）。①动了 sourceFiles ⇒ sourceHash 按当前源码复算。
+// 2026-10-08 定向复核（本批刷新；按 README「机械变更的定向复核」口径）：
+// 相对上一版声明值的唯一改动面 = `crates/native-host/Cargo.toml`，来自**更新取字节的系统
+// 代理批次**（`update/proxy.rs`）——macOS 段增 `system-configuration` 与 `core-foundation`，
+// Windows 段给 `windows-sys` 增 `Win32_Networking_WinHttp` feature。三项证据：
+// ① 具体 diff：manifest 的两处 target 依赖段各增行，无版本重排、无 feature 移除；
+//    `build.rs` 与 `[profile.*]` 未动（本文件所在仓库根 `Cargo.toml` 不在 sourceFiles）。
+// ② 受影响 coverage / caseId：**无**。三个新依赖只被 `update/proxy.rs` 消费（构造
+//    `ureq::Proxy` 与取 CFDictionary / WinHTTP 结构体），观察链一个符号都不碰 ——
+//    `observation_cmd.rs` 的读取终裁、决策解析、`monitor/*` 均未改，ob-01..ob-10 的
+//    实现点与描述不变，无 caseId 需要迁移。
+// ③ 同文件其余内容为何不在改动面：本次只增依赖行与 feature 名，不改变既有依赖的解析结果
+//    （新增包无版本冲突、不经 feature unification 影响既有 crate）。
+// 对照已核实：把 `crates/native-host/Cargo.toml` 换回上一版（git HEAD）复算，恰好等于上一版
+// 声明的 sourceHash —— 即本契约上一轮审查已覆盖当时工作树里的其它并发改动，本次增量只此一项。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -232,12 +246,12 @@ export const observationContract: ModuleContract = {
     // 属同一次「UI 协调移出领域面」裁定（W11b），其导出面的变化要重新审查该负向断言。
     "src/services/proactive/index.ts",
     "src/services/agent/memory/index.ts",
-    "src/services/engine/harness/model-gateway.ts",
+    // ob-02 depends on the runner's committed-user ingress hook; the observation topic module
+    // owns the evidence policy, while the generic user-turn lifecycle belongs to agent-runtime.
     "src/services/context/budget.ts",
     "src/services/images/budget.ts",
     "src/services/images/limits.json",
     "src/services/engine/runtime/snapshot.ts",
-    "src/services/engine/harness/runtime.ts",
     "src/services/engine/harness/index.ts",
     "src/services/engine/runtime/types.ts",
     "src/services/agent/runner.ts",
@@ -265,7 +279,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "78c5510acb51a8767ac7aa62db9b4cfc8a47dd96c80e4b710c49b7e6bf842237",
+  sourceHash: "e73fc586c17f28698ca3cc14f500e552cc7b120e86560fd8fb6e4e9670438667",
   coverage: [
     {
       id: "ob-01",

@@ -62,13 +62,13 @@ import type { ModuleContract } from "../host/types"
 
 export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
-  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts",
+  sourceFiles: ["src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts",
     // 2026-10-06 验收 analyze→generate 补入：RUNTIME_DATA 标记（块名与起止标签）的唯一定义点。
     // vp-04 / vp-08 / vp-23 的解析、剥离与缺失检测判据都以它为输入 —— 只改标记值不改 generator.ts
     // 时用例会变红而本契约 hash 不动（门禁失明形态）；变量池表头也引用同一份标记。
     "src/services/reply/protocol.ts",
     "src/services/session/store.ts"],
-  sourceHash: "fb99e0e9b225385fb3381fb03bf91c10b90b7fd5e29ed3f74b9309f9ce2f6293",
+  sourceHash: "9bbead15ed4192960909109c6a5322d58f81323d5a77781b32461f431a0444ec",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables(now, activeCardId) 产出 6 个系统变量：5 个由本地时间派生（hour / minute / dayOfWeek / isNightTime / isWeekend）+ activeCardId；isNightTime 的区间随 CONFIG 静默值派生（ai.proactive.quietStartHour/quietEndHour，非硬编码 23–9），覆盖跨夜 / 同日 / start==end（全不静默）三形态，边界值落在同一侧。**没有模式派生变量** —— pet/assistant 双模式与 general.mode 已全链删除，系统变量集合与删除前逐项一致，这是本轮重分析专门核对过的负向结论（含模式字段的注入点只剩 Card 变量与互动状态）", why: "Prompt 注入基础；模式面删除后必须确认系统变量集合没有跟着漂移，否则 Prompt 里会留下已不存在的维度；isNightTime 若留下旧硬编码，用户改静默时段后模型感知的「夜里」与产品的静默边界会互相矛盾", layer: "unit", depth: "shallow", scenarios: ["variable-system-vars", "variable-night-time-config"] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", layer: "unit", depth: "deep", scenarios: ["variable-pool-init"] },

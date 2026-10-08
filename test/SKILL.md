@@ -19,7 +19,7 @@ description: V1rtual-Desk-Pet 测试树的 Contract 分析、测试生成与覆�
 
 判定顺序固定（与 README「该写在哪一层」同一份判据）：
 
-1. **需要真 Rust 边界吗**（Bash 硬基线、许可内核、桌面能力、真实 IPC 差值）？→ **L4**：`test/e2e/scenes/` 里的 Scene，跑真 Tauri。
+1. **需要真 Rust 边界吗**（Bash 硬基线、许可内核、桌面能力、真实 IPC 差值）？→ **L4**：`test/e2e/scenes/` 里的 Scene，跑真原生宿主与随包 Node。
 2. 不需要 → **需要真 JSONL 落盘与 agent loop 吗**？→ **L3**：`test/integration/` 的朴素 vitest + 临时数据根 + fake Provider。
 3. 都不需要 → **L2**：`test/unit/` 的朴素 vitest，纯逻辑。
 
@@ -31,10 +31,12 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 
 1. 确定受影响模块和跨模块调用链；读取当前 `contracts/{module}.contract.ts`、其 `sourceFiles` 与相关测试（L2/L3 的 vitest 文件与 L4 的 Scene）。
 2. 分析当前公开行为、状态转换、持久化、取消/错误分支、边界值和平台差异。不要把计划文档中的 P6 或未接通能力写成已实现。
-3. 更新 `sourceFiles`，使其覆盖行为实际所在的源码；覆盖点描述当前可验证行为，不以文件名替代行为。
-4. 为每个 coverage point 设置唯一 id、`depth` 与 `scenarios`。`scenarios` 填已存在或将创建的 **caseId**（L2/L3 的写在测试名末尾的 `[caseId]` 标记里，L4 的写在 `meta.caseId`）；caseId 空间**跨层唯一**：同层重复由 `assertNoDuplicates` 在快层 reporter 里直接抛出（后者会静默压掉前者，旧的那条不再跑而报告照样全绿）；跨层重复与「声明了没人实现 / 实现了没声明」由全量 L4 收尾的跨层对账核对（`scripts/contract-layers.mjs`：unit / integration 读 `test/reports/caseids-*.json`，e2e 读本次报告；带过滤参数或 `--bench` / `--quality` / `--performance` 的运行跳过）。
-5. 根据实际风险设置 `minScenarios`、`minDeepScenarios`、`requireBoundary`、`requireErrorPath`。前两项的口径是 **L4 场景集**：只数 e2e 层覆盖点落地的场景（unit / integration 点由快层校验器负责，不在这里计数），按「当前实际 L4 场景数」校准、不许再少；没有 e2e 层覆盖点的契约写 0。值偏大会让全量严格运行在跑任何场景之前直接中止（报告 `scenes: []`）。只有确实无法经运行时入口触达时才声明 `unitOnly`，并写明 `unitOnlyReason`。
-6. 按项目的 source hash 计算方式刷新 `sourceHash`。不能只改 hash 而不完成前述行为审查。
+3. `sourceFiles` 只列行为的实际定义点，不因测试经过某个共享模块就加引用。共享 Harness 内核的统一审查 owner 是 `agent-runtime`；其它 Contract 仅为有明确 coverage 依据的域内定义点保留枢纽文件，并在数组旁注明 coverage ID 与行为位置。
+4. 对可界定的机械 diff，按 README「机械变更的定向复核」只审新增/改动项、直接消费者和相关 coverage/caseId，保留原 caseId 归属，并记录 diff 证据与排除范围。语义分支、跨域调用、权限/错误/协议/平台边界变化，或无法限定影响面时走完整 review。
+5. 更新 `sourceFiles`，使其覆盖行为实际所在的源码；覆盖点描述当前可验证行为，不以文件名替代行为。
+6. 为每个 coverage point 设置唯一 id、`depth` 与 `scenarios`。`scenarios` 填已存在或将创建的 **caseId**（L2/L3 的写在测试名末尾的 `[caseId]` 标记里，L4 的写在 `meta.caseId`）；caseId 空间**跨层唯一**：同层重复由 `assertNoDuplicates` 在快层 reporter 里直接抛出（后者会静默压掉前者，旧的那条不再跑而报告照样全绿）；跨层重复与「声明了没人实现 / 实现了没声明」由全量 L4 收尾的跨层对账核对（`scripts/contract-layers.mjs`：unit / integration 读 `test/reports/caseids-*.json`，e2e 读本次报告；带过滤参数或 `--bench` / `--quality` / `--performance` 的运行跳过）。
+7. 根据实际风险设置 `minScenarios`、`minDeepScenarios`、`requireBoundary`、`requireErrorPath`。前两项的口径是 **L4 场景集**：只数 e2e 层覆盖点落地的场景（unit / integration 点由快层校验器负责，不在这里计数），按「当前实际 L4 场景数」校准、不许再少；没有 e2e 层覆盖点的契约写 0。值偏大会让全量严格运行在跑任何场景之前直接中止（报告 `scenes: []`）。只有确实无法经运行时入口触达时才声明 `unitOnly`，并写明 `unitOnlyReason`。
+8. 按项目的 source hash 计算方式最后刷新 `sourceHash`。不能只改 hash 而不完成前述行为审查。
 
 ## `/generate test [module]`
 

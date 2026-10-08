@@ -14,6 +14,7 @@ import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { extname, join, relative } from "node:path"
 import { pathToFileURL } from "node:url"
+import { checkContractHashes } from "./check-contract-hashes.mjs"
 import { inspectTraceEvidence, retainTraceBundle, salvageTempTrace } from "./trace-evidence.mjs"
 import { pruneReportArtifacts } from "./report-retention.mjs"
 import { compareCaseIdLayers, extractContractCaseIds, formatCaseIdLayerIssues } from "./contract-layers.mjs"
@@ -94,56 +95,16 @@ const MODE_REPORTS_DIR = env.DESKPET_E2E_BENCH === "1" ? join(REPORTS_DIR, "benc
   : REPORTS_DIR
 const TRACES_DIR = join(MODE_REPORTS_DIR, "traces")
 
-/**
- * `--contracts=selected` 只校验 `--module` 选中的那一份 Contract。
- *
- * 默认仍是全量校验：「改了源码忘了刷 hash」正是这条门禁要挡的事。
- * 但单模块调试时会反复被别的模块的过期 hash 拦住（本轮就撞过一次），
- * 所以留一个显式开关，而不是把门禁默认放松。
- */
-function selectedContractFile() {
-  if ((env.DESKPET_E2E_CONTRACTS ?? "all") !== "selected") return null
-  const module = env.DESKPET_E2E_MODULE
-  if (!module) return null
-  return `${module}.contract.ts`
-}
-
-/**
- * Contract 预检：逐份重算 sourceFiles 的 hash 并和声明的 sourceHash 比对。
- *
- * 通过时返回「模块 → 预检 hash」的证明：Scene runner 不独立读源码重算，只能核对
- * 这份证明（contract-checker.ts）。没有证明或与契约声明不一致，runner 判为 stale
- * —— 绕过本脚本直接起原生宿主不会得到一份看起来通过的报告。
- */
-function checkContractHashes() {
-  const directory = join(process.cwd(), "test/contracts")
-  const only = selectedContractFile()
-  const targets = readdirSync(directory).filter(name => name.endsWith(".contract.ts") && (!only || name === only))
-  if (only && targets.length === 0) {
-    throw new Error(`[STALE] 找不到 ${only}，--module 与 --contracts=selected 对不上`)
-  }
-  const attestation = {}
-  for (const file of targets) {
-    const content = readFileSync(join(directory, file), "utf8")
-    const hashMatch = content.match(/sourceHash:\s*"([0-9a-f]*)"/)
-    const filesMatch = content.match(/sourceFiles:\s*\[([\s\S]*?)\]/)
-    const files = [...(filesMatch?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(match => match[1])
-    const actual = sha256([...files].sort().map(source => readFileSync(join(process.cwd(), source), "utf8")))
-    const expected = hashMatch?.[1] ?? ""
-    if (!expected || expected !== actual) {
-      throw new Error(`[STALE] ${file}: sourceHash=${expected || "<empty>"}, current=${actual}; 请重新运行 /analyze test`)
-    }
-    // 键取契约里声明的 module，与浏览器侧 collectContracts 的键一致。
-    // 取不到就退回文件名：浏览器找不到证明会判 stale，而不是误判为通过。
-    const moduleName = content.match(/^\s*module:\s*"([^"]+)"/m)?.[1] ?? file.replace(/\.contract\.ts$/, "")
-    attestation[moduleName] = actual
-  }
-  return attestation
-}
+/** The standalone checker and E2E use the same scope selection and source hash implementation. */
+const contractHashOptions = () => ({
+  root: process.cwd(),
+  contracts: env.DESKPET_E2E_CONTRACTS ?? "all",
+  module: env.DESKPET_E2E_MODULE,
+})
 
 let hashAttestation
 try {
-  hashAttestation = checkContractHashes()
+  hashAttestation = checkContractHashes(contractHashOptions())
 } catch (error) {
   console.error(`[E2E] Contract 校验失败: ${error instanceof Error ? error.message : String(error)}`)
   process.exit(1)
@@ -535,7 +496,7 @@ async function finalize(exitCode, reason) {
   if (reason) console.error(`[E2E] ${reason}`)
   try {
     try {
-      const finalAttestation = checkContractHashes()
+      const finalAttestation = checkContractHashes(contractHashOptions())
       if (JSON.stringify(finalAttestation) !== JSON.stringify(hashAttestation)) throw new Error("源码证明与启动时不同")
     } catch (error) {
       exitCode = 1

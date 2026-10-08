@@ -55,6 +55,8 @@ export const humanizerContract: ModuleContract = {
   sourceFiles: [
     "src/services/humanizer/protocol.ts",
     "src/services/humanizer/scheduler.ts",
+    // hz-04 is the production consumer check: runner commits/enqueues the reply and runtime
+    // transforms it and releases the typing owner at first reveal.
     "src/services/agent/runner.ts",
     "src/services/engine/harness/runtime.ts",
     // 2026-10-06 契约账本批次 systematic sourceFiles 复查补入：hz-04（生产入口分泡与顶栏

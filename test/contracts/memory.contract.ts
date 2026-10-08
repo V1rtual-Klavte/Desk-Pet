@@ -244,8 +244,11 @@ export const memoryContract: ModuleContract = {
     "src/services/engine/runtime/trace.ts",
     "src/services/engine/runtime/input-identity.ts",
     "src/services/error/failure-kind.ts",
+    // memory contract owns these domain-specific consumers: runtime performs request-bound
+    // recall gating, projection and custom-message injection (mm-17/mm-37/mm-38);
+    // HarnessSlots applies the memory compaction window and owns its lifecycle (mm-19/mm-40).
+    // Generic loop/gateway behavior remains anchored once by agent-runtime.
     "src/services/engine/harness/runtime.ts",
-    "src/services/engine/harness/model-gateway.ts",
     "src/services/engine/harness/harness-slot.ts",
     "src/services/engine/harness/delivery.ts",
     "src/services/engine/harness/session-repo.ts",
@@ -261,7 +264,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "205979a5f6330e5f6f218b947ad988227443c665b0ec6790e5597c775b0d6916",
+  sourceHash: "7325ae62e5e13f757bd3404c157f3eaaf5c694f7e4749ac8080ade2deb998afa",
   coverage: [
     { id: "mm-01", feature: "记忆来源准入（两类通道，不混池）", description: "准入分两条互不混淆的通道：用户事实只收 origin=user + taint=trusted_user + eligibleForMemory=true 的已提交条目（助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局）；系统观察只收 origin=derived_behavior + taint=derived + eligibleForMemory=true 的系统观察来源（画像稳定结论与静默了解观察摘要两个子类，见 mm-47），错配（如 derived_behavior+trusted_user）拒收。投递时刻冻结的 cardId 随来源落盘；派生来源独立登记（合成会话 behavior、身份含内容文本 hash），不冒充用户事实", why: "「谁说的」是记忆的准入判据：把工具/助手来源放进去，模型的一次措辞就会被当成用户长期事实；把系统观察混进用户事实池，归纳出的推断会被说成「你告诉过我」", layer: "integration", depth: "deep", scenarios: ["memory-source-admission", "derived-behavior-source-registration", "derived-behavior-gate-blocks-registration", "derived-behavior-new-source-version"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },

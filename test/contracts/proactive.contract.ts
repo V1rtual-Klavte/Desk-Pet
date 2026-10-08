@@ -250,7 +250,7 @@ import type { ModuleContract } from "../host/types"
 // `setOverride + flushConfig` 组合（抽屉/设置/主动斜杠等）的写盘次数由 2 降为 1（内容不变），
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "9af980aab5863847ff116948cc7187bf2676cde9ad9af817047f805d33b0959c",
+  module:"proactive",sourceHash: "96f579fc600803e0ad244c371b4e22119b7267ef92d59b7fc15e8dcfe5776597",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",
@@ -262,7 +262,8 @@ export const proactiveContract:ModuleContract={
     // 原 src/App.vue（scanner start/stop/refresh 引导接线 + UI 投影）随 WebView 删壳退役：
     // 原生 UI 的控制入口尚未接线到领域处理器（见 proactive/control.ts 头注），此处不指向替代物。
     // （注释内不写双引号路径：sourceHash 的读法会把方括号区间里任何双引号串当 sourceFile。）
-    "src/services/init.ts","src/services/agent/runner.ts","src/services/agent/types.ts","src/services/interaction.ts","src/services/session/index.ts","src/services/session/messages.ts","src/services/session/read-model.ts","src/services/engine/harness/runtime.ts",
+    // pr-05/pr-07 的生产送达在 runner.sendActiveMessage 落到真实提交与视图投影；通用回合内核归 agent-runtime。
+    "src/services/init.ts","src/services/agent/runner.ts","src/services/agent/types.ts","src/services/interaction.ts","src/services/session/index.ts","src/services/session/messages.ts","src/services/session/read-model.ts",
     "src/services/engine/harness/delivery.ts","crates/native-host/src/proactive/store.rs","crates/native-host/src/proactive/schema.rs",
     "crates/native-host/src/proactive/mod.rs","crates/native-host/src/proactive/commands.rs","crates/native-host/src/memory/protocol.rs","src/services/agent/memory/protocol.json","src/services/agent/memory/protocol.ts",
     "resources/defaults/personality/cards/default.md"],

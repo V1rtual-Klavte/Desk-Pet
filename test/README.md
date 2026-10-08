@@ -206,13 +206,25 @@ Trace 默认 `full`；`light` 省略 payload/snapshot 事件，`off` 只用于�
 
 **跨层 caseId 对账在全量 L4 的收尾路径真实执行**：启动脚本（`scripts/contract-layers.mjs`）把三层实际收集到的 caseId 汇总 —— unit / integration 读最近一次整层快层运行落盘的 `test/reports/caseids-*.json`，e2e 读本次报告的场景集（skip 不算）—— 与全部 Contract 声明的 `scenarios` 对比：声明了没有任何层携带（MISSING）、携带了没有任何声明（ORPHAN）、同一 caseId 被两层同时携带（CROSS-LAYER，违反跨层唯一）任一命中即打印明细并非零退出。带 `--module` / `--scene` / `--case` / `--tag` / `--suite` 过滤、或 `--bench` / `--quality` / `--performance` 特殊模式的运行跳过（集合残缺会误报），所以全量 L4 前要先跑过快层（`test:release` 的顺序保证）。快层逐层运行时 `test/host/caseid-reporter.ts` 只判自己那层并把整层集合落盘 —— 落盘文件正是这份对账的输入。
 
-Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新分析 Contract，再更新 hash 和场景。不要只替换 hash 来绕过门禁。`--strict` 还会拒绝 coverage、深度、边界、错误或入口规则的缺口。
+独立秒级入口 `pnpm run check:contract-hashes` 与 E2E 启动/收尾复核共用 `scripts/check-contract-hashes.mjs`：不编译、不启动宿主，直接校验全部 `sourceHash`，一次列出所有 stale 模块与声明/当前 hash，任一失败退出非零。push/PR 的 CI 在 Ubuntu `bundle-config` job 提前执行同一入口。调试可用 `pnpm run check:contract-hashes -- --contracts selected --module <模块>` 只看一份；默认全量检查。源码变更后应先按 SKILL 重新分析 Contract，再更新 hash 和场景。不要只替换 hash 来绕过门禁。`--strict` 还会拒绝 coverage、深度、边界、错误或入口规则的缺口。
+
+### 机械变更的定向复核
+
+`sourceFiles` 按行为定义点归属，不按「测试跑过这个模块」扩张。共享 Harness 内核的审查 owner 是 `agent-runtime`：`agent/runner.ts`、`engine/harness/runtime.ts`、`harness-slot.ts`、`model-gateway.ts` 的通用运行语义由它统一锚定。其它 Contract 只有在枢纽文件内确实定义了该域的行为、且已有 coverage 明确验证时才保留引用；就地注释点明对应 coverage ID 和函数/语义。例如 memory 的回合召回注入与 compaction window、humanizer 的生产消费链、图片路径/请求投影、主动上下文适配、观察 ingress 信号、会话旁路写入，都是各自 Contract 可保留的业务定义点。caseId 和 coverage 归属不因 sourceFiles 收窄而迁移。
+
+下列变化可做定向复核，但仍要贴着真实 diff 读源码、consumer 和对应 coverage/caseId；不能只刷新 hash：
+
+- `NativeDispatcher` 只新增一条命令时，核对新增分派臂的参数/结果形状、命令实现、TS `HostCommandMap` 对应项、精确消费者和关联覆盖点。无关分派臂不必重审；若改变既有命令的权限、错误或副作用语义，升级完整 review。
+- 只增删一个协议枚举值时，核对 Rust 定义、TS 对应项、编码/解码与所有对该值有分支的消费者，并核对覆盖的分类和边界。若重排数值、改线格式或改错误归宿，按跨层协议完整 review。
+- lockfile 变化先按包名/版本拆分项目自身版本元数据、lockfile 格式元数据与依赖解析结果。只改项目包版本行不算依赖升级；真实依赖版本、来源或 feature 变化则追到 manifest、构建脚本和直接 API 消费者。不要因为 lockfile 大片重排就略过其中真实依赖变更，也不要把项目版本行当作全量依赖升级审查。
+
+每次定向复核至少记录三项证据：具体 diff 路径/行、受影响 coverage ID 与 caseId、为何同一文件其余行为不在改动面。出现删除/重命名、既有分支语义变化、权限/安全/取消/错误/事务边界变化、跨域 consumer 增长、协议形状变化、依赖 API 或构建行为变化、ownership 说不清，或 diff 无法限定到单一机械项时，升级为完整 `/analyze` → `/generate` → `/audit`。sourceHash 在行为与归属审查完成后最后刷新。
 
 Scene runner 不做也不假装做独立校验：预检通过时把「模块 → sourceHash」的证明经私有测试通道交给运行中的 runner，契约声明与证明不一致、或根本没有证明（例如绕过启动脚本直接起原生宿主）时该 Contract 记为 `stale`，严格模式据此失败。
 
 `sourceHash` 只覆盖 Contract 声明的 `sourceFiles`，不是依赖闭包；两者的差异清单与是否收紧门禁见[未完成工作与已知缺口](../docs/plans/active/未完成工作与已知缺口.md) 的「不修/暂不修边界」小节。
 
-分层**不会**缩小「改一个共享文件判多个契约 STALE」的爆炸半径；真正的改善是检查变便宜（从「开桌面等几分钟」变成「几秒重跑」）。
+按行为 owner 收窄 `sourceFiles` 会减少枢纽改动造成的重复 stale；仍被多个业务点真实持有的文件，按上面的定向复核证据审查具体改动范围。
 
 ## Scene 规范（L4）
 

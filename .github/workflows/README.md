@@ -4,7 +4,7 @@
 
 | 工作流 | 什么时候跑 | 跑什么 | 出安装包吗 |
 |---|---|---|---|
-| `ci.yml` | 任何分支 push、任何 PR、手动（**`v*` tag 不跑**，见 `release.yml`） | 双平台验证（类型/编译 · Rust 单测 · L2 · L3 · 纪律扫描 · FLAKY 棘轮）+ `bundle-config` 配置校验 | **不会** |
+| `ci.yml` | 任何分支 push、任何 PR、手动（**`v*` tag 不跑**，见 `release.yml`） | 双平台验证（类型/编译 · Rust 单测 · L2 · L3 · 纪律扫描 · FLAKY 棘轮）+ Ubuntu `bundle-config`（打包配置与 Contract sourceHash） | **不会** |
 | `release.yml` | 推 `v*` tag，或手动触发 | harness bundle（一次）→ 双平台打包（macOS `.app`/`.dmg`/`.app.tar.gz` · Windows NSIS `.exe`）→ 汇总出 `update.json` 并发布到 GitHub Release | **会** |
 
 ---
@@ -17,7 +17,14 @@ git commit -m "fix(xxx): 改了什么"
 git push
 ```
 
-只跑 `ci.yml`，**不打包、不发版**。两个 job（`verify` 双平台 + `bundle-config`）都要绿。
+只跑 `ci.yml`，**不打包、不发版**。两个 job（`verify` 双平台 + Ubuntu `bundle-config`）都要绿；Contract hash 只在单个 Ubuntu job 校验一次。
+
+本机可独立检查全部 Contract 的 `sourceHash`，不启动 E2E：
+
+```bash
+pnpm run check:contract-hashes
+pnpm run check:contract-hashes -- --contracts selected --module native-ui
+```
 
 ## 发版：五步
 
@@ -78,6 +85,7 @@ Actions 页面选 `Release` → Run workflow → 填一个**已存在**的 tag�
 |---|---|
 | `check:bundle` 报 tag 与 version 不一致 | 跑 `pnpm run version:set <tag 的版本>`，重新提交后再打 tag |
 | `check:bundle` 报 `productName` 不是 ASCII | 产物文件名会带中文，GitHub 上传时**静默剥掉非 ASCII 字符**，发布侧随即匹配不上自己的产物名、**`update.json` 的组件条目被跳过** —— CI 全绿但用户永远收不到更新。`productName` 保持 ASCII，界面里的中文名来自 UI 资源，不受影响 |
+| `check:contract-hashes` 报 `[STALE] module=… sourceHash=… current=…` | 按 `test/SKILL.md` 重新分析对应 Contract 的行为与 `sourceFiles` 覆盖，再刷新声明的 `sourceHash`；不要只改 hash 消除失败 |
 | `update.json` 签名失败（update-feed: … 验签失败 / signer 报错） | 缺仓库 Secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（release.yml 映射给 cargo-packager 的 minisign signer），或签名私钥与 `packaging/update.json` 内嵌公钥对不上。私钥与口令只在仓库 Secrets 里，不写入任何文件。失败信息附**定位指纹**（`数据 <n> 字节 sha256=… · alg=… · keynum 与公钥一致/不一致`），据此分档：keynum **不一致** → 换过密钥或口令不对（minisign 的 keynum 是用口令派生密钥流异或过的，口令错必然对不上），核对 Secret 与内嵌公钥；keynum **一致**而主签名不过 → 公钥的 **pk 体**被抄错（keynum 在前 10 字节，不会跟着坏），拿发布侧 key 文件旁的 `<name>.key.pub` 第二行逐字对一遍。2026-10-06 就是这么栽的：`tauri.conf.json` 时代的 updater.pubkey 把第 40 字符 `X` 抄成 `W`，一路带进 `packaging/update.json`——此后**每一个签名都无法被验证**，而 tauri-action 与 cargo-packager 都只签不验，直到本流水线加上「签完现场验」才暴露 |
 | macOS 打包报 `ERROR No matching IconType` | `desktop.json` 的 `icons` 里没有 `.icns`，而主图是 1024×1024 PNG：它是 2 的整数幂、不进缩小分支，于是按 density=1 去 `tauri-icns` 找 1024 槽位——该槽位不存在。补 `resources/icons/mascot-app-icon.icns`（`iconutil -c icns` 由 1024 主图生成）并保留 PNG（Windows 的 `find_ico()` 要回落取它） |
 | Release 没建出来 / 只有部分平台产物 | `publish` 只在两个平台都成功后跑（不会发半份 `update.json`）；看挂掉那个 build job 的日志 |

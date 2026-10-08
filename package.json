@@ -29,7 +29,8 @@
         "test:smoke": "pnpm run test:e2e -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
         "test:release": "pnpm run test:types && node scripts/check-test-rules.mjs && node scripts/check-flaky-ratchet.mjs && pnpm run test:rust && node scripts/run-vitest-with-retry.mjs unit && node scripts/run-vitest-with-retry.mjs integration && pnpm run test:e2e -- --strict --repeat 3 --report json",
         "version:set": "node scripts/set-version.mjs",
-        "check:bundle": "node scripts/check-bundle-config.mjs"
+        "check:bundle": "node scripts/check-bundle-config.mjs",
+        "check:contract-hashes": "node scripts/check-contract-hashes.mjs"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.85.1",

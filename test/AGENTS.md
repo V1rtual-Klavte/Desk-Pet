@@ -47,7 +47,7 @@
   不会红就不合格；恒真子句、拿被测函数的输出当期望值、断言测试自己构造的值都算不合格。
   写前对照 SKILL 的自查清单（D1–D10）；扫描器只判形状，判不了区分力——那一层必须人工过。
 - **扫描器**：`node scripts/check-test-rules.mjs` 扫描 `test/`，命中即失败；新测试须零命中；守卫自身要有测试。
-- **Contract 同步**：源码或行为契约变化后按 SKILL 重新 analyze → generate，不能只改 `sourceHash` 过门禁；
+- **Contract 同步**：源码或行为契约变化后按 SKILL 重新分析 owner 与 coverage，不能只改 `sourceHash` 过门禁；共享 Harness 内核由 `agent-runtime` 统一审查，其它 Contract 仅保留有 coverage 依据的域内定义点；机械变更口径见 README。
   coverage 的 `scenarios` 写稳定 caseId，不写文件名 / 描述 / 导出名。
 - **验证纪律**：类型 / 编译不能代替运行验证；非 unit 场景需实际或 fake Provider 响应，
   `entry: production` 须经过 `sendMessage()`（fake 只替换 Provider，工具与 IPC 行为仍要断言）；

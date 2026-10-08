@@ -221,6 +221,10 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   sourceHash: "c74c083ccdae32ae751ba8f557a2d36e104e68ab13fe8166234b0433c9a0e96a",
+  // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
+  // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
+  // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
+  // (ar-16/ar-26/ar-34/ar-37). Domain-specific transformations stay covered by their owning modules.
   coverage: [
     {
       id: "ar-01",
