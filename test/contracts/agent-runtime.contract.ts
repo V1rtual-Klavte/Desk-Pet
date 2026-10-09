@@ -1,3 +1,4 @@
+// 2026-10-09 最终静态复核：空工具回合与准入去重已沿生产调用链复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新（含保存会话动态导入改指名 harness-slot，行为不变）。
 // 2026-10-06 验收批次：声明更新，sourceHash 批量刷新（主会话统一复算）。
 // 2026-10-05 本批复查与刷新（RUNTIME_DATA 协议缺失检测与提醒）：sourceFiles 变化 ——
 // runtime.ts（结算按冻结 Card 判定 runtimeDataMissing：缺区块且声明了 updateBy=llm 的 card
@@ -226,12 +227,39 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "174896542615e16c6007677d34bcbc471ea064ad7800062d33e7311fd8c02db3",
+  sourceHash: "b7f1522b5ec0b3cf9ed5edf4dffcd1212958d96b0a31363064926e6b8531b549",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
   // (ar-16/ar-26/ar-34/ar-37). Domain-specific transformations stay covered by their owning modules.
   coverage: [
+    {
+      id: "ar-40",
+      feature: "独立回合冻结空工具面",
+      description: "sendMessage 的 toolMode=none 沿生产入口透传，Plan开启也只发送一次 tools=[] 的请求；冻结面和激活面均为空，不挂内部回读/取用工具，不借用主动消息语义或改全局注册表；下一普通回合仍有会话回读工具",
+      why: "撤下注册工具不能移除 Harness 内部工具，事后断言也不能阻止工具调用，需要核对真正的 Provider 请求及下一普通回合的工具面",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["runtime-empty-tools-turn"],
+    },
+    {
+      id: "ar-38",
+      feature: "普通输入去重的准入结算与并发所有权",
+      description: "最近文本与去重时间只在持久准入后提交；同文在途请求等待首个 owner 的结算，成功后才过滤，拒绝释放后重新竞争。不同文本释放互不覆盖，release 后的晚到 commit 无效；图片绕过同文过滤，但成功后仍更新最近文本。unknown slash 与技能准入不进入普通文本去重",
+      why: "提前记账会把未发送的输入当作重复吞掉；无 owner 的撤回会抹掉另一条已准入输入的去重事实",
+      layer: "unit",
+      depth: "deep",
+      scenarios: ["agent-preprocess-dedup-concurrent-release", "agent-preprocess-dedup-concurrent-commit", "agent-preprocess-dedup-release-owner", "agent-preprocess-dedup-images"],
+    },
+    {
+      id: "ar-39",
+      feature: "拒绝后原文重发的生产入口与单次落盘",
+      description: "经 sendMessage 的忙碌准入边界夹具先拒绝且不落用户正文；解除忙碌后在原去重窗口内重发相同文本可进入真实 agent loop、消费 fake Provider 并落一条 JSONL 用户条目。成功准入后的同文不再调用 Provider，也不重复追加正文；实际压缩操作沿用既有 L4 覆盖，此点不冒充真实压缩任务",
+      why: "只测预处理状态不能证明生产入口会撤回拒绝输入；需要回读 JSONL 与 Provider 次数一起区分吞输入和重复落盘",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["runtime-dedup-after-admission"],
+    },
     {
       id: "ar-01",
       feature: "生产消息入口",

@@ -13,8 +13,8 @@ export const RETENTION_MAX_BYTES = 200 * 1024 * 1024
 
 /** 日期戳报告本体：<stamp>.(json|txt|html) */
 const REPORT_NAME = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+)\.(?:json|txt|html)$/
-/** 日期戳报告的派生卫星：<报告名>.review.json / <报告名>.scored.json */
-const REPORT_SATELLITE = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+\.(?:json|txt|html))\.(?:review|scored)\.json$/
+/** 日期戳报告的派生卫星与外部判分输入快照均跟随父报告淘汰。 */
+const REPORT_SATELLITE = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+\.(?:json|txt|html))\.(?:review|scored(?:-[a-z0-9-]+)?|hypotheses(?:-[a-z0-9-]+)?|verdicts-[a-z0-9-]+)\.(?:json|html|jsonl)$/
 
 /**
  * 报告保留体系的组键：本体取自身；两类卫星归到父报告名下；其余（caseids / flaky /

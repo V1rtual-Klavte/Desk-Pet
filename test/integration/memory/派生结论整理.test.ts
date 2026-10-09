@@ -34,12 +34,15 @@ vi.mock("@/services/agent/memory/ipc", () => ipc)
 const sources = vi.hoisted(() => ({
   collectAllMemorySources: vi.fn(async () => []),
   collectBehaviorMemorySources: vi.fn(async () => []),
+  // 静默了解来源的真实实现会走 observation/memory 证据对账（有独立套件覆盖），这里同样只留空替身。
+  collectUnderstandingMemorySources: vi.fn(async () => []),
 }))
 // 真实现（isDerivedBehaviorSource / conclusionSlotOf / 常量）保留，采集入口换成替身。
 vi.mock("@/services/agent/memory/sources", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/services/agent/memory/sources")>()),
   collectAllMemorySources: sources.collectAllMemorySources,
   collectBehaviorMemorySources: sources.collectBehaviorMemorySources,
+  collectUnderstandingMemorySources: sources.collectUnderstandingMemorySources,
 }))
 
 const harness = vi.hoisted(() => ({

@@ -66,12 +66,12 @@ vi.mock("@/services/behavior", async importOriginal => {
   return {
     ...actual,
     getBehaviorSnapshot: () => {
-      const activity = { byHour: behaviorState.byHour, activeMs: 0, idleMs: 0, unobservedMs: 0, petForegroundMs: 0 }
+      const activity = { byHour: behaviorState.byHour, activeMs: 0, idleMs: 0, unknownMs: 0, unobservedMs: 0, petForegroundMs: 0 }
       return {
-        revision: 1, generatedAt: Date.now(),
+        measurementVersion: 2, revision: 1, generatedAt: Date.now(),
         quality: { status: behaviorState.quality, sampleDays: 3, coverageRatio: 0.8, eligibleCollectionMs: 1, reasons: [] },
         rhythm: { weekdays: Array(24).fill(0) as number[], weekends: Array(24).fill(0) as number[], days7: 3, days30: 3 },
-        apps: { categoryShare: {} as never, commonAppIds: [] as string[], unknownRatio: 0 },
+        apps: { categoryShare: {} as never, commonAppIds: [] as string[], unknownRatio: 0, classificationRatio: 0, classifiedMs: 0, unclassifiedMs: 0 },
         focus: { segments: 0, totalMs: 0, longestMs: 0, meanMs: 0, switchesPerHour: 0, currentContinuousMs: 0, currentCategory: null },
         activity,
         weekly: { days: 3, focus: { segments: 0, totalMs: 0, longestMs: 0, meanMs: 0, switchesPerHour: 0, coveredMs: 0 }, activity },
@@ -168,15 +168,17 @@ describe("静默了解决策输入补齐", () => {
     const observation = await bootObservation()
     const { appendUnderstanding, appendTopicEvidence } = await import("@/services/observation/store")
     const now = Date.now()
+    // 独立 artifact 必须 <3（quality=thin）：本用例考决策输入块，而 quality=ready 时调度器
+    // 转入话题批次、不再发起决策调用（ready 路径由 了解层与话题来源.test.ts 覆盖）。
     await appendUnderstanding([
-      { sourceId: "under-1", kind: "file", observedAt: now - 1_000, expiresAt: now + 600_000, summary: "摘要一：项目结构已了解" },
-      { sourceId: "under-2", kind: "window", observedAt: now - 2_000, expiresAt: now + 600_000, summary: "摘要二：正在读文档" },
+      { sourceId: "under-1", evidenceId: "a".repeat(64), evidenceHash: "b".repeat(64), kind: "file", observedAt: now - 1_000, expiresAt: now + 600_000, summary: "摘要一：项目结构已了解" },
+      { sourceId: "under-2", evidenceId: "c".repeat(64), evidenceHash: "d".repeat(64), kind: "window", observedAt: now - 2_000, expiresAt: now + 600_000, summary: "摘要二：正在读文档" },
     ])
     await appendTopicEvidence([
-      { topic: "软件架构", weight: 2, sourceId: "topic-src-a", observedAt: now - 1_000, cardId: "card-decide-01" },
-      { topic: "软件架构", weight: 2, sourceId: "topic-src-b", observedAt: now - 1_000, cardId: "card-decide-01" },
-      { topic: "桌面宠物", weight: 1, sourceId: "topic-src-c", observedAt: now - 1_000, cardId: "card-decide-01" },
-      { topic: "桌面宠物", weight: 1, sourceId: "topic-src-d", observedAt: now - 1_000, cardId: "card-decide-01" },
+      { topic: "软件架构", category: "technology", stance: "neutral", sensitivity: "none", weight: 2, sourceId: "topic-src-a", observedAt: now - 1_000, cardId: "card-decide-01" },
+      { topic: "软件架构", category: "technology", stance: "negative", sensitivity: "none", weight: 2, sourceId: "topic-src-b", observedAt: now - 1_000, cardId: "card-decide-01" },
+      { topic: "桌面宠物", category: "hobby", stance: "quoted", sensitivity: "none", weight: 1, sourceId: "topic-src-c", observedAt: now - 1_000, cardId: "card-decide-01" },
+      { topic: "桌面宠物", category: "hobby", stance: "hypothetical", sensitivity: "none", weight: 1, sourceId: "topic-src-d", observedAt: now - 1_000, cardId: "card-decide-01" },
     ])
     const session = await import("@/services/session")
     session.activeSessionId.value = "session-decide-01"
@@ -223,9 +225,10 @@ describe("静默了解决策输入补齐", () => {
       expect(behavior.hours.map(item => item.activeMinutes), "画像活跃分钟没有按钟点映射").toEqual(behavior.hours.map(item => item.hour))
 
       // 话题权重：top-N 与占比；只有 ≥2 个独立来源的话题入榜
-      const topics = decision.topics as Array<{ topic: string; share: number }>
+      const topics = decision.topics as Array<{ topic: string; participationShare: number; stances: string[] }>
       expect(topics.map(item => item.topic), "话题块没有带上权重最高的标签").toEqual(["软件架构", "桌面宠物"])
-      expect(topics[0]?.share, "话题占比不是 0-1 的小数").toBeCloseTo(2 / 3, 2)
+      expect(topics[0]?.participationShare, "话题占比不是 0-1 的小数").toBeCloseTo(2 / 3, 2)
+      expect(topics[0]?.stances, "讨论立场没有随参与证据保留").toEqual(["negative", "neutral"])
 
       // 长期记忆：条数与单条字符都有界
       const memoryBrief = decision.memory as string[]

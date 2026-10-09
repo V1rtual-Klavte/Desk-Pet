@@ -4,7 +4,7 @@
 //
 // 画像层算出的稳定结论经 `collectBehaviorMemorySources` 登记为 `derived_behavior` 来源：
 //  · 非 reliable 档不登记任何来源（原始观察进不了记忆）；
-//  · 来源身份含结论文本 hash：同结论幂等、新结论即新版本；
+//  · 来源身份包含测量版本和结论文本 hash：同结论幂等、新结论即新来源版本；
 //  · 语义是「系统观察得出的、可撤销的结论」：taint=derived、不可冒充 trusted_user。
 //
 // 边界替换：画像快照（真聚合会读采集器内存）用替身冻结；来源登记（Rust IPC）用替身捕获；
@@ -25,6 +25,8 @@ vi.mock("@/services/behavior", async (importOriginal) => {
 
 const ipc = vi.hoisted(() => ({ registerMemorySources: vi.fn(async (_sources: unknown[]) => 0) }))
 vi.mock("@/services/agent/memory/ipc", () => ipc)
+const evidence = vi.hoisted(() => ({ reconcileDerivedMemoryEvidence: vi.fn(async () => undefined) }))
+vi.mock("@/services/agent/memory/evidence", () => evidence)
 
 import { collectBehaviorMemorySources } from "@/services/agent/memory/sources"
 
@@ -76,12 +78,13 @@ describe("派生结论来源登记", () => {
       expect(source.taint, "系统观察冒充了用户事实的 taint").toBe("derived")
       expect(source.eligibleForMemory).toBe(true)
       expect(source.sessionId).toBe("behavior")
-      expect(String(source.entryId)).toMatch(/^conclusion:(rhythm|apps|focus|activity)$/)
+      expect(String(source.entryId)).toMatch(/^conclusion:(rhythm|apps|focus|activity):2$/)
       expect(String(source.evidence)).toContain("判据")
       // 来源身份 = 槽位 + 结论文本 hash 前缀：文本变则身份变（新版本）。
       const expectedHash = createHash("sha256").update(String(source.evidence)).digest("hex")
       expect(source.contentHash).toBe(expectedHash)
-      expect(String(source.sourceId)).toBe(`behavior-conclusion:${String(source.entryId).slice("conclusion:".length)}:${expectedHash.slice(0, 16)}`)
+      const slot = String(source.entryId).slice("conclusion:".length).replace(/:2$/, "")
+      expect(String(source.sourceId)).toBe(`behavior-conclusion:${slot}:2:${expectedHash.slice(0, 16)}`)
       expect(source.seq).toBe(1_700_000_000_000)
     }
     // 同输入重登记：身份稳定（幂等），不因重跑产生新来源版本。
@@ -115,8 +118,8 @@ describe("派生结论来源登记", () => {
     })
     behavior.snapshot = snapshotOf(moved)
     const after = await collectBehaviorMemorySources(1_700_000_001_000)
-    const rhythmBefore = before.find(source => source.entryId === "conclusion:rhythm")!
-    const rhythmAfter = after.find(source => source.entryId === "conclusion:rhythm")!
+    const rhythmBefore = before.find(source => source.entryId === "conclusion:rhythm:2")!
+    const rhythmAfter = after.find(source => source.entryId === "conclusion:rhythm:2")!
     expect(rhythmAfter.evidence, "作息输入变了但结论文本没变（用例前提失效）").not.toBe(rhythmBefore.evidence)
     expect(rhythmAfter.sourceId, "新结论与旧版本共用身份（覆盖语义被破坏）").not.toBe(rhythmBefore.sourceId)
     expect(rhythmAfter.seq, "新版本没有推进水位序号").toBeGreaterThan(rhythmBefore.seq)

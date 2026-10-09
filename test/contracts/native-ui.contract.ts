@@ -1,3 +1,4 @@
+// 2026-10-09 最终静态复核：会话投影侦听同长度追加，提示音限定同会话新助手身份，既有图片与意图边界保留；未执行测试。
 // 原生 UI 桥契约（Node ↔ 原生宿主的数据流面）。
 //
 // 范围：`test/unit/native-ui/**` 与 `test/integration/native-ui/**` 的全部 caseId 锚点，
@@ -205,8 +206,17 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "8767829e8b4c48dec141007af850b71b622346519ee20331acc41bbe7a70fa60",
+  sourceHash: "71e4698f5252638860738af9a607fe28da4df8222ac6bbbca9584ae60a431fea",
   coverage: [
+    {
+      id: "nui-34",
+      feature: "可见正文窗口的同长度更新与回复音效",
+      description: "正文浅快照发生条目变化就推送最新整帧，不依赖长度增长：达到可见上限后追加用户、助手、系统及已确认主动条目仍同步尾窗；同数量同身份的正文替换也同步新内容。新助手尾项按稳定身份触发回复 WAV，首条问候、会话切换和同身份重载不误响",
+      why: "达到上限时追加与裁剪保持长度不变，长度监听会让已提交消息留在 Node 但原生界面永久停在旧尾窗",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["native-ui-transcript-at-cap", "native-ui-transcript-same-length-replace"],
+    },
     {
       id: "nui-33",
       feature: "关停排空已准入宿主请求与回执",

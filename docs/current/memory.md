@@ -1,24 +1,48 @@
 # 当前记忆与会话基础
 
-长期记忆由 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`）承载，经 `MemoryProvider` 只读端口进入 Runtime。召回是「本地检索 + 可关闭的 adaptive 重排」两段：本地结果先算出来并随时可用，重排失败、超时或被取消都退回同一份本地顺序。召回按 `estimateContextTokens` 对整条事实计量，超单条／tier／总预算的条目整条淘汰并记录预算原因，不截断正文。Card 变量与用户长期事实分别管理（如用户给角色起的名字进 Card 变量，不进用户长期事实）。
+长期记忆由 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`）承载。`MemoryProvider` 统一组织用户事实、派生画像和会话原话召回：原问题与有界改写查询共同找候选，可关闭的 adaptive 重排在候选并集上执行一次；失败回退本地结果。召回按 `estimateContextTokens` 对整条事实计量，超单条／tier／总预算的条目整条淘汰并记录预算原因，不截断正文。Card 变量与用户长期事实分别管理（如用户给角色起的名字进 Card 变量，不进用户长期事实）。
 
-## 记忆的五层与两条链路
+## 记忆的五层与召回链路
 
 | 层 | 承载 |
 |---|---|
 | 真相层 | `sessions/` 的 JSONL 会话正文，永久保留、不迁移、不替代 |
-| 记忆层 | Rust SQLite：已接受条目 + 来源 + 治理记录 + 可重建的 FTS5 索引 |
+| 记忆层 | Rust SQLite：已接受条目 + 来源 + 治理记录；会话片段与 FTS5 均为可重建索引 |
 | 投影层 | `memory/exports/` 下的只读 Markdown；模型不能直接写 |
 | 作业层 | dreaming（Light → Review → 自动 Publish），离线整理只在事务提交前短暂保留候选 |
-| 端口层 | `MemoryProvider` 是唯一召回入口，连核心画像也走它 |
+| 端口层 | `MemoryProvider` 统一改写、取候选、重排与预算；原话内部读取复用 `conversation` 模块 |
 
 记忆语义分四类：核心画像（用户确认并置顶的称呼与稳定偏好）、事实/偏好、经历、短期事项（带有效期，到期自动退出召回）。`kind = fact | preference | episode | working`，`scope = user | card | session`。另有来源类别 `origin = user | derived_behavior`（条目的 origin 由来源类别唯一派生，没有第二个存储位）：`user` = 用户本人可信输入沉淀的用户事实；`derived_behavior` = **系统观察得出的、可撤销的结论**（行为画像的稳定结论沉淀，2026-10-06 方案 b；抽取与准入口径见[行为画像](behavior.md#稳定结论沉淀)）。
 
-**准入判据是「谁说的」，分两条互不混淆的通道**：用户事实只收 `origin=user` + `taint=trusted_user` + `eligibleForMemory=true` 的已提交条目——助手台词、工具结果、压缩摘要、主动搭话与缺来源标记的历史条目一律出局（它们都可能又长又具体，但没有一条能证明是用户本人说的）；系统观察只收 `origin=derived_behavior` + `taint=derived` + `eligibleForMemory=true` 的画像结论来源（reliable 档才有，见[行为画像](behavior.md)）。**两类分区存放、分区召回，不混池**：混用来源的候选整条拒绝；系统观察永不进核心画像、不做 working 事项、不能被改写成用户事实（反向亦然）——模型写入（`memory_change`）与用户区整理在结构上引用不到派生来源，不存在「顺手合并」的路径；错误配对的来源（如 `derived_behavior` + `trusted_user`）登记即拒收。投递时刻冻结的 `cardId` 随来源落盘，事后不从「当前正在显示的 Card」反推。
+**准入判据是「谁说的」，分两条互不混淆的通道**：用户事实只收 `origin=user` + `taint=trusted_user` + `eligibleForMemory=true` 的已提交条目——助手台词、工具结果、压缩摘要、主动搭话与缺来源标记的历史条目一律出局（它们都可能又长又具体，但没有一条能证明是用户本人说的）；系统观察只收 `origin=derived_behavior` + `taint=derived` + `eligibleForMemory=true` 的画像结论（reliable 档才有）或带稳定 artifact 与实际输入版本证据的了解摘要（见[行为画像](behavior.md)）。**两类分区存放、分区召回，不混池**：混用来源的候选整条拒绝；系统观察永不进核心画像、不做 working 事项、不能被改写成用户事实（反向亦然）——模型写入（`memory_change`）与用户区整理在结构上引用不到派生来源，不存在「顺手合并」的路径；错误配对的来源（如 `derived_behavior` + `trusted_user`）登记即拒收。投递时刻冻结的 `cardId` 随来源落盘，事后不从「当前正在显示的 Card」反推。
 
 **检索链路**：同一库版本下先过滤 scope、状态、有效期与遗忘 → 本地合并 FTS5 trigram、主题/别名与**短词 LIKE 回退**（FTS 命中集合只计算一次，按条目 id 与版本精确关联），本地顺序按相关度优先、importance／时间／id 依次兜底 → 可选重排 → 按预算取全文。FTS5 trigram 的 `MATCH` 不匹配少于三个 Unicode 字符的查询（「咖啡」这类两字词在它下面恒零命中），所以两字中文查询靠短词回退兜住。一次召回从同一 SQLite 读快照取 user／当前 Card／当前 session 候选、置顶核心与精确目标，并带回该快照的 revision；核心画像（pinned）无关键词也独立读取，不参与重排、不因查询词缺席而消失。adaptive 只在动态候选超过 6 条时调用，最多发送 12 条且受输入预算约束，白名单只含真正发送的 id，合法空数组表示不使用动态记忆；未知 id、坏 JSON、散文一律判无效并回退本地顺序。
 
-**请求落位**：核心画像与动态召回合成一个记忆块，作为**尾随 custom 消息**贴在请求视图末尾（不是 system prompt）：记忆每回合都可能变，留在 system prompt 里会把前缀缓存断在会话正文上游。记忆块带 `eligibleForMemory=false`，因此召回内容不会被下一轮整理当成用户新事实重新提取。**呈现按 origin 可区分**：记忆块按「[标签 | provenance] 正文」逐行渲染，`derived_behavior` 条目的 provenance 位固定为「系统观察·可撤销的推断（非用户原话）」（`DERIVED_PROVENANCE_MARK`，provider 投影时写入；占用行预算、逐行可辨）——模型不得把观察说成「你告诉过我」。额度先按「当前视图已用量」算出真实可用量，再逐条按预算追加；空间不足只丢可选记忆并记录 `budgetDrops`，不截断块内文字；两区共用召回预算与重排，不设独立配额。
+**请求落位**：核心画像、动态事实与会话片段合成一个参考块，作为**尾随 custom 消息**贴在请求视图末尾（不是 system prompt）：记忆每回合都可能变，留在 system prompt 里会把前缀缓存断在会话正文上游。记忆块带 `eligibleForMemory=false`，因此召回内容不会被下一轮整理当成用户新事实重新提取。**呈现按 origin 可区分**：记忆块按「[标签 | provenance] 正文」逐行渲染，`derived_behavior` 条目的 provenance 位固定为「系统观察·可撤销的推断（非用户原话）」（`DERIVED_PROVENANCE_MARK`，provider 投影时写入；占用行预算、逐行可辨）——模型不得把观察说成「你告诉过我」。额度先按「当前视图已用量」算出真实可用量，再逐条按预算追加；空间不足只丢可选记忆并记录 `budgetDrops`，不截断块内文字；两区共用召回预算与重排，不设独立配额。
+
+## 统一查询改写与候选重排
+
+默认 SQLite MemoryProvider 是事实、核心画像、派生观察与会话原话的统一检索入口。原问题先获取本地候选，`ai.memory.queryRewrite=adaptive` 将指代/记忆/画像词作为线索；原查询零非置顶动态事实命中时，个人/历史问句还有无当前前文的中性扩词后备，短跟进则必须有已提交可见前文，社交确认句不额外调用模型。每次最多补充两条短查询；原问题始终保留，改写只生成检索词，不回答或写入事实。时间参照沿用当前时间注记（评测的题目时间锚也在该入口），当前输入和未来消息不冒充历史上下文。JSON、长度、数量与取消均校验，失败沿用原查询。
+
+用户事实、派生画像与原话候选仍先过各自来源、scope、状态、有效期、遗忘与删除规则，再进入同一候选并集。`ai.memory.rerank=adaptive` 只对足够多的动态候选调用一次有界重排，描述中明确事实/系统观察/原话角色及出处；置顶核心画像保留优先级，不参加重排。模型只能选择实际发送的候选ID，不能创造或修改内容；合法空数组不补回候选，未知ID、坏JSON、超时或不可用回退本地次序。
+
+两种增强共用现有召回总时限，不把改写、事实重排和原话重排叠成三套独立模型流程。回合内冻结查询计划和配置；写后资格刷新沿用计划并跳过第二次模型重排。主动精确目标及反馈引用保持精确解引用，不扩展到全部历史。失败只记录受控 channel/reason，原话和查询正文不进普通trace；预算最终仍由 `recallMemory` 裁决。
+
+两个技术开关只经运行时 YAML 修改，默认改写 `adaptive`、重排 `off`；路径和生效说明见[运行时数据](runtime-data.md#配置变更同步清单)。真实 CONFIG-DEV.yaml 未改，本轮没有质量或费用收益实测。
+
+## 当前会话与跨会话原文检索
+
+“用户是什么样的人”和“当时谁说过什么”分开回答。助手推荐、说明与承诺保留为助手原话，不转成用户事实；错误的旧话也只能证明当时说过。查询覆盖当前数据根下全部 JSONL，包括已关闭标签的会话，不受聊天视图条数上限或压缩摘要限制。会话不拥有 Card 归属，不能根据当前 Card 反推旧助手身份。
+
+`session/readVisibleSessionTranscript` 复用聊天投影和主动送达回执核验；只索引已提交且用户可见的 user/assistant 正文，剥离 RUNTIME_DATA，排除 thinking、工具结果、控制条目与未确认主动输出。可信用户事件作为普通助手回应的锚点；外部输入和主动触发打断该锚点。原始 JSONL 为真相源，索引保存 entry/event ID、seq、角色、时间与 Unicode 片段坐标。
+
+首次查询按需建索引，后续只重读指纹变化的会话。长正文按 360 个 Unicode 字符、64 字符重叠分块；刷新分批暂存，完整快照提交前旧索引保持可读，指纹和遗忘代 CAS 拦住过期写回。FTS5 trigram 与参数化短词 LIKE 共用事实检索的分词口径；命中用户问题时可带回有界同轮助手窗口。明确短指代在关键词无命中时才取近期历史，普通无命中不补无关片段。索引刷新与删除共用会话锁，查询后和每次 Provider 请求前复核原会话仍存在。
+
+默认 SQLite 召回策略统一启用事实、派生画像与原话通道；显式替换 MemoryProvider 的策略由其自身提供证据。它们共用既有 core + recall 总预算：核心事实优先，会话片段最多使用 recall 额度的 60%，其余动态证据按统一候选次序填入。片段带角色、时间及原会话/条目/分块出处，最终渲染 trace 只登记真正进入请求的引用，不写原话、thinking 或路径。引用属于参考数据，不是指令；空间不足丢整个片段，不把片段冒充完整事实。主动表达仍只解引用调度器选定的事实，不扫描全部历史。
+
+会话索引使用同一 Rust MemoryStore 连接，自己的 revision 不推进事实 revision。遗忘同事务抑制来源用户条目及锚定它的助手原话，重建不复活；清空还保存原会话 seq 边界，旧时间戳和时钟变化不能绕过。删除正文后清理其索引，关闭标签保留正文与检索资格。原始聊天或已经发出的模型请求并不会因记忆治理被追回。
+
+召回受现有 recallTimeoutMs 与运行取消控制。超时停止等待，晚到索引不能发布，故障走统一日志与会话审计；首次建索引的冷成本及长会话性能尚未实测。源码入口是 [conversation.ts](../../src/services/agent/memory/conversation.ts) 与 [Rust conversation.rs](../../crates/native-host/src/memory/conversation.rs)。这借鉴了 OpenViking 的原文保留与按需读取思路，没有引入其服务、向量库或模型摘要调用。
 
 ## 记忆库的治理不变量
 
@@ -26,7 +50,7 @@
 - **operation_id 幂等**：提交结果未知时先查这条操作记录，绝不盲重放。
 - **基准版本**：写入与发布都带 `baseRevision`，不匹配返回 `MEMORY_CONFLICT`，由调用方重新读取后再决定；不静默覆盖。
 - **候选隔离**：Review 的产物先落为 `prepared`，不进 FTS、不进召回；作业完成时由 `memory_dreaming_commit` 复核来源、版本、hash、遗忘代并在单事务内将候选变成 `accepted`、生成的记忆条目写为 `active`。用户面板不提供人工发布门，只做提交后的查看、纠正与遗忘。
-- **遗忘闭包**：遗忘写 `memory_tombstones`（稳定事件身份 session+entry+content_hash），同时清正文、FTS 与候选，并递增 `forget_epoch`。之后**索引重建、旧水位补扫、旧批次发布都不会让内容复活**；抑制匹配的是稳定身份而不是可重建的行号。行为画像清除（`/behavior clear`）对全部 `derived_behavior` 来源复用同一闭包口径（先失效主动引用、再写墓碑并清正文/索引/候选、推进 `forget_epoch` 与 revision；库里没有派生数据时不动代际），已清的结论文本不能迟到回灌。清除静默了解复用同一闭包、范围收在 `understanding:` 来源（`memory_apply_change` 的 `forget_understanding`，actor 固定 internal），已清文本同样不得迟到回灌。
+- **遗忘闭包**：遗忘写 `memory_tombstones`（稳定事件身份 session+entry+content_hash），同时清正文、FTS 与候选，并递增 `forget_epoch`。之后**索引重建、旧水位补扫、旧批次发布都不会让内容复活**；抑制匹配的是稳定身份而不是可重建的行号。行为画像清除（`/behavior clear`）对全部 `derived_behavior` 来源复用同一闭包口径（先失效主动引用、再写墓碑并清正文/索引/候选、推进 `forget_epoch` 与 revision；库里没有派生数据时不动代际），已清来源身份不能迟到回灌。计量升级通过内部 `forget_derived_behavior` 复用同一闭包，读取和登记派生记忆前先处理持久撤销待办，事务失败不确认完成；用户事实不受影响。清除静默了解复用同一闭包、范围收在 `understanding:` 来源（`memory_apply_change` 的 `forget_understanding`，actor 固定 internal），已清来源同样不得迟到回灌。缺证据的旧了解记录只可展示，不参与就绪或沉淀，已沉淀部分在首次读取前按持久待办撤销。
 - **范围隔离**：`card` 范围的记忆绑定 Card id（外观 Profile 切换不改变归属）；跨 scope 不隐式 supersede。
 - **删除范围分开讲**：「记住/忘记」只清应用管理的记忆与它的回灌资格；原始聊天正文、已导出的文件和外部备份各自有独立的删除入口，界面必须分别说明。当前会话正文里仍然存在的被忘内容无法追回，不能宣称模型已经完全不知道。
 
@@ -38,7 +62,7 @@
 
 **用户入口与运行期同步**：原生设置窗的「记忆」页经宿主请求面（`memory_overview` / `memory_item_detail` / `memory_item_change`）读取库总览、条目详情与历史版本（库总览行副标题与详情「来源类别」一栏对 `origin=derived_behavior` 的条目追加同一枚呈现标记 `DERIVED_PROVENANCE_MARK`——与记忆块逐行呈现同一份判据与措辞，用户事实不标注；「已记住」列表按 5 条一页分页——2026-10-06 用户裁决，分页只在原生 UI 层做，`memory_overview` 仍返回全部条目，切片与页码 clamp 在设置域纯函数），并按需解引用来源原话（`memory_source_evidence`：登记时有界证据 + 会话正文原话，已遗忘来源返回不可用；**逐条展开**——详情下方每条来源一行，点某行才取并展开那一条，同时最多展开一条、再点收起，旧的「一次拼接最多 5 条」文档形态已删除）；写操作支持纠正、核心画像标记与遗忘（actor 固定 `user_ui`，信任门槛与遗忘语义保持 Rust 既有裁决，界面不放宽）。整理作业行按状态投影动作：进行中（running/queued）= 可取消（`memory_job_cancel`，租约身份 = 记忆整理的既有写者，状态没变成 cancelled 即如实拒绝）、受限的 review 作业（paused/cancelled/failed）= 可继续（`memory_job_resume` + 既有 `runDreamingSweep({resumeJobId})`，非 review 作业由领域拒绝）；终态作业只读列出。同一条通道另有：范围筛选（`memory_overview` 的 scope，card/session 的 id 由 Node 补激活值）、手动整理（`memory_dreaming_sweep`）与维护（`memory_maintenance` 备份/只读导出/重建索引）、备份列表（`memory_backup_list`：托管备份目录里的 `.sqlite3` 逐份一行，时间/大小，点行选中，缺省与选中失效时回退最新一份）与恢复预览/应用（`memory_restore` 带 `backupPath` = **选中的那一份**；路径边界仍由 Rust 只接受托管备份目录内的文件）。面板提交成功后才 `publishMemoryRevision(revision)` —— 单 Node 架构下它是**进程内分发总线**：运行侧订阅者（runtime）据此中止陈旧记忆投影，总线等待全部消费者处置完成后返回；失败的提交不发布、不谎报。备份的预览与应用也在这条管理通道上（应用走 Rust 备份恢复语义）。宿主分派层另保留「记住这条」的存储门禁组合（main principal + actor `user_ui` + action `add` + 可信会话），消费点是聊天消息右键菜单（`chat_remember_message`），存储门禁与 actor 不动。槽存活期间 `appendPiSessionCustomEntry` 转交 `HarnessSlot` → `AgentLane`（按 operation 状态进分支或持久 inbox），只有无活槽的空闲会话才直接写 session Branch，避免旁路追加移动盘上 tip 把条目挤成孤立分支。
 
-dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Review 产出带证据引用的 `prepared` 候选、Publish 在复核来源/版本/抑制后单事务提交。**Review 判据（2026-10-06 加强）**：只有用户明确表达、跨会话仍成立的事实/偏好才记（要能从原话直接读出来）；请求句（帮我 / 看看 / 猜猜 / 查一下 / 截个图）不是偏好，测试与调试、临时任务不记；同一批同类内容最多一条候选；**没有值得记或更新的内容时返回空数组——空数组是常见且正确的输出**（此前的弱判据把测试闲聊「猜猜我在放什么歌」「看看今天天气」归纳成了持久偏好，属反面样本；`memory_change` 工具对主 agent 主动记忆同口径）。**系统观察区同理且是结构保证**：结论来源的 sourceId 含内容 hash、登记幂等（同 hash 只更新 evidence、水位不推进），水位后无新来源时连作业都不开——同一结论重复产出零写入，只有文本真的变了才登记新来源并覆盖旧条目（「没有可更新的就不写」不靠自觉，靠三道闸门）。**来源分两区且一次作业只驱动一类**（写入前登记两区来源，前置查询与批内取数按 `origin` 过滤）：用户区走模型 Review（下述预算/模型口径只作用于它）；系统观察区（`derived_behavior`）含**两个子类**：画像 reliable 档的稳定结论（身份前缀 `conclusion:`）与静默了解的观察摘要（前缀 `understanding:`，登记窗口与在库上限各 12 条、满额按最旧优先覆盖），均走**确定性 Review**——文本原样成为候选正文、不经模型改写或演绎、不占 token 预算，同槽位/同身份的新版本带 `supersedesId` 在发布事务里覆盖旧条目（版本收敛）。两类候选在发布口复核来源类别：混用来源、派生候选带 pinned 或 kind=working 一律整条拒绝。每批来源数与正文长度有界，单条过大整条跳过交给用户挑选片段，不做静默截断；模型来源 id 必须落在本批内，否则整条丢弃。单次 Review 的输出预算按模型窗口推导（窗口 × 1/8、32k 封顶，且不越过模型目录声明的上限；reasoning 的 thinking 也计入），再按「窗口 − 估算输入 − 余量」逐批收紧；`ai.memory.dreaming.reviewMaxTokens` 只用于显式压低上限，缺省即自动。触达长度上限的批次仍以「输出达到长度上限」如实失败，不采用不完整结果。Review 使用的模型取辅助模型 `ai.auxModel`（留空跟随聊天模型；与子运行共用同一解析入口）。运行入口支持手动整理（不受档位约束）；开作业前先查「水位之后还有没有待处理来源」（`memory_pending_source_count`，与 `memory_job_sources` 同一水位判定，**按来源类别分开查**）：没有就转**库内整理**（2026-10-06）：在没有待处理来源时，对库内已有条目做同 origin 区内的合并整理——按 scope+kind 分组的已有条目（pinned/working/过期/派生条目出局）交模型产出合并组（2–4 条/组、≤3 组/次），候选带 `supersedesIds`，发布事务内旧条目 supersede（历史链保留）、**来源取并集（Rust 事务内强制）**、范围/类别/失效逐条复核、冲突按 `MEMORY_CONFLICT` 如实失败；库内没有可合并分组时一次列举零写早退（不开 job、不动预算/租约，如实回报「水位之后没有新的可整理来源」）。有新来源时不做库内整理（新来源优先）；只有系统观察来源时照常开派生区的作业。恢复既有作业（`resumeJobId`）不经前置查询——job 自带游标、水位为空也能继续（恢复不分类别；水位按会话隔离，两区来源互不吞并）。`ai.memory.dreaming.tier` 非 `off` 时，启动的定时调度器按固定钟点表（低 12/20、中 10/14/18/22、高 9/11/13/15/17/19；钟点起 15 分钟追赶窗）到点即跑、不再要求系统空闲，同一钟点只跑一轮（判定与静默了解共用 `proactive/schedule.ts`），并在作业完成时自动 Publish；`off` = 定时调度器早退（手动入口保留）。档位（低/中/高）= 每天 2/4/6 轮，最小间隔 240 / 60 / 30 分钟保留为防重兜底；档位表内原 idleSeconds/idleRequiredMs 字段已删除（钟点表取代）。每日 token 上限已按 2026-10-06 用户裁决撤除（与主动链同批口径：「一天最多几次」保留、「一天最多烧多少 token」取消）：空闲调度器不再查 token 账做门禁，批次也不再因 token 账被中止（Rust 预留一律接受）；token 的预留/结算照记进 Rust 作业账本，只作观测账，重启后沿用同一自然日的已用量与租约状态；原 `mode / idleSeconds / minIntervalMinutes / maxDailyTokens` 四键已删（`manual` 被 `off` 吸收）。
+dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Review 产出带证据引用的 `prepared` 候选、Publish 在复核来源/版本/抑制后单事务提交。**Review 判据（2026-10-06 加强）**：只有用户明确表达、跨会话仍成立的事实/偏好才记（要能从原话直接读出来）；请求句（帮我 / 看看 / 猜猜 / 查一下 / 截个图）不是偏好，测试与调试、临时任务不记；同一批同类内容最多一条候选；**没有值得记或更新的内容时返回空数组——空数组是常见且正确的输出**（此前的弱判据把测试闲聊「猜猜我在放什么歌」「看看今天天气」归纳成了持久偏好，属反面样本；`memory_change` 工具对主 agent 主动记忆同口径）。**系统观察区同理且是结构保证**：结论来源的 sourceId 含内容 hash、登记幂等（同 hash 只更新 evidence、水位不推进），水位后无新来源时连作业都不开——同一结论重复产出零写入，画像身份绑定计量版本与结论文本，了解身份绑定稳定 artifact、实际输入版本及摘要；证据发生变化才登记新来源并覆盖旧条目（「没有可更新的就不写」不靠自觉，靠三道闸门）。**来源分两区且一次作业只驱动一类**（写入前登记两区来源，前置查询与批内取数按 `origin` 过滤）：用户区走模型 Review（下述预算/模型口径只作用于它）；系统观察区（`derived_behavior`）含**两个子类**：画像 reliable 档的稳定结论（身份前缀 `conclusion:`）与静默了解的观察摘要（前缀 `understanding:`，登记窗口与在库上限各 12 条、满额按最旧优先覆盖），均走**确定性 Review**——文本原样成为候选正文、不经模型改写或演绎、不占 token 预算，同槽位/同身份的新版本带 `supersedesId` 在发布事务里覆盖旧条目（版本收敛）。两类候选在发布口复核来源类别：混用来源、派生候选带 pinned 或 kind=working 一律整条拒绝。每批来源数与正文长度有界，单条过大整条跳过交给用户挑选片段，不做静默截断；模型来源 id 必须落在本批内，否则整条丢弃。单次 Review 的输出预算按模型窗口推导（窗口 × 1/8、32k 封顶，且不越过模型目录声明的上限；reasoning 的 thinking 也计入），再按「窗口 − 估算输入 − 余量」逐批收紧；`ai.memory.dreaming.reviewMaxTokens` 只用于显式压低上限，缺省即自动。触达长度上限的批次仍以「输出达到长度上限」如实失败，不采用不完整结果。Review 使用的模型取辅助模型 `ai.auxModel`（留空跟随聊天模型；与子运行共用同一解析入口）。运行入口支持手动整理（不受档位约束）；开作业前先查「水位之后还有没有待处理来源」（`memory_pending_source_count`，与 `memory_job_sources` 同一水位判定，**按来源类别分开查**）：没有就转**库内整理**（2026-10-06）：在没有待处理来源时，对库内已有条目做同 origin 区内的合并整理——按 scope+kind 分组的已有条目（pinned/working/过期/派生条目出局）交模型产出合并组（2–4 条/组、≤3 组/次），候选带 `supersedesIds`，发布事务内旧条目 supersede（历史链保留）、**来源取并集（Rust 事务内强制）**、范围/类别/失效逐条复核、冲突按 `MEMORY_CONFLICT` 如实失败；库内没有可合并分组时一次列举零写早退（不开 job、不动预算/租约，如实回报「水位之后没有新的可整理来源」）。有新来源时不做库内整理（新来源优先）；只有系统观察来源时照常开派生区的作业。恢复既有作业（`resumeJobId`）不经前置查询——job 自带游标、水位为空也能继续（恢复不分类别；水位按会话隔离，两区来源互不吞并）。`ai.memory.dreaming.tier` 非 `off` 时，启动的定时调度器按固定钟点表（低 12/20、中 10/14/18/22、高 9/11/13/15/17/19；钟点起 15 分钟追赶窗）到点即跑、不再要求系统空闲，同一钟点只跑一轮（判定与静默了解共用 `proactive/schedule.ts`），并在作业完成时自动 Publish；`off` = 定时调度器早退（手动入口保留）。档位（低/中/高）= 每天 2/4/6 轮，最小间隔 240 / 60 / 30 分钟保留为防重兜底；档位表内原 idleSeconds/idleRequiredMs 字段已删除（钟点表取代）。每日 token 上限已按 2026-10-06 用户裁决撤除（与主动链同批口径：「一天最多几次」保留、「一天最多烧多少 token」取消）：空闲调度器不再查 token 账做门禁，批次也不再因 token 账被中止（Rust 预留一律接受）；token 的预留/结算照记进 Rust 作业账本，只作观测账，重启后沿用同一自然日的已用量与租约状态；原 `mode / idleSeconds / minIntervalMinutes / maxDailyTokens` 四键已删（`manual` 被 `off` 吸收）。
 
 ## 当前文件职责
 
@@ -93,7 +117,7 @@ dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Re
 
 `V1RTUAL.md` 是人工指令，与摘要分别建块：有 `## 指令` 小节时只取该节内容，没有则整份正文都算指令（手写文件不留标题也不能静默丢）；用户画像不再有独立文件，它就是记忆库里置顶的条目。应用启动、每五轮与 session 结束都不隐式发起记忆整理：整理只能由记忆面板手动触发（或在档位非「关」时按空闲条件自动运行），作业完成后自动提交合格候选，失败/冲突/取消保持明确终态。
 
-当前实现入口为 [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）、[memory/](../../src/services/agent/memory/)（召回端口、来源收集、dreaming）、[instructions/](../../src/services/context/instructions/)（V1RTUAL）、[crates/native-host/src/memory/](../../crates/native-host/src/memory/)（SQLite 存储与治理命令）、[tool-output.ts](../../src/services/context/tool-output.ts)（L0 工具结果投影与回读地址）与 [delivery.ts](../../src/services/engine/harness/delivery.ts)（投递证据与上下文 epoch）；计划 checkpoint 与恢复扫描入口为 [checkpoint-store.ts](../../src/services/engine/plan/checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 由 [runtime.ts](../../src/services/engine/harness/runtime.ts) 消费。
+当前实现入口为 [conversation.ts](../../src/services/agent/memory/conversation.ts)（会话原文索引与召回）、[harness-slot.ts](../../src/services/engine/harness/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）、[memory/](../../src/services/agent/memory/)（召回端口、来源收集、dreaming）、[instructions/](../../src/services/context/instructions/)（V1RTUAL）、[crates/native-host/src/memory/](../../crates/native-host/src/memory/)（SQLite 存储与治理命令）、[tool-output.ts](../../src/services/context/tool-output.ts)（L0 工具结果投影与回读地址）与 [delivery.ts](../../src/services/engine/harness/delivery.ts)（投递证据与上下文 epoch）；计划 checkpoint 与恢复扫描入口为 [checkpoint-store.ts](../../src/services/engine/plan/checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 由 [runtime.ts](../../src/services/engine/harness/runtime.ts) 消费。
 
 ## 质量与资源证据
 

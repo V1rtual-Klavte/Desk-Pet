@@ -6,6 +6,7 @@
 
 pub mod benchmark;
 pub mod commands;
+mod conversation;
 mod schema;
 mod store;
 #[cfg(test)]
@@ -14,6 +15,7 @@ mod tests;
 pub mod protocol;
 
 pub use store::MemoryStore;
+pub(crate) use conversation::{ConversationClearFence, ConversationIndexBatch};
 // 清除行为画像时一并失效派生记忆：由主动侧 clearBehaviorSources 事务调用
 // （记忆域的遗忘闭包只有一个实现点，不在 proactive 侧重写一套）。
 pub(crate) use store::forget_derived_behavior_items_tx;

@@ -16,6 +16,16 @@ import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
 export type { TemporalAnchor, ProactiveRecurrence, ProactiveOwner, ProactiveTask, ProactiveSourceRef } from "./protocol"
 
 export { parseRerankIds } from "./rerank"
+export { invalidateConversationSession, recallConversation, validateConversationProjections } from "./conversation"
+export type { ConversationRecallRequest, ConversationSourceRef } from "./conversation"
+export type {
+  MemoryQueryPlan,
+  MemoryRecallFailureChannel,
+  MemoryRecallFailureReason,
+  MemoryRecallOptionalFailure,
+  MemoryRerankMode,
+  QueryRewriteMode,
+} from "./query"
 // revision 同步：这里只保留进程内分发总线（单 Node 架构下所有提交都发生在本进程）。
 export { publishMemoryRevision, subscribeMemoryRevision } from "./revision"
 export {
@@ -81,7 +91,10 @@ export async function refreshMemoryCount(): Promise<number> {
 }
 
 export const MemoryService = {
-  async init(): Promise<void> { await ensureInit() },
+  async init(): Promise<void> {
+    await ensureInit()
+    await (await import("./evidence")).reconcileDerivedMemoryEvidence()
+  },
 
   get count(): number { return cachedCount },
 
@@ -125,6 +138,15 @@ export const MemoryService = {
  * 仍冲突就如实抛出（不静默吞掉、不谎报清除成功）。
  */
 export async function forgetUnderstandingDerivedMemory(): Promise<number> {
+  return forgetDerivedMemoryScope("forget_understanding")
+}
+
+/** Invalidate old measurement conclusions and their derived references, preserving user facts. */
+export async function forgetDerivedBehaviorMemory(): Promise<number> {
+  return forgetDerivedMemoryScope("forget_derived_behavior")
+}
+
+async function forgetDerivedMemoryScope(action: "forget_understanding" | "forget_derived_behavior"): Promise<number> {
   try {
     await ensureInit()
     let lastError: unknown
@@ -132,9 +154,9 @@ export async function forgetUnderstandingDerivedMemory(): Promise<number> {
       const { revision } = await memoryStatus()
       try {
         return await applyMemoryChange({
-          operationId: `forget-understanding-${crypto.randomUUID()}`,
+          operationId: `${action}-${crypto.randomUUID()}`,
           baseRevision: revision,
-          action: "forget_understanding",
+          action,
           actor: "internal",
         })
       } catch (error) {

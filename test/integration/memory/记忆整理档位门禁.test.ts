@@ -41,15 +41,18 @@ const ipc = vi.hoisted(() => ({
   resumeMemoryJob: vi.fn(async () => ({ id: "job-review", revision: 1, phase: "review", processed: 0 })),
 }))
 vi.mock("@/services/agent/memory/ipc", () => ipc)
-// 来源登记（真 JSONL 扫描与画像稳定结论）用替身挂住：本文件只考档位与前置查询之间的门禁次序。
+// 来源登记（真 JSONL 扫描、画像稳定结论与静默了解来源）用替身挂住：本文件只考档位与前置查询之间的门禁次序。
+// 静默了解来源的真实实现会走 observation/memory 证据对账（有独立套件覆盖），这里同样只留空替身。
 const sources = vi.hoisted(() => ({
   collectAllMemorySources: vi.fn(async () => []),
   collectBehaviorMemorySources: vi.fn(async () => []),
+  collectUnderstandingMemorySources: vi.fn(async () => []),
 }))
 vi.mock("@/services/agent/memory/sources", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/services/agent/memory/sources")>()),
   collectAllMemorySources: sources.collectAllMemorySources,
   collectBehaviorMemorySources: sources.collectBehaviorMemorySources,
+  collectUnderstandingMemorySources: sources.collectUnderstandingMemorySources,
 }))
 // 默认实现故意抛错：不进入 Review 的用例一旦触达模型调用就立刻现形。
 // 只有低档记账用例会按需改成可响应的替身（见该用例）；返回类型显式标注供 mockResolvedValue 使用。

@@ -13,13 +13,14 @@
 //   · 按日删除的旧日文件用非递归 file_remove；
 //   · 超保留期的分段目录（kind=directory）必须真的走到分段清理分支（递归删除）。
 
-import { beforeAll, describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 
-import { observeBehavior } from "@/services/behavior"
+import { getBehaviorSnapshot, observeBehavior } from "@/services/behavior"
 import { setHostBridge } from "@/services/host"
 import type { HostBridge } from "@/services/host"
 import { initPaths } from "@/services/paths"
 import type { WindowObservation } from "@/services/window/types"
+import { UnsupportedInNodeError } from "../../host/unsupported"
 
 const ROOT = "/deskpet-behavior-retention-test"
 const DAILY_PATH = `${ROOT}/data/behavior/daily`
@@ -81,10 +82,10 @@ const bridge = {
     return null
   },
   subscribe() {
-    throw new Error("测试假桥没有事件通道")
+    throw new UnsupportedInNodeError("event.listen(window-observed)")
   },
   async readBlob() {
-    throw new Error("测试假桥不提供 blob")
+    throw new UnsupportedInNodeError("readBlob")
   },
   async releaseBlob() {},
 } as unknown as HostBridge
@@ -121,12 +122,17 @@ beforeAll(async () => {
 describe("行为历史保留期清理（file_list 条目按 kind 判定）", () => {
   it("超保留期的日文件与旧分段目录各走各的清理分支：递归标志与类型语义都不串", () => {
     const removals = recorded("file_remove").map(call => call.args)
-    // 恰好两条：日文件一条、旧分段目录一条。若分段分支仍按 isDir（恒 undefined）
-    // 判定，这里只剩日文件一条，直接红在长度上。
+    // 两份旧计量 daily 先隔离删除，再删除一份过期 segment 目录；旧 daily 即使
+    // 日期看似未来也不能继续进入新版画像或留作新版来源资格。
     expect(
       removals,
-      "旧分段目录（kind=directory）必须真的走到分段清理分支",
-    ).toHaveLength(2)
+      "旧 daily 与旧 segment 都应被清理，且目录分支必须按 kind 识别",
+    ).toHaveLength(3)
+    expect(removals, "旧日文件按日删除，非递归").toContainEqual({
+      path: `${DAILY_PATH}/2999-12-31.json`,
+      recursive: false,
+      force: true,
+    })
     expect(removals, "旧日文件按日删除，非递归").toContainEqual({
       path: `${DAILY_PATH}/2000-01-01.json`,
       recursive: false,
@@ -140,18 +146,118 @@ describe("行为历史保留期清理（file_list 条目按 kind 判定）", () 
   })
 
   it("保留期内或类型与分支不符的条目一律不动：日文件候选排除目录，分段清理只认目录", () => {
-    // 恰好两次读取：两个真正符合「非目录 + 日文件名」的候选。目录条目
+    // 先读一次计量版本 marker，再读取两个真正符合「非目录 + 日文件名」的候选。目录条目
     // （1999-12-31.json）若混进候选会在这里多出一次 file_read。
     expect(recorded("file_read").map(call => call.args.path)).toEqual([
+      `${ROOT}/data/behavior/measurement-state.json`,
       `${DAILY_PATH}/2999-12-31.json`,
       `${DAILY_PATH}/2000-01-01.json`,
     ])
-    // 保留期内的分段目录、类型不符的条目（目录形日文件、文件形分段目录、
-    // 非日文件）都不得出现在删除清单里（上一条已把删除总数钉为 2）。
+    // 保留期内的 segment 目录、类型不符的条目（目录形日文件、文件形分段目录、
+    // 非日文件）都不得出现在删除清单里；旧 daily 已由独立版本隔离规则删除。
     const removedPaths = recorded("file_remove").map(call => call.args.path)
     expect(removedPaths).not.toContain(`${SEGMENTS_PATH}/2999-12-31`)
     expect(removedPaths).not.toContain(`${SEGMENTS_PATH}/1999-12-30`)
     expect(removedPaths).not.toContain(`${DAILY_PATH}/1999-12-31.json`)
     expect(removedPaths).not.toContain(`${DAILY_PATH}/notes.txt`)
+  })
+
+  it("旧计量格式不回填新画像 [behavior-legacy-measurement-quarantine]", () => {
+    expect(getBehaviorSnapshot().quality).toMatchObject({ status: "unavailable", sampleDays: 0, eligibleCollectionMs: 0 })
+  })
+
+  it("历史读取失败可重试，旧计量闭包确认后重启不重复撤销 [behavior-history-retry-and-marker-ack]", async () => {
+    vi.resetModules()
+
+    const root = "/deskpet-behavior-history-retry-test"
+    const dailyPath = `${root}/data/behavior/daily`
+    const markerPath = `${root}/data/behavior/measurement-state.json`
+    const calls: RecordedCall[] = []
+    const files = new Map<string, string>()
+    files.set(markerPath, JSON.stringify({ measurementVersion: 2, derivedBehaviorInvalidationPending: false }))
+    const dailyEntries = [
+      { name: "2999-12-31.json", path: `${dailyPath}/2999-12-31.json`, kind: "file", size: 2, mtimeMs: 1 },
+    ]
+    let failDailyListing = true
+    const retryBridge = {
+      async request(method: string, args: Record<string, unknown>) {
+        calls.push({ method, args })
+        if (method === "get_runtime_paths") return {
+          data: `${root}/data`, memory: `${root}/memory`, sessions: `${root}/sessions`,
+          personality: `${root}/personality`, profiles: `${root}/profiles`, settings: `${root}/settings`,
+          configFile: `${root}/settings/CONFIG.yaml`, runtimeMode: "development",
+        }
+        if (method === "resolve_runtime_path") {
+          const { scope, segments } = args as { scope: string; segments?: string[] }
+          return [root, scope, ...(segments ?? [])].join("/")
+        }
+        if (method === "file_read") {
+          const path = args.path as string
+          const content = files.get(path)
+          if (content !== undefined) return { content }
+          if (path === `${dailyPath}/2999-12-31.json`)
+            return { content: JSON.stringify({ date: "2999-12-31", hourMs: Array(24).fill(0) }) }
+          throw Object.assign(new Error(`missing file: ${path}`), { code: "PATH_NOT_FOUND" })
+        }
+        if (method === "file_write_atomic") {
+          files.set(args.path as string, args.content as string)
+          return null
+        }
+        if (method === "file_list") {
+          const path = args.path as string
+          if (path === dailyPath) {
+            if (failDailyListing) {
+              failDailyListing = false
+              throw Object.assign(new Error("transient history read failure"), { code: "IO_ERROR" })
+            }
+            return { entries: [...dailyEntries] }
+          }
+          throw Object.assign(new Error(`missing directory: ${path}`), { code: "PATH_NOT_FOUND" })
+        }
+        if (method === "file_remove") {
+          const path = args.path as string
+          const index = dailyEntries.findIndex(entry => entry.path === path)
+          if (index >= 0) dailyEntries.splice(index, 1)
+          files.delete(path)
+          return true
+        }
+        return null
+      },
+      subscribe() { throw new UnsupportedInNodeError("event.listen(window-observed)") },
+      async readBlob() { throw new UnsupportedInNodeError("readBlob") },
+      async releaseBlob() {},
+    } as unknown as HostBridge
+
+    const loadBehavior = async () => {
+      const host = await import("@/services/host")
+      const paths = await import("@/services/paths")
+      host.setHostBridge(retryBridge)
+      await paths.initPaths()
+      return import("@/services/behavior")
+    }
+
+    const firstProcess = await loadBehavior()
+    await expect(firstProcess.needsBehaviorDerivedInvalidation()).rejects.toThrow("transient history read failure")
+    expect(calls.some(call => call.method === "file_remove" && call.args.path === dailyEntries[0]?.path)).toBe(false)
+
+    expect(await firstProcess.needsBehaviorDerivedInvalidation()).toBe(true)
+    expect(dailyEntries).toHaveLength(0)
+    const markerWritesBeforeAck = calls.filter(call => call.method === "file_write_atomic" && call.args.path === markerPath)
+    expect(markerWritesBeforeAck).toHaveLength(1)
+    expect(JSON.parse(markerWritesBeforeAck[0]!.args.content as string)).toMatchObject({
+      measurementVersion: 2, derivedBehaviorInvalidationPending: true,
+    })
+    expect(calls.findIndex(call => call.method === "file_write_atomic" && call.args.path === markerPath))
+      .toBeLessThan(calls.findIndex(call => call.method === "file_remove" && call.args.path === `${dailyPath}/2999-12-31.json`))
+
+    await firstProcess.completeBehaviorDerivedInvalidation()
+    expect(JSON.parse(files.get(markerPath)!)).toMatchObject({
+      measurementVersion: 2, derivedBehaviorInvalidationPending: false,
+    })
+
+    vi.resetModules()
+    const secondProcess = await loadBehavior()
+    expect(await secondProcess.needsBehaviorDerivedInvalidation()).toBe(false)
+    expect(calls.filter(call => call.method === "file_write_atomic" && call.args.path === markerPath)).toHaveLength(2)
   })
 })

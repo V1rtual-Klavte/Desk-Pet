@@ -25,10 +25,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { nextTick } from "vue"
 
 import { NodeHostBridge } from "../../host/node-host-bridge"
 import { setTestDataRoot } from "../../host/node-ipc"
-import { initConfig } from "@/services/config"
+import { flushConfig, initConfig, loopConfig, setOverride } from "@/services/config"
 import { HOST_REQUEST_EVENT, setHostBridge, setUiEventPublisher, setUiReceiptSource } from "@/services/host"
 import type { HostBridge } from "@/services/host"
 import {
@@ -52,8 +53,11 @@ import {
   initSessions,
   listPiSessionMetadata,
   openSession,
+  pushCommittedProactiveMessage,
+  pushMessageFor,
   pushUserMessage,
   readPiSessionEntriesOnce,
+  replaceMessages,
   setSessionInterrupted,
   switchToSession,
   updateSessionName,
@@ -128,7 +132,7 @@ interface RecordedCall {
 }
 
 /**
- * 记录型宿主桥：只截获 A2 关心的三条命令（投影帧 / 顶栏文本 / 请求回执），
+ * 记录型宿主桥：只截获 A2 的投影帧 / 顶栏文本 / 请求回执与回复音效的 WAV 输出，
  * 其余原样委托 Node 测试宿主（真实会话文件 I/O 都在那边）；subscribe 用本地监听表
  * （Node 测试宿主对 subscribe 如实抛错，这里要模拟「有事件通道」的宿主）。
  */
@@ -147,7 +151,7 @@ function createRecordingBridge() {
         }
         return null
       }
-      if (method === "apply_titlebar_status" || method === HOST_REQUEST_RESULT_METHOD) {
+      if (method === "apply_titlebar_status" || method === HOST_REQUEST_RESULT_METHOD || method === "audio_play_wav") {
         calls.push({ method, args })
         return null
       }
@@ -412,6 +416,71 @@ describe("会话意图承接（chat_* 宿主请求）", () => {
 })
 
 describe("投影推送的时机与顺序", () => {
+  it("满可见列表仍推送用户、助手、系统与主动正文，回复音效按新条目触发 [native-ui-transcript-at-cap]", async () => {
+    const previousLimit = loopConfig.maxVisibleMessages
+    const previousHistory = chatHistory.slice()
+    const sessionId = getActiveSessionId()
+    setOverride("ai.loop.maxVisibleMessages", 3)
+    try {
+      replaceMessages([
+        { id: "cap-old-1", role: "user", text: "旧一", timestamp: 1 },
+        { id: "cap-old-2", role: "assistant", text: "旧二", timestamp: 2 },
+        { id: "cap-old-3", role: "user", text: "旧三", timestamp: 3 },
+      ])
+      await settleThenReset()
+
+      pushMessageFor(sessionId, { id: "cap-user", role: "user", text: "新用户", timestamp: 4 })
+      await nextTick()
+      expect(lastFrame().messages.map(message => message.text)).toEqual(["旧二", "旧三", "新用户"])
+      expect(recorder.calls.filter(call => call.method === "audio_play_wav")).toHaveLength(0)
+
+      pushMessageFor(sessionId, { id: "cap-assistant", role: "assistant", text: "助手回复", timestamp: 5 })
+      await nextTick()
+      expect(lastFrame().messages.map(message => message.text)).toEqual(["旧三", "新用户", "助手回复"])
+      const replyClips = recorder.calls.filter(call => call.method === "audio_play_wav")
+      expect(replyClips).toHaveLength(1)
+      expect(Array.from(Buffer.from(replyClips[0].args.data as string, "base64").subarray(0, 4))).toEqual([82, 73, 70, 70])
+
+      pushMessageFor(sessionId, { id: "cap-system", role: "system", text: "系统提示", timestamp: 6 })
+      await nextTick()
+      expect(lastFrame().messages.map(message => message.text)).toEqual(["新用户", "助手回复", "系统提示"])
+      expect(recorder.calls.filter(call => call.method === "audio_play_wav")).toHaveLength(1)
+
+      pushCommittedProactiveMessage("主动提交", sessionId, "cap-active", false, undefined, 7)
+      await nextTick()
+      expect(lastFrame().messages.map(message => message.text)).toEqual(["助手回复", "系统提示", "主动提交"])
+      const activeMessages = lastFrame().messages
+      expect(activeMessages[activeMessages.length - 1]?.id).toBe("cap-active")
+      expect(chatHistory).toHaveLength(3)
+    } finally {
+      setOverride("ai.loop.maxVisibleMessages", previousLimit)
+      replaceMessages(previousHistory)
+      await flushConfig()
+      await flush()
+    }
+  })
+
+  it("同长度同身份正文替换也重推最新内容，重载不触发回复音效 [native-ui-transcript-same-length-replace]", async () => {
+    const previousHistory = chatHistory.slice()
+    try {
+      replaceMessages([
+        { id: "replace-user", role: "user", text: "旧用户正文", timestamp: 1 },
+        { id: "replace-assistant", role: "assistant", text: "旧助手正文", timestamp: 2 },
+      ])
+      await settleThenReset()
+      replaceMessages([
+        { id: "replace-user", role: "user", text: "新用户正文", timestamp: 1 },
+        { id: "replace-assistant", role: "assistant", text: "新助手正文", timestamp: 2 },
+      ])
+      await nextTick()
+      expect(lastFrame().messages.map(message => message.text)).toEqual(["新用户正文", "新助手正文"])
+      expect(recorder.calls.filter(call => call.method === "audio_play_wav")).toHaveLength(0)
+    } finally {
+      replaceMessages(previousHistory)
+      await flush()
+    }
+  })
+
   it("切换 / 改名 / 中断标记变化都重推投影帧，载荷就是会话读模型的现值 [native-ui-projection-push-triggers]", async () => {
     await settleThenReset()
     const probe = await seedTab()

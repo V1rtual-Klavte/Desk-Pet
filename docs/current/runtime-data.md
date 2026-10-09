@@ -37,6 +37,8 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 新字段若按产品范围决定不提供设置控件，必须在对应文档说明用途与文件修改入口，不能把漏接 UI 当作默认豁免。改名/删除还需定义旧用户文件的兼容、迁移或忽略语义，清理旧 UI 映射与消费者；当前配置初始化不会自动把缺失字段与默认 YAML 深合并。
 
+`ai.memory.queryRewrite`（默认 `adaptive`，可取 `off`）与 `ai.memory.rerank`（默认 `off`，可取 `adaptive`）为统一检索技术参数，作用于用户事实、派生画像和会话原话，沿用记忆总时限与预算。它们不提供设置控件或 `settings_commit` 单独映射；编辑当前运行模式的完整 CONFIG 文件后重启生效。缺少新 queryRewrite 字段时只按出厂值读取，不自动改写用户配置；真实 CONFIG-DEV.yaml 未由本批修改。
+
 当前主保存路径为：原生设置窗控件（Rust 草稿）→ `SettingsPort`（[ui/ports.rs](../../crates/native-host/src/ui/ports.rs) 的 `settings_commit` 请求）→ Node `settingsCommit` → setOverrides → config 写队列 → `flushConfig` → `reapplyRuntimeSettings` → `pushNativeUiState`（快捷键/字体/主题/舞台/聊天列/图片预览/摆位/尺寸/自动呼出/音效十条推送，逐项口径见 [pushes.ts](../../src/services/native-ui/pushes.ts) 头部）。字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
 
 频率档位批（2026-10-05）的即时生效链：保存后 `reapplyRuntimeSettings` 的 `ai.proactive.*` 分支调 `refreshProactive()`（scanner 按新档重排随机唤醒、重算冷却并重推 Rust 投影），`ai.silentAccess.*` 分支按档位是否 `off` 起停观察总闸与静默了解；整份导入 YAML 由 `importConfigYaml()` 收尾的消费者刷新链补同样的刷新（失败只留痕，配置已落盘）。

@@ -17,6 +17,7 @@
 //
 // 这个模块是纯函数：不触 IPC、不读盘、不注册来源；登记与整理在 memory 域完成。
 
+import { BEHAVIOR_MEASUREMENT_VERSION } from "./types"
 import type { AppCategory, BehaviorSnapshot } from "./types"
 
 export type BehaviorConclusionSlot = "rhythm" | "apps" | "focus" | "activity"
@@ -24,6 +25,7 @@ export type BehaviorConclusionSlot = "rhythm" | "apps" | "focus" | "activity"
 export interface BehaviorConclusion {
   slot: BehaviorConclusionSlot
   text: string
+  measurementVersion: typeof BEHAVIOR_MEASUREMENT_VERSION
 }
 
 /** 结论共同的时间口径：画像快照本身就是近 30 个日历日的读模型。 */
@@ -83,9 +85,10 @@ function appsConclusion(snapshot: BehaviorSnapshot): string | null {
   const top = ranked.slice(0, TOP_CATEGORIES)
   const share = Math.round(top.reduce((sum, [, value]) => sum + value, 0) * 100)
   const apps = snapshot.apps.commonAppIds.slice(0, TOP_APPS)
-  const categoryPart = `${top.map(([category]) => CATEGORY_LABELS[category]).join("、")}类应用为主（约占 ${share}%）`
+  const categoryPart = `已识别的前台应用中，${top.map(([category]) => CATEGORY_LABELS[category]).join("、")}类为主（约占 ${share}%）`
   const appPart = apps.length ? `，常用 ${apps.join("、")}` : ""
-  return `${WINDOW_LABEL}的应用使用：${categoryPart}${appPart}。（判据：${WINDOW_BASIS}的应用类别占比与常用应用榜）`
+  const confidencePart = `；可靠分类覆盖约 ${Math.round(snapshot.apps.classificationRatio * 100)}%`
+  return `${WINDOW_LABEL}的前台应用观察：${categoryPart}${appPart}${confidencePart}。（判据：${WINDOW_BASIS}的身份分类与前台应用时长）`
 }
 
 function focusConclusion(snapshot: BehaviorSnapshot): string | null {
@@ -93,17 +96,18 @@ function focusConclusion(snapshot: BehaviorSnapshot): string | null {
   const longestMinutes = snapshot.focus.longestMs > 0 ? roundTo(snapshot.focus.longestMs / 60_000, 15) : 0
   if (meanMinutes <= 0 && longestMinutes <= 0) return null
   const parts: string[] = []
-  if (meanMinutes > 0) parts.push(`单段专注通常约 ${meanMinutes} 分钟`)
+  if (meanMinutes > 0) parts.push(`连续观察到的办公/开发活跃段通常约 ${meanMinutes} 分钟`)
   if (longestMinutes > 0) parts.push(`最长约 ${longestMinutes} 分钟`)
-  return `${WINDOW_LABEL}的专注习惯：${parts.join("，")}。（判据：${WINDOW_BASIS}的连续工作段统计，按 5/15 分钟取整）`
+  return `${WINDOW_LABEL}的前台应用活跃观察：${parts.join("，")}。（判据：${WINDOW_BASIS}的可信活跃段统计，按 5/15 分钟取整）`
 }
 
 function activityConclusion(snapshot: BehaviorSnapshot): string | null {
   const { activeMs, idleMs, unobservedMs } = snapshot.activity
-  const total = activeMs + idleMs + unobservedMs
+  const { unknownMs } = snapshot.activity
+  const total = activeMs + idleMs + unknownMs + unobservedMs
   if (!(total > 0) || !(activeMs > 0)) return null
   const share = Math.round((activeMs / total) * 100)
-  return `${WINDOW_LABEL}的使用节奏：活跃使用约占 ${share}%（其余为空闲或未观察）。（判据：${WINDOW_BASIS}的活跃/空闲时长比）`
+  return `${WINDOW_LABEL}的观察活跃约占 ${share}%（其余为空闲、活动状态未知或未观察）。（判据：${WINDOW_BASIS}的互斥活动时长桶）`
 }
 
 /**
@@ -121,7 +125,7 @@ export function sedimentConclusions(snapshot: BehaviorSnapshot): BehaviorConclus
   ]
   const out: BehaviorConclusion[] = []
   for (const [slot, text] of built) {
-    if (text) out.push({ slot, text })
+    if (text) out.push({ slot, text, measurementVersion: BEHAVIOR_MEASUREMENT_VERSION })
   }
   return out
 }

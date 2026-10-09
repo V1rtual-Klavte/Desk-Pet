@@ -8,6 +8,6 @@ export {
   setObservationGovernanceRouter,
 } from "./ownership"
 export type { ObservationGovernanceOperation, ObservationGovernanceRouter } from "./ownership"
-export { getUnderstandingPromptBlock, getUnderstandingPromptBlockAsync, getUnderstandingSnapshot, getUnderstandingSnapshotAsync, getTopicWeights } from "./store"
-export type { CommittedUserParticipation, UnderstandingSnapshot, TopicWeight, ReadTargetRequest, TargetReadResult } from "./types"
+export { completeUnverifiedMemoryClosure, getUnderstandingPromptBlock, getUnderstandingPromptBlockAsync, getUnderstandingSnapshot, getUnderstandingSnapshotAsync, getTopicWeights, getUnverifiedUnderstandingSourceIds, hasUnverifiedMemoryClosurePending, hasUnverifiedUnderstandingEvidence } from "./store"
+export type { CommittedUserParticipation, UnderstandingRecord, UnderstandingSnapshot, TopicWeight, TopicEvidence, TopicCategory, TopicStance, TopicSensitivity, ReadTargetRequest, TargetReadResult } from "./types"
 export { drainTopicIntake, recordCommittedUserParticipation } from "./topics"

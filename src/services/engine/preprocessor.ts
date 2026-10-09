@@ -29,6 +29,13 @@ export interface PreProcessResult {
   text: string
   rawText: string
   normalizedText: string
+  /** 输入的准入去重租约；调用方须在持久准入后 commit，其余出口 release。 */
+  dedupAdmission?: PreProcessDedupAdmission
+}
+
+export interface PreProcessDedupAdmission {
+  commit(): void
+  release(): void
 }
 
 /** 命令结果里的非文本形态只有技能准入（`SlashCommandResult` 是一个联合）。 */
@@ -46,6 +53,49 @@ export interface PreProcessOptions {
   busy?: boolean
   /** 路径图片也是有效输入；空文字与文字去重不能丢掉不同的图片。 */
   imageInput?: boolean
+}
+
+interface PendingDedupAdmission {
+  owner: object
+  accepted: Promise<boolean>
+  settle(accepted: boolean): void
+}
+
+const pendingDedupAdmissions = new WeakMap<PreProcessState, Map<string, PendingDedupAdmission>>()
+
+function reserveDedupAdmission(state: PreProcessState, text: string, blockDuplicates = true): PreProcessDedupAdmission {
+  let pending = pendingDedupAdmissions.get(state)
+  if (!pending && blockDuplicates) {
+    pending = new Map()
+    pendingDedupAdmissions.set(state, pending)
+  }
+  let settled = false
+  let settlePending!: (accepted: boolean) => void
+  const accepted = new Promise<boolean>(resolve => { settlePending = resolve })
+  const owner = {}
+  const pendingRecord: PendingDedupAdmission = { owner, accepted, settle: settlePending }
+  const admission: PreProcessDedupAdmission = {
+    commit() {
+      if (settled || (blockDuplicates && pending?.get(text)?.owner !== owner)) return
+      settled = true
+      if (blockDuplicates) pending?.delete(text)
+      state.lastUserText = text
+      state.lastUserTime = Date.now()
+      pendingRecord.settle(true)
+    },
+    release() {
+      if (settled) return
+      settled = true
+      if (blockDuplicates && pending?.get(text)?.owner === owner) pending.delete(text)
+      pendingRecord.settle(false)
+    },
+  }
+  if (blockDuplicates) pending!.set(text, pendingRecord)
+  return admission
+}
+
+function pendingDedupAdmission(state: PreProcessState, text: string): PendingDedupAdmission | undefined {
+  return pendingDedupAdmissions.get(state)?.get(text)
 }
 
 /** 忙碌期准入：只有 immediate / coordinated 的命令能执行，其余明确拒绝（§3.4）。 */
@@ -107,13 +157,29 @@ export async function preProcess(rawText: string, state: PreProcessState = {}, o
   }
 
   // ── 去重 ──
-  const now = Date.now()
-  if (!options.imageInput && text === state.lastUserText && now - (state.lastUserTime ?? 0) < loopConfig.dedupWindowMs) {
-    log.debug("重复消息过滤")
-    return { handled: true, text: "", rawText, normalizedText: text }
+  if (!options.imageInput) {
+    while (true) {
+      if (text === state.lastUserText && Date.now() - (state.lastUserTime ?? 0) < loopConfig.dedupWindowMs) {
+        log.debug("重复消息过滤")
+        return { handled: true, text: "", rawText, normalizedText: text }
+      }
+      const pendingAdmission = pendingDedupAdmission(state, text)
+      if (!pendingAdmission) break
+      if (await pendingAdmission.accepted) {
+        log.debug("重复消息过滤")
+        return { handled: true, text: "", rawText, normalizedText: text }
+      }
+      // 首个同文输入未获准入；重新检查最近提交值与新出现的 reservation 后再竞争准入。
+    }
   }
-  state.lastUserText = text
-  state.lastUserTime = now
 
-  return { handled: false, text, rawText, normalizedText: text }
+  // 图片不参与判重，也不阻挡另一条同文图片；最近文本只在实际准入后记账。
+  if (options.imageInput) {
+    return {
+      handled: false, text, rawText, normalizedText: text,
+      dedupAdmission: reserveDedupAdmission(state, text, false),
+    }
+  }
+
+  return { handled: false, text, rawText, normalizedText: text, dedupAdmission: reserveDedupAdmission(state, text) }
 }

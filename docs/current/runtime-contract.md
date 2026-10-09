@@ -36,6 +36,8 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 
 退出与回收边界：进程退出由原生宿主的统一退出序列承担（封 admission → 请求 Node flush → 等真实报告 → 停 Node；见[系统地图](system-design.md#启动与资源)），被杀进程由监督器的崩溃换代与中断恢复兜底；Node 侧**不注册**退出时停止钩子（会取消用户可能想继续的运行）。会话切换/新建/关闭触发的槽释放是**空闲回收器**：运行中用 `releaseWhenIdle` 只登记请求（`requestIdleRelease`），运行真正收尾（`onRunSettled`）或宿主声明回合终点（`end`）时由注册表统一删除并关闭——运行中的槽绝不立即关闭，否则宿主在 `run()` 返回之后的收尾访问会把无主槽经 `open()` 复活。并发 lane 上限不做：空闲回收器补齐后空闲槽不再累积，再加容量/LRU 等于第二套淘汰策略。消息气泡按**入参会话**写入（`pushMessageFor(sessionId, msg)`），仅当该会话仍是活跃会话时才进视图 —— 跨会话推送不画进别的会话。
 
+普通文本去重只对真实准入记账：空闲输入在 `onInputAdmitted` 后、忙碌输入拿到持久 inbox 投递回执后提交最近文本与时间。相同文本的在途竞争等待首个准入结算，成功后按重复处理，拒绝后重新竞争；各 owner 只释放自身预留，不覆盖其它已准入输入。图片继续绕过重复过滤，准入成功后才更新最近文本；未知 Slash 与技能命令不参与普通文本去重。预处理之后的拒绝与异常统一释放预留，因此压缩拒绝后可立即重发原文。
+
 ## Node ↔ 宿主事件面与投影帧
 
 原生 UI 的显示面由两条 Node → 宿主通道组成：**事件**（瞬时状态：流式增量、运行/阶段状态、计划与权限面板、揭示进度）与**投影帧**（已提交读模型：会话标签、历史、正文与面板数据）。两者都带 scope（appVersion/nodeEpoch/sessionId/runGeneration），旧代际生产者的事件与结果不得写进新状态。
@@ -53,7 +55,7 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 
 会话与正文的读模型以**整帧**下发：`apply_chat_projection` 的载荷是 Rust [`TranscriptProjection`](../../crates/native-host/src/ui/chat/projection.rs) 的会话侧子集 + 正文，帧形状的权威定义在 Rust；Node 侧唯一组装点是 [session-projection.ts](../../src/services/native-ui/session-projection.ts) 的 `buildSessionProjection`。
 
-- **触发时机**：① 会话读模型变化（新建/关闭/删除/恢复/切换/改名/中断标记，经 `session-signal`）；② 正文提交（`chatHistory` 可见列表长度监听：用户消息/助手回复/系统提示/欢迎语落进正文；**流式增量不在触发面内**——增量走事件，提交帧才推，且带 `history: false` 不重发历史整表）；③ `chat_request_session_history` 的刷新结果（**回执之后**推，宿主侧「读取中」在收到带 `sessionHistory` 的帧时清除）；④ 启动首帧（`initNativeUiBridge`）。
+- **触发时机**：① 会话读模型变化（新建/关闭/删除/恢复/切换/改名/中断标记，经 `session-signal`）；② 正文提交（`chatHistory` 可见列表浅快照监听：用户消息/助手回复/系统提示/欢迎语落进正文；达到可见上限后的裁剪及同长度替换仍按条目变化推送，回复音效以同会话新增助手尾项的稳定身份判断；**流式增量不在触发面内**——增量走事件，提交帧才推，且带 `history: false` 不重发历史整表）；③ `chat_request_session_history` 的刷新结果（**回执之后**推，宿主侧「读取中」在收到带 `sessionHistory` 的帧时清除）；④ 启动首帧（`initNativeUiBridge`）。
 - **缺省语义（消费侧按字段性质分三类，不能一概而论）**：`messages` **必带**（非 Option）——帧内缺省即解析成空列表，等于清空正文，所以**整帧覆盖**；会话/视图态字段（`queue` / `interrupted` / `recoveredPlans` / `slashCommands` / `defaultDelivery`）**随帧权威，缺省即清空**（否则已撤回的排队项、已丢弃的待处置计划会永远留在 UI）；进程级累计（`usage`）与窗口级视图数据（`sessions` / `sessionHistory`）**缺省保持现值**（普通正文帧不重发标签列表；若按「缺省即清空」，任何一条只更新正文的帧都会把标签栏抹掉）。`sessionHistory` 只在进程内已有一次读取结果（成功或失败都算）之后才携带——不把「没读过」画成「确实没有」。
 - **列表口径（2026-10-06 用户拍板）**：`sessions`（标签条）与 `sessionHistory`（历史面板）都按**用户活动时间**倒序——活动时间 = 正文最后一条 `role:"user"` 条目（`message.timestamp` 优先、回退条目级 timestamp；与读模型的展示时间同口径），助手的主动消息/自定义条目不算；没有用户消息的会话回退 `createdAt`（同值按 id 升序稳定排列）。历史卡片展示的日期取同一口径（活动时间，缺省回退创建时间）。**维护类写入不改变它**：折叠是保留行逐字不变的纯删除式重写、重命名只追加 `value` 行，都不产生新 user 条目。读取只扫文件尾部（宿主 `session_read_text` 的 `tailBytes` 模式 + 按路径与仓库 mtime 键控的缓存），启动/历史刷新从盘上重读，运行期由用户消息即时标记（`markSessionActivity`）。见 [activity.ts](../../src/services/session/activity.ts)。
 - **生产端纪律**：整帧是覆盖式读模型，后续其余面板字段（queue / interrupted / recoveredPlans / slashCommands / defaultDelivery / prompts / usage）**必须并入同一条 builder（同一帧）**——两条生产者轮流发帧会互相清空（一条不带 `messages` 的会话变化帧会把正文抹掉）。帧内正文是出站显示窗口：从最新一条向前取到帧预算（32 KiB）以内，至少保留最新一条；完整正文读取仍在 SessionRepo，不经这里改动。
@@ -89,6 +91,8 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 ## 长期记忆接线点
 
 `MemoryProvider` 已接真实实现：每个用户回合在主请求前取一次投影，本回合写过记忆时下一次请求前重取；投影以尾随 custom 消息进入请求视图，不写会话条目。事实存储、来源、候选与治理决定的真相源是 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`），经[当前记忆](memory.md)描述的命令面读写。
+
+普通回合经默认 `MemoryProvider` 联合检索事实、派生画像与当前/跨会话原话，统一有界查询改写与候选重排，共享既有预算；助手原话不成为用户事实。历史索引分批暂存、完整提交后才可读，运行取消/召回超时停止等待，晚到结果不能进入已结束回合；删除源会话后，每次尚未发出的 Provider 请求复核引用资格。主动表达仅按调度器的精确事实目标取数。
 
 未完成的是**验证与设施**而非能力：真实模型质量对照、资源账目实测与隔离设置窗口检查设施（真实设置窗口的人工验收依赖它）见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md) §3。
 

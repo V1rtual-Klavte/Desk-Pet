@@ -97,7 +97,7 @@ describe("Runtime trace 持久化锚点", () => {
       const requestTexts = provider.payloads.flatMap(payload => payload.messages.map(message => typeof message.content === "string"
         ? message.content
         : message.content.map(part => part.type === "text" ? part.text : "").join("")))
-      const memoryText = requestTexts.find(text => text.includes("[长期记忆]"))
+      const memoryText = requestTexts.find(text => text.includes("[记忆与会话参考]"))
 
       expect(rendered?.sessionId, "render trace 缺少所属会话").toBe(sessionId)
       expect(rendered?.payload.sourceIds, "trace 的准入 ID 应与最终记忆块一致").toEqual(["mq-kept@1"])

@@ -1,3 +1,4 @@
+// 2026-10-09 最终静态复核：互斥计时、分类依据及计量升级撤销已静态复核，回归锚点同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
 // 2026-10-05 设置页 Card 增删改查 + 模版批次：本契约 sourceFiles 中仅
 // `crates/native-host/src/host/dispatch.rs` 变化 —— 新增一条 `personality_file_delete`
 // 分派臂（命令矩阵 128→129），既有命令接线与错误语义一个未改；观察协议命令
@@ -35,6 +36,9 @@
 // 对行为画像的影响面：**供给多了一条「启动时刻」的观察**（此前该时刻没有观察）—— 采集侧
 // `collector.ts`、活跃/类别判定、rollup 口径与阈值一律未动。覆盖点描述与实现点均不变，
 // 无 caseId 迁移。
+// 2026-10-09 metrics/evidence sync: coverage and sourceFiles now include v2 activity buckets,
+// legacy measurement quarantine, and derived-memory reconciliation. New caseIds are recorded
+// below; sourceHash was refreshed by the root agent's acceptance pass (2026-10-09).
 import type { ModuleContract } from "../host/types"
 
 export const behaviorContract: ModuleContract = {
@@ -46,6 +50,9 @@ export const behaviorContract: ModuleContract = {
     "src/services/behavior/conclusions.ts",
     "src/services/behavior/paths.ts",
     "src/services/behavior/types.ts",
+    "src/services/agent/memory/evidence.ts",
+    "src/services/agent/memory/sources.ts",
+    "src/services/agent/memory/index.ts",
     "src/services/window/listener.ts",
     "src/services/window/monitor.ts",
     "src/services/window/types.ts",
@@ -63,12 +70,12 @@ export const behaviorContract: ModuleContract = {
     "crates/native-host/src/host/dispatch.rs",
     "test/e2e/scenes/behavior/原生观察边界.scene.ts",
   ],
-  sourceHash: "84662f6fe70f171626b3734e7c64c595386f10631e1b0199927f061aa1707d8d",
+  sourceHash: "e2dacc2787388202ada5cfc6f7cbfd1ca6d1594638a52cc29d06f6acb62337e9",
   coverage: [
-    { id: "bh-01", feature: "窗口类别与画像指标", description: "应用分类优先稳定appId、未知保持unknown；日历窗口生成近30日画像与真实7日activity/focus，不以最近有数据的天数冒充自然周，未知时长不伪装为已知类别", why: "画像和机会必须有来源可解释，分类错误会伪造习惯与工作结论", layer: "unit", depth: "shallow", scenarios: ["behavior-app-classification", "behavior-metrics-source"] },
-    { id: "bh-02", feature: "覆盖率与采样空窗", description: "无有效采集时间时质量为unavailable；至少3个有效观察日且覆盖率达到60%才可靠；原生事件驱动下采样间隔本身不再产生空窗 —— 连续 observed 之间整段回填，分段只被时钟回退与 locked/suspended 边界（锁屏、系统睡眠、显示器睡眠、会话切换）截断：边界之后的时长不再被回填为连续使用（不进入 observed 累计，也不累加 unobservedMs —— 盲区计数只保留给采集链自身缺陷：队列丢弃与时钟回退）", why: "采样中断不能被解释成连续工作或作息规律", layer: "unit", depth: "deep", scenarios: ["behavior-quality-threshold", "behavior-gap-no-fill"] },
+    { id: "bh-01", feature: "窗口类别与画像指标", description: "应用类别仅由命中的appId身份规则以high置信度确认；title只可提供low置信media activity hint，不能把未知app分类成已知类别，原始title不落盘。日历窗口生成近30日画像与真实7日activity/focus，不以最近有数据的天数冒充自然周；focus只表示已分类work/development应用的active连续段代理值，不宣称心理专注；未知应用时长不伪装为已知类别", why: "画像和机会必须有来源可解释，分类错误会伪造习惯与工作结论", layer: "unit", depth: "shallow", scenarios: ["behavior-app-classification", "behavior-metrics-source"] },
+    { id: "bh-02", feature: "覆盖率与活动时间证据", description: "active/idle/unknown/unobserved四类时间互斥；短间隔仅在两端idle低于5分钟、前点idle加跨度仍不超过5分钟时可全计active，长间隔按单调idle证据切分，计数重置或无法解释的部分归unknown，墙钟超出monotonic确认量与边界前未证实部分归unobserved；hourMs只累计active。无有效采集时间时质量unavailable，至少3个有效观察日且covered/(covered+unobserved)达到60%才可靠；measurementVersion=2，旧daily在持久待办写入后删除，不进入新画像；读取失败可重试、ack后重启不反复撤销，持久撤销待办在memory recall或derived registration前关闭旧derived行为来源，闭包成功后ack，失败保留待办", why: "事件间长空窗与idle重置不能伪装成连续活跃或专注；旧口径daily和旧结论不能混入v2画像", layer: "unit", depth: "deep", scenarios: ["behavior-quality-threshold", "behavior-legacy-measurement-quarantine", "behavior-history-retry-and-marker-ack"] },
     { id: "bh-03", feature: "有限presence状态", description: "presence只允许idle/working/resting；状态由owner持有并可到期，短动作两秒以内且滚动一小时最多两次", why: "桌宠表现必须有限且不会覆盖其他状态所有者", layer: "unit", depth: "deep", scenarios: ["presence-owner-scope", "presence-motion-bound", "presence-owner-expiry"] },
-    { id: "bh-04", feature: "实际观察与派生落盘", description: "真完整WindowObservation进入单一收集器；按本地日/小时分割并滚动写有界JSONL分片与每日聚合；窗口标题不落盘，图片段与日聚合来自真实IPC隔离根读取", why: "纯数学测试无法证明采集器真实调用存储、聚合与隐私边界正确", layer: "integration", depth: "deep", scenarios: ["behavior-persisted-rollup"] },
+    { id: "bh-04", feature: "实际观察与派生落盘", description: "真完整WindowObservation进入单一收集器；按本地日/小时分割并滚动写有界JSONL分片与每日聚合；窗口标题不落盘，图片段与日聚合来自真实IPC隔离根读取；长idle gap按证据切分，idle reset和阈值边缘不能全算活跃", why: "纯数学测试无法证明采集器真实调用存储、聚合与隐私边界正确", layer: "integration", depth: "deep", scenarios: ["behavior-persisted-rollup", "behavior-idle-bounded-gap", "behavior-reset-idle-unknown-gap"] },
     { id: "bh-05", feature: "画像清除与停止", description: "行为清除串行排空、删除behavior文件树并清内存读模型；采集许可保持原状，清除水位之前的迟到观察不能重建画像，之后的新样本可重新采集", why: "清除不能只清UI或留下能被后台回写的个人画像，也不能悄悄关闭用户启用的采集", layer: "integration", depth: "deep", scenarios: ["behavior-clear-erases-source"] },
     { id: "bh-06", feature: "原生观察协议", description: "Windows/macOS native command enable/disable 与独立 activity 查询返回锁屏、系统 idle、桌宠可见与前台；observation 带真实时间、generation/sequence、appId/app/title，隐私快照无标题/应用字段。注（可验证性边界）：E2E 宿主不启动 monitor 工作线程（`main.rs` 的 run_e2e 不调用 spawn_monitor_thread），`window-observed` 没有事件源 —— 场景把「宿主不会发布任何观察事件」断言成前置，事件载荷协议（采样时间、generation/sequence、前后台/可见性）当前无可执行入口验证；宿主在 e2e 分支接入事件源后该前置会失败并提示重写", why: "模拟载荷与TS类型不足以证明跨平台Rust采样和命令注册可用", layer: "e2e", depth: "deep", scenarios: ["behavior-native-observation"] },
     { id: "bh-07", feature: "稳定结论沉淀视图（记忆准入的唯一出口）", description: "`sedimentConclusions(snapshot)` 是画像层唯一允许进入长期记忆的出口：输入只有近 30 日画像读模型（rhythm/apps/focus/activity + quality），拿不到 daily/segments 原始账；只有 reliable（≥3 有效观察日且覆盖率 ≥60%）才产出结论，unavailable/insufficient 一律空数组；每画像组一条、共四槽位，文本只含带段/整比/取整表述并自带判据（窗口与画像字段），不输出具体某天的工时、精确时间戳、逐次应用切换细节或原始计数；同输入重算稳定、输入形状变化则文本变化（可重验/可推翻）。来源登记、整理与清画像失效链在 memory 契约（mm-46/mm-47/mm-48 与 Rust 单测）", why: "结论一旦进记忆就会长期留存而原始账是滚动缓冲：没有 reliable 门禁会把噪声当习惯，没有「结论+判据」就无从重验，原始账混入则等于把窗口外的个人数据写成长期事实", layer: "unit", depth: "deep", scenarios: ["derived-behavior-reliable-gate", "derived-behavior-conclusion-criteria", "derived-behavior-not-raw-ledger", "derived-behavior-recompute"] },

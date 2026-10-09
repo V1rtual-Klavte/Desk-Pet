@@ -779,6 +779,7 @@ const TOOLS_ACTIONS: &[Field] = &[
 
 // 记忆页只保留库管理动作：技术参数（coreTokenBudget / recallTokenBudget / maxSessions）
 // 已按「设置页瘦身」边界撤下界面（值保留在 CONFIG/getter，YAML 可改）。
+// queryRewrite / rerank 同属检索技术参数，仅经运行时 YAML 配置，不另加设置控件或提交映射。
 // 库管理（条目浏览/纠正/遗忘/历史/整理作业）走管理面模型（`panels.rs`），不进静态字段表。
 
 // 记忆页动作（2026-10-05 规整）。

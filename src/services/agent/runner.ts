@@ -13,7 +13,7 @@ import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted,
 import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/harness"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { preProcess } from "@/services/engine/preprocessor"
-import type { PreProcessState } from "@/services/engine/preprocessor"
+import type { PreProcessDedupAdmission, PreProcessState } from "@/services/engine/preprocessor"
 import {
   unansweredCount,
   pushUserMessage, pushAssistantMessage, pushSystemMessage,
@@ -120,7 +120,7 @@ async function cancelActiveRunForUserInput(sessionId: string): Promise<void> {
 
 /**
  * 每会话的预处理去重状态：唯一取用入口，避免调用点各写一份默认对象导致状态丢失。
- * 忙碌分支与空闲分支必须拿到同一个对象 —— `preProcess` 就地改写去重窗口，临时对象会让 30 秒窗口在任何入口下失效。
+ * 忙碌分支与空闲分支必须拿到同一个对象 —— reservation 与准入记账都以它为状态键。
  */
 function preprocessStateFor(sessionId: string): PreProcessState {
   let state = preprocessStates.get(sessionId)
@@ -226,6 +226,8 @@ export async function initChat(): Promise<void> {
  */
 export interface SendMessageOptions {
   requestId?: string
+  /** Freeze an empty capability surface for this whole turn, including internal tools and Plan. */
+  toolMode?: "none"
   priority?: MessagePriority
   /** 原文件路径；准入前验证，JSONL 不保存图片编码。 */
   imagePaths?: readonly string[]
@@ -284,6 +286,7 @@ interface TurnInvocation {
   requestId: string
   runGeneration: number
   userText: string
+  toolMode?: "none"
   /** 本次投递的正文：普通输入带身份与来源标记；继续暂停输入是取回的原文。技能准入不投递正文。 */
   userPrompt?: AgentMessage | AgentMessage[]
   ingress?: IngressEnvelope
@@ -315,6 +318,7 @@ async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutpu
     userText: invocation.userText,
     unansweredCount: unansweredCount.value,
     isActiveMessage: false,
+    ...(invocation.toolMode ? { toolMode: invocation.toolMode } : {}),
     runGeneration,
     ...(invocation.onInputAdmitted ? { onInputAdmitted: invocation.onInputAdmitted } : {}),
     ...(invocation.turnContext ? { turnContext: invocation.turnContext } : {}),
@@ -449,6 +453,19 @@ async function pausedInputsCommitted(sessionId: string, messages: AgentMessage[]
 }
 
 async function dispatchMessage(text: string, options: SendMessageOptions = {}): Promise<SendMessageResult> {
+  const admissionScope: { current?: PreProcessDedupAdmission } = {}
+  try {
+    return await dispatchMessageInner(text, options, admissionScope)
+  } finally {
+    admissionScope.current?.release()
+  }
+}
+
+async function dispatchMessageInner(
+  text: string,
+  options: SendMessageOptions,
+  admissionScope: { current?: PreProcessDedupAdmission },
+): Promise<SendMessageResult> {
   // ★ 入口绑定会话 ID（防止异步回复错位到其他会话）
   const originSessionId = getActiveSessionId()
   cancelHumanizerSession(originSessionId)
@@ -485,7 +502,13 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   // 那种窗口里没有可投递的回合，投递必然失败，输入不能被当成正常回合放进去。
   let busyPreResult: Awaited<ReturnType<typeof preProcess>> | undefined
   if (await harnessSlots.hasOpenOperation(originSessionId)) {
+    // An input cannot change the already-frozen capabilities of a running lane.
+    if (options.toolMode === "none") return {
+      reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [],
+      failure: { kind: "admission", message: "空工具回合需要独立的空闲运行槽" },
+    }
     const preResult = await preProcess(text, preprocessStateFor(originSessionId), { busy: true, imageInput: imagePaths.length > 0 })
+    admissionScope.current = preResult.dedupAdmission
     if (preResult.handled) {
       // 命令已执行（immediate/coordinated）或已被明确拒绝；两种结果都如实呈现，不谎称在思考。
       if (preResult.response) {
@@ -523,6 +546,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       resolveDeliveryIntent(text),
     )
     if (receipt) {
+      preResult.dedupAdmission?.commit()
       pushUserMessage(preResult.normalizedText, originSessionId, inputEventId(requestId), imagePaths)
       if (getActiveSessionId() === originSessionId) resetUnanswered()
       // 归宿回执随提交当刻一并交给观察者：原生 UI 据此发出中性回执（不等到整回合收尾）。
@@ -563,6 +587,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   // ── Step 1: 预处理（命令不占用运行槽：/compact 需要看到真实空闲状态）──
   const preState = preprocessStateFor(originSessionId)
   const preResult = busyPreResult ?? await preProcess(text, preState, { imageInput: imagePaths.length > 0 })
+  admissionScope.current = preResult.dedupAdmission
 
   if (preResult.handled) {
     if (preResult.response) {
@@ -636,6 +661,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       userPrompt: userInputMessage(preResult.text, inputEventId(requestId), inputSourceMark(inputIngress, turnCard?.id), imagePaths),
       ingress: inputIngress,
       onInputAdmitted: async () => {
+        preResult.dedupAdmission?.commit()
         pushUserMessage(preResult.text, originSessionId, inputEventId(requestId), imagePaths)
         if (getActiveSessionId() === originSessionId) resetUnanswered()
         await notifyUserIngressCommitted(originSessionId, requestId)
@@ -649,6 +675,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       requestId,
       runGeneration,
       userText: preResult.text,
+      ...(options.toolMode ? { toolMode: options.toolMode } : {}),
       ...(turnContext ? { turnContext } : {}),
       ...turnDelivery(),
     })

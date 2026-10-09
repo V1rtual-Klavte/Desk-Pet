@@ -29,7 +29,7 @@ export function contentPool(card:PersonalityCard,behavior:BehaviorSnapshot,owner
     let cumulative=0
     const candidate=weightedPool.find(item=>{cumulative+=item.item.weight/variations.length;return point<cumulative})??weightedPool[weightedPool.length-1]!
     const {item:topic,variant}=candidate
-    selected={key:`topic:${topic.topic}:${variant}`,context:`分享一个围绕「${topic.topic}」的轻松话题。只把它当作选材方向，不说这是用户的固定偏好，也不提取或补写个人事实。\n选题方向：${variant}`,
+    selected={key:`topic:${topic.topic}:${variant}`,context:`分享一个围绕「${topic.topic}」的轻松话题。只把它当作讨论选材方向，不说这是用户的固定偏好，也不提取或补写个人事实。\n原讨论立场：${topic.stances.join("、")}；保留否定、中立、引用和假设语境，不能改写成喜爱或认可，负面话题避免热情推介。\n选题方向：${variant}`,
       source:source("behavior",`topic:${topic.topic}`,behavior.revision,`${behavior.revision}:${topic.topic}`,owner),targets:[]}
   } else {
     const available=variations.filter(variant=>!usedTopicKeys.includes(`role:${card.hash}:${variant}`))

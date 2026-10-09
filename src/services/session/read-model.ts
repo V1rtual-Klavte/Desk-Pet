@@ -10,6 +10,7 @@ import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY, inputSourceOf, me
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { getMessageImagePaths } from "@/services/images"
+import { parseRuntimeData } from "@/services/reply"
 
 const log = createLogger("SessionReadModel")
 
@@ -77,6 +78,21 @@ function textFromParts(parts: readonly (TextContent | ImageContent | ThinkingCon
     .join("\n")
 }
 
+function assistantTextParts(parts: readonly (TextContent | ImageContent | ThinkingContent | ToolCall)[]): string[] {
+  // New assistant entries are stripped before persistence. This also keeps older or
+  // externally-produced entries from exposing the internal Card writeback protocol.
+  const texts = parts.filter((part): part is TextContent => part.type === "text").map(part => part.text)
+  const joined = texts.join("\n")
+  let visible = joined
+  for (;;) {
+    const parsed = parseRuntimeData(visible)
+    if (!parsed.hasBlock) break
+    visible = parsed.text
+  }
+  // Preserve original parts unless a protocol block (possibly spanning parts) was removed.
+  return visible === joined ? texts : visible ? [visible] : []
+}
+
 function safeStringify(value: unknown): string {
   try {
     return JSON.stringify(value) ?? ""
@@ -121,7 +137,7 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
       const toolCalls: ToolCallRequest[] = raw.content
         .filter((part): part is ToolCall => part.type === "toolCall")
         .map(call => ({ id: call.id, name: call.name, arguments: safeStringify(call.arguments) }))
-      const parts = raw.content.filter((part): part is TextContent => part.type === "text").map(part => part.text)
+      const parts = assistantTextParts(raw.content)
       // 助手条目同样只带回原路径（她 show_to_user 截图的落盘文件）：文件没了就由界面
       // 按「不可用」呈现，不在这里从缓存恢复副本。
       const imagePaths = getMessageImagePaths(raw)
@@ -129,7 +145,7 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
         id: entry.id,
         eventId: entry.id,
         role: "assistant",
-        text: textFromParts(raw.content),
+        text: parts.join("\n"),
         ...(parts.length > 1 ? { parts } : {}),
         timestamp,
         ...(thinking ? { thinking } : {}),

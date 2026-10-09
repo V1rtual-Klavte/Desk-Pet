@@ -2,7 +2,209 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Desk-Pet memory IPC protocol",
   "version": 3,
+  "constants": {"conversation": {"batchChunks": 512, "maxSearchResults": 20}},
   "definitions": {
+    "ConversationIndexEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entryId",
+        "eventId",
+        "seq",
+        "chunk",
+        "role",
+        "text",
+        "timestamp"
+      ],
+      "properties": {
+        "entryId": {
+          "type": "string"
+        },
+        "eventId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "chunk": {
+          "type": "integer"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "user",
+            "assistant"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "integer"
+        },
+        "anchorEntryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "anchorEventId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ConversationIndexBatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "offset", "complete"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 512, "description": "一次完整会话索引快照的稳定批次 id" },
+        "offset": { "type": "integer", "minimum": 0, "description": "此前已经发送的 chunk 条目数量，必须与已暂存偏移连续" },
+        "complete": { "type": "boolean", "description": "true 只用于最后一批；其时完整快照才会原子替换可见索引" }
+      }
+    },
+    "ConversationClearFence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "maxSeq"],
+      "properties": {
+        "sessionId": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "maxSeq": { "type": "integer", "minimum": -1, "description": "clear 时 JSONL 会话最大 entry.seq；-1 表示会话为空" }
+      }
+    },
+    "ConversationSearchEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entryId",
+        "eventId",
+        "seq",
+        "chunk",
+        "role",
+        "text",
+        "timestamp",
+        "sessionId",
+        "score"
+      ],
+      "properties": {
+        "entryId": {
+          "type": "string"
+        },
+        "eventId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "chunk": {
+          "type": "integer"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "user",
+            "assistant"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "integer"
+        },
+        "anchorEntryId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "anchorEventId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "score": {
+          "type": "number"
+        }
+      }
+    },
+    "ConversationIndexStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessions",
+        "stagedSessionIds",
+        "revision",
+        "forgetEpoch"
+      ],
+      "properties": {
+        "stagedSessionIds": {"type":"array","items":{"type":"string"}},
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "sessionId",
+              "fingerprint"
+            ],
+            "properties": {
+              "sessionId": {
+                "type": "string"
+              },
+              "fingerprint": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "forgetEpoch": {
+          "type": "integer"
+        }
+      }
+    },
+    "ConversationSearchResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "memoryRevision",
+        "forgetEpoch",
+        "entries"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer"
+        },
+        "memoryRevision": {
+          "type": "integer"
+        },
+        "forgetEpoch": {
+          "type": "integer"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConversationSearchEntry"
+          }
+        }
+      }
+    },
     "MemoryScope": { "type": "string", "enum": ["user", "card", "session"] },
     "MemoryKind": { "type": "string", "enum": ["fact", "preference", "episode", "working"] },
     "MemoryOrigin": { "type": "string", "enum": ["user", "derived_behavior"], "description": "条目来源类别：user = 用户本人可信输入沉淀的用户事实；derived_behavior = 系统观察得出的、可撤销的结论（行为画像沉淀），与用户事实分区、永不进核心画像" },
@@ -95,6 +297,78 @@
     }
   },
   "commands": {
+    "conversation_index_status": {
+      "request": {},
+      "response": {
+        "$ref": "#/definitions/ConversationIndexStatus"
+      }
+    },
+    "conversation_index_replace": {
+      "request": {
+        "sessionId": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "expectedFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expectedForgetEpoch": {
+          "type": "integer"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConversationIndexEntry"
+          }
+        },
+        "batch": {
+          "$ref": "#/definitions/ConversationIndexBatch"
+        }
+      },
+      "response": {
+        "type": "integer"
+      }
+    },
+    "conversation_index_prune": {
+      "request": {
+        "sessionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "response": {
+        "type": "integer"
+      }
+    },
+    "conversation_search": {
+      "request": {
+        "query": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "before": {
+          "type": "integer"
+        },
+        "recentFallback": {
+          "type": "boolean"
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/ConversationSearchResult"
+      }
+    },
     "memory_recall_candidates": {"request": {"query": {"type": "string"}, "cardId": {"type": ["string", "null"]}, "sessionId": {"type": "string"}, "limit": {"type": "integer"}, "targets": {"type": "array", "items": {"$ref": "#/definitions/MemoryRecallTarget"}}, "allowExpiredTargets": {"type": "boolean"}}, "response": {"$ref": "#/definitions/MemoryRecallCandidateSnapshot"}},
     "memory_job_list": {"request": {"limit": {"type": "integer"}, "offset": {"type": "integer"}}, "response": {"type": "array", "items": {"$ref": "#/definitions/MemoryJobListItem"}}},
     "memory_restore_preview": {"request": {"backupPath": {"type": "string"}}, "response": {"$ref": "#/definitions/MemoryRestorePreview"}},
@@ -106,7 +380,7 @@
     "memory_register_sources": { "request": { "sources": { "type": "array", "items": { "$ref": "#/definitions/MemorySource" } } }, "response": { "type": "integer" } },
     "memory_query": { "request": { "query": { "type": "string" }, "scope": { "$ref": "#/definitions/MemoryScope" }, "scopeId": { "type": "string" }, "sessionId": { "type": "string" }, "limit": { "type": "integer" }, "tokenBudget": { "type": "integer" } }, "response": { "type": "array", "items": { "$ref": "#/definitions/MemoryItem" } } },
     "memory_get_items": { "request": { "ids": { "type": "array", "items": { "type": "string" } } }, "response": { "type": "array", "items": { "$ref": "#/definitions/MemoryItem" } } },
-    "memory_apply_change": {"request": {"operationId": {"type": "string"}, "baseRevision": {"type": "integer"}, "action": {"type": "string", "enum": ["add", "update", "supersede", "forget", "clear", "complete", "cancel", "forget_understanding"]}, "itemId": {"type": "string"}, "expectedVersion": {"type": "integer"}, "actor": {"$ref": "#/definitions/MemoryChangeActor"}, "trustedUserEventId": {"type": "string"}, "draft": {"$ref": "#/definitions/MemoryDraft"}, "trustedSessionId": {"type": "string"}}, "response": {"type": "integer"}},
+    "memory_apply_change": {"request": {"operationId": {"type": "string"}, "baseRevision": {"type": "integer"}, "action": {"type": "string", "enum": ["add", "update", "supersede", "forget", "clear", "complete", "cancel", "forget_understanding", "forget_derived_behavior"]}, "itemId": {"type": "string"}, "expectedVersion": {"type": "integer"}, "actor": {"$ref": "#/definitions/MemoryChangeActor"}, "trustedUserEventId": {"type": "string"}, "draft": {"$ref": "#/definitions/MemoryDraft"}, "trustedSessionId": {"type": "string"}, "conversationFences": {"type": "array", "items": {"$ref": "#/definitions/ConversationClearFence"}}}, "response": {"type": "integer"}},
     "memory_pending_source_count": { "request": { "origin": { "anyOf": [{ "$ref": "#/definitions/MemoryOrigin" }, { "type": "null" }] } }, "response": { "type": "integer" } },
     "memory_job_start": { "request": { "phase": { "type": "string", "enum": ["light", "review"] }, "leaseOwner": { "type": "string" } }, "response": { "$ref": "#/definitions/MemoryJob" } },
     "memory_job_checkpoint": { "request": { "jobId": { "type": "string" }, "cursor": { "type": "string" }, "leaseOwner": { "type": "string" }, "leaseMs": { "type": "integer" } }, "response": { "$ref": "#/definitions/MemoryJob" } },

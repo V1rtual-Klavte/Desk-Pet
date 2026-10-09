@@ -22,7 +22,10 @@
 //   · V1RTUAL 读取的整份正文回退与写入的既有落盘入口；
 //   · 阶段文案 / 变量池 / 主动开关的形状守卫与无卡时的如实拒绝。
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+
+// Migration transactions have a dedicated suite; this suite owns management projections.
+vi.mock("@/services/agent/memory/evidence", () => ({ reconcileDerivedMemoryEvidence: async () => undefined }))
 
 import { initConfig, setOverride } from "@/services/config"
 import { DERIVED_PROVENANCE_MARK, subscribeMemoryRevision } from "@/services/agent/memory"

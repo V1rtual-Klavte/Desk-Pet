@@ -26,7 +26,9 @@ import type {
   MemorySourceAudit,
   MemoryStatus,
   WorkingState,
+  ConversationClearFence,
 } from "./protocol"
+import { captureConversationClearFences } from "./conversation"
 
 export type {
   MemoryCandidateDraft,
@@ -63,14 +65,17 @@ export interface MemoryChangeRequest {
    * `forget_understanding` 是「清除静默了解」的专用闭包动作（actor 固定 internal）：
    * 只圈定 `understanding:` 来源（静默了解沉淀），墓碑 + 删条目/候选 + 推进遗忘代，
    * 画像结论与用户事实不在范围内。其余动作语义见 Rust `apply_change_with_actor`。
+   * `forget_derived_behavior` 在计量升级时撤销全部系统观察，复用同一派生闭包且只接受 internal。
    */
-  action: "add" | "update" | "supersede" | "forget" | "clear" | "complete" | "cancel" | "forget_understanding"
+  action: "add" | "update" | "supersede" | "forget" | "clear" | "complete" | "cancel" | "forget_understanding" | "forget_derived_behavior"
   actor: MemoryChangeActor
   trustedUserEventId?: string
   trustedSessionId?: string
   itemId?: string
   expectedVersion?: number
   draft?: MemoryDraft
+  /** Internally captured by applyMemoryChange for clear; callers must not supply it. */
+  conversationFences?: ConversationClearFence[]
 }
 
 export async function memoryStatus(): Promise<MemoryStatusSnapshot> {
@@ -129,10 +134,18 @@ export async function getMemoryItems(ids: string[]): Promise<MemoryItem[]> {
 
 /** 返回提交后的 revision；冲突（stale 基准）由 Rust 抛 `MEMORY_CONFLICT`。 */
 export async function applyMemoryChange(request: MemoryChangeRequest): Promise<number> {
+  const requestBody = { ...request }
+  delete requestBody.conversationFences
+  const conversationFences = request.action === "clear"
+    ? await captureConversationClearFences()
+    : undefined
   // 删除事实同时撤销由同一可信原话派生的主题资格；只传来源身份，不把正文交给观察域。
   const forgottenSources = request.action === "forget" && request.itemId
     ? (await memoryHistory(request.itemId)).flatMap(history => history.sourceAudits) : []
-  const revision = await getHostBridge().request("memory_apply_change", { ...request })
+  const revision = await getHostBridge().request("memory_apply_change", {
+    ...requestBody,
+    ...(conversationFences === undefined ? {} : { conversationFences }),
+  })
   if (request.action === "forget" && forgottenSources.length) {
     const { invalidateTopicSources } = await import("@/services/observation")
     const bySession = new Map<string, Set<string>>()

@@ -19,6 +19,7 @@ import { listPiSessionMetadata, readPiSessionEntriesOnce } from "@/services/sess
 import { inputSourceOf, laneMessageText, messageEventId } from "@/services/engine/runtime"
 import { registerMemorySources } from "./ipc"
 import type { MemorySource } from "./ipc"
+import { reconcileDerivedMemoryEvidence } from "./evidence"
 
 const log = createLogger("MemorySources")
 
@@ -26,7 +27,7 @@ const log = createLogger("MemorySources")
 export const DERIVED_BEHAVIOR_ORIGIN = "derived_behavior" as const
 /** 派生结论来源的合成会话身份：与真实 sessionId 空间不相交，水位独立记账。 */
 export const BEHAVIOR_CONCLUSION_SESSION = "behavior"
-/** 派生结论来源的条目身份前缀（`conclusion:<slot>`），槽位即画像组（rhythm/apps/focus/activity）。 */
+/** 派生结论来源的条目身份前缀（`conclusion:<slot>:<measurementVersion>`），槽位即画像组（rhythm/apps/focus/activity）。 */
 export const BEHAVIOR_CONCLUSION_ENTRY_PREFIX = "conclusion:"
 /**
  * 静默了解观察来源的条目身份前缀（`understanding:<内容 hash 前 16 位>`）。
@@ -37,13 +38,13 @@ export const UNDERSTANDING_SOURCE_ENTRY_PREFIX = "understanding:"
 /** 静默了解沉淀条目的识别前缀（别名 `behavior-understanding:<hash16>`），同前缀即同一有界池。 */
 export const UNDERSTANDING_ALIAS_PREFIX = "behavior-understanding:"
 /**
- * 静默了解沉淀的有界窗口：每次登记只取**最新**的 N 条不同文本观察，在库的了解条目同样以
+ * 静默了解沉淀的有界窗口：每次登记只取**最新**的 N 条不同 artifact 的可验证观察，在库的了解条目同样以
  * 该数为上限（容量满时最旧的条目由新条目 supersede 覆盖）。取 12 的依据是了解层自己的读取
  * 窗口——了解块只取最近 12 条（store 的 `slice(-12)`）、决策输入取最近 8 条——长期侧与
  * 了解层同阶，既不夸大来源面，也不额外稀释两区共用的召回预算。
  *
- * 去重口径：按 observation 摘要文本的 sha256 前 16 位做身份（sourceId / entryId 同源），
- * 同一文本无论观察多少次都是同一个来源（登记幂等、水位不推进）；文本不同才是新来源。
+ * 去重口径：同一 artifact 只取最新的可验证观察；来源身份绑定 artifact、输入版本与摘要，
+ * 内容 hash 始终只校验摘要原文。重复采样不增加独立来源，旧无证据摘要不得沉淀。
  */
 export const UNDERSTANDING_MAX_ENTRIES = 12
 /** 静默了解条目的查询关键词别名（了解层在设置面的名字）。 */
@@ -156,11 +157,11 @@ export function isDerivedBehaviorSource(source: Pick<MemorySource, "origin">): b
   return source.origin === DERIVED_BEHAVIOR_ORIGIN
 }
 
-/** 从派生来源的条目身份里取结论槽位（`conclusion:<slot>`）；非派生来源返回 undefined。 */
+/** 从派生来源的条目身份里取结论槽位（`conclusion:<slot>:<measurementVersion>`）；非派生来源返回 undefined。 */
 export function conclusionSlotOf(source: Pick<MemorySource, "origin" | "entryId">): string | undefined {
   if (!isDerivedBehaviorSource(source)) return undefined
   if (!source.entryId.startsWith(BEHAVIOR_CONCLUSION_ENTRY_PREFIX)) return undefined
-  const slot = source.entryId.slice(BEHAVIOR_CONCLUSION_ENTRY_PREFIX.length)
+  const slot = source.entryId.slice(BEHAVIOR_CONCLUSION_ENTRY_PREFIX.length).split(":")[0]
   return slot || undefined
 }
 
@@ -184,16 +185,17 @@ export function understandingSourceOf(source: Pick<MemorySource, "origin" | "ent
  * - 内容变化时旧来源行保留（旧条目版本仍引用它），与用户来源同一口径。
  */
 export async function collectBehaviorMemorySources(now = Date.now()): Promise<MemorySource[]> {
+  await reconcileDerivedMemoryEvidence()
   const conclusions = sedimentConclusions(getBehaviorSnapshot(now))
   if (conclusions.length === 0) return []
   const sources: (MemorySource & { rawText: string })[] = []
   for (const conclusion of conclusions) {
     const hash = await sha256(conclusion.text)
-    const identity = `${conclusion.slot}:${hash.slice(0, 16)}`
+    const identity = `${conclusion.slot}:${conclusion.measurementVersion}:${hash.slice(0, 16)}`
     sources.push({
       sourceId: `behavior-conclusion:${identity}`,
       sessionId: BEHAVIOR_CONCLUSION_SESSION,
-      entryId: `${BEHAVIOR_CONCLUSION_ENTRY_PREFIX}${conclusion.slot}`,
+      entryId: `${BEHAVIOR_CONCLUSION_ENTRY_PREFIX}${conclusion.slot}:${conclusion.measurementVersion}`,
       eventId: `behavior:${identity}`,
       seq: now,
       contentHash: hash,
@@ -217,44 +219,47 @@ export async function collectBehaviorMemorySources(now = Date.now()): Promise<Me
  *   这里返回空数组、不登记任何来源；过期与窗口裁剪在了解层存储内完成）。
  * - **文本原样**：摘要逐字登记为 evidence（了解层已按 500 字符上限落盘），沉淀时成为
  *   候选正文；Review 是确定性映射，不得再演绎、改写或补写观察（见 dreaming 的派生区注释）。
- * - 幂等与版本：身份 = 摘要文本的 sha256 前 16 位 —— 同一文本重复观察到是同一来源
- *   （登记只更新 evidence、水位不推进），新文本才是新来源。
- * - 有界：每次只登记最新的 `UNDERSTANDING_MAX_ENTRIES` 条不同文本观察（数字依据见常量注释）；
+ * - 幂等与版本：身份绑定 artifact、输入版本与摘要 —— 同一输入重复观察到是同一来源，
+ *   新输入才是新来源；缺证据的旧摘要不能登记。
+ * - 有界：每次只登记最新的 `UNDERSTANDING_MAX_ENTRIES` 条不同 artifact 的可验证观察（数字依据见常量注释）；
  *   seq 逐条递增（now + 序号），保证跨调用/同批来源不会在水位上互相吞并。
  */
 export async function collectUnderstandingMemorySources(now = Date.now()): Promise<MemorySource[]> {
+  await reconcileDerivedMemoryEvidence()
   // 动态 import 防环：observation → memory 的静态引用会成环（memory/ipc 已反向动态引用）。
   const { getUnderstandingSnapshotAsync } = await import("@/services/observation")
   const snapshot = await getUnderstandingSnapshotAsync(now)
   if (snapshot.quality === "unavailable" || snapshot.observations.length === 0) return []
-  // 先按文本去重（同文本保留最新一次观察），再取最新的有界窗口。
-  const byHash = new Map<string, { summary: string; observedAt: number }>()
+  // One latest verified input per artifact; repeated sampling is not independent evidence.
+  const byArtifact = new Map<string, { summary: string; observedAt: number; identityHash: string; contentHash: string }>()
   for (const record of snapshot.observations) {
     const summary = record.summary.trim()
-    if (!summary) continue
-    const hash = await sha256(summary)
-    const previous = byHash.get(hash)
-    if (!previous || record.observedAt >= previous.observedAt) byHash.set(hash, { summary, observedAt: record.observedAt })
+    if (!summary || !record.evidenceId || !record.evidenceHash) continue
+    const identityHash = await sha256(JSON.stringify([record.evidenceId, record.evidenceHash, summary]))
+    const previous = byArtifact.get(record.evidenceId)
+    if (!previous || record.observedAt >= previous.observedAt) byArtifact.set(record.evidenceId, {
+      summary, observedAt: record.observedAt, identityHash, contentHash: await sha256(summary),
+    })
   }
   // 截取有界窗口（最新 12 条）后再按观察时间从旧到新登记（复习顺序与水位推进方向一致）。
   const byNewestFirst = (left: [string, { observedAt: number }], right: [string, { observedAt: number }]): number =>
     right[1].observedAt - left[1].observedAt || left[0].localeCompare(right[0])
   const byOldestFirst = (left: [string, { observedAt: number }], right: [string, { observedAt: number }]): number =>
     left[1].observedAt - right[1].observedAt || left[0].localeCompare(right[0])
-  const selected = [...byHash.entries()]
+  const selected = [...byArtifact.entries()]
     .sort(byNewestFirst)
     .slice(0, UNDERSTANDING_MAX_ENTRIES)
     .sort(byOldestFirst)
   const sources: (MemorySource & { rawText: string })[] = []
-  selected.forEach(([hash, entry], index) => {
-    const identity = hash.slice(0, 16)
+  selected.forEach(([, entry], index) => {
+    const identity = entry.identityHash.slice(0, 16)
     sources.push({
       sourceId: `${UNDERSTANDING_ALIAS_PREFIX}${identity}`,
       sessionId: BEHAVIOR_CONCLUSION_SESSION,
       entryId: `${UNDERSTANDING_SOURCE_ENTRY_PREFIX}${identity}`,
       eventId: `behavior:${UNDERSTANDING_SOURCE_ENTRY_PREFIX}${identity}`,
       seq: now + index,
-      contentHash: hash,
+      contentHash: entry.contentHash,
       evidence: entry.summary.slice(0, EVIDENCE_CHARS),
       sourceLength: entry.summary.length,
       rawText: entry.summary,

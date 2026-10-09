@@ -1,3 +1,4 @@
+// 2026-10-09 最终静态复核：会话文件锁新增检索与删除消费者，JSONL帧和折叠语义保留；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
 // 2026-10-06 聊天图片与折叠守卫批次（analyze→generate）：sourceFiles 变化 ——
 // `src/services/engine/harness/session-fold.ts`：FOLD_POLICY 新增第四个阈值 maxFileBytes
 // （64 MiB，读取守卫 = 折叠自愿设的读上界），旧守卫「文件 > MAX_TOOL_FILE_BYTES（5 MiB）
@@ -71,7 +72,7 @@ export const harnessStorageContract: ModuleContract = {
     // 该文件同时在 agent-runtime 契约在列，共享文件多契约并列是既有形态。
     "src/services/engine/harness/harness-slot.ts",
   ],
-  sourceHash: "ce10eb697db8c1c476ce1f3b55fc82077c1f68fcfbe149e8e7eb9ca62c683500",
+  sourceHash: "a547cca52fa3fe27a3c23e2bbc51f29bd68c5f05d8585dd344ff936027a46a3c",
   coverage: [
     {
       id: "hs-01",

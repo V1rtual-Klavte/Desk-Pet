@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { initPaths, runtimePath } from "@/services/paths"
 import { getHostBridge } from "@/services/host"
-import { getRecentTargetReadAttempts, getUnderstandingSnapshot, loadObservationStore } from "@/services/observation/store"
+import { getRecentTargetReadAttempts, getUnderstandingSnapshot, hasUnverifiedMemoryClosurePending, loadObservationStore } from "@/services/observation/store"
 
 let root = ""
 
@@ -46,6 +46,10 @@ describe("了解层旧档与非法字段读取", () => {
 
     const snapshot = getUnderstandingSnapshot(now)
     expect(snapshot.observations.map(row => row.sourceId), "非法 kind 记录没有在读取时被滤掉").toEqual(["dir-1", "plain-1"])
+    expect(snapshot.quality, "缺少 evidenceId/hash 的旧记录被算成 ready").toBe("thin")
+    expect(snapshot.coverage, "旧观察记录没有保留为可展示覆盖").toBe(2)
+    expect(snapshot.independentSources, "旧观察记录被误算为独立证据").toBe(0)
+    expect(hasUnverifiedMemoryClosurePending(), "旧派生来源的闭包没有先持久标记").toBe(true)
     const dirRow = snapshot.observations.find(row => row.sourceId === "dir-1")
     expect(dirRow?.targets?.length, "审计路径数量没有按上限截断").toBe(2)
     expect(dirRow?.targets?.[0]?.length, "单条审计路径没有按上限截断").toBe(240)

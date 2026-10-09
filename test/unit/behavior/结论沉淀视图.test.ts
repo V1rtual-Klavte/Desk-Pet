@@ -27,6 +27,7 @@ function observedDays(shape: (day: BehaviorDaily, index: number) => void): Behav
     day.unobservedMs = UNOBSERVED_MS
     day.activeMs = 5 * HOUR
     day.idleMs = 1 * HOUR
+    day.classifiedMs = 6 * HOUR
     day.workSegments = 2
     day.workTotalMs = 50 * 60_000
     day.workLongestMs = 45 * 60_000
@@ -66,6 +67,7 @@ describe("稳定结论沉淀视图", () => {
   it("四组画像各出一条结论，文本带判据（窗口与画像字段）[derived-behavior-conclusion-criteria]", () => {
     const conclusions = sedimentConclusions(snapshotOf(baselineDays()))
     expect(conclusions.map(conclusion => conclusion.slot)).toEqual(["rhythm", "apps", "focus", "activity"])
+    expect(conclusions.every(conclusion => conclusion.measurementVersion === 2)).toBe(true)
     const rhythm = conclusions.find(conclusion => conclusion.slot === "rhythm")!
     // 期望值来自用例自己写入的钟点桶：工作日在 19–22 点投喂，最强 4 小时带 = 19–23 时；
     // 周六在 10–13 点投喂 = 10–14 时。
@@ -74,9 +76,12 @@ describe("稳定结论沉淀视图", () => {
     const apps = conclusions.find(conclusion => conclusion.slot === "apps")!
     expect(apps.text).toContain("开发")
     expect(apps.text).toContain("com.example.ide")
+    expect(apps.text).toContain("可靠分类覆盖约 100%")
+    expect(apps.text).toContain("前台应用观察")
     const focus = conclusions.find(conclusion => conclusion.slot === "focus")!
     expect(focus.text).toContain("25 分钟") // 150 分钟 / 6 段
     expect(focus.text).toContain("45 分钟") // 最长段
+    expect(focus.text).toContain("连续观察到的办公/开发活跃段")
     const activity = conclusions.find(conclusion => conclusion.slot === "activity")!
     expect(activity.text).toContain("50%") // 5h / (5h + 1h + 4h)
     for (const conclusion of conclusions) {

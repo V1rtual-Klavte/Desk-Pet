@@ -1,3 +1,4 @@
+// 2026-10-09 最终静态复核：稳定artifact与输入证据分离、去重和话题立场透传已复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
 // 2026-10-05 设置页 Card 增删改查 + 模版批次：本契约 sourceFiles 中三处变化，均为新增 ——
 // `src/services/native-ui/host-requests.ts` 加四条 Card 请求臂、`ui/settings/schema.rs`
 // 的 AI 页「人格」节加 7 个 action.card* 动作字段（silentAccess 字段与既有动作未动）、
@@ -231,6 +232,8 @@
 // 于是「应用启动到用户第一次切窗口」之间窗口观察恒为空，静默了解第 5 关（要求有当前窗口观察）
 // 整轮不过；15 分钟追赶窗下启动落在后半段就必然错过（实测就绪时间 ~2 分钟 → 0.5 秒）。
 // 本契约 watched 的是 `monitor/mod.rs`，故 hash 不含该文件。
+// 2026-10-09 observation evidence sync: coverage/sourceFiles include verified artifact identity,
+// topic enums/deduplication, and the shared memory reconciliation gates. sourceHash was refreshed at acceptance (2026-10-09).
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -241,6 +244,7 @@ export const observationContract: ModuleContract = {
     "src/services/observation/store.ts",
     "src/services/observation/topics.ts",
     "src/services/observation/scheduler.ts",
+    "src/services/observation/evidence.ts",
     "src/services/observation/ownership.ts",
     "src/services/observation/decide.ts",
     "src/services/observation/config.ts",
@@ -258,6 +262,8 @@ export const observationContract: ModuleContract = {
     // 属同一次「UI 协调移出领域面」裁定（W11b），其导出面的变化要重新审查该负向断言。
     "src/services/proactive/index.ts",
     "src/services/agent/memory/index.ts",
+    "src/services/agent/memory/evidence.ts",
+    "src/services/agent/memory/sources.ts",
     // ob-02 depends on the runner's committed-user ingress hook; the observation topic module
     // owns the evidence policy, while the generic user-turn lifecycle belongs to agent-runtime.
     "src/services/context/budget.ts",
@@ -289,27 +295,28 @@ export const observationContract: ModuleContract = {
     "crates/native-host/src/ui/settings/schema.rs",
     "src/services/native-ui/host-requests.ts",
     "test/integration/observation/了解层与话题来源.test.ts",
+    "test/unit/observation/证据身份稳定.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "3ffeacc3cee8632608f2d4f22c0322c94c2c97d8f6d53f604636e7d09a889b66",
+  sourceHash: "59b62268b9201320a3561d37a943015b6d8809a006f962205362f1eb50292230",
   coverage: [
     {
       id: "ob-01",
       feature: "了解层来源、TTL、关闭与清除水位",
-      description: "了解层只返回未过期的截图/文件/窗口摘要和来源身份；少于3条有效来源保持thin，关闭许可不向请求暴露观察；clear等待在途任务与入队写完成、撤掉摘要/标签，并持久化topic source watermark，提交前产生的老用户entry即使被普通回合补扫也不能回灌；clear 还联动记忆闭包（forget_understanding）：先按 `understanding:` 前缀失效了解沉淀的记忆（失效主动引用、写提取墓碑、删条目/候选、推进遗忘代——与清画像共用同一 Rust 闭包，画像结论不在范围，库里没有了解数据时零写），再清了解数据文件，记忆侧失败如实抛出。Node集成只证明现有文件IPC/RAM语义，不假冒Rust截图和文件路径裁决。",
+      description: "了解层只返回未过期截图/文件/窗口摘要；record绑定稳定artifact `evidenceId` 与输入版本 `evidenceHash`，后者不增加独立来源数。file/dir以路径作稳定身份，window/screenshot以appId作稳定域，title不参与身份；窗口快照文本或截图图像本身变化时只产生新输入hash，同artifact重复采样不增独立来源数。coverage记录数与independent source count分开，至少3个独立artifact才ready。缺hash旧记录可展示，但不提升ready、不进入prompt或derived-memory登记；Store先持久化closure pending，recall/derived registration前经memory reconciliation撤销旧understanding来源，闭包成功才ack，失败保留待办。关闭许可不向请求暴露观察；clear等待在途任务与入队写完成、撤掉摘要/标签，并持久化topic source watermark，提交前产生的老用户entry即使被普通回合补扫也不能回灌；clear 还联动记忆闭包（forget_understanding）：先按 `understanding:` 前缀失效了解沉淀的记忆（失效主动引用、写提取墓碑、删条目/候选、推进遗忘代——与清画像共用同一 Rust 闭包，画像结论不在范围，库里没有了解数据时零写），再清了解数据文件，记忆侧失败如实抛出。Node集成只证明现有文件IPC/RAM语义，不假冒Rust截图和文件路径裁决。",
       why: "观察来源是可撤销派生资料，不能在关闭时进入模型，也不能在清除后被迟到任务或忙碌收件箱扫描复活。",
       layer: "integration",
       depth: "deep",
-      scenarios: ["observation-understanding-ttl-clear"],
+      scenarios: ["observation-understanding-ttl-clear", "observation-evidence-source-dedupe"],
     },
     {
       id: "ob-02",
       feature: "话题画像的可信用户来源与失效",
-      description: "只接受已提交origin=user、taint=trusted_user且eligibleForMemory的用户entry；话题辅助请求无tools，正文只在本次请求RAM中使用，持久层只含标签、权重、哈希sourceId、时间与Card失效范围。独立参与source达到2条后才向主动选材公开；标签source证据最多512条且自然保留90日；取消/清除/entry失效阻止旧标签回写；删除会话不再作废该会话产生的话题来源（2026-10-06 用户裁决）：证据独立存活到自身 TTL 自然过期，作废入口只留显式治理路径。",
-      why: "单次提及不等于偏好，工具/外部内容不具备用户来源资格；已遗忘或清除的话题不能继续驱动主动选材。",
+      description: "只接受已提交origin=user、taint=trusted_user且eligibleForMemory的用户entry；单次辅助调用输出有限category/sensitivity/stance枚举并严格校验，敏感或unknown标签不进入可用选材；中立、负面、引用、假设、否定等stance留在证据，不转换成喜欢。weight表示参与度而非偏好；同一source内规范化topic与重复模型条目只保留一次、不乘权重。至少2个独立用户source后才公开参与占比；标签source证据最多512条且自然保留90日；取消/清除/entry失效阻止旧标签回写；删除会话不再作废该会话产生的话题来源（2026-10-06 用户裁决）：证据独立存活到自身TTL自然过期，作废入口只留显式治理路径。",
+      why: "单次提及与话题参与不等于偏好，工具/外部内容不具备用户来源资格；敏感标签与立场不能被统计权重伪装为用户喜好。",
       layer: "integration",
       depth: "deep",
-      scenarios: ["observation-topic-trust-cancel", "observation-topic-revoked-before-provider", "observation-topic-large-batch-progress", "session-delete-keeps-topics"],
+      scenarios: ["observation-topic-trust-cancel", "observation-topic-revoked-before-provider", "observation-topic-large-batch-progress", "observation-topic-decode-evidence", "observation-topic-source-dedupe", "session-delete-keeps-topics"],
     },
     {
       id: "ob-03",
@@ -341,7 +348,7 @@ export const observationContract: ModuleContract = {
     {
       id: "ob-06",
       feature: "了解层旧档兼容读取",
-      description: "加载 store 时保留 dir 记录与有界 targets，非法目标/非法类型/坏记账不让整次读取失败（逐条容错而不是整档报废）。",
+      description: "加载store时逐条容错保留有效dir与targets审计；缺证据身份/内容hash的旧记录只可展示，独立来源数为0且不ready、不进prompt或memory沉淀；加载前持久化旧了解来源memory closure待办，闭包成功才ack，失败保留重试。非法类型/坏记账不会让整档读取失败。",
       why: "了解层是增量落盘的历史文件，单条坏数据不能让静默了解整体不可用。",
       layer: "integration",
       depth: "shallow",
@@ -359,7 +366,7 @@ export const observationContract: ModuleContract = {
     {
       id: "ob-08",
       feature: "静默了解决策输入补齐与降级（L3）",
-      description: "决策输入在 W4-B 补齐为只读有界块并经 L3 端到端断言：本地时间（时刻+时区）、Card 人设有界摘要（名字/描述/角色设定截断）、行为画像快照（质量状态+就近 6 钟点活跃分钟）、话题权重 top-5（占比，仅 ≥2 独立来源的话题入榜）、长期记忆核心画像（召回端口空 query、token 上限 256、关闭重排、身份取运行时会话与激活 Card；条数与单条字符都有界）；原窗口快照与最近 8 条了解摘要保留。画像不可靠/话题为空/无 Card/无记忆时各块如实降级（null / [] / 质量状态原样）而批次照跑；无活跃会话时不发起记忆召回、不造身份。",
+      description: "决策输入在 W4-B 补齐为只读有界块并经 L3 端到端断言：本地时间（时刻+时区）、Card 人设有界摘要（名字/描述/角色设定截断）、行为画像快照（质量状态+active-only就近6钟点分钟）、话题参与占比top-5（至少2独立source；weight不代表喜欢，携带中立/负面/引用/假设等stance）、长期记忆核心画像（召回端口空 query、token 上限 256、关闭重排、身份取运行时会话与激活 Card；条数与单条字符都有界）；原窗口快照与最近 8 条已验证了解摘要保留。画像不可靠/话题为空/无 Card/无记忆时各块如实降级（null / [] / 质量状态原样）而批次照跑；无活跃会话时不发起记忆召回、不造身份。",
       why: "输入块只读有界才能既把决定权交给模型，又不让每条链各自造证据或撑爆请求预算；降级必须如实（不可靠带状态、无身份不造身份）而不是静默补块或抛错。",
       layer: "integration",
       depth: "shallow",
@@ -382,6 +389,15 @@ export const observationContract: ModuleContract = {
       layer: "unit",
       depth: "shallow",
       scenarios: ["observation-scheduled-slot-table"],
+    },
+    {
+      id: "ob-11",
+      feature: "窗口 artifact 身份与内容版本分离",
+      description: "window/screenshot 的 evidenceId 按稳定 appId 分组，不含可变 title；窗口快照文本或截图图像由 evidenceHash 标记输入版本，因此同一 app 的标题微变不会作为独立来源抬高了解质量，实际输入变化仍能产生新版本身份",
+      why: "标题属于窗口内容且会随保存状态/页面变化；把它放进 artifact 身份会将同一窗口误计为多个独立来源",
+      layer: "unit",
+      depth: "shallow",
+      scenarios: ["observation-window-artifact-stable"],
     },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: true },

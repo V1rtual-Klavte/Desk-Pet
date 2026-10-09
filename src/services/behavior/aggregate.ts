@@ -1,25 +1,15 @@
+import { BEHAVIOR_MEASUREMENT_VERSION } from "./types"
 import type { AppCategory, BehaviorDaily, BehaviorQuality, BehaviorSnapshot } from "./types"
 
 export const CATEGORIES: readonly AppCategory[] = ["work", "communication", "media", "development", "browser", "other", "unknown"]
 export const MIN_QUALITY_DAYS = 3
 export const MIN_COVERAGE_RATIO = 0.6
 
-export function coveredInterval(deltaMs: number, wallDeltaMs: number, gapLimitMs: number): { creditedMs: number; unobservedMs: number; reset: boolean } {
-  if (!Number.isFinite(deltaMs) || !Number.isFinite(wallDeltaMs) || deltaMs <= 0 || wallDeltaMs <= 0) {
-    return { creditedMs: 0, unobservedMs: Math.max(0, wallDeltaMs || 0), reset: true }
-  }
-  if (deltaMs > gapLimitMs || wallDeltaMs > gapLimitMs) {
-    const creditedMs = Math.min(deltaMs, wallDeltaMs, gapLimitMs)
-    return { creditedMs, unobservedMs: Math.max(0, wallDeltaMs - creditedMs), reset: true }
-  }
-  return { creditedMs: Math.min(deltaMs, wallDeltaMs), unobservedMs: 0, reset: false }
-}
-
 export function emptyDaily(date: string): BehaviorDaily {
-  return { date, activeMs: 0, unknownMs: 0, idleMs: 0, unobservedMs: 0, petForegroundMs: 0,
+  return { measurementVersion: BEHAVIOR_MEASUREMENT_VERSION, date, activeMs: 0, unknownMs: 0, idleMs: 0, unobservedMs: 0, petForegroundMs: 0,
     categoryMs: Object.fromEntries(CATEGORIES.map((key) => [key, 0])) as Record<AppCategory, number>,
     hourMs: Array(24).fill(0), workSegments: 0, workTotalMs: 0, workLongestMs: 0,
-    appMs: {}, switches: 0, coveredMs: 0 }
+    appMs: {}, switches: 0, coveredMs: 0, classifiedMs: 0, unclassifiedMs: 0 }
 }
 
 export function qualityFor(days: readonly BehaviorDaily[]): BehaviorQuality {
@@ -72,6 +62,7 @@ function activityMetrics(input: readonly BehaviorDaily[]) {
     byHour: Array.from({ length: 24 }, (_, hour) => input.reduce((n, day) => n + day.hourMs[hour], 0)),
     activeMs: input.reduce((n, day) => n + day.activeMs, 0),
     idleMs: input.reduce((n, day) => n + day.idleMs, 0),
+    unknownMs: input.reduce((n, day) => n + day.unknownMs, 0),
     unobservedMs: input.reduce((n, day) => n + day.unobservedMs, 0),
     petForegroundMs: input.reduce((n, day) => n + day.petForegroundMs, 0),
   }
@@ -85,6 +76,8 @@ export function buildSnapshot(days: readonly BehaviorDaily[], now: number, curre
   const last7 = sorted.filter((day) => day.date >= last7Start && day.date <= today)
   const categoryMs = Object.fromEntries(CATEGORIES.map((key) => [key, last30.reduce((n, d) => n + d.categoryMs[key], 0)])) as Record<AppCategory, number>
   const allCategory = CATEGORIES.reduce((n, key) => n + categoryMs[key], 0)
+  const classifiedMs = last30.reduce((n, day) => n + day.classifiedMs, 0)
+  const unclassifiedMs = last30.reduce((n, day) => n + day.unclassifiedMs, 0)
   const appMs: Record<string, number> = {}
   for (const day of last30) for (const [id, ms] of Object.entries(day.appMs)) appMs[id] = (appMs[id] ?? 0) + ms
   const focus = focusMetrics(last30)
@@ -95,11 +88,12 @@ export function buildSnapshot(days: readonly BehaviorDaily[], now: number, curre
     const dest = new Date(`${day.date}T12:00:00`).getDay() === 0 || new Date(`${day.date}T12:00:00`).getDay() === 6 ? rhythm.weekends : rhythm.weekdays
     day.hourMs.forEach((value, hour) => { dest[hour] += value })
   }
-  const unknownMs = last30.reduce((n, day) => n + day.unknownMs, 0)
-  const activeMs = last30.reduce((n, day) => n + day.activeMs, 0)
-  return { revision: 1, generatedAt: now, quality: qualityFor(last30),
+  return { measurementVersion: BEHAVIOR_MEASUREMENT_VERSION, revision: 1, generatedAt: now, quality: qualityFor(last30),
     rhythm, apps: { categoryShare: Object.fromEntries(CATEGORIES.map((key) => [key, allCategory ? categoryMs[key] / allCategory : 0])) as Record<AppCategory, number>,
-      commonAppIds: Object.entries(appMs).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([id]) => id), unknownRatio: activeMs ? unknownMs / activeMs : 0 },
+      commonAppIds: Object.entries(appMs).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([id]) => id),
+      unknownRatio: classifiedMs + unclassifiedMs > 0 ? unclassifiedMs / (classifiedMs + unclassifiedMs) : 0,
+      classificationRatio: classifiedMs + unclassifiedMs > 0 ? classifiedMs / (classifiedMs + unclassifiedMs) : 0,
+      classifiedMs, unclassifiedMs },
     focus: { ...focus, currentContinuousMs, currentCategory },
     activity,
     weekly }

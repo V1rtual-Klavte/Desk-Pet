@@ -47,7 +47,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 | engine | 预处理、Plan、Slash、Harness 运行槽、会话仓库与压缩接线 | [engine/](../../src/services/engine/)、[harness-slot.ts](../../src/services/engine/harness/harness-slot.ts)、[runtime.ts](../../src/services/engine/harness/runtime.ts)、[session-repo.ts](../../src/services/engine/harness/session-repo.ts) |
 | engine/runtime | 可选惰性 trace、快照协议与输入事件身份（`deskpetEventId`/`deskpetSource`） | [runtime/](../../src/services/engine/runtime/)、[input-identity.ts](../../src/services/engine/runtime/input-identity.ts) |
 | context | 分层构建、共享预算（块排序与整块淘汰）与工具输出请求投影 | [context/](../../src/services/context/) |
-| memory | 召回端口、来源收集、dreaming 编排；Rust 记忆库本体在 [crates/native-host/src/memory/](../../crates/native-host/src/memory/)，V1RTUAL 属于 context instructions，Plan checkpoint 属于 engine/plan | [agent/memory/](../../src/services/agent/memory/)、[instructions/](../../src/services/context/instructions/)、[plan/](../../src/services/engine/plan/) |
+| memory | 事实与跨会话原文召回端口、来源收集、dreaming 编排；原文索引共用 Rust MemoryStore，Rust 记忆库本体在 [crates/native-host/src/memory/](../../crates/native-host/src/memory/)，V1RTUAL 属于 context instructions，Plan checkpoint 属于 engine/plan | [agent/memory/](../../src/services/agent/memory/)、[instructions/](../../src/services/context/instructions/)、[plan/](../../src/services/engine/plan/) |
 | proactive | 机会、有限规划、约定任务、预算、消息回执与 presence；治理表共用 MemoryStore 连接（Rust 主动域在 [crates/native-host/src/proactive/](../../crates/native-host/src/proactive/)） | [proactive/](../../src/services/proactive/) |
 | behavior | 独立派生域：采集窗口心跳、分段、日聚合、质量与时机指标 | [behavior/](../../src/services/behavior/) |
 | evaluation（测试宿主） | trace 缓冲/ACK/证据审阅、真实记忆质量跑批与性能采样；不拥有产品运行状态 | [test/trace/](../../test/trace/)、[test/memory-quality/](../../test/memory-quality/)、[trace-observer.ts](../../test/host/trace-observer.ts)、[e2e_trace.rs](../../crates/native-host/src/e2e_trace.rs)、[memory/benchmark.rs](../../crates/native-host/src/memory/benchmark.rs) |
@@ -55,7 +55,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 | humanizer | 引擎拟人协议、沉默护栏、提交后逐泡揭示（只存瞬态进度） | [humanizer/](../../src/services/humanizer/) |
 | native-ui | Node ↔ 原生宿主数据流：状态推送（快捷键/字体/主题/舞台/聊天列/图片预览/摆位尺寸/自动呼出/音效/顶栏文本/揭示进度/权限确认）、宿主请求应答（设置读写、编辑器 I/O、聊天与会话意图、决策动作、管理面）、会话投影帧组装的唯一入口 | [native-ui/](../../src/services/native-ui/)、[session-projection.ts](../../src/services/native-ui/session-projection.ts)、[host-requests.ts](../../src/services/native-ui/host-requests.ts) |
 | images | 原图路径准入、预览与请求投影；聊天图片自动预览开关的 Node 侧消费（默认关，占位零预读、只按可见加载）；read/请求链路的图片处理端口见[工具系统](tool-system.md) | [images/](../../src/services/images/) |
-| observation | 截图／手边文件了解、对话主题权重，独立派生域（原生实现见 [observation_cmd.rs](../../crates/native-host/src/commands/observation_cmd.rs)） | [observation/](../../src/services/observation/) |
+| observation | 截图／手边文件的可验证了解、带立场的对话参与度，独立派生域（原生实现见 [observation_cmd.rs](../../crates/native-host/src/commands/observation_cmd.rs)） | [observation/](../../src/services/observation/) |
 | personality / reply | Card（加载切换 + 设置页的增删改查、导入导出与作者模版）、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | Pi 原生 Skill 清单（目录指纹驱动刷新）与披露块 | [skill/](../../src/services/skill/) |

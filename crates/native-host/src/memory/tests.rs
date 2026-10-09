@@ -1,5 +1,6 @@
 //! 记忆库的单元测试：每条都钉住一条产品规则，改坏实现就会红。
 
+use super::conversation::ConversationIndexEntry;
 use super::protocol::{MEMORY_COMMANDS, MEMORY_SCHEMA_VERSION};
 use super::schema::SCHEMA_VERSION;
 use super::store::{id_suffix, payload_hash, rand_suffix};
@@ -11,6 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+static NEXT_REPAIR: AtomicUsize = AtomicUsize::new(0);
 
 /// 临时库：每个用例一个独立目录，落盘路径由测试自己管。
 struct Fixture(PathBuf);
@@ -30,6 +32,58 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Repair fixtures follow native-host rules: all test databases live under test/.tmp.
+struct RepairFixture {
+    root: PathBuf,
+    store: MemoryStore,
+}
+
+impl RepairFixture {
+    fn new() -> Self {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test/.tmp")
+            .join(format!(
+                "schema-repair-{}-{}",
+                std::process::id(),
+                NEXT_REPAIR.fetch_add(1, Ordering::SeqCst)
+            ));
+        std::fs::create_dir_all(&root).expect("create schema repair fixture directory");
+        let store =
+            MemoryStore::open_at(&root.join("memory.sqlite3")).expect("open schema repair fixture");
+        Self { root, store }
+    }
+
+    fn backup_dir(&self) -> PathBuf {
+        self.root.join(crate::paths::MEMORY_BACKUPS_DIR)
+    }
+
+    fn backup_count(&self) -> usize {
+        std::fs::read_dir(self.backup_dir())
+            .map(|entries| entries.filter_map(Result::ok).count())
+            .unwrap_or(0)
+    }
+
+    fn ensure(&self) -> AppResult<()> {
+        let conn = self.store.lock()?;
+        super::schema::ensure(&conn, &self.backup_dir(), false)
+    }
+}
+
+impl Drop for RepairFixture {
+    fn drop(&mut self) {
+        if let Ok(placeholder) = rusqlite::Connection::open_in_memory() {
+            let mut guard = self
+                .store
+                .conn
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let connection = std::mem::replace(&mut *guard, placeholder);
+            let _ = connection.close();
+        }
+        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 
@@ -86,8 +140,7 @@ fn id_suffix_survives_lockstep_counter_and_clock() {
     // 同一计数器、不同亚毫秒也必须能区分（时间位不是装饰）。
     assert_ne!(id_suffix(4, 100), id_suffix(4, 101));
     // 进程内逐次调用的总不变量：后缀互不相同。
-    let generated: std::collections::HashSet<String> =
-        (0..2000).map(|_| rand_suffix()).collect();
+    let generated: std::collections::HashSet<String> = (0..2000).map(|_| rand_suffix()).collect();
     assert_eq!(generated.len(), 2000, "同进程内 id 后缀出现重复");
 }
 
@@ -149,9 +202,13 @@ fn protocol_commands_match_published_schema() {
     assert!(MEMORY_COMMANDS.contains(&"memory_source_evidence"));
     // 前置查询：dreaming 开作业前用它决定「水位之后无来源就跳过」。
     assert!(MEMORY_COMMANDS.contains(&"memory_pending_source_count"));
+    assert!(MEMORY_COMMANDS.contains(&"conversation_index_status"));
+    assert!(MEMORY_COMMANDS.contains(&"conversation_index_replace"));
+    assert!(MEMORY_COMMANDS.contains(&"conversation_index_prune"));
+    assert!(MEMORY_COMMANDS.contains(&"conversation_search"));
     assert_eq!(
         MEMORY_COMMANDS.len(),
-        27,
+        31,
         "命令数量变了就要同步 protocol.json 与 ipc.ts"
     );
     assert_eq!(MEMORY_SCHEMA_VERSION, SCHEMA_VERSION);
@@ -215,7 +272,8 @@ fn chat_user_ui_add_requires_one_complete_current_trusted_source() {
                 Some(&complete),
                 "user_ui_current",
                 Some("chat-entry:user"),
-                Some("s1")
+                Some("s1"),
+                None,
             )
             .unwrap(),
         1,
@@ -232,7 +290,8 @@ fn chat_user_ui_add_requires_one_complete_current_trusted_source() {
             Some(&partial),
             "user_ui_current",
             Some("chat-entry:user"),
-            Some("s1")
+            Some("s1"),
+            None,
         )
         .is_err());
     assert!(store
@@ -245,7 +304,8 @@ fn chat_user_ui_add_requires_one_complete_current_trusted_source() {
             Some(&complete),
             "user_ui_current",
             Some("chat-entry:user"),
-            Some("other-session")
+            Some("other-session"),
+            None,
         )
         .is_err());
     assert!(store
@@ -258,7 +318,8 @@ fn chat_user_ui_add_requires_one_complete_current_trusted_source() {
             Some(&complete),
             "user_ui_current",
             Some("chat-entry:user"),
-            Some("s1")
+            Some("s1"),
+            None,
         )
         .is_err());
 }
@@ -950,14 +1011,23 @@ fn untrusted_sources_are_never_registered() {
 #[test]
 fn mcp_credential_roundtrip_and_status_never_exposes_values() {
     let (_fixture, store) = Fixture::new();
-    assert_eq!(store.credential_status("github").unwrap(), Vec::<String>::new());
-    assert_eq!(store.credential_get("github", "GITHUB_TOKEN").unwrap(), None);
+    assert_eq!(
+        store.credential_status("github").unwrap(),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        store.credential_get("github", "GITHUB_TOKEN").unwrap(),
+        None
+    );
 
     store
         .credential_set("github", "GITHUB_TOKEN", "probe-token-1")
         .unwrap();
     assert_eq!(
-        store.credential_get("github", "GITHUB_TOKEN").unwrap().as_deref(),
+        store
+            .credential_get("github", "GITHUB_TOKEN")
+            .unwrap()
+            .as_deref(),
         Some("probe-token-1")
     );
     // 名单只报变量名、不带值：设置面状态显示的唯一依据。
@@ -969,22 +1039,34 @@ fn mcp_credential_roundtrip_and_status_never_exposes_values() {
     );
     // 别的服务器不受影响（键是 server + var）。
     assert_eq!(store.credential_get("other", "GITHUB_TOKEN").unwrap(), None);
-    assert_eq!(store.credential_status("other").unwrap(), Vec::<String>::new());
+    assert_eq!(
+        store.credential_status("other").unwrap(),
+        Vec::<String>::new()
+    );
 
     // 同键覆盖：旧值不再可读，名单不重复。
     store
         .credential_set("github", "GITHUB_TOKEN", "probe-token-2")
         .unwrap();
     assert_eq!(
-        store.credential_get("github", "GITHUB_TOKEN").unwrap().as_deref(),
+        store
+            .credential_get("github", "GITHUB_TOKEN")
+            .unwrap()
+            .as_deref(),
         Some("probe-token-2")
     );
-    assert_eq!(store.credential_status("github").unwrap(), vec!["GITHUB_TOKEN".to_string()]);
+    assert_eq!(
+        store.credential_status("github").unwrap(),
+        vec!["GITHUB_TOKEN".to_string()]
+    );
 
     // 删除如实报告删没删到；删除后 get 回落 None（调用方按变量缺失失败）。
     assert!(store.credential_delete("github", "GITHUB_TOKEN").unwrap());
     assert!(!store.credential_delete("github", "GITHUB_TOKEN").unwrap());
-    assert_eq!(store.credential_get("github", "GITHUB_TOKEN").unwrap(), None);
+    assert_eq!(
+        store.credential_get("github", "GITHUB_TOKEN").unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -1003,7 +1085,10 @@ fn mcp_credential_rejects_blank_axes() {
             "空坐标/空值没有被拒绝: {server:?}/{var:?}/{value:?}"
         );
     }
-    assert_eq!(store.credential_status("github").unwrap(), Vec::<String>::new());
+    assert_eq!(
+        store.credential_status("github").unwrap(),
+        Vec::<String>::new()
+    );
 }
 
 // ── dreaming token 账（只记账，不按日总量准入）──
@@ -1046,8 +1131,12 @@ fn dreaming_budget_records_usage_without_daily_token_gate() {
     );
     // 参数校验与冲突语义保持：空 id / 非法日期 / 负数如实报错，同 id 不同额报冲突。
     assert!(store.reserve_dreaming_budget("", "2026-10-05", 1).is_err());
-    assert!(store.reserve_dreaming_budget("job-1:2", "2026-10-0", 1).is_err());
-    assert!(store.reserve_dreaming_budget("job-1:2", "2026-10-05", -1).is_err());
+    assert!(store
+        .reserve_dreaming_budget("job-1:2", "2026-10-0", 1)
+        .is_err());
+    assert!(store
+        .reserve_dreaming_budget("job-1:2", "2026-10-05", -1)
+        .is_err());
     assert!(matches!(
         store.reserve_dreaming_budget("job-1:1", "2026-10-05", 91_000),
         Err(AppError::MemoryConflict)
@@ -1107,7 +1196,9 @@ fn publish_candidates(store: &MemoryStore, drafts: &[Value]) -> AppResult<i64> {
             })
         })
         .collect();
-    store.candidates_add(&job_id, &payloads).expect("候选落 staging");
+    store
+        .candidates_add(&job_id, &payloads)
+        .expect("候选落 staging");
     let revision = store.status().unwrap().revision;
     store.commit_dreaming_job(&job_id, revision)
 }
@@ -1156,7 +1247,12 @@ fn derived_sources_are_admitted_in_their_own_class_and_keep_user_rejections() {
         store
             .register_sources(&[
                 source("user-1", "entry-u1", "hash-u1"),
-                derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100),
+                derived_source(
+                    "behavior-conclusion:rhythm:aaaa",
+                    "conclusion:rhythm",
+                    "hash-r",
+                    100
+                ),
             ])
             .unwrap(),
         2,
@@ -1165,7 +1261,9 @@ fn derived_sources_are_admitted_in_their_own_class_and_keep_user_rejections() {
     // 前置查询与作业取数按类别分区：两处共用同一段水位判定。
     assert_eq!(store.pending_source_count(Some("user")).unwrap(), 1);
     assert_eq!(
-        store.pending_source_count(Some("derived_behavior")).unwrap(),
+        store
+            .pending_source_count(Some("derived_behavior"))
+            .unwrap(),
         1
     );
     assert_eq!(store.pending_source_count(None).unwrap(), 2);
@@ -1174,7 +1272,9 @@ fn derived_sources_are_admitted_in_their_own_class_and_keep_user_rejections() {
     let user_sources = store.job_sources(&job_id, Some("user")).unwrap();
     assert_eq!(user_sources.len(), 1);
     assert_eq!(user_sources[0]["origin"], json!("user"));
-    let derived_sources = store.job_sources(&job_id, Some("derived_behavior")).unwrap();
+    let derived_sources = store
+        .job_sources(&job_id, Some("derived_behavior"))
+        .unwrap();
     assert_eq!(derived_sources.len(), 1, "派生来源没有按类别取到");
     assert_eq!(derived_sources[0]["origin"], json!("derived_behavior"));
     assert_eq!(derived_sources[0]["taint"], json!("derived"));
@@ -1191,18 +1291,31 @@ fn mixed_pools_and_core_or_working_flags_are_rejected_at_publish() {
     store
         .register_sources(&[
             source("user-1", "entry-u1", "hash-u1"),
-            derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100),
+            derived_source(
+                "behavior-conclusion:rhythm:aaaa",
+                "conclusion:rhythm",
+                "hash-r",
+                100,
+            ),
         ])
         .unwrap();
     // 混池候选：同时引用用户来源与派生来源 —— 整批拒绝，不静默二选一。
-    let mixed = derived_draft("混池结论", "user-1", json!({"sourceIds": ["user-1", "behavior-conclusion:rhythm:aaaa"]}));
+    let mixed = derived_draft(
+        "混池结论",
+        "user-1",
+        json!({"sourceIds": ["user-1", "behavior-conclusion:rhythm:aaaa"]}),
+    );
     let mixed_result = publish_candidates(&store, &[mixed]);
     assert!(
         matches!(&mixed_result, Err(AppError::Memory(message)) if message.contains("混池")),
         "混池候选没有被拒绝: {mixed_result:?}"
     );
     // 派生 + pinned（核心画像）拒绝。
-    let pinned = derived_draft("核心画象结论", "behavior-conclusion:rhythm:aaaa", json!({"pinned": true}));
+    let pinned = derived_draft(
+        "核心画象结论",
+        "behavior-conclusion:rhythm:aaaa",
+        json!({"pinned": true}),
+    );
     let pinned_result = publish_candidates(&store, &[pinned]);
     assert!(
         matches!(&pinned_result, Err(AppError::Memory(message)) if message.contains("核心画像")),
@@ -1222,7 +1335,11 @@ fn mixed_pools_and_core_or_working_flags_are_rejected_at_publish() {
     // 纯派生候选照常发布，条目 origin 由来源类别派生。
     let revision = publish_candidates(
         &store,
-        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+        &[derived_draft(
+            "近一个月的活跃时段：工作日集中在 19–23 时。",
+            "behavior-conclusion:rhythm:aaaa",
+            json!({}),
+        )],
     )
     .expect("纯派生候选没有发布");
     assert!(revision > 0);
@@ -1248,11 +1365,20 @@ fn new_derived_version_supersedes_previous_slot_and_leaves_user_facts_alone() {
     add(&store, "op-u", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
 
     store
-        .register_sources(&[derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r1", 100)])
+        .register_sources(&[derived_source(
+            "behavior-conclusion:rhythm:aaaa",
+            "conclusion:rhythm",
+            "hash-r1",
+            100,
+        )])
         .unwrap();
     publish_candidates(
         &store,
-        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+        &[derived_draft(
+            "近一个月的活跃时段：工作日集中在 19–23 时。",
+            "behavior-conclusion:rhythm:aaaa",
+            json!({}),
+        )],
     )
     .expect("第一版结论发布失败");
     let first = store
@@ -1265,7 +1391,12 @@ fn new_derived_version_supersedes_previous_slot_and_leaves_user_facts_alone() {
 
     // 新数据推翻旧结论：新版本带 supersedesId → 旧条目退出召回（版本 + 覆盖收敛）。
     store
-        .register_sources(&[derived_source("behavior-conclusion:rhythm:bbbb", "conclusion:rhythm", "hash-r2", 200)])
+        .register_sources(&[derived_source(
+            "behavior-conclusion:rhythm:bbbb",
+            "conclusion:rhythm",
+            "hash-r2",
+            200,
+        )])
         .unwrap();
     publish_candidates(
         &store,
@@ -1290,7 +1421,9 @@ fn new_derived_version_supersedes_previous_slot_and_leaves_user_facts_alone() {
         "在库的不是新版本结论"
     );
     assert!(
-        active.iter().any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")),
+        active
+            .iter()
+            .any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")),
         "覆盖派生结论时动了用户事实"
     );
 }
@@ -1299,7 +1432,12 @@ fn new_derived_version_supersedes_previous_slot_and_leaves_user_facts_alone() {
 fn apply_change_cannot_cross_source_classes() {
     let (_fixture, store) = Fixture::new();
     store
-        .register_sources(&[derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100)])
+        .register_sources(&[derived_source(
+            "behavior-conclusion:rhythm:aaaa",
+            "conclusion:rhythm",
+            "hash-r",
+            100,
+        )])
         .unwrap();
     // 派生来源 + working / pinned 在写入入口同样被拒绝（不只是整理发布口）。
     let working = derived_draft(
@@ -1307,9 +1445,17 @@ fn apply_change_cannot_cross_source_classes() {
         "behavior-conclusion:rhythm:aaaa",
         json!({"kind": "working", "workingState": "open"}),
     );
-    assert!(store.apply_change("op-w", 0, "add", None, None, Some(&working)).is_err());
-    let pinned = derived_draft("核心画象结论", "behavior-conclusion:rhythm:aaaa", json!({"pinned": true}));
-    assert!(store.apply_change("op-p", 0, "add", None, None, Some(&pinned)).is_err());
+    assert!(store
+        .apply_change("op-w", 0, "add", None, None, Some(&working))
+        .is_err());
+    let pinned = derived_draft(
+        "核心画象结论",
+        "behavior-conclusion:rhythm:aaaa",
+        json!({"pinned": true}),
+    );
+    assert!(store
+        .apply_change("op-p", 0, "add", None, None, Some(&pinned))
+        .is_err());
     // 合法派生条目（internal 入口）可以落库，但用户来源草稿不能把它「改写」成用户事实。
     let revision = store
         .apply_change(
@@ -1318,7 +1464,11 @@ fn apply_change_cannot_cross_source_classes() {
             "add",
             None,
             None,
-            Some(&derived_draft("第一条观察结论", "behavior-conclusion:rhythm:aaaa", json!({}))),
+            Some(&derived_draft(
+                "第一条观察结论",
+                "behavior-conclusion:rhythm:aaaa",
+                json!({}),
+            )),
         )
         .expect("派生条目写入失败");
     let item_id = store.list(Some("user"), None, 10).unwrap()[0]["id"]
@@ -1343,6 +1493,78 @@ fn apply_change_cannot_cross_source_classes() {
 }
 
 #[test]
+fn measurement_upgrade_closes_derived_memory_with_internal_actor_only() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[source("upgrade-user", "entry-user", "hash-user")])
+        .unwrap();
+    add(
+        &store,
+        "upgrade-user-add",
+        0,
+        &draft("用户喜欢喝茶", vec!["upgrade-user"]),
+    );
+    store
+        .register_sources(&[derived_source(
+            "old-measurement",
+            "conclusion:apps",
+            "old-hash",
+            100,
+        )])
+        .unwrap();
+    publish_candidates(
+        &store,
+        &[derived_draft(
+            "旧口径应用结论",
+            "old-measurement",
+            json!({}),
+        )],
+    )
+    .unwrap();
+    let before = store.status().unwrap();
+    assert!(store
+        .apply_change_with_actor(
+            "upgrade-ui",
+            before.revision,
+            "forget_derived_behavior",
+            None,
+            None,
+            None,
+            "user_ui",
+            None,
+            None,
+            None
+        )
+        .is_err());
+    let revision = store
+        .apply_change(
+            "upgrade-internal",
+            before.revision,
+            "forget_derived_behavior",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(revision > before.revision);
+    let items = store.list(Some("user"), None, 10).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["draft"]["content"], json!("用户喜欢喝茶"));
+    assert!(store.source_evidence("old-measurement").unwrap().is_none());
+    assert_eq!(
+        store
+            .register_sources(&[derived_source(
+                "old-measurement",
+                "conclusion:apps",
+                "old-hash",
+                100
+            )])
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn behavior_clear_forgets_derived_items_and_blocks_replay() {
     let (_fixture, store) = Fixture::new();
     // 用户事实与派生条目共存：清除只动派生一侧。
@@ -1351,21 +1573,36 @@ fn behavior_clear_forgets_derived_items_and_blocks_replay() {
         .unwrap();
     add(&store, "op-u", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
     store
-        .register_sources(&[derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100)])
+        .register_sources(&[derived_source(
+            "behavior-conclusion:rhythm:aaaa",
+            "conclusion:rhythm",
+            "hash-r",
+            100,
+        )])
         .unwrap();
     publish_candidates(
         &store,
-        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+        &[derived_draft(
+            "近一个月的活跃时段：工作日集中在 19–23 时。",
+            "behavior-conclusion:rhythm:aaaa",
+            json!({}),
+        )],
     )
     .expect("派生条目发布失败");
 
     // 在飞候选：一个引用派生来源、一个引用用户来源；清除后只留后者（前者连候选一起失效）。
     store
-        .register_sources(&[derived_source("behavior-conclusion:apps:cccc", "conclusion:apps", "hash-r2", 200)])
+        .register_sources(&[derived_source(
+            "behavior-conclusion:apps:cccc",
+            "conclusion:apps",
+            "hash-r2",
+            200,
+        )])
         .unwrap();
     let job = store.job_start("review", "host").unwrap();
     let job_id = job["id"].as_str().unwrap().to_string();
-    let inflight_derived = derived_draft("在飞派生候选", "behavior-conclusion:apps:cccc", json!({}));
+    let inflight_derived =
+        derived_draft("在飞派生候选", "behavior-conclusion:apps:cccc", json!({}));
     let inflight_user = draft("在飞用户候选", vec!["user-1"]);
     store
         .candidates_add(
@@ -1387,9 +1624,14 @@ fn behavior_clear_forgets_derived_items_and_blocks_replay() {
         items.iter().all(|item| item["origin"] == json!("user")),
         "清除画像后仍有派生条目在库"
     );
-    assert!(items.iter().any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")));
+    assert!(items
+        .iter()
+        .any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")));
     // 索引：FTS 不再命中已清正文。
-    assert_eq!(store.query("活跃时段", None, None, None, 10).unwrap().len(), 0);
+    assert_eq!(
+        store.query("活跃时段", None, None, None, 10).unwrap().len(),
+        0
+    );
     assert_eq!(store.query("拿铁", None, None, None, 10).unwrap().len(), 1);
     // 候选：引用派生来源的候选被删，用户候选保留。
     assert_eq!(
@@ -1406,16 +1648,27 @@ fn behavior_clear_forgets_derived_items_and_blocks_replay() {
     // 失效：同一结论文本重新登记被墓碑拦下（已清的来源不能迟到回灌）。
     assert_eq!(
         store
-            .register_sources(&[derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100)])
+            .register_sources(&[derived_source(
+                "behavior-conclusion:rhythm:aaaa",
+                "conclusion:rhythm",
+                "hash-r",
+                100
+            )])
             .unwrap(),
         0,
         "已清画像的结论文本被重新登记"
     );
     // 在飞作业的发布复核被 forget_epoch 拦下（不是靠候选恰好被删）。
     let revision_after = store.status().unwrap().revision;
-    assert!(revision_after > revision_before, "清除没有推进记忆 revision");
     assert!(
-        matches!(store.commit_dreaming_job(&job_id, revision_after), Err(AppError::MemoryConflict)),
+        revision_after > revision_before,
+        "清除没有推进记忆 revision"
+    );
+    assert!(
+        matches!(
+            store.commit_dreaming_job(&job_id, revision_after),
+            Err(AppError::MemoryConflict)
+        ),
         "跨清除代的作业仍然发布了候选"
     );
     // 空转保护：库里已无派生数据，再清一次不动 epoch/revision。
@@ -1465,8 +1718,7 @@ fn item_id_by_content(items: &[Value], content: &str) -> String {
     items
         .iter()
         .find(|item| item["draft"]["content"] == json!(content))
-        .unwrap_or_else(|| panic!("在库条目里找不到 {content}"))
-        ["id"]
+        .unwrap_or_else(|| panic!("在库条目里找不到 {content}"))["id"]
         .as_str()
         .unwrap()
         .to_string()
@@ -1495,29 +1747,52 @@ fn understanding_clear_forgets_only_understanding_scope_and_blocks_replay() {
     store
         .register_sources(&[
             source("user-1", "entry-u1", "hash-u1"),
-            derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100),
-            understanding_source("a1b2c3d4e5f60718", 200, "项目里在做一个 Rust 与 TypeScript 的桌宠"),
+            derived_source(
+                "behavior-conclusion:rhythm:aaaa",
+                "conclusion:rhythm",
+                "hash-r",
+                100,
+            ),
+            understanding_source(
+                "a1b2c3d4e5f60718",
+                200,
+                "项目里在做一个 Rust 与 TypeScript 的桌宠",
+            ),
         ])
         .unwrap();
     add(&store, "op-u", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
     publish_candidates(
         &store,
-        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+        &[derived_draft(
+            "近一个月的活跃时段：工作日集中在 19–23 时。",
+            "behavior-conclusion:rhythm:aaaa",
+            json!({}),
+        )],
     )
     .expect("画像结论发布失败");
     publish_candidates(
         &store,
-        &[understanding_draft("项目里在做一个 Rust 与 TypeScript 的桌宠", "behavior-understanding:a1b2c3d4e5f60718")],
+        &[understanding_draft(
+            "项目里在做一个 Rust 与 TypeScript 的桌宠",
+            "behavior-understanding:a1b2c3d4e5f60718",
+        )],
     )
     .expect("了解条目发布失败");
 
     // 在飞候选：引用另一个了解来源（未发布）；清除后必须连候选一起失效。
     store
-        .register_sources(&[understanding_source("0011223344556677", 201, "常用 VS Code 与终端")])
+        .register_sources(&[understanding_source(
+            "0011223344556677",
+            201,
+            "常用 VS Code 与终端",
+        )])
         .unwrap();
     let job = store.job_start("review", "host").unwrap();
     let job_id = job["id"].as_str().unwrap().to_string();
-    let inflight = understanding_draft("常用 VS Code 与终端", "behavior-understanding:0011223344556677");
+    let inflight = understanding_draft(
+        "常用 VS Code 与终端",
+        "behavior-understanding:0011223344556677",
+    );
     store
         .candidates_add(
             &job_id,
@@ -1538,31 +1813,52 @@ fn understanding_clear_forgets_only_understanding_scope_and_blocks_replay() {
         "user_ui",
         None,
         None,
+        None,
     );
     assert!(wrong_actor.is_err(), "治理 UI actor 触发了了解清除闭包");
 
     let revision_after_clear = store
-        .apply_change("op-clear-understanding", before.revision, "forget_understanding", None, None, None)
+        .apply_change(
+            "op-clear-understanding",
+            before.revision,
+            "forget_understanding",
+            None,
+            None,
+            None,
+        )
         .expect("清除静默了解");
-    assert!(revision_after_clear > before.revision, "清除了解没有推进 revision");
+    assert!(
+        revision_after_clear > before.revision,
+        "清除了解没有推进 revision"
+    );
 
     // 正文：了解条目消失；画像结论与用户事实原样保留。
     let items = store.list(Some("user"), None, 10).unwrap();
     assert!(
-        items.iter().any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")),
+        items
+            .iter()
+            .any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")),
         "清除了解动了用户事实"
     );
     assert!(
-        items.iter().any(|item| item["draft"]["content"].as_str().unwrap().contains("活跃时段")),
+        items.iter().any(|item| item["draft"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("活跃时段")),
         "清除了解动了画像结论"
     );
     assert!(
-        !items.iter().any(|item| item["draft"]["content"].as_str().unwrap().contains("桌宠")),
+        !items
+            .iter()
+            .any(|item| item["draft"]["content"].as_str().unwrap().contains("桌宠")),
         "了解条目没有随清除失效"
     );
     // 索引与候选：已清正文不可召回；引用了解来源的候选被删。
     assert_eq!(store.query("桌宠", None, None, None, 10).unwrap().len(), 0);
-    assert_eq!(store.query("活跃时段", None, None, None, 10).unwrap().len(), 1);
+    assert_eq!(
+        store.query("活跃时段", None, None, None, 10).unwrap().len(),
+        1
+    );
     assert_eq!(store.query("拿铁", None, None, None, 10).unwrap().len(), 1);
     assert_eq!(
         store.status().unwrap().candidate_count,
@@ -1581,23 +1877,37 @@ fn understanding_clear_forgets_only_understanding_scope_and_blocks_replay() {
     // 墓碑：同一文本重新登记被拦下（已清来源不能迟到回灌）；新文本不受影响。
     assert_eq!(
         store
-            .register_sources(&[understanding_source("a1b2c3d4e5f60718", 300, "项目里在做一个 Rust 与 TypeScript 的桌宠")])
+            .register_sources(&[understanding_source(
+                "a1b2c3d4e5f60718",
+                300,
+                "项目里在做一个 Rust 与 TypeScript 的桌宠"
+            )])
             .unwrap(),
         0,
         "已清了解文本被重新登记"
     );
     assert_eq!(
         store
-            .register_sources(&[understanding_source("9988776655443322", 301, "晚上常在 21 点后写代码")])
+            .register_sources(&[understanding_source(
+                "9988776655443322",
+                301,
+                "晚上常在 21 点后写代码"
+            )])
             .unwrap(),
         1,
         "新了解文本被墓碑误伤"
     );
     // 遗忘代推进：跨清除代的在飞作业发布被拦下。
     let after = store.status().unwrap();
-    assert!(after.forget_epoch > before.forget_epoch, "清除了解没有推进遗忘代");
     assert!(
-        matches!(store.commit_dreaming_job(&job_id, after.revision), Err(AppError::MemoryConflict)),
+        after.forget_epoch > before.forget_epoch,
+        "清除了解没有推进遗忘代"
+    );
+    assert!(
+        matches!(
+            store.commit_dreaming_job(&job_id, after.revision),
+            Err(AppError::MemoryConflict)
+        ),
         "跨清除代的作业仍然发布了候选"
     );
 }
@@ -1608,18 +1918,30 @@ fn behavior_clear_also_forgets_understanding_scope() {
     // 清画像（全量范围）必须把了解沉淀一并带走：与画像结论共用同一闭包，不另开第二条链。
     store
         .register_sources(&[
-            derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100),
+            derived_source(
+                "behavior-conclusion:rhythm:aaaa",
+                "conclusion:rhythm",
+                "hash-r",
+                100,
+            ),
             understanding_source("cafebabecafebabe", 200, "项目里在读设计稿"),
         ])
         .unwrap();
     publish_candidates(
         &store,
-        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+        &[derived_draft(
+            "近一个月的活跃时段：工作日集中在 19–23 时。",
+            "behavior-conclusion:rhythm:aaaa",
+            json!({}),
+        )],
     )
     .expect("画像结论发布失败");
     publish_candidates(
         &store,
-        &[understanding_draft("项目里在读设计稿", "behavior-understanding:cafebabecafebabe")],
+        &[understanding_draft(
+            "项目里在读设计稿",
+            "behavior-understanding:cafebabecafebabe",
+        )],
     )
     .expect("了解条目发布失败");
 
@@ -1627,12 +1949,19 @@ fn behavior_clear_also_forgets_understanding_scope() {
     let items = store.list(Some("user"), None, 10).unwrap();
     assert!(items.is_empty(), "清画像后仍有系统观察条目在库");
     assert!(
-        store.source_evidence("behavior-understanding:cafebabecafebabe").unwrap().is_none(),
+        store
+            .source_evidence("behavior-understanding:cafebabecafebabe")
+            .unwrap()
+            .is_none(),
         "清画像后了解来源证据仍可回看"
     );
     assert_eq!(
         store
-            .register_sources(&[understanding_source("cafebabecafebabe", 300, "项目里在读设计稿")])
+            .register_sources(&[understanding_source(
+                "cafebabecafebabe",
+                300,
+                "项目里在读设计稿"
+            )])
             .unwrap(),
         0,
         "已清画像的了解文本被重新登记"
@@ -1649,7 +1978,12 @@ fn merge_candidates_union_sources_and_supersede_targets() {
         ])
         .unwrap();
     let revision = add(&store, "op-a", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
-    add(&store, "op-b", revision, &draft("用户早上喝咖啡", vec!["user-2"]));
+    add(
+        &store,
+        "op-b",
+        revision,
+        &draft("用户早上喝咖啡", vec!["user-2"]),
+    );
     let items = store.list(Some("user"), None, 10).unwrap();
     let latte_id = item_id_by_content(&items, "用户喜欢喝拿铁");
     let coffee_id = item_id_by_content(&items, "用户早上喝咖啡");
@@ -1666,7 +2000,10 @@ fn merge_candidates_union_sources_and_supersede_targets() {
 
     let active = store.list(Some("user"), None, 10).unwrap();
     assert_eq!(active.len(), 1, "合并后旧条目仍在库（没有 supersede）");
-    assert_eq!(active[0]["draft"]["content"], json!("用户早上喝咖啡，也喜欢拿铁"));
+    assert_eq!(
+        active[0]["draft"]["content"],
+        json!("用户早上喝咖啡，也喜欢拿铁")
+    );
     assert_eq!(
         active[0]["draft"]["sourceIds"],
         json!(["user-1", "user-2"]),
@@ -1707,7 +2044,11 @@ fn merge_publish_rejects_pinned_stale_or_cross_pool_targets() {
     let pinned_id = item_id_by_content(&items, "用户称呼糖糖");
 
     // 置顶（核心画像）目标不参与合并。
-    let pinned_merge = merge_draft("合并请求", &["user-1"], &[latte_id.clone(), pinned_id.clone()]);
+    let pinned_merge = merge_draft(
+        "合并请求",
+        &["user-1"],
+        &[latte_id.clone(), pinned_id.clone()],
+    );
     let result = publish_candidates(&store, &[pinned_merge]);
     assert!(
         matches!(&result, Err(AppError::Memory(message)) if message.contains("置顶")),
@@ -1717,16 +2058,29 @@ fn merge_publish_rejects_pinned_stale_or_cross_pool_targets() {
     // 跨来源类别：派生条目不能并进用户合并（来源并集先因混池在写入口被拒，
     // 逐目标的来源类别守卫是第二道防线）。
     store
-        .register_sources(&[derived_source("behavior-conclusion:focus:bbbb", "conclusion:focus", "hash-r", 400)])
+        .register_sources(&[derived_source(
+            "behavior-conclusion:focus:bbbb",
+            "conclusion:focus",
+            "hash-r",
+            400,
+        )])
         .unwrap();
     publish_candidates(
         &store,
-        &[derived_draft("近一个月的专注习惯：单段专注通常约 25 分钟。", "behavior-conclusion:focus:bbbb", json!({}))],
+        &[derived_draft(
+            "近一个月的专注习惯：单段专注通常约 25 分钟。",
+            "behavior-conclusion:focus:bbbb",
+            json!({}),
+        )],
     )
     .expect("派生条目发布失败");
     let items = store.list(Some("user"), None, 10).unwrap();
     let derived_id = item_id_by_content(&items, "近一个月的专注习惯：单段专注通常约 25 分钟。");
-    let cross_merge = merge_draft("跨池合并", &["user-1"], &[latte_id.clone(), derived_id.clone()]);
+    let cross_merge = merge_draft(
+        "跨池合并",
+        &["user-1"],
+        &[latte_id.clone(), derived_id.clone()],
+    );
     let result = publish_candidates(&store, &[cross_merge]);
     assert!(
         matches!(&result, Err(AppError::Memory(message)) if message.contains("混池")),
@@ -1734,9 +2088,16 @@ fn merge_publish_rejects_pinned_stale_or_cross_pool_targets() {
     );
 
     // 失效目标（已被合并掉）：如实报 MEMORY_CONFLICT，不静默跳过。
-    store.register_sources(&[source("user-4", "entry-u4", "hash-u4")]).unwrap();
+    store
+        .register_sources(&[source("user-4", "entry-u4", "hash-u4")])
+        .unwrap();
     let revision = store.status().unwrap().revision;
-    add(&store, "op-c", revision, &draft("用户常用 VS Code", vec!["user-4"]));
+    add(
+        &store,
+        "op-c",
+        revision,
+        &draft("用户常用 VS Code", vec!["user-4"]),
+    );
     let items = store.list(Some("user"), None, 10).unwrap();
     let vscode_id = item_id_by_content(&items, "用户常用 VS Code");
     let first_merge = merge_draft(
@@ -1756,7 +2117,9 @@ fn merge_publish_rejects_pinned_stale_or_cross_pool_targets() {
 #[test]
 fn merge_draft_shape_is_checked_before_staging_and_governance_writes() {
     let (_fixture, store) = Fixture::new();
-    store.register_sources(&[source("user-1", "entry-u1", "hash-u1")]).unwrap();
+    store
+        .register_sources(&[source("user-1", "entry-u1", "hash-u1")])
+        .unwrap();
     let job = store.job_start("review", "host").unwrap();
     let job_id = job["id"].as_str().unwrap().to_string();
 
@@ -1802,10 +2165,992 @@ fn merge_draft_shape_is_checked_before_staging_and_governance_writes() {
     let mut governance = draft("治理合并尝试", vec!["user-1"]);
     governance["supersedesIds"] = json!(["mem-x"]);
     let error = store
-        .apply_change("op-merge-governance", 0, "add", None, None, Some(&governance))
+        .apply_change(
+            "op-merge-governance",
+            0,
+            "add",
+            None,
+            None,
+            Some(&governance),
+        )
         .unwrap_err();
     assert!(
         matches!(&error, AppError::Memory(message) if message.contains("dreaming")),
         "治理写入静默接受了合并字段: {error:?}"
     );
+}
+
+fn add_repair_fixture_fact(store: &MemoryStore, suffix: &str, content: &str) -> String {
+    let source_id = format!("repair-source-{suffix}");
+    let entry_id = format!("repair-entry-{suffix}");
+    store
+        .register_sources(&[source(
+            &source_id,
+            &entry_id,
+            &format!("repair-hash-{suffix}"),
+        )])
+        .expect("register repair fixture source");
+    let item = draft(content, vec![source_id.as_str()]);
+    let revision = store.status().expect("repair fixture status").revision;
+    store
+        .apply_change(
+            &format!("repair-add-{suffix}"),
+            revision,
+            "add",
+            None,
+            None,
+            Some(&item),
+        )
+        .expect("add repair fixture fact");
+    store
+        .list(None, None, 50)
+        .expect("list repair fixture facts")
+        .into_iter()
+        .find(|item| item["draft"]["content"] == content)
+        .expect("new repair fixture fact exists")["id"]
+        .as_str()
+        .expect("fact id")
+        .to_string()
+}
+
+#[test]
+fn database_repair_restores_cache_index_and_fts_without_losing_facts_forget_or_seq_fences() {
+    let fixture = RepairFixture::new();
+    add_repair_fixture_fact(&fixture.store, "keep", "修复后仍在的事实");
+    let forgotten_id = add_repair_fixture_fact(&fixture.store, "forget", "不可复活的事实");
+    let revision = fixture
+        .store
+        .status()
+        .expect("status before forget")
+        .revision;
+    fixture
+        .store
+        .apply_change(
+            "repair-forget-operation",
+            revision,
+            "forget",
+            Some(&forgotten_id),
+            None,
+            None,
+        )
+        .expect("forget fixture fact");
+
+    let status = fixture
+        .store
+        .conversation_index_status()
+        .expect("conversation status");
+    let epoch = status["forgetEpoch"].as_i64().expect("forget epoch");
+    fixture
+        .store
+        .conversation_index_replace(
+            "fenced-session",
+            "fingerprint-1",
+            None,
+            epoch,
+            &[ConversationIndexEntry {
+                entry_id: "entry-12".into(),
+                event_id: Some("entry-12:user".into()),
+                seq: 12,
+                chunk: 0,
+                role: "user".into(),
+                text: "新来源".into(),
+                timestamp: 1_800_000_000_000,
+                anchor_entry_id: None,
+                anchor_event_id: None,
+            }],
+            None,
+        )
+        .expect("seed disposable search cache");
+
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute(
+            "INSERT INTO conversation_index_clear_fences(session_id,max_seq,created_at) VALUES ('fenced-session',11,1)",
+            [],
+        )
+        .expect("seed future-sequence fence");
+        conn.execute(
+            "UPDATE conversation_index_meta SET clear_inventory_complete=1 WHERE id=1",
+            [],
+        )
+        .expect("mark complete inventory");
+        conn.execute_batch(
+            "DROP INDEX memory_items_active;
+             DROP TABLE conversation_index_entries;
+             DROP TABLE memory_fts;
+             CREATE TABLE memory_fts_data(id INTEGER PRIMARY KEY, block BLOB);",
+        )
+        .expect("damage only rebuildable structures and leave an orphan FTS shadow");
+    }
+
+    fixture.ensure().expect("repair damaged cache structures");
+    let status = fixture.store.status().expect("status after repair");
+    assert_eq!(
+        status.item_count, 1,
+        "the accepted fact must survive schema repair"
+    );
+    assert!(
+        status.forget_epoch > 0,
+        "forget epoch must survive schema repair"
+    );
+    let conn = fixture.store.lock().expect("memory lock after repair");
+    let forgotten_tombstones: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_tombstones WHERE reason='forget'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read forget tombstones");
+    assert_eq!(forgotten_tombstones, 1);
+    let fts_fact: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_fts WHERE content='修复后仍在的事实'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read rebuilt fact FTS");
+    assert_eq!(
+        fts_fact, 1,
+        "memory_fts must be rebuilt from surviving facts"
+    );
+    let fence: i64 = conn
+        .query_row(
+            "SELECT max_seq FROM conversation_index_clear_fences WHERE session_id='fenced-session'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read preserved future-sequence fence");
+    assert_eq!(fence, 11, "schema repair must retain clear sequence fences");
+    let index_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='memory_items_active')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("check rebuilt index");
+    assert!(index_exists);
+    drop(conn);
+    assert_eq!(
+        fixture.backup_count(),
+        1,
+        "one pre-repair snapshot is retained"
+    );
+
+    fixture.ensure().expect("idempotent second open repair");
+    assert_eq!(
+        fixture.backup_count(),
+        1,
+        "an already repaired database is not backed up again"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .conversation_index_status()
+            .expect("index status after cache repair")["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "a missing entries cache invalidates its stale session fingerprints"
+    );
+}
+
+#[test]
+fn database_repair_adds_safe_default_column_and_restores_missing_constraint() {
+    let fixture = RepairFixture::new();
+    add_repair_fixture_fact(&fixture.store, "constraint", "结构修复不能清空的事实");
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute(
+            "INSERT INTO proactive_budgets(local_date,planning_attempts,updated_at) VALUES ('2026-10-09',4,10)",
+            [],
+        )
+        .expect("seed budget row");
+        conn.execute_batch(
+            "ALTER TABLE proactive_budgets DROP COLUMN observation_attempts;
+             CREATE TABLE proactive_control_drift (
+               id INTEGER PRIMARY KEY CHECK (id = 1),
+               mute_until INTEGER,
+               revision INTEGER NOT NULL,
+               CHECK (mute_until IS NULL)
+             ) STRICT;
+             INSERT INTO proactive_control_drift SELECT id,mute_until,revision FROM proactive_control;
+             DROP TABLE proactive_control;
+             ALTER TABLE proactive_control_drift RENAME TO proactive_control;",
+        )
+        .expect("remove a safe default column and a declared check constraint");
+    }
+
+    fixture.ensure().expect("repair safe column and constraint");
+    let conn = fixture.store.lock().expect("memory lock after repair");
+    let budget: (i64, i64) = conn
+        .query_row(
+            "SELECT planning_attempts,observation_attempts FROM proactive_budgets WHERE local_date='2026-10-09'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read preserved budget and defaulted column");
+    assert_eq!(budget, (4, 0));
+    let mute_until: Option<i64> = conn
+        .query_row(
+            "SELECT mute_until FROM proactive_control WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read preserved control row");
+    assert_eq!(mute_until, None);
+    assert!(
+        conn.execute(
+            "INSERT INTO proactive_control(id,mute_until,revision) VALUES (2,NULL,0)",
+            []
+        )
+        .is_err(),
+        "the declared proactive_control id CHECK must be restored"
+    );
+    let fact_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_items WHERE status='active'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read active facts after constraint repair");
+    assert_eq!(fact_count, 1);
+}
+
+#[test]
+fn database_repair_reconstructs_a_malformed_proactive_revision_from_control_state() {
+    let fixture = RepairFixture::new();
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute("UPDATE proactive_control SET revision=4 WHERE id=1", [])
+            .expect("seed durable proactive control revision");
+        conn.execute(
+            "UPDATE proactive_meta SET value='not-an-integer' WHERE key='revision'",
+            [],
+        )
+        .expect("corrupt only the derived revision counter");
+    }
+
+    fixture
+        .ensure()
+        .expect("repair malformed proactive revision");
+    let conn = fixture.store.lock().expect("memory lock after repair");
+    let revision: i64 = conn
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM proactive_meta WHERE key='revision'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read reconstructed revision");
+    assert!(
+        revision > 4,
+        "recovered revision must exceed all durable control revisions"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT revision FROM proactive_control WHERE id=1",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .expect("read preserved proactive control state"),
+        4
+    );
+}
+
+#[test]
+fn database_repair_rejects_future_schema_version_without_rewriting_it() {
+    let fixture = RepairFixture::new();
+    add_repair_fixture_fact(&fixture.store, "future", "未来版本保护事实");
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute(
+            "UPDATE memory_meta SET value=?1 WHERE key='schema_version'",
+            [(SCHEMA_VERSION + 1).to_string()],
+        )
+        .expect("simulate a newer schema version");
+    }
+    let error = fixture
+        .ensure()
+        .expect_err("newer schema must not be downgraded");
+    assert!(matches!(error, AppError::Memory(message) if message.contains("高于当前版本")));
+    let conn = fixture
+        .store
+        .lock()
+        .expect("memory lock after rejected repair");
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM memory_meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read unchanged newer version");
+    assert_eq!(version, (SCHEMA_VERSION + 1).to_string());
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_items WHERE status='active'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .expect("read preserved facts"),
+        1
+    );
+    assert_eq!(
+        fixture.backup_count(),
+        0,
+        "unknown future schemas fail before any mutation/repair snapshot"
+    );
+}
+
+#[test]
+fn known_empty_schema_version_is_upgraded_without_resetting_existing_meta() {
+    let fixture = RepairFixture::new();
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute(
+            "UPDATE memory_meta SET value='2' WHERE key='schema_version'",
+            [],
+        )
+        .expect("mark a known old schema version");
+        conn.execute_batch("DROP TABLE memory_tombstones;")
+            .expect("remove the additive old-version tombstone table");
+    }
+
+    fixture
+        .ensure()
+        .expect("upgrade known safe empty old schema");
+    let conn = fixture.store.lock().expect("memory lock after upgrade");
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM memory_meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read upgraded schema version");
+    assert_eq!(version, SCHEMA_VERSION.to_string());
+    assert!(conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_tombstones')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .expect("check recreated safe additive table"));
+    assert_eq!(
+        fixture.backup_count(),
+        1,
+        "known old data is snapshotted before schema repair"
+    );
+}
+
+#[test]
+fn database_repair_refuses_to_fabricate_a_missing_forget_ledger() {
+    let fixture = RepairFixture::new();
+    add_repair_fixture_fact(&fixture.store, "keep-ledger", "墓碑缺失时仍保留的事实");
+    let forgotten_id = add_repair_fixture_fact(&fixture.store, "lost-ledger", "已有遗忘记录的事实");
+    let revision = fixture
+        .store
+        .status()
+        .expect("status before forget")
+        .revision;
+    fixture
+        .store
+        .apply_change(
+            "repair-ledger-forget",
+            revision,
+            "forget",
+            Some(&forgotten_id),
+            None,
+            None,
+        )
+        .expect("forget second fixture fact");
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch("DROP TABLE memory_tombstones;")
+            .expect("simulate loss of the authoritative forget ledger");
+    }
+
+    let error = fixture
+        .ensure()
+        .expect_err("missing forget ledger must fail closed");
+    assert!(matches!(error, AppError::Memory(message) if message.contains("无法证明遗忘历史为空")));
+    let conn = fixture
+        .store
+        .lock()
+        .expect("memory lock after rejected repair");
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_items WHERE status='active'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .expect("read remaining fact"),
+        1
+    );
+    assert!(!conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_tombstones')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .expect("verify the missing governance ledger remains untouched"));
+    assert_eq!(
+        fixture.backup_count(),
+        1,
+        "an unrecoverable governance gap retains a non-mutating diagnostic snapshot"
+    );
+}
+
+#[test]
+fn database_repair_recovers_clear_cutoff_before_conversation_cache_existed() {
+    let fixture = RepairFixture::new();
+    let revision = fixture
+        .store
+        .status()
+        .expect("initial memory status")
+        .revision;
+    fixture
+        .store
+        .apply_change("legacy-clear", revision, "clear", None, None, None)
+        .expect("record durable clear operation");
+    let cutoff: i64 = {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.query_row(
+            "SELECT clear_cutoff FROM conversation_index_meta WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read original clear cutoff")
+    };
+
+    // Model a legacy database from before the disposable conversation cache was installed.
+    // Keep the durable clear operation and tombstones while removing every cache metadata row.
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch(
+            "DROP TABLE conversation_fts;
+             DROP TABLE conversation_index_suppressions;
+             DROP TABLE conversation_index_clear_fences;
+             DROP TABLE conversation_index_entries;
+             DROP TABLE conversation_index_sessions;
+             DROP TABLE conversation_index_meta;",
+        )
+        .expect("remove derived conversation cache as in legacy schema");
+    }
+
+    fixture
+        .ensure()
+        .expect("reconstruct legacy clear privacy fence");
+    let conn = fixture.store.lock().expect("memory lock after repair");
+    let restored: (i64, i64) = conn
+        .query_row(
+            "SELECT clear_cutoff,clear_inventory_complete FROM conversation_index_meta WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read reconstructed conversation metadata");
+    assert!(
+        restored.0 >= cutoff,
+        "legacy clear timestamp must remain a suppression fence"
+    );
+    assert_eq!(
+        restored.1, 0,
+        "missing historical inventory must fail closed"
+    );
+    drop(conn);
+
+    let status = fixture
+        .store
+        .conversation_index_status()
+        .expect("status after repair");
+    let forget_epoch = status["forgetEpoch"].as_i64().expect("forget epoch");
+    fixture
+        .store
+        .conversation_index_replace(
+            "future-session",
+            "future-fingerprint",
+            None,
+            forget_epoch,
+            &[
+                ConversationIndexEntry {
+                    entry_id: "legacy-user-entry".into(),
+                    event_id: Some("legacy-user-event".into()),
+                    seq: 40,
+                    chunk: 0,
+                    role: "user".into(),
+                    text: "清理之前的旧内容".into(),
+                    timestamp: cutoff.saturating_sub(1_000),
+                    anchor_entry_id: None,
+                    anchor_event_id: None,
+                },
+                ConversationIndexEntry {
+                    entry_id: "future-user-entry".into(),
+                    event_id: Some("future-user-event".into()),
+                    seq: 1,
+                    chunk: 0,
+                    role: "user".into(),
+                    text: "清理之后新提交的全新记录".into(),
+                    timestamp: cutoff + 10_000,
+                    anchor_entry_id: None,
+                    anchor_event_id: None,
+                },
+            ],
+            None,
+        )
+        .expect("index future committed entry");
+    let old_result = fixture
+        .store
+        .conversation_search("旧内容", "future-session", Some(5), None, false)
+        .expect("search pre-clear history after cache rebuild");
+    assert_eq!(old_result["entries"].as_array().unwrap().len(), 0);
+    let result = fixture
+        .store
+        .conversation_search("新提交", "future-session", Some(5), None, false)
+        .expect("search future committed entry");
+    assert_eq!(result["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(result["entries"][0]["entryId"], "future-user-entry");
+}
+
+#[test]
+fn database_repair_does_not_infer_complete_clear_inventory_from_a_leftover_fence_table() {
+    let fixture = RepairFixture::new();
+    let revision = fixture
+        .store
+        .status()
+        .expect("initial memory status")
+        .revision;
+    fixture
+        .store
+        .apply_change("partial-clear", revision, "clear", None, None, None)
+        .expect("record durable clear operation");
+    let cutoff: i64 = {
+        let conn = fixture.store.lock().expect("memory lock");
+        let cutoff = conn
+            .query_row(
+                "SELECT clear_cutoff FROM conversation_index_meta WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read clear cutoff");
+        conn.execute(
+            "INSERT INTO conversation_index_clear_fences(session_id,max_seq,created_at) VALUES ('partial-session',5,?1)",
+            [cutoff],
+        )
+        .expect("leave one fence from an unknown inventory");
+        conn.execute_batch("DROP TABLE conversation_index_meta")
+            .expect("lose the singleton that recorded inventory completeness");
+        cutoff
+    };
+
+    fixture.ensure().expect("recover metadata conservatively");
+    let meta: (i64, i64) = {
+        let conn = fixture.store.lock().expect("memory lock after repair");
+        conn.query_row(
+            "SELECT clear_cutoff,clear_inventory_complete FROM conversation_index_meta WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read recovered metadata")
+    };
+    assert!(meta.0 >= cutoff);
+    assert_eq!(
+        meta.1, 0,
+        "a surviving partial fence table is not proof of complete inventory"
+    );
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch(
+            "ALTER TABLE conversation_index_meta DROP COLUMN clear_inventory_complete",
+        )
+        .expect("simulate an older metadata row without the completeness marker");
+    }
+    fixture
+        .ensure()
+        .expect("repair missing completeness marker conservatively");
+    assert_eq!(
+        fixture
+            .store
+            .lock()
+            .expect("memory lock after marker repair")
+            .query_row(
+                "SELECT clear_inventory_complete FROM conversation_index_meta WHERE id=1",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("read repaired completeness marker"),
+        0,
+        "a leftover fence table cannot prove a missing completeness marker was true"
+    );
+
+    let forget_epoch = fixture
+        .store
+        .conversation_index_status()
+        .expect("read index status")["forgetEpoch"]
+        .as_i64()
+        .expect("forget epoch");
+    fixture
+        .store
+        .conversation_index_replace(
+            "new-session-after-clear",
+            "new-fingerprint",
+            None,
+            forget_epoch,
+            &[ConversationIndexEntry {
+                entry_id: "new-user-entry".into(),
+                event_id: None,
+                seq: 1,
+                chunk: 0,
+                role: "user".into(),
+                text: "清理之后的新会话".into(),
+                timestamp: cutoff + 10_000,
+                anchor_entry_id: None,
+                anchor_event_id: None,
+            }],
+            None,
+        )
+        .expect("index a new session after clear");
+    let result = fixture
+        .store
+        .conversation_search("新会话", "new-session-after-clear", Some(5), None, false)
+        .expect("search newly indexed session");
+    assert_eq!(result["entries"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn database_repair_rolls_back_when_existing_rows_violate_the_authoritative_constraint() {
+    let fixture = RepairFixture::new();
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch(
+            "CREATE TABLE proactive_control_drift (
+               id INTEGER PRIMARY KEY,
+               mute_until INTEGER,
+               revision INTEGER NOT NULL
+             ) STRICT;
+             INSERT INTO proactive_control_drift VALUES (1,NULL,3);
+             INSERT INTO proactive_control_drift VALUES (2,NULL,7);
+             DROP TABLE proactive_control;
+             ALTER TABLE proactive_control_drift RENAME TO proactive_control;",
+        )
+        .expect("remove the id CHECK and seed an incompatible row");
+    }
+
+    let error = fixture
+        .ensure()
+        .expect_err("unsafe constraint repair must fail");
+    assert!(
+        matches!(error, AppError::Memory(message) if message.contains("搬移表 proactive_control 数据失败"))
+    );
+    let conn = fixture
+        .store
+        .lock()
+        .expect("memory lock after rolled back repair");
+    let row: (i64, i64) = conn
+        .query_row("SELECT id,revision FROM proactive_control WHERE id=1", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .expect("singleton row remains after rollback");
+    assert_eq!(row, (1, 3));
+    assert_eq!(
+        conn.query_row(
+            "SELECT revision FROM proactive_control WHERE id=2",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("incompatible row remains after rollback"),
+        7
+    );
+    let version: String = conn
+        .query_row(
+            "SELECT value FROM memory_meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read original schema version");
+    assert_eq!(version, SCHEMA_VERSION.to_string());
+    assert_eq!(
+        fixture.backup_count(),
+        1,
+        "a failed automatic repair retains its pre-repair backup"
+    );
+}
+
+#[test]
+fn database_repair_restores_optional_credentials_structure_without_claiming_value_recovery() {
+    let fixture = RepairFixture::new();
+    add_repair_fixture_fact(&fixture.store, "credential-keep", "凭据表修复后仍在的事实");
+    let forgotten = add_repair_fixture_fact(
+        &fixture.store,
+        "credential-forget",
+        "凭据缺表修复时仍被遗忘的事实",
+    );
+    {
+        fixture
+            .store
+            .credential_set("server", "TOKEN", "secret-value")
+            .expect("seed a credential before simulating table loss");
+        let revision = fixture
+            .store
+            .status()
+            .expect("status before forget")
+            .revision;
+        fixture
+            .store
+            .apply_change(
+                "credential-table-forget",
+                revision,
+                "forget",
+                Some(&forgotten),
+                None,
+                None,
+            )
+            .expect("retain the independent forget ledger");
+    }
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch("DROP TABLE mcp_credentials")
+            .expect("simulate lost credentials table");
+    }
+
+    fixture
+        .ensure()
+        .expect("restore optional credential table structure");
+    let conn = fixture
+        .store
+        .lock()
+        .expect("memory lock after credential structure repair");
+    let active_fact_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_items WHERE status='active'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read retained fact");
+    assert_eq!(
+        active_fact_count, 1,
+        "fact data remains available after optional table repair"
+    );
+    let forgotten: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_tombstones WHERE reason='forget'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read durable forget ledger");
+    assert_eq!(forgotten, 1, "the forget tombstone is preserved");
+    let credentials_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='mcp_credentials')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("check recreated credential table exists");
+    assert!(
+        credentials_exists,
+        "repair must restore the optional table structure"
+    );
+    let credential_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM mcp_credentials", [], |row| row.get(0))
+        .expect("read recreated credential table");
+    assert_eq!(
+        credential_rows, 0,
+        "repair must not fabricate or claim to recover secret values"
+    );
+    drop(conn);
+    assert_eq!(
+        fixture
+            .store
+            .credential_get("server", "TOKEN")
+            .expect("read absent credential"),
+        None
+    );
+    assert_eq!(
+        fixture.backup_count(),
+        1,
+        "the pre-repair backup remains available for credential recovery"
+    );
+}
+
+#[test]
+fn restore_rechecks_and_repairs_the_live_database_schema() {
+    let fixture = RepairFixture::new();
+    add_repair_fixture_fact(&fixture.store, "restore", "恢复后仍在的事实");
+    let backup = fixture
+        .store
+        .backup()
+        .expect("make restore fixture snapshot");
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch("DROP INDEX memory_items_active;")
+            .expect("remove one derived index");
+    }
+
+    fixture
+        .store
+        .restore(std::path::Path::new(&backup))
+        .expect("restore and recheck active schema");
+    let conn = fixture.store.lock().expect("memory lock after restore");
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_items WHERE status='active' AND content='恢复后仍在的事实'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("read restored fact"),
+        1
+    );
+    assert!(conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='memory_items_active')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .expect("read repaired index"));
+}
+
+#[test]
+fn restore_rechecks_and_repairs_the_active_database_schema() {
+    let fixture = RepairFixture::new();
+    add_repair_fixture_fact(&fixture.store, "restore", "恢复后保留的事实");
+    let backup_path = fixture
+        .store
+        .backup()
+        .expect("create restore fixture backup");
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch("DROP INDEX memory_items_active;")
+            .expect("damage one rebuildable index");
+    }
+
+    fixture
+        .store
+        .restore(std::path::Path::new(&backup_path))
+        .expect("restore data then repair the live schema");
+    let conn = fixture.store.lock().expect("memory lock after restore");
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_items WHERE status='active' AND content='恢复后保留的事实'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("read restored fact"),
+        1
+    );
+    assert!(conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='memory_items_active')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .expect("read restored schema index"));
+}
+
+#[test]
+fn failed_restore_rolls_back_changes_and_detaches_the_backup_database() {
+    let fixture = RepairFixture::new();
+    let fact_id = add_repair_fixture_fact(
+        &fixture.store,
+        "restore-rollback",
+        "恢复中途失败仍保留的事实",
+    );
+    let backup = fixture.store.backup().expect("create valid restore source");
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch(
+            "CREATE TRIGGER reject_restore_item BEFORE INSERT ON memory_items
+             BEGIN SELECT RAISE(ABORT,'simulated restore insert failure'); END;",
+        )
+        .expect("install deterministic restore failure");
+    }
+
+    assert!(fixture
+        .store
+        .restore(std::path::Path::new(&backup))
+        .is_err());
+    let conn = fixture.store.lock().expect("memory lock after rollback");
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_items WHERE id=?1 AND content='恢复中途失败仍保留的事实'",
+            [fact_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("read original fact after failed restore"),
+        1,
+        "partial restore writes must roll back"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_database_list WHERE name='restore_src'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("check detached source after failed restore"),
+        0
+    );
+}
+
+#[test]
+fn schema_repair_does_not_mistake_fts_words_in_an_ordinary_table_for_a_virtual_cache() {
+    let fixture = RepairFixture::new();
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute_batch(
+            "DROP TABLE memory_fts;
+             CREATE TABLE memory_fts(value TEXT DEFAULT 'CREATE VIRTUAL TABLE USING FTS5');
+             INSERT INTO memory_fts(value) VALUES('ordinary data must survive');",
+        )
+        .expect("create a conflicting ordinary table");
+    }
+    assert!(
+        fixture.ensure().is_err(),
+        "unknown ordinary data must not be dropped as FTS"
+    );
+    let conn = fixture
+        .store
+        .lock()
+        .expect("memory lock after refused repair");
+    let value: String = conn
+        .query_row("SELECT value FROM memory_fts", [], |row| row.get(0))
+        .expect("read protected ordinary data");
+    assert_eq!(value, "ordinary data must survive");
+}
+
+#[test]
+fn schema_repair_does_not_silently_resume_when_the_only_proactive_control_row_was_lost() {
+    let fixture = RepairFixture::new();
+    {
+        let conn = fixture.store.lock().expect("memory lock");
+        conn.execute("DELETE FROM proactive_control", [])
+            .expect("simulate lost pause state");
+    }
+    assert!(
+        fixture.ensure().is_err(),
+        "empty sibling tables do not prove the user had no pause"
+    );
+    let conn = fixture
+        .store
+        .lock()
+        .expect("memory lock after refused repair");
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM proactive_control", [], |row| {
+            row.get(0)
+        })
+        .expect("read unrecoverable control state");
+    assert_eq!(rows, 0, "must not manufacture an unmuted singleton");
+}
+
+#[cfg(windows)]
+#[test]
+fn read_only_restore_uris_preserve_unc_paths_and_escape_query_characters() {
+    use super::store::readonly_sqlite_uri;
+    use std::path::Path;
+    for path in [
+        r"\\server\share\备份 a?.sqlite3",
+        r"\\?\UNC\server\share\备份 a?.sqlite3",
+    ] {
+        let uri = readonly_sqlite_uri(Path::new(path)).expect("UNC readonly URI");
+        assert!(uri.starts_with("file:////server/share/"));
+        assert!(uri.ends_with("?mode=ro"));
+        assert!(uri.contains("%20a%3F.sqlite3"));
+    }
+    let drive = readonly_sqlite_uri(Path::new(r"\\?\C:\data\memory.sqlite3")).expect("drive URI");
+    assert_eq!(drive, "file:///C:/data/memory.sqlite3?mode=ro");
 }

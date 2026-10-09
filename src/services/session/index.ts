@@ -34,6 +34,7 @@ export type { SessionActivityKey } from "./activity"
 // ── Manager ──
 export {
   initSessions,
+  readVisibleSessionTranscript,
   switchToSession,
   createNewSession,
   closeSession,
@@ -42,6 +43,7 @@ export {
   updateSessionName,
   setSessionInterrupted,
 } from "./manager"
+export type { VisibleSessionTranscript } from "./manager"
 
 // ── 会话历史读模型（sessions/ 仓库全量会话，含未打开标签的归档）──
 export {
@@ -55,6 +57,8 @@ export {
 export {
   PI_LANE,
   getPiSessionRepo,
+  isPiSessionOpen,
+  withPiSessionFileLock,
   acquirePiSession,
   releasePiSession,
   listPiSessionMetadata,

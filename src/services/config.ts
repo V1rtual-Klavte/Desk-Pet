@@ -263,6 +263,8 @@ interface Config {
       coreTokenBudget: number
       recallTokenBudget: number
       rerank: "off" | "adaptive"
+      /** 缺省走出厂adaptive；与rerank一样只通过运行时YAML配置。 */
+      queryRewrite?: "off" | "adaptive"
       recallTimeoutMs: number
       rerankTimeoutMs: number
       dreaming: {
@@ -831,6 +833,16 @@ export const memoryConfig = {
   get enabled() { return overrideOr("ai.memory.enabled", cfg.ai?.memory?.enabled ?? true); },
   get coreTokenBudget() { return overrideOr("ai.memory.coreTokenBudget", cfg.ai?.memory?.coreTokenBudget ?? 320); },
   get recallTokenBudget() { return overrideOr("ai.memory.recallTokenBudget", cfg.ai?.memory?.recallTokenBudget ?? 1000); },
+  get queryRewrite(): "off" | "adaptive" {
+    const value = overrideOr("ai.memory.queryRewrite", cfg.ai?.memory?.queryRewrite ?? "adaptive")
+    if (value === "off" || value === "adaptive") return value
+    const marker = `ai.memory.queryRewrite=${String(value)}`
+    if (!warnedInvalidTierValues.has(marker)) {
+      warnedInvalidTierValues.add(marker)
+      log.warn("ai.memory.queryRewrite 取值非法，按 off 读取；请在运行时 YAML 中修正")
+    }
+    return "off"
+  },
   get rerank() { return overrideOr("ai.memory.rerank", cfg.ai?.memory?.rerank || "off") as "off" | "adaptive"; },
   get recallTimeoutMs() { return overrideOr("ai.memory.recallTimeoutMs", cfg.ai?.memory?.recallTimeoutMs ?? 4000); },
   get rerankTimeoutMs() { return overrideOr("ai.memory.rerankTimeoutMs", cfg.ai?.memory?.rerankTimeoutMs ?? 2500); },

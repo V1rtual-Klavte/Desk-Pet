@@ -49,7 +49,8 @@ beforeEach(async () => {
 
 function observation(summary: string) {
   const now = Date.now()
-  return { sourceId: `obs-${summary}`, kind: "file" as const, observedAt: now - 1_000, expiresAt: now + 60_000, summary }
+  const evidenceId = "0".repeat(64)
+  return { sourceId: `obs-${summary}`, evidenceId, evidenceHash: "1".repeat(64), kind: "file" as const, observedAt: now - 1_000, expiresAt: now + 60_000, summary }
 }
 
 describe("清除静默了解联动记忆闭包", () => {

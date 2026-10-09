@@ -5,10 +5,11 @@ import { errorCode, formatError } from "@/services/error"
 import { createRuntimeTraceContext } from "@/services/engine/runtime/trace"
 import { proactiveEvent } from "@/services/proactive/trace"
 import { classifyApp } from "./classifier"
-import { buildSnapshot, coveredInterval, emptyDaily } from "./aggregate"
+import { buildSnapshot, emptyDaily } from "./aggregate"
 import { BEHAVIOR_DIR, DAILY_DIR, SEGMENT_INDEX_FILE, SEGMENTS_DIR, UNDERSTANDING_FILE } from "./paths"
 import { IDLE_ACTIVE_LIMIT_MS } from "./types"
-import type { AppCategory, BehaviorDaily, BehaviorSegment, BehaviorSnapshot, WindowObservation } from "./types"
+import { BEHAVIOR_MEASUREMENT_VERSION } from "./types"
+import type { AppCategory, BehaviorActivityBucket, BehaviorDaily, BehaviorSegment, BehaviorSnapshot, WindowObservation } from "./types"
 
 const log = createLogger("Behavior")
 const behaviorTraceContext = createRuntimeTraceContext()
@@ -28,12 +29,10 @@ const DAILY_RETENTION_DAYS = 40
  * 这里是「启动读多少」，两者不必相等（曾经按 180 份读，其中 150 份没人用）。
  */
 const DAILY_READ_DAYS = 35
-const WORK_PRESENCE_THRESHOLD_MS = 30 * 60_000
 const MAX_DAILY_READ_BYTES = 2 * 1024 * 1024
 const MAX_APP_IDS_PER_DAY = 64
 const MAX_PENDING_OBSERVATIONS = 128
-/** 事件密集时按时间兜底落盘一次，避免分段只在状态切换时才持久化。 */
-const CHECKPOINT_INTERVAL_MS = 60_000
+const MEASUREMENT_STATE_FILE = "measurement-state.json"
 
 /**
  * `file_list` 的线格式是 FileEntry（见 @/services/host 的 HostCommandMap），目录判定
@@ -47,6 +46,7 @@ let started = false
 let loaded = false
 let historyLoad: Promise<void> | null = null
 let loadEpoch = 0
+let measurementInvalidationPending: boolean | null = null
 let revision = 0
 let generation = -1
 let sequence = 0
@@ -56,12 +56,9 @@ let clearWatermark: ObservationWatermark | null = null
 let clearInProgress = false
 let clearPromise: Promise<void> | null = null
 let previous: WindowObservation | null = null
-let currentStart: WindowObservation | null = null
 let currentCategory: AppCategory | null = null
 let currentContinuousMs = 0
-let currentSegmentStart = 0
 let currentWorkStartAt = 0
-let lastCheckpointAt = 0
 let serial = Promise.resolve()
 let pendingObservations = 0
 let droppedObservations = 0
@@ -115,24 +112,42 @@ async function loadDailyHistory(): Promise<void> {
 }
 
 async function loadDailyHistoryOnce(epoch: number): Promise<void> {
+  let completed = false
   try {
+    await ensureMeasurementState()
     const dailyPath = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR)
-    const listing = await getHostBridge().request("file_list", { path: dailyPath })
+    const listing = await getHostBridge().request("file_list", { path: dailyPath }).catch(error => {
+      // A fresh data root has no daily directory; failures reading an existing row must retry.
+      if (errorCode(error) === "PATH_NOT_FOUND") return { entries: [] }
+      throw error
+    })
     const entries = listing.entries as ListedEntry[]
     const names = entries.filter((entry) => entry.kind !== "directory" && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name))
       .sort((a, b) => b.name.localeCompare(a.name)).slice(0, DAILY_READ_DAYS)
+    const removedLegacy = new Set<string>()
     for (const entry of names) {
       const path = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR, entry.name)
       const { content } = await getHostBridge().request("file_read", { path, maxBytes: MAX_DAILY_READ_BYTES })
       const day = JSON.parse(content) as BehaviorDaily
-      if (epoch === loadEpoch && day.date === entry.name.slice(0, 10) && Array.isArray(day.hourMs) && day.hourMs.length === 24) days.set(day.date, day)
+      if (day.measurementVersion !== BEHAVIOR_MEASUREMENT_VERSION) {
+        if (measurementInvalidationPending !== true) {
+          // Persist before discarding the obsolete derived buffer; a failed closure must retry.
+          await writeMeasurementState(true)
+          measurementInvalidationPending = true
+        }
+        await getHostBridge().request("file_remove", { path, recursive: false, force: true })
+        removedLegacy.add(entry.name)
+        continue
+      }
+      if (epoch === loadEpoch && day.measurementVersion === BEHAVIOR_MEASUREMENT_VERSION && day.date === entry.name.slice(0, 10)
+        && Array.isArray(day.hourMs) && day.hourMs.length === 24) days.set(day.date, day)
     }
     const today = new Date()
     const cutoff = (retention: number) => { const date = new Date(today); date.setDate(date.getDate() - retention); return localDate(date.getTime()) }
     const dailyCutoff = cutoff(DAILY_RETENTION_DAYS)
     for (const entry of entries) {
       const date = entry.name.slice(0, 10)
-      if (entry.kind !== "directory" && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name) && date < dailyCutoff) {
+      if (!removedLegacy.has(entry.name) && entry.kind !== "directory" && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name) && date < dailyCutoff) {
         const path = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR, entry.name)
         await getHostBridge().request("file_remove", { path, recursive: false, force: true })
       }
@@ -150,15 +165,52 @@ async function loadDailyHistoryOnce(epoch: number): Promise<void> {
     } catch (error) {
       if (errorCode(error) !== "PATH_NOT_FOUND") throw error
     }
+    completed = true
   } catch (error) {
-    if (errorCode(error) === "PATH_NOT_FOUND") {
-      log.debug("尚无可读取的行为日聚合")
-    } else {
-      log.warn("读取行为历史失败:", formatError(error))
-    }
+    log.warn("读取行为历史失败:", formatError(error))
+    throw error
   } finally {
-    if (epoch === loadEpoch) loaded = true
+    if (epoch === loadEpoch) loaded = completed
   }
+}
+
+async function ensureMeasurementState(): Promise<void> {
+  if (measurementInvalidationPending !== null) return
+  const path = await runtimePath("data", BEHAVIOR_DIR, MEASUREMENT_STATE_FILE)
+  try {
+    const { content } = await getHostBridge().request("file_read", { path, maxBytes: 1024 })
+    const state = JSON.parse(content) as { measurementVersion?: number; derivedBehaviorInvalidationPending?: boolean }
+    if (state.measurementVersion === BEHAVIOR_MEASUREMENT_VERSION
+      && typeof state.derivedBehaviorInvalidationPending === "boolean") {
+      measurementInvalidationPending = state.derivedBehaviorInvalidationPending
+      return
+    }
+  } catch (error) {
+    if (errorCode(error) !== "PATH_NOT_FOUND") log.warn("读取行为计量状态失败，派生结论失效会重试:", formatError(error))
+  }
+  await writeMeasurementState(true)
+  measurementInvalidationPending = true
+}
+
+async function writeMeasurementState(pending: boolean): Promise<void> {
+  await writeJson([MEASUREMENT_STATE_FILE], {
+    measurementVersion: BEHAVIOR_MEASUREMENT_VERSION,
+    derivedBehaviorInvalidationPending: pending,
+  })
+}
+
+/** True until the memory domain confirms that old derived behavior sources were invalidated. */
+export async function needsBehaviorDerivedInvalidation(): Promise<boolean> {
+  await loadDailyHistory()
+  return measurementInvalidationPending === true
+}
+
+/** Call only after the memory-domain invalidation transaction succeeds. */
+export async function completeBehaviorDerivedInvalidation(): Promise<void> {
+  await loadDailyHistory()
+  if (measurementInvalidationPending !== true) return
+  await writeMeasurementState(false)
+  measurementInvalidationPending = false
 }
 
 async function persistSegment(segment: BehaviorSegment): Promise<void> {
@@ -186,8 +238,8 @@ async function persistDay(day: BehaviorDaily): Promise<void> {
   await writeJson([DAILY_DIR, `${day.date}.json`], day)
 }
 
-async function finishWorkSegment(preserveWork: boolean): Promise<void> {
-  if (preserveWork || !currentWorkStartAt) return
+async function finishWorkSegment(): Promise<void> {
+  if (!currentWorkStartAt) return
   if (currentContinuousMs > 0) {
     const startDay = dayFor(localDate(currentWorkStartAt))
     startDay.workSegments++
@@ -197,61 +249,133 @@ async function finishWorkSegment(preserveWork: boolean): Promise<void> {
   currentWorkStartAt = 0
 }
 
-function splitInterval(startAt: number, durationMs: number, appId: string | null, category: AppCategory, petForeground: boolean, work: boolean, idle: boolean): BehaviorSegment[] {
-  const result: BehaviorSegment[] = []
+interface ActivitySlice { bucket: Exclude<BehaviorActivityBucket, "unobserved">; durationMs: number }
+
+/**
+ * idle counters are sampled only when a native observation event arrives. A short
+ * interval whose endpoints are both below the idle threshold is safely active by
+ * the shared idle policy. For longer intervals, a monotonic idle increase bounds
+ * the active prefix and idle suffix; a reset leaves the unproven leading portion
+ * unknown instead of crediting it to the previously foreground app.
+ */
+function splitActivityInterval(previousIdleMs: number | null, currentIdleMs: number | null, durationMs: number): ActivitySlice[] {
+  if (durationMs <= 0) return []
+  if (previousIdleMs !== null && currentIdleMs !== null
+    && previousIdleMs < IDLE_ACTIVE_LIMIT_MS && currentIdleMs < IDLE_ACTIVE_LIMIT_MS
+    && previousIdleMs + durationMs <= IDLE_ACTIVE_LIMIT_MS) {
+    return [{ bucket: "active", durationMs }]
+  }
+
+  let activeMs = 0
+  let idleMs = 0
+  if (currentIdleMs !== null && Number.isFinite(currentIdleMs) && currentIdleMs >= 0) {
+    const idleProgressMs = previousIdleMs === null ? null : currentIdleMs - previousIdleMs
+    const continuousIdle = previousIdleMs !== null && idleProgressMs !== null
+      && idleProgressMs >= durationMs - 2_000
+    if (continuousIdle) {
+      activeMs = Math.min(durationMs, Math.max(0, IDLE_ACTIVE_LIMIT_MS - previousIdleMs))
+      idleMs = durationMs - activeMs
+      return [
+        ...(activeMs > 0 ? [{ bucket: "active" as const, durationMs: activeMs }] : []),
+        ...(idleMs > 0 ? [{ bucket: "idle" as const, durationMs: idleMs }] : []),
+      ]
+    } else {
+      idleMs = Math.min(durationMs, Math.max(0, currentIdleMs - IDLE_ACTIVE_LIMIT_MS))
+      activeMs = Math.min(durationMs - idleMs, Math.min(currentIdleMs, IDLE_ACTIVE_LIMIT_MS))
+    }
+  }
+  const unknownMs = durationMs - activeMs - idleMs
+  return [
+    ...(unknownMs > 0 ? [{ bucket: "unknown" as const, durationMs: unknownMs }] : []),
+    ...(activeMs > 0 ? [{ bucket: "active" as const, durationMs: activeMs }] : []),
+    ...(idleMs > 0 ? [{ bucket: "idle" as const, durationMs: idleMs }] : []),
+  ]
+}
+
+function splitByLocalDay(startAt: number, durationMs: number, visit: (date: string, startAt: number, durationMs: number) => void): string[] {
+  const dates = new Set<string>()
   let cursor = startAt, remaining = durationMs
   while (remaining > 0) {
     const date = localDate(cursor)
     const nextMidnight = new Date(cursor)
     nextMidnight.setHours(24, 0, 0, 0)
     const span = Math.min(remaining, Math.max(1, nextMidnight.getTime() - cursor))
-    const endAt = cursor + span
-    const day = dayFor(date)
-    day.coveredMs += span
-    if (category !== "unknown") day.activeMs += span
-    else day.unknownMs += span
-    if (idle) day.idleMs += span
-    day.categoryMs[category] += span
-    if (petForeground) day.petForegroundMs += span
-    if (appId && (day.appMs[appId] !== undefined || Object.keys(day.appMs).length < MAX_APP_IDS_PER_DAY)) {
-      day.appMs[appId] = (day.appMs[appId] ?? 0) + span
-    }
-    for (let mark = cursor; mark < endAt;) {
-      const hour = new Date(mark).getHours()
-      const nextHour = new Date(mark); nextHour.setHours(hour + 1, 0, 0, 0)
-      const part = Math.min(endAt, nextHour.getTime()) - mark
-      day.hourMs[hour] += part
-      mark += part
-    }
-    if (work) day.workTotalMs += span
-    result.push({ date, appId, category, startAt: cursor, endAt, durationMs: span, quality: "observed" })
-    cursor = endAt; remaining -= span
+    dates.add(date)
+    visit(date, cursor, span)
+    cursor += span
+    remaining -= span
   }
-  return result
+  return [...dates]
 }
 
-async function checkpointSegment(endAt: number, close: boolean, preserveWork = false): Promise<void> {
-  if (!currentStart || !currentCategory || endAt <= currentSegmentStart) {
-    if (close) {
-      await finishWorkSegment(preserveWork)
-      currentStart = null; currentCategory = null
-      if (!preserveWork) currentContinuousMs = 0
+async function recordInterval(startAt: number, observation: WindowObservation,
+  category: AppCategory, classificationHigh: boolean, slices: readonly ActivitySlice[]): Promise<void> {
+  const appId = classificationHigh ? observation.appId : null
+  for (const slice of slices) {
+    const dates = splitByLocalDay(startAt, slice.durationMs, (date, pieceStart, pieceDuration) => {
+      const day = dayFor(date)
+      day.coveredMs += pieceDuration
+      day[slice.bucket === "active" ? "activeMs" : slice.bucket === "idle" ? "idleMs" : "unknownMs"] += pieceDuration
+      if (observation.isPetForeground) day.petForegroundMs += pieceDuration
+      if (classificationHigh) {
+        day.classifiedMs += pieceDuration
+        day.categoryMs[category] += pieceDuration
+        if (appId && (day.appMs[appId] !== undefined || Object.keys(day.appMs).length < MAX_APP_IDS_PER_DAY)) {
+          day.appMs[appId] = (day.appMs[appId] ?? 0) + pieceDuration
+        }
+      } else {
+        day.unclassifiedMs += pieceDuration
+      }
+      if (slice.bucket === "active") {
+        for (let mark = pieceStart; mark < pieceStart + pieceDuration;) {
+          const hour = new Date(mark).getHours()
+          const nextHour = new Date(mark); nextHour.setHours(hour + 1, 0, 0, 0)
+          const part = Math.min(pieceStart + pieceDuration, nextHour.getTime()) - mark
+          day.hourMs[hour] += part
+          mark += part
+        }
+        if (classificationHigh && isWorkCategory(category)) day.workTotalMs += pieceDuration
+      }
+    })
+    const segmentPieces: BehaviorSegment[] = []
+    splitByLocalDay(startAt, slice.durationMs, (date, pieceStart, pieceDuration) => {
+      segmentPieces.push({ date, appId, category: classificationHigh ? category : "unknown", startAt: pieceStart,
+        endAt: pieceStart + pieceDuration, durationMs: pieceDuration, activity: slice.bucket })
+    })
+    for (const segment of segmentPieces) await persistSegment(segment)
+    for (const date of dates) await persistDay(dayFor(date))
+
+    const work = slice.bucket === "active" && classificationHigh && isWorkCategory(category)
+    if (work) {
+      if (currentContinuousMs === 0) currentWorkStartAt = startAt
+      currentContinuousMs += slice.durationMs
+    } else {
+      await finishWorkSegment()
+      currentContinuousMs = 0
     }
-    return
+    startAt += slice.durationMs
   }
-  const segmentStart = currentSegmentStart
-  const isWork = isWorkCategory(currentCategory)
-  const segments = splitInterval(segmentStart, endAt - segmentStart, currentStart.appId, currentCategory,
-    currentStart.isPetForeground, isWork, (currentStart.idleForMs ?? 0) >= IDLE_ACTIVE_LIMIT_MS)
-  if (close && isWork) await finishWorkSegment(preserveWork)
+}
+
+async function recordUnobserved(startAt: number, durationMs: number): Promise<void> {
+  if (durationMs <= 0) return
+  const segments: BehaviorSegment[] = []
+  splitByLocalDay(startAt, durationMs, (date, pieceStart, pieceDuration) => {
+    dayFor(date).unobservedMs += pieceDuration
+    segments.push({ date, appId: null, category: "unknown", startAt: pieceStart, endAt: pieceStart + pieceDuration,
+      durationMs: pieceDuration, activity: "unobserved" })
+  })
   for (const segment of segments) await persistSegment(segment)
   for (const date of new Set(segments.map((segment) => segment.date))) await persistDay(dayFor(date))
-  if (close) { currentStart = null; currentCategory = null; if (!preserveWork) currentContinuousMs = 0 }
-  else { currentSegmentStart = endAt; currentStart = previous }
-  publish()
+  await finishWorkSegment()
+  currentContinuousMs = 0
 }
 
-async function closeSegment(endAt: number): Promise<void> { await checkpointSegment(endAt, true) }
+async function closeSegment(): Promise<void> {
+  await finishWorkSegment()
+  currentContinuousMs = 0
+  currentCategory = null
+}
 
 function publish(): void {
   const snapshot = buildSnapshot([...days.values()], Date.now(), currentContinuousMs, currentCategory)
@@ -267,91 +391,79 @@ async function ingest(observation: WindowObservation): Promise<void> {
   if (droppedObservations > 0) {
     const lost = droppedObservations
     droppedObservations = 0
-    await closeSegment(previous?.observedAt ?? observation.observedAt)
-    if (previous && observation.observedAt > previous.observedAt) {
-      const day = dayFor(localDate(observation.observedAt))
-      day.unobservedMs += observation.observedAt - previous.observedAt
-      await persistDay(day)
-    }
+    if (previous) await recordUnobserved(previous.observedAt, Math.max(0, observation.observedAt - previous.observedAt))
+    await closeSegment()
     log.warn(`画像采集队列达到上限，丢弃 ${lost} 个心跳并切断分段`)
-    previous = observation
+    previous = observation.observationState === "observed" ? observation : null
     generation = observation.monitorGeneration; sequence = observation.sequence
-    lastCheckpointAt = observation.observedAt
+    currentCategory = observation.observationState === "observed" ? classifyApp(observation.appId, observation.title).category : null
     return
   }
   if (observation.monitorGeneration < generation || (observation.monitorGeneration === generation && observation.sequence <= sequence)) return
   const changedGeneration = observation.monitorGeneration !== generation
   if (changedGeneration || observation.observationState !== "observed") {
-    await closeSegment(previous?.observedAt ?? observation.observedAt)
+    if (previous) await recordUnobserved(previous.observedAt, Math.max(0, observation.observedAt - previous.observedAt))
+    await closeSegment()
     previous = observation.observationState === "observed" ? observation : null
     generation = observation.monitorGeneration; sequence = observation.sequence
-    lastCheckpointAt = observation.observedAt
+    currentCategory = previous ? classifyApp(previous.appId, previous.title).category : null
     publish(); return
   }
   generation = observation.monitorGeneration; sequence = observation.sequence
-  if (!previous) { previous = observation; lastCheckpointAt = observation.observedAt; return }
+  if (!previous) {
+    previous = observation
+    currentCategory = classifyApp(observation.appId, observation.title).category
+    currentContinuousMs = 0
+    return
+  }
   const delta = observation.sampleMonoMs - previous.sampleMonoMs
   const wallDelta = observation.observedAt - previous.observedAt
-  // 事件驱动采样：两次 observed 之间没有心跳，采样间隔本身不再代表观察中断
-  // （可能只是长时间没切窗口）。整段时长回填给上一条观察；显式 suspended/
-  // locked/unavailable/disabled 才是中断证据，它们在 observationState 分支截断分段。
-  // 仍保留 coveredInterval 对时钟回退（非正 delta）的截断。
-  const interval = coveredInterval(delta, wallDelta, Number.POSITIVE_INFINITY)
-  if (interval.reset && interval.creditedMs === 0) {
-    await closeSegment(previous.observedAt)
-    previous = observation; return
+  const nextCategory = classifyApp(observation.appId, observation.title).category
+  if (!Number.isFinite(delta) || !Number.isFinite(wallDelta) || delta <= 0 || wallDelta <= 0) {
+    await recordUnobserved(previous.observedAt, Math.max(0, wallDelta))
+    await closeSegment()
+    previous = observation; currentCategory = nextCategory
+    publish(); return
   }
-  if (interval.reset) {
-    await closeSegment(previous.observedAt + interval.creditedMs)
-    const day = dayFor(localDate(observation.observedAt))
-    day.unobservedMs += interval.unobservedMs
-    await persistDay(day)
-    previous = observation; publish(); return
-  }
-  // Attribute the elapsed interval to the observation at its start. The newly
-  // sampled app/category becomes the owner of the next interval, avoiding a
-  // one-heartbeat blend when the user switches windows.
-  const category = previous.idleForMs !== null && previous.idleForMs >= IDLE_ACTIVE_LIMIT_MS
-    ? "unknown" : classifyApp(previous.appId, previous.title)
-  const sameSegment = currentCategory === category && currentStart?.appId === previous.appId
-  if (!sameSegment) {
-    const preservesWork = isWorkCategory(currentCategory) && isWorkCategory(category)
-    await checkpointSegment(previous.observedAt, true, preservesWork)
-    currentStart = previous; currentCategory = category; currentSegmentStart = previous.observedAt
-  }
+
+  const creditedMs = Math.min(delta, wallDelta)
+  const classification = classifyApp(previous.appId, previous.title)
+  const slices = splitActivityInterval(previous.idleForMs, observation.idleForMs, creditedMs)
+  await recordInterval(previous.observedAt, previous, classification.category,
+    classification.confidence === "high", slices)
+  if (wallDelta > creditedMs) await recordUnobserved(previous.observedAt + creditedMs, wallDelta - creditedMs)
   if (previous.appId !== observation.appId) dayFor(localDate(observation.observedAt)).switches++
-  if (isWorkCategory(category)) {
-    if (currentContinuousMs === 0) currentWorkStartAt = previous.observedAt
-    currentContinuousMs += interval.creditedMs
-  } else {
+  if (currentContinuousMs > 0 && !isWorkCategory(nextCategory)) {
+    await finishWorkSegment()
     currentContinuousMs = 0
-    currentWorkStartAt = 0
   }
-  if (currentContinuousMs >= WORK_PRESENCE_THRESHOLD_MS) publish()
+  currentCategory = nextCategory
+  publish()
   previous = observation
-  // Bound persistence cost: close/checkpoint on transitions and about once per minute.
-  // 没有事件的时间段本就不会触发落盘；恢复后的第一条事件会立即补齐检查点。
-  if (observation.observedAt - lastCheckpointAt >= CHECKPOINT_INTERVAL_MS) {
-    await checkpointSegment(observation.observedAt, false)
-    lastCheckpointAt = observation.observedAt
-  }
 }
 
-export function startBehavior(): void { started = true; void loadDailyHistory() }
+export function startBehavior(): void {
+  started = true
+  // The loader records the failure; keep collection alive and retry on the next ingest/read.
+  void loadDailyHistory().catch(() => undefined)
+}
 
 export function stopBehavior(): Promise<boolean> {
   started = false
-  const endAt = previous?.observedAt ?? Date.now()
+  const stopAt = Date.now()
   let succeeded = true
   serial = serial.then(async () => {
     if (historyLoad) await historyLoad
-    await closeSegment(endAt)
+    if (previous && stopAt > previous.observedAt) {
+      await recordUnobserved(previous.observedAt, stopAt - previous.observedAt)
+    }
+    await closeSegment()
+    previous = null; generation = -1; sequence = 0
   }).catch((error) => {
     succeeded = false
     persistenceFailures += 1
     log.error("关闭行为分段失败:", formatError(error))
   })
-  previous = null; generation = -1; sequence = 0; lastCheckpointAt = 0
   return serial.then(() => succeeded && persistenceFailures === 0)
 }
 
@@ -369,7 +481,8 @@ export function observeBehavior(observation: WindowObservation): Promise<void> {
       category:"unknown",idleMs:observation.idleForMs??undefined,sequence:observation.sequence,monitorGeneration:observation.monitorGeneration}))
     return Promise.resolve()
   }
-  const category=observation.observationState==="observed"?classifyApp(observation.appId,observation.title):"unknown"
+  const classification=observation.observationState==="observed"?classifyApp(observation.appId,observation.title):null
+  const category=classification?.category??"unknown"
   const idleBand=observation.idleForMs===null?"unknown":observation.idleForMs>=IDLE_ACTIVE_LIMIT_MS?"idle":"active"
   const traceKey=`${observation.observationState}:${category}:${idleBand}`
   if(traceKey!==lastTraceObservationKey||observation.observedAt-lastTraceObservationAt>=60_000) {
@@ -404,7 +517,7 @@ async function performClearBehavior(): Promise<void> {
     if (newerThan(latestReceived ?? { observedAt: 0, monitorGeneration: generation, sequence }, clearWatermark)) {
       clearWatermark = latestReceived ?? { observedAt: 0, monitorGeneration: generation, sequence }
     }
-    previous = null; currentStart = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0; lastCheckpointAt = 0
+    previous = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0
   }).catch((error) => log.error("清理前停止画像队列失败", error instanceof Error ? error : undefined))
   await serial
   try {
@@ -419,7 +532,9 @@ async function performClearBehavior(): Promise<void> {
       const stalePath = await runtimePath("data", BEHAVIOR_DIR, entry.name)
       await getHostBridge().request("file_remove", { path: stalePath, recursive: true, force: true })
     }
-    days.clear(); previous = null; currentStart = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0; lastCheckpointAt = 0
+    await writeMeasurementState(false)
+    measurementInvalidationPending = false
+    days.clear(); previous = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0
     loaded = true
     droppedObservations = 0
     persistenceFailures = 0

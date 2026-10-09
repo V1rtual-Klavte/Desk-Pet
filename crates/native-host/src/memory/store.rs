@@ -7,9 +7,12 @@
 //! - prepared 候选不进 FTS、不进召回；自动 dreaming commit 是唯一把它们变成 active 的路径。
 
 use super::schema;
+use super::ConversationClearFence;
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
-use rusqlite::{backup, params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    backup, params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -87,7 +90,113 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-fn db_err(error: rusqlite::Error) -> AppError {
+pub(super) fn readonly_sqlite_uri(path: &Path) -> AppResult<String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| AppError::Io(format!("读取当前目录失败: {error}")))?
+            .join(path)
+    };
+    let raw = absolute.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    let raw = if raw
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/UNC/"))
+    {
+        format!("//{}", &raw[8..])
+    } else if let Some(path) = raw.strip_prefix("//?/") {
+        path.to_owned()
+    } else {
+        raw
+    };
+    let encoded = raw
+        .as_bytes()
+        .iter()
+        .map(|byte| match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b':' | b'-' | b'_' | b'.' | b'~' => {
+                (*byte as char).to_string()
+            }
+            byte => format!("%{byte:02X}"),
+        })
+        .collect::<String>();
+    #[cfg(windows)]
+    let uri = if raw.starts_with("//") {
+        // Empty URI authority, with the UNC host kept in the double-slash path.
+        format!("file://{encoded}?mode=ro")
+    } else if raw.as_bytes().get(1) == Some(&b':') {
+        format!("file:///{encoded}?mode=ro")
+    } else {
+        format!("file:{encoded}?mode=ro")
+    };
+    #[cfg(not(windows))]
+    let uri = if raw.starts_with("//") {
+        format!("file://{encoded}?mode=ro")
+    } else {
+        format!("file:{encoded}?mode=ro")
+    };
+    Ok(uri)
+}
+
+/// Create a collision-safe SQLite snapshot through rusqlite's consistent backup API.
+pub(super) fn backup_sqlite_connection(
+    source: &Connection,
+    directory: &Path,
+    prefix: &str,
+) -> AppResult<PathBuf> {
+    std::fs::create_dir_all(directory)
+        .map_err(|error| AppError::Io(format!("创建记忆库备份目录失败: {error}")))?;
+    let mut target = None;
+    let created_at = now_ms();
+    for attempt in 0..16 {
+        let name = if attempt == 0 {
+            format!("{prefix}-{created_at}.sqlite3")
+        } else {
+            format!("{prefix}-{created_at}-{}.sqlite3", rand_suffix())
+        };
+        let candidate = directory.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                drop(file);
+                target = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(AppError::Io(format!("预留记忆库备份失败: {error}")));
+            }
+        }
+    }
+    let target = target.ok_or_else(|| AppError::Memory("无法生成唯一记忆库备份名".into()))?;
+    let result = (|| {
+        let mut destination = Connection::open(&target).map_err(db_err)?;
+        let backup = backup::Backup::new(source, &mut destination).map_err(db_err)?;
+        backup
+            .run_to_completion(64, std::time::Duration::from_millis(5), None)
+            .map_err(db_err)?;
+        drop(backup);
+        let integrity: String = destination
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(db_err)?;
+        if integrity != "ok" {
+            return Err(AppError::Memory(
+                "结构修复备份 integrity_check 未通过".into(),
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&target);
+        return Err(error);
+    }
+    Ok(target)
+}
+
+pub(super) fn db_err(error: rusqlite::Error) -> AppError {
     AppError::Memory(error.to_string())
 }
 
@@ -171,7 +280,7 @@ fn escape_like(text: &str) -> String {
 }
 
 /// Chinese natural questions need concept n-grams in addition to whole-phrase LIKE.
-fn memory_query_terms(query: &str) -> Vec<String> {
+pub(super) fn memory_query_terms(query: &str) -> Vec<String> {
     // 停用词：疑问词、指代词与功能词；切出的短词命中它们不代表内容相关。
     const QUERY_STOP_WORDS: &[&str] = &[
         "你",
@@ -399,7 +508,10 @@ fn validate_draft(draft: &Value) -> AppResult<()> {
     }
     // 合并候选的目标列表（dreaming 整理专属）：形状在此校验；范围/kind/来源类别与来源并集
     // 在发布事务里逐条复核（`apply_change` 会在写入前明确拒绝这一字段，不给静默忽略的机会）。
-    if draft.get("supersedesIds").is_some_and(|value| !value.is_null()) {
+    if draft
+        .get("supersedesIds")
+        .is_some_and(|value| !value.is_null())
+    {
         let shape_ok = draft
             .get("supersedesIds")
             .and_then(Value::as_array)
@@ -420,7 +532,10 @@ fn validate_draft(draft: &Value) -> AppResult<()> {
         if ids.iter().any(|id| !unique.insert(id.as_str())) {
             return Err(AppError::Memory("supersedesIds 不能包含重复条目".into()));
         }
-        if draft.get("supersedesId").is_some_and(|value| !value.is_null()) {
+        if draft
+            .get("supersedesId")
+            .is_some_and(|value| !value.is_null())
+        {
             return Err(AppError::Memory(
                 "合并候选不能同时携带 supersedesId 与 supersedesIds".into(),
             ));
@@ -612,11 +727,23 @@ impl MemoryStore {
                 Err(error) => return Err(AppError::Io(error.to_string())),
             }
         }
-        let reopened = Connection::open(&self.db_path).map_err(db_err)?;
+        let reopened = Connection::open_with_flags(
+            &self.db_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_FULL_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(db_err)?;
         reopened
             .busy_timeout(std::time::Duration::from_millis(DB_BUSY_TIMEOUT_MS))
             .map_err(db_err)?;
-        schema::ensure(&reopened)?;
+        let backup_directory = self
+            .db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(crate::paths::MEMORY_BACKUPS_DIR);
+        schema::ensure(&reopened, &backup_directory, true)?;
         *connection = reopened;
         drop(connection);
         self.status()
@@ -626,10 +753,27 @@ impl MemoryStore {
         std::fs::create_dir_all(&paths.memory)
             .map_err(|e| AppError::Io(format!("创建记忆目录失败: {e}")))?;
         let db_path = paths.memory.join(crate::paths::MEMORY_DB_FILE);
-        let conn = Connection::open(&db_path).map_err(db_err)?;
+        let allow_fresh = !db_path.exists()
+            || db_path
+                .metadata()
+                .map_err(|error| AppError::Io(format!("读取记忆库文件状态失败: {error}")))?
+                .len()
+                == 0;
+        let conn = Connection::open_with_flags(
+            &db_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_FULL_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(db_err)?;
         conn.busy_timeout(std::time::Duration::from_millis(DB_BUSY_TIMEOUT_MS))
             .map_err(db_err)?;
-        schema::ensure(&conn)?;
+        schema::ensure(
+            &conn,
+            &paths.memory.join(crate::paths::MEMORY_BACKUPS_DIR),
+            allow_fresh,
+        )?;
         Ok(Self {
             db_path,
             conn: Mutex::new(conn),
@@ -638,21 +782,38 @@ impl MemoryStore {
 
     /// 打开一个独立连接（单元测试与维护命令用）；不注册为业务路径。
     pub fn open_at(db_path: &Path) -> AppResult<Self> {
+        let allow_fresh = !db_path.exists()
+            || db_path
+                .metadata()
+                .map_err(|error| AppError::Io(format!("读取测试库文件状态失败: {error}")))?
+                .len()
+                == 0;
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| AppError::Io(format!("创建测试目录失败: {e}")))?;
         }
-        let conn = Connection::open(db_path).map_err(db_err)?;
+        let conn = Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_FULL_MUTEX
+                | OpenFlags::SQLITE_OPEN_URI,
+        )
+        .map_err(db_err)?;
         conn.busy_timeout(std::time::Duration::from_millis(DB_BUSY_TIMEOUT_MS))
             .map_err(db_err)?;
-        schema::ensure(&conn)?;
+        let backup_directory = db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(crate::paths::MEMORY_BACKUPS_DIR);
+        schema::ensure(&conn, &backup_directory, allow_fresh)?;
         Ok(Self {
             db_path: db_path.to_path_buf(),
             conn: Mutex::new(conn),
         })
     }
 
-    fn lock(&self) -> AppResult<std::sync::MutexGuard<'_, Connection>> {
+    pub(super) fn lock(&self) -> AppResult<std::sync::MutexGuard<'_, Connection>> {
         // 锁中毒恢复而非 panic：一个失败的写不该让整个记忆库对进程永久不可用。
         Ok(self
             .conn
@@ -660,7 +821,7 @@ impl MemoryStore {
             .unwrap_or_else(|poisoned| poisoned.into_inner()))
     }
 
-    fn meta(conn: &Connection, key: &str) -> AppResult<i64> {
+    pub(super) fn meta(conn: &Connection, key: &str) -> AppResult<i64> {
         let raw: String = conn
             .query_row("SELECT value FROM memory_meta WHERE key=?1", [key], |row| {
                 row.get(0)
@@ -775,14 +936,23 @@ impl MemoryStore {
     }
 
     /// 写入前的分池校验：两类来源不得混用；系统观察不进核心画像、不做 working 事项。
-    fn validate_source_pool(conn: &Connection, source_ids: &[String], pinned: bool, kind: &str) -> AppResult<&'static str> {
+    fn validate_source_pool(
+        conn: &Connection,
+        source_ids: &[String],
+        pinned: bool,
+        kind: &str,
+    ) -> AppResult<&'static str> {
         let (has_user, has_derived) = Self::source_classes(conn, source_ids)?;
         if has_user && has_derived {
             return Err(AppError::Memory(
                 "候选来源混用用户事实与系统观察：两类分区存放，不混池".into(),
             ));
         }
-        let origin = if has_derived { "derived_behavior" } else { "user" };
+        let origin = if has_derived {
+            "derived_behavior"
+        } else {
+            "user"
+        };
         if origin == "derived_behavior" {
             if pinned {
                 return Err(AppError::Memory("系统观察结论不进入核心画像".into()));
@@ -1362,10 +1532,11 @@ impl MemoryStore {
             "internal",
             None,
             None,
+            None,
         )
     }
 
-    pub fn apply_change_with_actor(
+    pub(crate) fn apply_change_with_actor(
         &self,
         operation_id: &str,
         base_revision: i64,
@@ -1376,6 +1547,7 @@ impl MemoryStore {
         actor: &str,
         trusted_user_event_id: Option<&str>,
         trusted_session_id: Option<&str>,
+        conversation_fences: Option<&[ConversationClearFence]>,
     ) -> AppResult<i64> {
         let mut conn = self.lock()?;
         let transaction = conn
@@ -1466,6 +1638,7 @@ impl MemoryStore {
 
         match action {
             "clear" => {
+                let clear_cutoff = now_ms();
                 transaction
                     .execute("DELETE FROM memory_fts", [])
                     .map_err(db_err)?;
@@ -1482,9 +1655,10 @@ impl MemoryStore {
                         "INSERT INTO memory_tombstones(session_id,entry_id,content_hash,effect,reason,forget_epoch,created_at) \
                          SELECT session_id,entry_id,content_hash,'block_extraction','clear',?1,?2 FROM memory_sources \
                          WHERE true ON CONFLICT DO NOTHING",
-                        params![epoch, now_ms()],
+                        params![epoch, clear_cutoff],
                     )
                     .map_err(db_err)?;
+                Self::clear_conversation_index_tx(&transaction, clear_cutoff, conversation_fences)?;
                 // 候选和来源证据也属于应用管理的记忆正文，清空后不能留在可读表里。
                 transaction
                     .execute("DELETE FROM memory_candidates", [])
@@ -1524,6 +1698,7 @@ impl MemoryStore {
                         params![epoch, now_ms(), id],
                     )
                     .map_err(db_err)?;
+                Self::suppress_conversation_source_tx(&transaction, &id)?;
                 // 删除引用该事实来源的候选正文，独立来源的评审产物仍可继续审查。
                 transaction.execute(
                     "DELETE FROM memory_candidates WHERE status='prepared' AND EXISTS (SELECT 1 FROM json_each(memory_candidates.source_ids_json) candidate_source JOIN memory_item_sources link ON link.source_id=candidate_source.value WHERE link.item_id=?1)",
@@ -1545,21 +1720,26 @@ impl MemoryStore {
                 ).map_err(db_err)?;
                 Self::bump(&transaction, "forget_epoch")?;
             }
-            "forget_understanding" => {
-                // 「清除静默了解」的专用闭包：只圈定 `understanding:` 来源（静默了解沉淀），
-                // 画像结论与用户事实不在范围内；只接受内部治理 actor（Node 观察域入口）。
+            "forget_understanding" | "forget_derived_behavior" => {
+                // 静默了解只圈定 understanding:；计量升级撤销全部 derived_behavior。
+                // 二者都保留用户事实，只接受内部治理 actor。
                 if actor != "internal" {
-                    return Err(AppError::Memory(
-                        "清除静默了解只接受内部治理 actor".into(),
-                    ));
+                    return Err(AppError::Memory("撤销系统观察只接受内部治理 actor".into()));
                 }
-                forget_understanding_items_tx(&transaction)?;
+                if action == "forget_derived_behavior" {
+                    forget_derived_behavior_items_tx(&transaction)?;
+                } else {
+                    forget_understanding_items_tx(&transaction)?;
+                }
             }
             "add" | "update" | "supersede" | "complete" | "cancel" => {
                 let draft = draft.ok_or_else(|| AppError::Memory("缺少记忆内容".into()))?;
                 // 合并候选只走 dreaming 的发布事务（memory_dreaming_commit）；治理写入不接受
                 // supersedesIds —— 明确拒绝而不是静默忽略，避免调用方以为合并已生效。
-                if draft.get("supersedesIds").is_some_and(|value| !value.is_null()) {
+                if draft
+                    .get("supersedesIds")
+                    .is_some_and(|value| !value.is_null())
+                {
                     return Err(AppError::Memory(
                         "合并候选只接受 dreaming 整理作业的发布路径".into(),
                     ));
@@ -2103,7 +2283,9 @@ impl MemoryStore {
                     )
                     .map_err(db_err)?;
                 let rows = statement
-                    .query_map(params![target_id, target_version], |row| row.get::<_, String>(0))
+                    .query_map(params![target_id, target_version], |row| {
+                        row.get::<_, String>(0)
+                    })
                     .map_err(db_err)?;
                 for row in rows {
                     let source_id = row.map_err(db_err)?;
@@ -2208,8 +2390,8 @@ impl MemoryStore {
             // 系统观察的版本收敛：同槽位新结论带 supersedesId 时，旧条目立即失效
             // （与 apply_change 的 update 同语义：先失效引用，再让新版本成为唯一在库结论）。
             if item_origin == "derived_behavior" {
-                if let Some(previous) = opt_s(&draft, "supersedesId")
-                    .filter(|value| !value.is_empty() && value != &id)
+                if let Some(previous) =
+                    opt_s(&draft, "supersedesId").filter(|value| !value.is_empty() && value != &id)
                 {
                     transaction
                         .execute(
@@ -2323,14 +2505,7 @@ impl MemoryStore {
             .parent()
             .ok_or_else(|| AppError::Memory("记忆目录不可用".into()))?
             .join(crate::paths::MEMORY_BACKUPS_DIR);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| AppError::Io(format!("创建备份目录失败: {e}")))?;
-        let target = dir.join(format!("memory-{}.sqlite3", now_ms()));
-        let mut destination = Connection::open(&target).map_err(db_err)?;
-        let backup = backup::Backup::new(&conn, &mut destination).map_err(db_err)?;
-        backup
-            .run_to_completion(64, std::time::Duration::from_millis(5), None)
-            .map_err(db_err)?;
+        let target = backup_sqlite_connection(&conn, &dir, "memory")?;
         Ok(target.to_string_lossy().to_string())
     }
 
@@ -2440,7 +2615,8 @@ impl MemoryStore {
                 backup_path.to_string_lossy().to_string(),
             ));
         }
-        let source = Connection::open(backup_path).map_err(db_err)?;
+        let source = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(db_err)?;
         let version: Option<String> = source
             .query_row(
                 "SELECT value FROM memory_meta WHERE key='schema_version'",
@@ -2483,6 +2659,15 @@ impl MemoryStore {
             }
         }
         let conn = self.lock()?;
+        let backup_directory = self
+            .db_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(crate::paths::MEMORY_BACKUPS_DIR);
+        // Keep the active database recoverable if a valid backup triggers a later
+        // data-level failure during the selective restore.
+        schema::ensure(&conn, &backup_directory, false)?;
+        backup_sqlite_connection(&conn, &backup_directory, "memory-pre-restore")?;
         // 先把「现在生效的墓碑」取出来：拷回旧库会把它们连同旧 revision 一起换掉。
         let tombstones = {
             let mut statement = conn
@@ -2506,105 +2691,151 @@ impl MemoryStore {
         // Copying the whole SQLite file here would resurrect old tasks and reset quotas.
         let current_forget_epoch = Self::meta(&conn, "forget_epoch")?;
         let current_revision = Self::meta(&conn, "revision")?;
-        conn.execute(
-            "ATTACH DATABASE ?1 AS restore_src",
-            [backup_path.to_string_lossy().as_ref()],
-        )
-        .map_err(db_err)?;
-        conn.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
-        let restore_tables = [
-            ("memory_item_sources", "memory_item_sources"),
-            ("memory_candidates", "memory_candidates"),
-            ("memory_jobs", "memory_jobs"),
-            ("memory_watermarks", "memory_watermarks"),
-            ("memory_operations", "memory_operations"),
-            ("memory_items", "memory_items"),
-            ("memory_sources", "memory_sources"),
-        ];
-        for (table, _) in restore_tables {
-            conn.execute(&format!("DELETE FROM {table}"), [])
-                .map_err(db_err)?;
+        let restore_uri = readonly_sqlite_uri(backup_path)?;
+        conn.execute("ATTACH DATABASE ?1 AS restore_src", [&restore_uri])
+            .map_err(db_err)?;
+        if let Err(error) = conn.execute_batch("BEGIN IMMEDIATE") {
+            let _ = conn.execute_batch("DETACH DATABASE restore_src");
+            return Err(db_err(error));
         }
-        // Replace metadata except the monotonically increasing privacy/version counters.
-        conn.execute(
+        let restore_result = (|| -> AppResult<i64> {
+            let restore_tables = [
+                ("memory_item_sources", "memory_item_sources"),
+                ("memory_candidates", "memory_candidates"),
+                ("memory_jobs", "memory_jobs"),
+                ("memory_watermarks", "memory_watermarks"),
+                ("memory_operations", "memory_operations"),
+                ("memory_items", "memory_items"),
+                ("memory_sources", "memory_sources"),
+            ];
+            for (table, _) in restore_tables {
+                conn.execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(db_err)?;
+            }
+            // Replace metadata except the monotonically increasing privacy/version counters.
+            conn.execute(
             "DELETE FROM memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch')",
             [],
         )
         .map_err(db_err)?;
-        conn.execute("INSERT INTO memory_meta(key,value) SELECT key,value FROM restore_src.memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch')", []).map_err(db_err)?;
-        for (table, _) in [
-            ("memory_sources", "memory_sources"),
-            ("memory_items", "memory_items"),
-            ("memory_item_sources", "memory_item_sources"),
-            ("memory_candidates", "memory_candidates"),
-            ("memory_jobs", "memory_jobs"),
-            ("memory_watermarks", "memory_watermarks"),
-            ("memory_operations", "memory_operations"),
-        ] {
-            conn.execute(
-                &format!("INSERT INTO {table} SELECT * FROM restore_src.{table}"),
-                [],
-            )
-            .map_err(db_err)?;
-        }
-        conn.execute("INSERT INTO memory_tombstones SELECT * FROM restore_src.memory_tombstones WHERE 1 ON CONFLICT DO NOTHING", []).map_err(db_err)?;
-        for (session_id, entry_id, content_hash) in tombstones {
-            conn.execute(
+            conn.execute("INSERT INTO memory_meta(key,value) SELECT key,value FROM restore_src.memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch')", []).map_err(db_err)?;
+            for (table, _) in [
+                ("memory_sources", "memory_sources"),
+                ("memory_items", "memory_items"),
+                ("memory_item_sources", "memory_item_sources"),
+                ("memory_candidates", "memory_candidates"),
+                ("memory_jobs", "memory_jobs"),
+                ("memory_watermarks", "memory_watermarks"),
+                ("memory_operations", "memory_operations"),
+            ] {
+                conn.execute(
+                    &format!("INSERT INTO {table} SELECT * FROM restore_src.{table}"),
+                    [],
+                )
+                .map_err(db_err)?;
+            }
+            conn.execute("INSERT INTO memory_tombstones SELECT * FROM restore_src.memory_tombstones WHERE 1 ON CONFLICT DO NOTHING", []).map_err(db_err)?;
+            for (session_id, entry_id, content_hash) in tombstones {
+                conn.execute(
                 "INSERT INTO memory_tombstones(session_id,entry_id,content_hash,effect,reason,forget_epoch,created_at) \
                  VALUES (?1,?2,?3,'block_extraction','restore',(SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='forget_epoch'),?4) \
                  ON CONFLICT DO NOTHING",
                 params![session_id, entry_id, content_hash, now_ms()],
             )
             .map_err(db_err)?;
-        }
-        // Tombstones from either the current installation or backup dominate all
-        // restored content; remove the full item/version closure so history cannot
-        // reveal forgotten text after a restore.
-        conn.execute("DELETE FROM memory_candidates WHERE EXISTS(SELECT 1 FROM json_each(memory_candidates.source_ids_json) c JOIN memory_sources s ON s.source_id=c.value JOIN memory_tombstones t ON t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash WHERE t.effect='block_extraction')", []).map_err(db_err)?;
-        conn.execute("DELETE FROM memory_items WHERE EXISTS(SELECT 1 FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id JOIN memory_tombstones t ON t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash WHERE l.item_id=memory_items.id AND t.effect='block_extraction')", []).map_err(db_err)?;
-        conn.execute("DELETE FROM memory_sources WHERE EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=memory_sources.session_id AND t.entry_id=memory_sources.entry_id AND t.content_hash=memory_sources.content_hash AND t.effect='block_extraction') AND NOT EXISTS(SELECT 1 FROM memory_item_sources l WHERE l.source_id=memory_sources.source_id)", []).map_err(db_err)?;
-        conn.execute(
-            "UPDATE memory_meta SET value=?1 WHERE key='schema_version'",
-            [schema::SCHEMA_VERSION.to_string()],
-        )
-        .map_err(db_err)?;
-        conn.execute(
-            "UPDATE memory_meta SET value=?1 WHERE key='forget_epoch'",
-            [current_forget_epoch.to_string()],
-        )
-        .map_err(db_err)?;
-        conn.execute("DELETE FROM memory_fts", []).map_err(db_err)?;
-        conn.execute(
+            }
+            // Tombstones from either the current installation or backup dominate all
+            // restored content; remove the full item/version closure so history cannot
+            // reveal forgotten text after a restore.
+            conn.execute("DELETE FROM memory_candidates WHERE EXISTS(SELECT 1 FROM json_each(memory_candidates.source_ids_json) c JOIN memory_sources s ON s.source_id=c.value JOIN memory_tombstones t ON t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash WHERE t.effect='block_extraction')", []).map_err(db_err)?;
+            conn.execute("DELETE FROM memory_items WHERE EXISTS(SELECT 1 FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id JOIN memory_tombstones t ON t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash WHERE l.item_id=memory_items.id AND t.effect='block_extraction')", []).map_err(db_err)?;
+            conn.execute("DELETE FROM memory_sources WHERE EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=memory_sources.session_id AND t.entry_id=memory_sources.entry_id AND t.content_hash=memory_sources.content_hash AND t.effect='block_extraction') AND NOT EXISTS(SELECT 1 FROM memory_item_sources l WHERE l.source_id=memory_sources.source_id)", []).map_err(db_err)?;
+            conn.execute(
+                "UPDATE memory_meta SET value=?1 WHERE key='schema_version'",
+                [schema::SCHEMA_VERSION.to_string()],
+            )
+            .map_err(db_err)?;
+            conn.execute(
+                "UPDATE memory_meta SET value=?1 WHERE key='forget_epoch'",
+                [current_forget_epoch.to_string()],
+            )
+            .map_err(db_err)?;
+            conn.execute("DELETE FROM memory_fts", []).map_err(db_err)?;
+            conn.execute(
             "INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) \
              SELECT i.id,i.version,i.content,i.summary,i.aliases_json FROM memory_items i WHERE i.status='active'",
             [],
         )
         .map_err(db_err)?;
-        let restored: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memory_items WHERE status='active'",
-                [],
-                |row| row.get(0),
+            let restored: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memory_items WHERE status='active'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)?;
+            conn.execute(
+                "UPDATE memory_meta SET value=?1 WHERE key='revision'",
+                [(current_revision + 1).to_string()],
             )
             .map_err(db_err)?;
-        conn.execute(
-            "UPDATE memory_meta SET value=?1 WHERE key='revision'",
-            [(current_revision + 1).to_string()],
-        )
-        .map_err(db_err)?;
-        // A restore invalidates proactive content while leaving its control, daily
-        // budgets and attempt receipts intact. Host snapshots repopulate fresh sources.
-        conn.execute("UPDATE proactive_tasks SET state=CASE WHEN state='active' THEN 'invalidated' ELSE state END,version=version+1,intent_json='{}',source_refs_json='[]',updated_at=?1,invalidation_epoch=invalidation_epoch+1", [now_ms()]).map_err(db_err)?;
-        conn.execute("DELETE FROM proactive_evaluations", [])
-            .map_err(db_err)?;
-        conn.execute("DELETE FROM proactive_source_registry", [])
-            .map_err(db_err)?;
-        conn.execute("UPDATE proactive_attempts SET status=CASE WHEN status IN ('reserved','generating') THEN 'unresolved' ELSE status END,source_refs_json='[]',decision_json=NULL,summary=NULL,error_code='memory_restored',updated_at=?1", [now_ms()]).map_err(db_err)?;
-        conn.execute_batch("COMMIT; DETACH DATABASE restore_src;")
-            .map_err(db_err)?;
+            // A restore invalidates proactive content while leaving its control, daily
+            // budgets and attempt receipts intact. Host snapshots repopulate fresh sources.
+            conn.execute("UPDATE proactive_tasks SET state=CASE WHEN state='active' THEN 'invalidated' ELSE state END,version=version+1,intent_json='{}',source_refs_json='[]',updated_at=?1,invalidation_epoch=invalidation_epoch+1", [now_ms()]).map_err(db_err)?;
+            conn.execute("DELETE FROM proactive_evaluations", [])
+                .map_err(db_err)?;
+            conn.execute("DELETE FROM proactive_source_registry", [])
+                .map_err(db_err)?;
+            conn.execute("UPDATE proactive_attempts SET status=CASE WHEN status IN ('reserved','generating') THEN 'unresolved' ELSE status END,source_refs_json='[]',decision_json=NULL,summary=NULL,error_code='memory_restored',updated_at=?1", [now_ms()]).map_err(db_err)?;
+            let foreign_key_violation = {
+                let mut statement = conn.prepare("PRAGMA foreign_key_check").map_err(db_err)?;
+                let mut rows = statement.query([]).map_err(db_err)?;
+                rows.next().map_err(db_err)?.is_some()
+            };
+            if foreign_key_violation {
+                return Err(AppError::Memory(
+                    "恢复数据未通过外键校验，事务已回滚".into(),
+                ));
+            }
+            let integrity: String = conn
+                .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                .map_err(db_err)?;
+            if integrity != "ok" {
+                return Err(AppError::Memory(format!(
+                    "恢复数据未通过 SQLite 完整性校验，事务已回滚: {integrity}"
+                )));
+            }
+            Ok(restored)
+        })();
+        let restored = match restore_result {
+            Ok(restored) => restored,
+            Err(error) => {
+                let rollback = conn.execute_batch("ROLLBACK");
+                let detach = conn.execute_batch("DETACH DATABASE restore_src");
+                if rollback.is_err() || detach.is_err() {
+                    return Err(AppError::Memory(format!(
+                        "恢复失败: {error}; rollback/detach 也未能完整收尾，需重新打开数据库复核"
+                    )));
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = conn.execute_batch("COMMIT") {
+            let _ = conn.execute_batch("ROLLBACK");
+            let _ = conn.execute_batch("DETACH DATABASE restore_src");
+            return Err(AppError::Memory(format!("恢复事务未能提交: {error}")));
+        }
+        conn.execute_batch("DETACH DATABASE restore_src")
+            .map_err(|error| {
+                AppError::Memory(format!("恢复已提交，但卸载只读备份连接失败: {error}"))
+            })?;
+        if let Err(error) = schema::ensure(&conn, &backup_directory, false) {
+            return Err(AppError::Memory(format!(
+                "恢复已提交，但提交后结构复核失败；不要将此错误当作可安全重试: {error}"
+            )));
+        }
         Ok(restored)
     }
-
 }
 
 /// 派生来源清除的范围：全量（清行为画像）或只收静默了解沉淀（清静默了解）。
@@ -2630,10 +2861,13 @@ enum DerivedForgetScope {
 ///
 /// 返回失效的条目数；范围内没有任何数据时不动 epoch/revision（不做空转）。
 /// `All` 由主动侧 `proactive_change` 的 `clearBehaviorSources` 事务调用（与任务/机会/尝试
-/// 的按 kind 失效同一时刻发生）；`Understanding` 由 `memory_apply_change` 的
+/// 的按 kind 失效同一时刻发生），或计量升级的内部 forget_derived_behavior 动作调用；`Understanding` 由 `memory_apply_change` 的
 /// `forget_understanding` 动作调用（清除静默了解）——两条入口共用这一份闭包实现，
 /// 不在 Node 侧另造第二套清除链。
-fn forget_derived_items_scoped_tx(tx: &Transaction<'_>, scope: DerivedForgetScope) -> AppResult<usize> {
+fn forget_derived_items_scoped_tx(
+    tx: &Transaction<'_>,
+    scope: DerivedForgetScope,
+) -> AppResult<usize> {
     // 同一段圈定条件按使用处补别名前缀；reason 逐范围区分，便于墓碑溯源（过滤只看 effect）。
     let (source_filter, final_filter, reason) = match scope {
         DerivedForgetScope::All => (
@@ -2701,8 +2935,11 @@ fn forget_derived_items_scoped_tx(tx: &Transaction<'_>, scope: DerivedForgetScop
     .map_err(db_err)?;
     // 4. 正文/关联/索引：条目连全部版本链删除。
     for item_id in &item_ids {
-        tx.execute("DELETE FROM memory_item_sources WHERE item_id=?1", [item_id])
-            .map_err(db_err)?;
+        tx.execute(
+            "DELETE FROM memory_item_sources WHERE item_id=?1",
+            [item_id],
+        )
+        .map_err(db_err)?;
         tx.execute("DELETE FROM memory_items WHERE id=?1", [item_id])
             .map_err(db_err)?;
         tx.execute("DELETE FROM memory_fts WHERE item_id=?1", [item_id])

@@ -21,6 +21,7 @@ import {
 } from "./decide"
 import { clearPendingTopics, drainTopicIntake, processTopicBatch, setTopicIntakeEnabled } from "./topics"
 import { appendUnderstanding, clearObservationDomain, getLastAuxiliaryAttemptAt, getRecentTargetReadAttempts, getTopicWeights, getUnderstandingSnapshot, loadObservationStore, markAuxiliaryAttemptAt, pruneExpiredObservationData, recordTargetReadAttempts } from "./store"
+import { observationEvidenceHash, observationEvidenceId, observationWindowEvidenceId } from "./evidence"
 import { MAX_AUDIT_PATH_CHARS, MAX_TEXT_CHARS_PER_FILE, OBSERVATION_SOURCE_TTL_MS, READ_WINDOW_MS } from "./config"
 import type { ObservationKind, TargetReadResult, UnderstandingRecord } from "./types"
 
@@ -58,7 +59,7 @@ function decisionBehaviorBrief(now: number) {
 /** 话题权重摘要：读取受 silentAccess 档位与 store 内部门禁约束，Card 过滤与选材同一口径。 */
 function decisionTopicBrief(cardId: string | undefined) {
   return getTopicWeights(cardId).slice(0, DECISION_TOPIC_LIMIT)
-    .map(row => ({ topic: row.topic, share: Math.round(row.weight * 1000) / 1000 }))
+    .map(row => ({ topic: row.topic, participationShare: Math.round(row.weight * 1000) / 1000, stances: row.stances }))
 }
 
 /**
@@ -93,7 +94,7 @@ async function decisionMemoryBrief(sessionId: string, cardId: string | undefined
 
 /** `observation_capture_screen` 的回执（HostCommandMap 复用本类型，见 @/services/host）。 */
 export interface ScreenCaptureResult { data: string; mimeType: string; width: number; height: number }
-interface ObservationInput { sourceId: string; kind: ObservationKind; observedAt: number; text?: string; target?: string }
+interface ObservationInput { sourceId: string; evidenceId: string; evidenceHash: string; kind: ObservationKind; observedAt: number; text?: string; target?: string }
 type TargetReadOutcome = "ok" | "cancelled" | "unavailable"
 
 let started = false
@@ -202,15 +203,19 @@ function decodeObservations(text: string, inputs: ObservationInput[]): Understan
   if (!Array.isArray(parsed.observations)) return []
   const bySource = new Map(inputs.map(input => [input.sourceId, input]))
   const output: UnderstandingRecord[] = []
+  const seenSources = new Set<string>()
   for (const raw of parsed.observations) {
     if (!raw || typeof raw !== "object") continue
     const item = raw as { sourceId?: unknown; summary?: unknown }
     if (typeof item.sourceId !== "string" || typeof item.summary !== "string") continue
     const source = bySource.get(item.sourceId)
     const summary = item.summary.trim().replace(/[\r\n\t]+/g, " ").slice(0, 500)
-    if (!source || !summary) continue
+    if (!source || !summary || seenSources.has(source.sourceId)) continue
+    seenSources.add(source.sourceId)
     output.push({
       sourceId: source.sourceId,
+      evidenceId: source.evidenceId,
+      evidenceHash: source.evidenceHash,
       kind: source.kind,
       observedAt: source.observedAt,
       expiresAt: source.observedAt + OBSERVATION_SOURCE_TTL_MS,
@@ -245,12 +250,16 @@ async function readDecidedTargets(targets: DecidedTarget[], inputs: ObservationI
       log.info("静默了解跳过读取目标：" + result.detail)
       continue
     }
-    const sourceId = newSourceId(result.kind === "dir" ? "dir" : "file", targetDetail(result.path))
+    const kind = result.status === "listed" ? "dir" : "file"
+    const sourceId = newSourceId(kind, targetDetail(result.path))
+    const evidenceId = await observationEvidenceId(kind, result.path)
     if (result.status === "listed") {
       const names = result.names ?? []
-      inputs.push({ sourceId, kind: "dir", observedAt: Date.now(), text: "目录 " + result.path + "（" + names.length + " 项）：\n" + names.join("\n"), target: result.path })
+      const text = "目录 " + result.path + "（" + names.length + " 项）：\n" + names.join("\n")
+      inputs.push({ sourceId, evidenceId, evidenceHash: await observationEvidenceHash(text), kind: "dir", observedAt: Date.now(), text, target: result.path })
     } else {
-      inputs.push({ sourceId, kind: "file", observedAt: Date.now(), text: result.path + "\n" + (result.content ?? "").slice(0, MAX_TEXT_CHARS_PER_FILE), target: result.path })
+      const text = result.path + "\n" + (result.content ?? "").slice(0, MAX_TEXT_CHARS_PER_FILE)
+      inputs.push({ sourceId, evidenceId, evidenceHash: await observationEvidenceHash(text), kind: "file", observedAt: Date.now(), text, target: result.path })
     }
   }
   return "ok"
@@ -294,7 +303,7 @@ async function observeBatch(signal: AbortSignal, generation: number): Promise<vo
       if (capture.mimeType.startsWith("image/")) {
         const sourceId = newSourceId("screenshot")
         images = [{ type: "image", data: capture.data, mimeType: capture.mimeType }]
-        inputs.push({ sourceId, kind: "screenshot", observedAt: Date.now(), text: "前台窗口截图 " + capture.width + "×" + capture.height })
+        inputs.push({ sourceId, evidenceId: await observationWindowEvidenceId(window.appId), evidenceHash: await observationEvidenceHash(capture.data), kind: "screenshot", observedAt: Date.now(), text: "前台窗口截图 " + capture.width + "×" + capture.height })
         screenshotAvailable = true
       }
     }
@@ -314,7 +323,9 @@ async function observeBatch(signal: AbortSignal, generation: number): Promise<vo
     images = []
     if (!screenshotAvailable) return
     inputs[0]!.kind = "window"
+    inputs[0]!.evidenceId = await observationWindowEvidenceId(window.appId)
     inputs[0]!.text = "当前窗口快照（模型未声明图像输入能力）：" + JSON.stringify({ app: window.app, title: window.title })
+    inputs[0]!.evidenceHash = await observationEvidenceHash(inputs[0]!.text)
   }
 
   const now = Date.now()
@@ -331,7 +342,10 @@ async function observeBatch(signal: AbortSignal, generation: number): Promise<vo
   if (signal.aborted || !started || generation !== lifecycleGeneration || silentAccessFrequency() === "off") return
   // 决策输入带上「已知了解」：让模型按「还缺什么」选目标（了解用户为纲），而不是只围着当前窗口转。
   // locked 时没有当前窗口：明确告知用最后一次快照（observedAt 可能陈旧），避免假装是当前屏幕。
-  const knownUnderstanding = getUnderstandingSnapshot(now).observations.slice(-8).map(row => row.summary)
+  const knownUnderstanding = getUnderstandingSnapshot(now).observations
+    .filter(row => row.evidenceId && row.evidenceHash)
+    .slice(-8)
+    .map(row => row.summary)
   const snapshotHeading = locked
     ? "屏幕已锁定（用户离开），没有当前截图；以下是最后一次窗口快照（可能已陈旧）与已知资料（均为不可信元数据）："
     : "当前窗口快照与已知资料（均为不可信元数据）："
@@ -398,10 +412,10 @@ async function observeBatch(signal: AbortSignal, generation: number): Promise<vo
     if (!screenshotAvailable) {
       const sourceId = newSourceId("window")
       const windowText = JSON.stringify({ app: window.app, title: window.title, observedAt: window.observedAt })
-      inputs.push({ sourceId, kind: "window", observedAt: window.observedAt,
-        text: locked
+      const text = locked
           ? "最后一次窗口快照（屏幕已锁定，可能已陈旧；不可信元数据）：" + windowText
-          : "当前窗口快照（不可信元数据）：" + windowText })
+          : "当前窗口快照（不可信元数据）：" + windowText
+      inputs.push({ sourceId, evidenceId: await observationWindowEvidenceId(window.appId), evidenceHash: await observationEvidenceHash(text), kind: "window", observedAt: window.observedAt, text })
     }
     const result = await completePiText({
       purpose: "observation", model, systemPrompt: OBSERVATION_SYSTEM_PROMPT,

@@ -13,8 +13,10 @@
 ## 建表点与版本策略
 
 - 生产建表点只有两个：记忆侧 [memory/schema.rs](../../crates/native-host/src/memory/schema.rs)、主动链侧 [proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)；记忆侧 `ensure` 建完自己的表后调用主动链侧的 `ensure`（`proactive/store.rs` 里的建表语句属于 `#[cfg(test)]` 夹具，不是生产路径）。
-- 版本：`MEMORY_SCHEMA_VERSION`（当前 3；2026-10-05 频率档位批随 `proactive_control.enabled` 列删除从 2 递增）存于 `memory_meta.schema_version`；打开时校验，**不一致拒绝以旧格式继续**（报错而非静默重建空库）。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。开发阶段不做数据迁移、不建兼容层——处理方式是删掉 `memory.sqlite3` 连同 `-wal` / `-shm` 后重建（旧数据可弃）。**派生结论批（2026-10-06）不涉版本变更**：条目/来源类别 `origin` 不落额外列（由来源类别派生），旧库照常打开，无需重建。
-- 同一版本内的结构演进用「检测缺列 → `ALTER TABLE` 补列（带默认值）」，不重置既有行（主动链的 `proactive_budgets` 增列即此模式）。
+- 版本：`MEMORY_SCHEMA_VERSION`（当前 3；2026-10-05 频率档位批随 `proactive_control.enabled` 列删除从 2 递增）存于 `memory_meta.schema_version`；常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。启动时以及恢复提交后的活动库，会用记忆侧与主动链侧现有 DDL 构造期望结构，事务内补齐可无损添加的字段/表/索引并搬回既有列数据；不可恢复的事实、来源或遗忘治理缺失会明确失败，未知未来 schema_version 永不降级。显式选择的备份仍须通过已有 schema_version 和必需表校验。**派生结论批（2026-10-06）不涉版本变更**：条目/来源类别 `origin` 不落额外列（由来源类别派生），旧库照常打开，无需重建。
+- 既有库首次需要结构修复前，MemoryStore 通过 SQLite backup API 在 `memory/backups/` 预留 `memory-repair-*.sqlite3` 快照；修复事务失败会回滚且保留快照，修复完成后的重复打开不会重复备份。事实 `memory_fts` 从已接受的 `memory_items` 重建；会话 FTS 与索引行属于可重建缓存，JSONL 仍是聊天正文真相源。恢复也会在提交后复核活动库结构。
+- 若清理来源清单曾声明完整但 fence 丢失，或缺失记忆作业/墓碑/来源关系、主动控制/预算等核心持久状态，启动不会创建空表掩盖缺口；会保留原库与诊断快照并返回可诊断错误。唯一同版本新增的可选模块例外是 `mcp_credentials`：缺表时可恢复空结构并保留修复前快照，`rust_warn!` 会说明原凭据无法由数据库重建，需重新录入或从备份恢复；应用不会伪造或声称恢复凭据值。旧库没有会话索引元数据时，clear 时间从操作/墓碑账本恢复；没有完整会话清单时只开放可证明晚于 cutoff 的缓存，TS 后续 clear 会提交稳定 seq fence。
+- 同一版本内的已知安全增列仍以 nullable 或有默认值的字段为主，不重置既有行（主动链的 `proactive_budgets` 增列即此模式）；会话检索表随 `ensure` 创建，不改 schema_version。
 
 ## 表清单
 
@@ -33,8 +35,16 @@
 | memory_operations | operation_id 幂等账本：提交结果未知时先查它，不盲重放 |
 | memory_dreaming_budgets | dreaming 每日 token 账（按自然日记录 reserved/used；只记账观测，不参与准入——2026-10-06 起日上限不再是门禁） |
 | memory_dreaming_reservations | token 预留租约（reserved/settled；只记账） |
-| mcp_credentials | MCP 凭据（主键 server + var → value）：服务器 headers 模板 `${VAR}` 的定向存取；值不写 CONFIG、不回显、不落日志，唯一出口是连接期注入的 `mcp_credential_get`（[commands/mcp_credentials.rs](../../crates/native-host/src/commands/mcp_credentials.rs)）；`ensure` 每次打开执行（未动 schema_version，旧库只多一张表）；与记忆同库，随库备份/恢复一并带出 |
+| mcp_credentials | MCP 凭据（主键 server + var → value）：服务器 headers 模板 `${VAR}` 的定向存取；值不写 CONFIG、不回显、不落日志，唯一出口是连接期注入的 `mcp_credential_get`（[commands/mcp_credentials.rs](../../crates/native-host/src/commands/mcp_credentials.rs)）；`ensure` 每次打开执行（未动 schema_version，旧库只多一张表）；若表缺失，只补空结构并记录警告，值需重新录入或从备份恢复；与记忆同库，随库备份/恢复一并带出 |
 | memory_fts（+5 张 FTS5 影子表） | 全文索引：正文/摘要/别名，trigram 分词；工具输出与原始 JSON 不建索引 |
+| conversation_index_meta | 会话索引自己的 revision、clear cutoff 与完整清空来源清单标记；不推进事实记忆 revision |
+| conversation_index_sessions | 每个会话当前索引指纹；replace 以旧指纹和 forgetEpoch 做 CAS |
+| conversation_index_entries | read-model 投影出的 user/assistant 文本片段，含 chunk、稳定来源身份与可选助手锚点；JSONL 仍是正文真相源 |
+| conversation_index_suppressions | forget 后保留的 session/entry/event 身份，阻止重建找回原条目及同轮助手回应 |
+| conversation_index_clear_fences | 清空时每个原会话的稳定 seq 上界，空会话用 -1；后续新来源不依赖墙钟时间判定 |
+| conversation_index_staging_batches | 分批索引的快照身份、指纹/遗忘代CAS、偏移与完成回执；只在 complete 后原子发布 |
+| conversation_index_staging_entries / conversation_index_staging_calls | 未发布片段与幂等批次回执；不参加检索，删除源会话或清空时级联清理，遗留批次按TTL回收 |
+| conversation_fts | 会话片段全文检索索引，trigram 分词；短词另用参数化 LIKE 回退 |
 
 主动链侧（[proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)）：
 

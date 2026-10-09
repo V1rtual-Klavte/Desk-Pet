@@ -17,8 +17,8 @@ import {
   loadSessionList, saveSessionList, loadActiveId, saveActiveId,
 } from "./persistence"
 import {
-  createPiSession, deletePiSession, listPiSessionMetadata, readPiSessionSummary,
-  readPiSessionEntries, persistPiSessionName,
+  createPiSession, deletePiSession, isPiSessionOpen, listPiSessionMetadata, readPiSessionSummary,
+  readPiSessionEntries, releasePiSession, persistPiSessionName,
 } from "./repo"
 import type { PiSessionSummary } from "./repo"
 import { prependSessionHistory, removeSessionHistory, renameSessionHistory, sessionHistoryError } from "./history"
@@ -51,27 +51,53 @@ function summaryToMeta(summary: PiSessionSummary): SessionMeta {
   }
 }
 
-/** 读正文：失败与「确实没有正文」不同形 —— 错误随返回值交给调用方，不只藏在日志里。 */
-async function loadMessagesFromSession(sessionId: string): Promise<{ messages: Message[]; error?: string }> {
+export interface VisibleSessionTranscript {
+  /** 原始、按 seq 排序的 JSONL entries；来源/水位等索引元数据从这里读取。 */
+  entries: Entry[]
+  /** 经既有聊天投影与主动送达回执过滤后的可见消息。 */
+  messages: Message[]
+  /** 读取或主动回执核对不完整时给出错误，调用方不能将其当成空历史。 */
+  error?: string
+}
+
+/**
+ * 读取完整会话并复用唯一可见性投影入口：active receipt reconcile → associations →
+ * messagesFromEntries。`releaseIfIdle` 用于历史索引扫描，避免把每个旧会话都留在句柄缓存。
+ */
+export async function readVisibleSessionTranscript(
+  sessionId: string,
+  options: { releaseIfIdle?: boolean } = {},
+): Promise<VisibleSessionTranscript> {
+  let receiptError: string | undefined
+  const wasOpen = isPiSessionOpen(sessionId)
   try {
-    await reconcileActiveReceipts(sessionId)
-  } catch (error) {
-    log.error("主动送达回执恢复失败，继续隐藏未确认的主动条目:", sessionId, formatError(error))
+    try {
+      await reconcileActiveReceipts(sessionId)
+    } catch (error) {
+      log.error("主动送达回执恢复失败，继续隐藏未确认的主动条目:", sessionId, formatError(error))
+      receiptError = formatError(error)
+    }
     const entries = await readPiSessionEntries(sessionId)
-    let receiptError = formatError(error)
     const associations = await readActiveAttemptAssociations(sessionId)
     const messages = await messagesFromEntries(entries, sessionId, item => { receiptError = formatError(item) }, associations)
-    return { messages, error: receiptError }
-  }
-  try {
-    let receiptError: string | undefined
-    const entries = await readPiSessionEntries(sessionId)
-    const associations = await readActiveAttemptAssociations(sessionId)
-    const messages = await messagesFromEntries(entries, sessionId, item => { receiptError = formatError(item) }, associations)
-    return { messages, ...(receiptError ? { error: receiptError } : {}) }
+    return { entries, messages, ...(receiptError ? { error: receiptError } : {}) }
   } catch (error) {
     log.error("加载会话正文失败:", sessionId, formatError(error))
-    return { messages: [], error: formatError(error) }
+    return { entries: [], messages: [], error: formatError(error) }
+  } finally {
+    // A user may have opened this historical session while its read was in flight.
+    if (options.releaseIfIdle && !wasOpen && activeSessionId.value !== sessionId && !harnessSlots.peek(sessionId)) {
+      await releasePiSession(sessionId)
+    }
+  }
+}
+
+/** 读正文：失败与「确实没有正文」不同形 —— 错误随返回值交给调用方，不只藏在日志里。 */
+async function loadMessagesFromSession(sessionId: string): Promise<{ messages: Message[]; error?: string }> {
+  const transcript = await readVisibleSessionTranscript(sessionId)
+  return {
+    messages: transcript.messages,
+    ...(transcript.error ? { error: transcript.error } : {}),
   }
 }
 
@@ -314,6 +340,13 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
       removeSessionHistory(sessionId)
       // 历史列表也变了：再推一帧（读模型是整帧快照，重复推幂等）。
       notifySessionChanged()
+      try {
+        const { invalidateConversationSession } = await import("@/services/agent/memory")
+        await invalidateConversationSession(sessionId)
+      } catch (error) {
+        log.warn("Session: 删除后清理对话检索索引失败:", sessionId, formatError(error))
+        reportError("Session", error, { kind: "删除后清理对话检索索引失败", overlay: false })
+      }
       // 文件确实删掉之后再清理该会话的托管聊天图片（不出「文件没删掉却清了图」）。
       await deleteSessionChatImages(sessionId, sourceEntries)
     }

@@ -10,7 +10,7 @@ import {
   clearSilentUnderstanding, getTopicWeights, getUnderstandingPromptBlock, getUnderstandingSnapshot,
   invalidateTopicSources, startSilentUnderstanding, stopSilentUnderstanding,
 } from "@/services/observation"
-import { drainTopicIntake, processTopicBatch, recordCommittedUserParticipation } from "@/services/observation/topics"
+import { decodeEntries, drainTopicIntake, processTopicBatch, recordCommittedUserParticipation } from "@/services/observation/topics"
 import { appendUnderstanding, appendTopicEvidence } from "@/services/observation/store"
 
 const budget = vi.hoisted(() => ({
@@ -81,13 +81,62 @@ function committedInput(entryId: string, text: string, options: Partial<{
 }
 
 describe("静默了解与话题来源", () => {
+  it("同一 artifact 的重复来源与版本变化只覆盖一份证据，不抬高 ready [observation-evidence-source-dedupe]", async () => {
+    const now = Date.now()
+    await appendUnderstanding([
+      { sourceId: "artifact-version-1", evidenceId: "a".repeat(64), evidenceHash: "b".repeat(64), kind: "file", observedAt: now, expiresAt: now + 60_000, summary: "旧版本摘要" },
+      { sourceId: "artifact-version-2", evidenceId: "a".repeat(64), evidenceHash: "c".repeat(64), kind: "file", observedAt: now + 1, expiresAt: now + 60_000, summary: "新版本摘要" },
+    ])
+    const snapshot = getUnderstandingSnapshot(now + 1)
+    expect(snapshot.coverage).toBe(1)
+    expect(snapshot.independentSources).toBe(1)
+    expect(snapshot.quality).toBe("thin")
+    expect(snapshot.observations[0]?.summary).toBe("新版本摘要")
+  })
+
+  it("合并重复来源与规范化话题，保留立场，不误杀认证技术或暴露敏感标签 [observation-topic-decode-evidence]", () => {
+    const decoded = decodeEntries(JSON.stringify({ entries: [
+      { sourceId: "allowed", topics: [
+        { topic: "身份认证技术", category: "technology", stance: "asserted", sensitivity: "none", weight: 3 },
+        { topic: "身份认证技术", category: "technology", stance: "asserted", sensitivity: "none", weight: 3 },
+        { topic: "数据库", category: "technology", stance: "negative", sensitivity: "none", weight: 2 },
+      ] },
+      { sourceId: "allowed", topics: [
+        { topic: "数据库", category: "technology", stance: "quoted", sensitivity: "none", weight: 3 },
+        { topic: "healthcare", category: "daily_life", stance: "asserted", sensitivity: "none", weight: 3 },
+        { topic: "私人主题", category: "other", stance: "asserted", sensitivity: "unknown", weight: 3 },
+      ] },
+    ] }), new Set(["allowed"]))
+    expect(decoded).toEqual([{ sourceId: "allowed", topics: [
+      { topic: "身份认证技术", category: "technology", stance: "asserted", weight: 3 },
+      { topic: "数据库", category: "technology", stance: "negative", weight: 2 },
+    ] }])
+  })
+
+  it("同来源同主题重复落账只保留一份权重，两个不同来源才参与占比 [observation-topic-source-dedupe]", async () => {
+    // Keep every fixture timestamp strictly after the clear watermark created in beforeEach.
+    const now = Date.now() + 1_000
+    await appendTopicEvidence([
+      { topic: "Rust", category: "technology", stance: "neutral", sensitivity: "none", weight: 1, sourceId: "topic-a", observedAt: now },
+      { topic: " rust ", category: "technology", stance: "negative", sensitivity: "none", weight: 3, sourceId: "topic-a", observedAt: now + 1 },
+      { topic: "Rust", category: "technology", stance: "neutral", sensitivity: "none", weight: 1, sourceId: "topic-b", observedAt: now + 2 },
+      { topic: "Kotlin", category: "technology", stance: "neutral", sensitivity: "none", weight: 1, sourceId: "topic-c", observedAt: now + 3 },
+      { topic: "Kotlin", category: "technology", stance: "asserted", sensitivity: "none", weight: 1, sourceId: "topic-d", observedAt: now + 4 },
+    ])
+    const weights = getTopicWeights()
+    expect(weights.map(row => row.weight)).toEqual([0.5, 0.5])
+    const path = await runtimePath("data", "behavior", "understanding.json")
+    const stored = await getTopicSourceRows(path)
+    expect(stored.filter(row => row.sourceId === "topic-a")).toHaveLength(1)
+  })
+
   it("只向请求暴露未过期摘要，关闭时隐藏，清除后旧来源不能回灌 [observation-understanding-ttl-clear]", async () => {
     const now = Date.now()
     await appendUnderstanding([
-      { sourceId: "screen-source-01", kind: "screenshot", observedAt: now - 1_000, expiresAt: now + 60_000, summary: "当前画面有一个代码编辑器" },
-      { sourceId: "file-source-01", kind: "file", observedAt: now - 2_000, expiresAt: now + 60_000, summary: "项目文档讨论模块边界" },
-      { sourceId: "window-source-01", kind: "window", observedAt: now - 3_000, expiresAt: now + 60_000, summary: "正在查看项目源码" },
-      { sourceId: "expired-source-01", kind: "file", observedAt: now - 10_000, expiresAt: now - 1, summary: "过期摘要不进入请求" },
+      { sourceId: "screen-source-01", evidenceId: "a".repeat(64), evidenceHash: "e".repeat(64), kind: "screenshot", observedAt: now - 1_000, expiresAt: now + 60_000, summary: "当前画面有一个代码编辑器" },
+      { sourceId: "file-source-01", evidenceId: "b".repeat(64), evidenceHash: "f".repeat(64), kind: "file", observedAt: now - 2_000, expiresAt: now + 60_000, summary: "项目文档讨论模块边界" },
+      { sourceId: "window-source-01", evidenceId: "c".repeat(64), evidenceHash: "1".repeat(64), kind: "window", observedAt: now - 3_000, expiresAt: now + 60_000, summary: "正在查看项目源码" },
+      { sourceId: "expired-source-01", evidenceId: "d".repeat(64), evidenceHash: "2".repeat(64), kind: "file", observedAt: now - 10_000, expiresAt: now - 1, summary: "过期摘要不进入请求" },
     ])
 
     const snapshot = getUnderstandingSnapshot(now)
@@ -109,7 +158,7 @@ describe("静默了解与话题来源", () => {
     }
 
     const sourceBeforeClear = "clear-user-source"
-    await appendTopicEvidence([{ topic: "软件架构", weight: 2, sourceId: sourceBeforeClear, observedAt: Date.now() - 1_000, cardId: "card-observation" }])
+    await appendTopicEvidence([{ topic: "软件架构", category: "technology", stance: "neutral", sensitivity: "none", weight: 2, sourceId: sourceBeforeClear, observedAt: Date.now() - 1_000, cardId: "card-observation" }])
     await clearSilentUnderstanding()
     expect(getUnderstandingSnapshot().observations, "清除后仍可召回旧了解摘要").toEqual([])
     expect(await getTopicSourceRows(await runtimePath("data", "behavior", "understanding.json")), "清除后旧话题标签仍在派生存储").toEqual([])
@@ -128,8 +177,8 @@ describe("静默了解与话题来源", () => {
     const firstSource = await topicSourceId(sessionId, first.entryId)
     const secondSource = await topicSourceId(sessionId, second.entryId)
     const fake = installFakeProvider([
-      fakeText(JSON.stringify({ entries: [{ sourceId: firstSource, topics: [{ topic: "软件架构", weight: 2 }] }] })),
-      fakeText(JSON.stringify({ entries: [{ sourceId: secondSource, topics: [{ topic: "软件架构", weight: 2 }] }] })),
+      fakeText(JSON.stringify({ entries: [{ sourceId: firstSource, topics: [{ topic: "软件架构", category: "technology", stance: "neutral", sensitivity: "none", weight: 2 }] }] })),
+      fakeText(JSON.stringify({ entries: [{ sourceId: secondSource, topics: [{ topic: "软件架构", category: "technology", stance: "negative", sensitivity: "none", weight: 2 }] }] })),
     ])
     restoreProvider = fake.restore
 

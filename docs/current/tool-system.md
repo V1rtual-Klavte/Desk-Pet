@@ -38,6 +38,8 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 - **冻结面**：对话回合装配时 `[...listAll()]` 全量交给 Pi `setTools`（名字可解析；Pi 在每次请求前校验激活集 ⊆ 全量）。
 - **激活面**：真正进请求 schema 的只有默认激活集 —— 非 MCP 工具全部（MCP 工具默认不在激活面；唯一判定是 [activation.ts](../../src/services/tool/activation.ts) 的 `defaultActiveToolNames`）。默认激活集在每回合装配时经 `lane.setActiveTools` 重设：只有主对话回合（主回合与恢复续跑）收窄，子代理 / 计划步骤省略即全量，保持既有行为。
 
+`sendMessage(..., { toolMode: "none" })` 为独立回合冻结空工具集和空激活集，包含内部 `read_session_event` / `enable_tools`，同时跳过 Plan、MCP/Skill 能力准备和 Skill 披露；不修改全局注册表，也不借用主动消息语义。忙碌 lane 的工具面已经冻结，此模式不能投递进去，必须另起空闲回合。评测仍登记异常工具调用，保留回答并单列可比性。
+
 模型取用入口是 `enable_tools`（[enable-tools.ts](../../src/services/tool/enable-tools.ts)）：传 `names` 精确启用、传 `query` 按关键词查找并启用、空参返回可启用清单；只在确有未激活工具时挂进对话回合的工具面（没有 MCP 工具时它无事可做，不占 schema）。启用经 Pi 原生 `addedToolNames` 在**本回合**后续请求生效（工具批次落盘时并入激活集），不跨 run 保留；[harness-tool-adapter.ts](../../src/services/tool/pi/harness-tool-adapter.ts) 把结果里本回合工具集之外的名字过滤掉并留痕（Pi 对名单外的名字会直接 configuration_failure，不能放进去）。
 
 渐进披露只改变「进不进请求」：披露面 ≠ 执行面 —— MCP 的 passthrough、PermissionKernel 终裁与 Rust 路径裁决一律不变；`setTools` 仍持全量，计划步骤 allowedTools、fork/team 白名单与恒暴露工具不受影响。恢复续跑会把中断操作里 running 的工具名并回本回合激活集（Pi 执行工具批次同样按激活集过滤，否则重放会变成「unavailable」），这是恢复语义、不是取用持久化。

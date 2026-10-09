@@ -2,6 +2,10 @@ export type ObservationKind = "screenshot" | "file" | "dir" | "window"
 
 export interface UnderstandingRecord {
   sourceId: string
+  /** Hash of the stable artifact identity; never a copy of the path or observed text. */
+  evidenceId?: string
+  /** Hash of the observed input version; never counts as an independent source. */
+  evidenceHash?: string
   kind: ObservationKind
   observedAt: number
   expiresAt: number
@@ -28,6 +32,9 @@ export interface TargetReadResult {
 
 export interface TopicEvidence {
   topic: string
+  category: TopicCategory
+  stance: TopicStance
+  sensitivity: TopicSensitivity
   weight: number
   sourceId: string
   observedAt: number
@@ -38,12 +45,21 @@ export interface UnderstandingSnapshot {
   revision: number
   generatedAt: number
   quality: "thin" | "ready" | "unavailable"
+  /** Number of visible observation rows; this is coverage, not independent evidence quality. */
+  coverage: number
+  independentSources: number
   observations: UnderstandingRecord[]
 }
+
+export type TopicCategory = "technology" | "work" | "study" | "hobby" | "daily_life" | "entertainment" | "other"
+export type TopicStance = "asserted" | "neutral" | "negative" | "quoted" | "hypothetical" | "negated" | "uncertain"
+export type TopicSensitivity = "none" | "sensitive" | "unknown"
 
 export interface TopicWeight {
   topic: string
   weight: number
+  /** Source stances remain attached so consumers can read this as participation, not preference. */
+  stances: TopicStance[]
 }
 
 export interface CommittedUserParticipation {

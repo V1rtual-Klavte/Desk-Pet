@@ -1,3 +1,4 @@
+// 2026-10-09 最终静态复核：输入去重和空工具选项不改变分泡、提交与顶栏所有权，覆盖点静态对照；未执行测试。
 // 2026-10-05 本批复查与刷新：契约 sourceFiles 里 runtime.ts 由另一会话同批写入
 // （新增 emitToolStageTitlebar：工具过程文案改推顶栏，与阶段提示共用同一 owner 与释放点），
 // runner.ts 的改动是「@/services/host/humanizer → @/services/humanizer」的纯 import 路径改名。
@@ -79,7 +80,7 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "e0b0a82f8574d279b5bbd1917c5ee1c6c8cb623a4e8432e4d7d6c358c49068f6",
+  sourceHash: "48b65aad4e3be726bd2fd854a32cdea70c5b8a0974c5fde8f4d2d0452eef4f1d",
   coverage: [
     {
       id: "hz-01",

@@ -141,7 +141,7 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
     const ref=source("behavior",`behavior:${day}`,b.revision,`${b.revision}:${day}`,owner)
     const weekday=new Date(`${day}T00:00:00Z`).getUTCDay()
     if(weekday===0) out.push({...opportunity(owner,"retrospective",weekKey(now,timezone),[ref],open,close,PRIORITY.retrospective,
-      JSON.stringify({quality:b.quality,days7:b.weekly.days,observedActivity:b.weekly.activity,focus:b.weekly.focus,instruction:"仅描述合格观测，不声称现实成就；过去7天一份回顾。"})),expectsReply:true})
+      JSON.stringify({quality:b.quality,days7:b.weekly.days,observedActivity:b.weekly.activity,observedActiveAppSegments:b.weekly.focus,classificationCoverage:b.apps.classificationRatio,instruction:"仅描述合格的前台应用活跃观察；空闲、未知和未观察不能算工时，应用类别不能证明专注或现实成就。过去7天一份回顾。"})),expectsReply:true})
   }
   if(input.topic) {
     const topic=input.topic

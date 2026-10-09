@@ -22,13 +22,15 @@ interface StoreData {
   topics: TopicEvidence[]
   invalidatedTopicSources: string[]
   topicClearedAt: number
+  /** Durable one-shot closure marker for derived memories from records without verified evidence. */
+  unverifiedMemoryClosurePending: boolean
   lastAuxiliaryAttemptAt: number
   /** 了解层宿主读取的滚动时间戳（毫秒），用于每小时读取上限记账。 */
   targetReadAttempts: number[]
 }
 
 function emptyStore(): StoreData {
-  return { schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0, lastAuxiliaryAttemptAt: 0, targetReadAttempts: [] }
+  return { schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0, unverifiedMemoryClosurePending: false, lastAuxiliaryAttemptAt: 0, targetReadAttempts: [] }
 }
 
 let data: StoreData = emptyStore()
@@ -60,10 +62,46 @@ function normalizeObservation(record: UnderstandingRecord): UnderstandingRecord 
   return targets ? { ...rest, targets } : rest
 }
 
+const EVIDENCE_ID_PATTERN = /^[a-f0-9]{64}$/
+const EVIDENCE_HASH_PATTERN = /^[a-f0-9]{64}$/
+
+function hasEvidence(record: UnderstandingRecord): boolean {
+  return Boolean(record.evidenceId && EVIDENCE_ID_PATTERN.test(record.evidenceId)
+    && record.evidenceHash && EVIDENCE_HASH_PATTERN.test(record.evidenceHash))
+}
+
+function normalizeTopic(topic: string): string {
+  return topic.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase()
+}
+
+function uniqueObservations(records: UnderstandingRecord[]): UnderstandingRecord[] {
+  const bySource = new Map<string, UnderstandingRecord>()
+  for (const row of records) bySource.set(row.sourceId, row)
+  const byEvidence = new Map<string, UnderstandingRecord>()
+  const legacyBySource = new Map<string, UnderstandingRecord>()
+  for (const row of bySource.values()) {
+    if (hasEvidence(row)) byEvidence.set(row.evidenceId!, row)
+    else legacyBySource.set(row.sourceId, row)
+  }
+  return [...legacyBySource.values(), ...byEvidence.values()].slice(-MAX_OBSERVATIONS)
+}
+
+function uniqueTopics(records: TopicEvidence[]): TopicEvidence[] {
+  const bySourceTopic = new Map<string, TopicEvidence>()
+  for (const row of records) {
+    const key = `${row.sourceId}\n${normalizeTopic(row.topic)}`
+    if (!bySourceTopic.has(key)) bySourceTopic.set(key, row)
+  }
+  return [...bySourceTopic.values()].slice(-MAX_TOPIC_EVIDENCE)
+}
+
 function isTopic(value: unknown): value is TopicEvidence {
   if (!value || typeof value !== "object") return false
   const record = value as Partial<TopicEvidence>
   return typeof record.topic === "string" && record.topic.length > 0 && record.topic.length <= 48
+    && ["technology", "work", "study", "hobby", "daily_life", "entertainment", "other"].includes(record.category ?? "")
+    && ["asserted", "neutral", "negative", "quoted", "hypothetical", "negated", "uncertain"].includes(record.stance ?? "")
+    && record.sensitivity === "none"
     && Number.isFinite(record.weight) && (record.weight ?? 0) > 0
     && typeof record.sourceId === "string" && Number.isSafeInteger(record.observedAt)
     && (record.cardId === undefined || typeof record.cardId === "string")
@@ -87,11 +125,13 @@ export async function loadObservationStore(): Promise<void> {
       const parsed = JSON.parse(content) as Partial<StoreData>
       if (parsed.schemaVersion !== 1) throw new Error("了解层schemaVersion无效")
       const now = Date.now()
+      const parsedObservations = Array.isArray(parsed.observations) ? parsed.observations.filter(isObservation) : []
+      const hasUnverifiedEvidence = parsedObservations.some(row => !hasEvidence(row))
       const observations = Array.isArray(parsed.observations)
-        ? parsed.observations.filter(isObservation).filter(row => row.expiresAt > now && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS).map(normalizeObservation).slice(-MAX_OBSERVATIONS)
+        ? uniqueObservations(parsedObservations.filter(row => row.expiresAt > now && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS).map(normalizeObservation))
         : []
       const topics = Array.isArray(parsed.topics)
-        ? parsed.topics.filter(isTopic).filter(row => row.observedAt + TOPIC_EVIDENCE_TTL_MS > now).slice(-MAX_TOPIC_EVIDENCE)
+        ? uniqueTopics(parsed.topics.filter(isTopic).filter(row => row.observedAt + TOPIC_EVIDENCE_TTL_MS > now))
         : []
       const invalidatedSourceIds = Array.isArray(parsed.invalidatedTopicSources)
         ? parsed.invalidatedTopicSources.filter((row): row is string => typeof row === "string")
@@ -101,10 +141,14 @@ export async function loadObservationStore(): Promise<void> {
         : []
       const targetReadAttempts = staleReadAttempts.slice(-MAX_TRACKED_READ_ATTEMPTS)
       const invalidationOverflow = invalidatedSourceIds.length > MAX_INVALIDATED_SOURCES
+      const unverifiedMemoryClosurePending = typeof parsed.unverifiedMemoryClosurePending === "boolean"
+        ? parsed.unverifiedMemoryClosurePending
+        : hasUnverifiedEvidence
       const requiresPrune = (parsed.observations?.length ?? 0) !== observations.length
         || (parsed.topics?.length ?? 0) !== topics.length
         || invalidatedSourceIds.length > MAX_INVALIDATED_SOURCES
         || (parsed.targetReadAttempts?.length ?? 0) !== targetReadAttempts.length
+        || typeof parsed.unverifiedMemoryClosurePending !== "boolean"
       data = {
         schemaVersion: 1,
         observations,
@@ -113,6 +157,7 @@ export async function loadObservationStore(): Promise<void> {
         topicClearedAt: invalidationOverflow
           ? Math.max(Number.isSafeInteger(parsed.topicClearedAt) ? Number(parsed.topicClearedAt) : 0, now)
           : Number.isSafeInteger(parsed.topicClearedAt) ? Number(parsed.topicClearedAt) : 0,
+        unverifiedMemoryClosurePending,
         lastAuxiliaryAttemptAt: Number.isSafeInteger(parsed.lastAuxiliaryAttemptAt) ? Number(parsed.lastAuxiliaryAttemptAt) : 0,
         targetReadAttempts,
       }
@@ -146,8 +191,10 @@ export async function appendUnderstanding(records: UnderstandingRecord[]): Promi
   await loadObservationStore()
   await serialize(async () => {
     const now = Date.now()
-    data.observations = [...data.observations.filter(row => row.expiresAt > now), ...records]
-      .slice(-MAX_OBSERVATIONS)
+    data.observations = uniqueObservations([
+      ...data.observations.filter(row => row.expiresAt > now),
+      ...records.filter(row => hasEvidence(row) && row.expiresAt > now && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS),
+    ])
     revision += 1
     await persist()
   })
@@ -158,23 +205,55 @@ export async function appendTopicEvidence(records: TopicEvidence[]): Promise<voi
   await serialize(async () => {
     const now = Date.now()
     const invalidated = new Set(data.invalidatedTopicSources)
-    data.topics = [...data.topics.filter(row => row.observedAt + TOPIC_EVIDENCE_TTL_MS > now),
-      ...records.filter(row => row.observedAt > data.topicClearedAt && !invalidated.has(row.sourceId))]
-      .slice(-MAX_TOPIC_EVIDENCE)
+    data.topics = uniqueTopics([...data.topics.filter(row => row.observedAt + TOPIC_EVIDENCE_TTL_MS > now),
+      ...records.filter(row => row.observedAt > data.topicClearedAt && !invalidated.has(row.sourceId) && isTopic(row))])
     revision += 1
     await persist()
   })
 }
 
 export function getUnderstandingSnapshot(now = Date.now()): UnderstandingSnapshot {
-  if (silentAccessFrequency() === "off") return { revision, generatedAt: now, quality: "unavailable", observations: [] }
-  const observations = data.observations.filter(row => row.expiresAt > now).slice(-MAX_OBSERVATIONS)
+  if (silentAccessFrequency() === "off") return { revision, generatedAt: now, quality: "unavailable", coverage: 0, independentSources: 0, observations: [] }
+  const observations = data.observations.filter(row => row.expiresAt > now
+    && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS).slice(-MAX_OBSERVATIONS)
+  const independentSources = new Set(observations.filter(hasEvidence).map(row => row.evidenceId!)).size
   return {
     revision,
     generatedAt: now,
-    quality: observations.length < 3 ? "thin" : "ready",
+    quality: independentSources < 3 ? "thin" : "ready",
+    coverage: observations.length,
+    independentSources,
     observations,
   }
+}
+
+/** Legacy rows stay displayable, but callers must close their derived-memory scope before promotion. */
+export function getUnverifiedUnderstandingSourceIds(): string[] {
+  return [...new Set(data.observations.filter(row => !hasEvidence(row)).map(row => row.sourceId))]
+}
+
+export function hasUnverifiedUnderstandingEvidence(): boolean {
+  return getUnverifiedUnderstandingSourceIds().length > 0
+}
+
+export function hasUnverifiedMemoryClosurePending(): boolean {
+  return data.unverifiedMemoryClosurePending
+}
+
+/** Acknowledge only after the existing derived-memory scope closure has succeeded. */
+export async function completeUnverifiedMemoryClosure(): Promise<void> {
+  await loadObservationStore()
+  await serialize(async () => {
+    if (!data.unverifiedMemoryClosurePending) return
+    data.unverifiedMemoryClosurePending = false
+    revision += 1
+    try { await persist() }
+    catch (error) {
+      data.unverifiedMemoryClosurePending = true
+      revision += 1
+      throw error
+    }
+  })
 }
 
 export async function getUnderstandingSnapshotAsync(now = Date.now()): Promise<UnderstandingSnapshot> {
@@ -185,20 +264,32 @@ export async function getUnderstandingSnapshotAsync(now = Date.now()): Promise<U
 export function getTopicWeights(cardId?: string, now = Date.now()): TopicWeight[] {
   if (silentAccessFrequency() === "off") return []
   const active = data.topics.filter(row => row.observedAt + TOPIC_EVIDENCE_TTL_MS > now
+    && row.sensitivity === "none"
     && (!cardId || !row.cardId || row.cardId === cardId))
   const totals = new Map<string, number>()
   const sourceIds = new Map<string, Set<string>>()
+  const stances = new Map<string, Set<TopicEvidence["stance"]>>()
   for (const row of active) {
-    totals.set(row.topic, (totals.get(row.topic) ?? 0) + row.weight)
-    const sources = sourceIds.get(row.topic) ?? new Set<string>()
+    const normalized = normalizeTopic(row.topic)
+    totals.set(normalized, (totals.get(normalized) ?? 0) + row.weight)
+    const sources = sourceIds.get(normalized) ?? new Set<string>()
     sources.add(row.sourceId)
-    sourceIds.set(row.topic, sources)
+    sourceIds.set(normalized, sources)
+    const stanceSet = stances.get(normalized) ?? new Set<TopicEvidence["stance"]>()
+    stanceSet.add(row.stance)
+    stances.set(normalized, stanceSet)
   }
   // One mention records discussion only; proactive selection waits for a second source.
   for (const topic of totals.keys()) if ((sourceIds.get(topic)?.size ?? 0) < 2) totals.delete(topic)
   const sum = [...totals.values()].reduce((total, value) => total + value, 0)
   if (!sum) return []
-  return [...totals].map(([topic, value]) => ({ topic, weight: value / sum }))
+  const labels = new Map<string, string>()
+  for (const row of active) if (!labels.has(normalizeTopic(row.topic))) labels.set(normalizeTopic(row.topic), row.topic)
+  return [...totals].map(([topic, value]) => ({
+    topic: labels.get(topic) ?? topic,
+    weight: value / sum,
+    stances: [...(stances.get(topic) ?? [])].sort(),
+  }))
     .sort((left, right) => right.weight - left.weight || left.topic.localeCompare(right.topic))
     .slice(0, 24)
 }
@@ -283,7 +374,8 @@ export async function invalidateTopicEvidence(sourceIds: string[]): Promise<void
 export function getUnderstandingPromptBlock(): { text: string; sourceId: string; revision: number } | undefined {
   const snapshot = getUnderstandingSnapshot()
   if (snapshot.quality !== "ready" || snapshot.observations.length === 0) return undefined
-  const observations = snapshot.observations.slice(-12)
+  const observations = snapshot.observations.filter(hasEvidence).slice(-12)
+  if (observations.length === 0) return undefined
   const text = observations.map(row => `- ${row.kind}: ${row.summary}`).join("\n")
   return { text, sourceId: observations.map(row => row.sourceId).join(","), revision: snapshot.revision }
 }

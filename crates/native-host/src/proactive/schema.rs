@@ -1,14 +1,13 @@
 use crate::error::{AppError, AppResult};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
-pub(crate) fn ensure(conn: &Connection) -> AppResult<()> {
+pub(crate) fn create_objects(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS proactive_meta (
           key TEXT PRIMARY KEY NOT NULL,
           value TEXT NOT NULL
         ) STRICT;
-        INSERT INTO proactive_meta(key,value) VALUES ('revision','0') ON CONFLICT(key) DO NOTHING;
 
         CREATE TABLE IF NOT EXISTS proactive_tasks (
           id TEXT PRIMARY KEY NOT NULL,
@@ -109,18 +108,12 @@ pub(crate) fn ensure(conn: &Connection) -> AppResult<()> {
         ) STRICT;
         CREATE INDEX IF NOT EXISTS proactive_occurrences_retry ON proactive_occurrences(status,retry_after);
 
-        -- `enabled` 已随 CONFIG 档位撤出（`ai.proactive.frequency` 的 off 承担开关）；
-        -- 旧库靠 MEMORY_SCHEMA_VERSION 拒开，不做列迁移。
+        -- `enabled` 已随 CONFIG 档位撤出（`ai.proactive.frequency` 的 off 承担开关）。
         CREATE TABLE IF NOT EXISTS proactive_control (
           id INTEGER PRIMARY KEY CHECK(id=1),
           mute_until INTEGER,
           revision INTEGER NOT NULL
         ) STRICT;
-        -- 用 NOT EXISTS 而非 ON CONFLICT：旧版表带 `enabled NOT NULL`，INSERT 若真发起
-        -- 会先撞 NOT NULL 约束（早于版本检查报错）；条件插入在不存在的行上直接不发起，
-        -- 让旧库继续走到 MEMORY_SCHEMA_VERSION 的诚实 abort。
-        INSERT INTO proactive_control(id,mute_until,revision)
-          SELECT 1,NULL,0 WHERE NOT EXISTS(SELECT 1 FROM proactive_control WHERE id=1);
 
         CREATE TABLE IF NOT EXISTS proactive_budgets (
           local_date TEXT PRIMARY KEY NOT NULL,
@@ -181,4 +174,141 @@ pub(crate) fn ensure(conn: &Connection) -> AppResult<()> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn initialize_rows(conn: &Connection) -> AppResult<()> {
+    let persisted_revision: Option<String> = conn
+        .query_row(
+            "SELECT value FROM proactive_meta WHERE key='revision'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| AppError::Memory(format!("主动元数据检查失败: {error}")))?;
+    let valid_revision = persisted_revision
+        .as_deref()
+        .and_then(|value| value.parse::<i64>().ok())
+        .is_some_and(|value| value >= 0);
+    if !valid_revision {
+        let operation_revision: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(revision) FROM proactive_operations",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                AppError::Memory(format!("主动 operation revision 上界检查失败: {error}"))
+            })?;
+        let control_revision: Option<i64> = conn
+            .query_row("SELECT MAX(revision) FROM proactive_control", [], |row| {
+                row.get(0)
+            })
+            .map_err(|error| {
+                AppError::Memory(format!("主动 control revision 上界检查失败: {error}"))
+            })?;
+        let registry_revision: Option<i64> = conn
+            .query_row(
+                "SELECT MAX(revision) FROM proactive_source_registry",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                AppError::Memory(format!("主动 source revision 上界检查失败: {error}"))
+            })?;
+        let recovered = operation_revision
+            .into_iter()
+            .chain(control_revision)
+            .chain(registry_revision)
+            .max();
+        let state_rows: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM proactive_tasks)+(SELECT COUNT(*) FROM proactive_attempts)
+                   +(SELECT COUNT(*) FROM proactive_operations)+(SELECT COUNT(*) FROM proactive_evaluations)
+                   +(SELECT COUNT(*) FROM proactive_topics)+(SELECT COUNT(*) FROM proactive_source_registry)
+                   +(SELECT COUNT(*) FROM proactive_attempt_occurrences)+(SELECT COUNT(*) FROM proactive_occurrences)
+                   +(SELECT COUNT(*) FROM proactive_budgets)+(SELECT COUNT(*) FROM proactive_auxiliary_reservations)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::Memory(format!("主动状态检查失败: {error}")))?;
+        let revision = match recovered {
+            Some(value) => value
+                .checked_add(1)
+                .ok_or_else(|| AppError::Memory("无法安全递增恢复的主动 revision".into()))?,
+            None if state_rows == 0 => 0,
+            None => {
+                return Err(AppError::Memory(
+                    "主动状态缺少 revision 元数据且账本无安全上界，拒绝重置已有状态".into(),
+                ))
+            }
+        };
+        conn.execute(
+            "INSERT INTO proactive_meta(key,value) VALUES ('revision',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [revision.to_string()],
+        )
+        .map_err(|error| AppError::Memory(format!("初始化主动 revision 失败: {error}")))?;
+    }
+
+    let control_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM proactive_control WHERE id=1)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| AppError::Memory(format!("主动控制状态检查失败: {error}")))?;
+    if !control_exists {
+        let state_rows: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM proactive_tasks)+(SELECT COUNT(*) FROM proactive_attempts)
+                   +(SELECT COUNT(*) FROM proactive_topics)+(SELECT COUNT(*) FROM proactive_source_registry)
+                   +(SELECT COUNT(*) FROM proactive_evaluations)+(SELECT COUNT(*) FROM proactive_occurrences)
+                   +(SELECT COUNT(*) FROM proactive_operations)+(SELECT COUNT(*) FROM proactive_budgets)
+                   +(SELECT COUNT(*) FROM proactive_auxiliary_reservations)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::Memory(format!("主动控制依赖状态检查失败: {error}")))?;
+        if state_rows > 0 {
+            return Err(AppError::Memory(
+                "proactive_control 单例缺失但主动状态仍在，拒绝静默解除既有控制状态".into(),
+            ));
+        }
+        let mut statement = conn
+            .prepare(
+                r#"SELECT name,"notnull",dflt_value FROM pragma_table_info('proactive_control')"#,
+            )
+            .map_err(|error| AppError::Memory(format!("主动控制结构检查失败: {error}")))?;
+        let columns = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|error| AppError::Memory(format!("主动控制结构检查失败: {error}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::Memory(format!("主动控制结构检查失败: {error}")))?;
+        if columns.iter().any(|(name, not_null, default)| {
+            !matches!(name.as_str(), "id" | "mute_until" | "revision")
+                && *not_null != 0
+                && default.is_none()
+        }) {
+            return Err(AppError::Memory(
+                "主动控制表缺少安全默认值，拒绝编造遗留控制状态".into(),
+            ));
+        }
+        conn.execute(
+            "INSERT INTO proactive_control(id,mute_until,revision) VALUES (1,NULL,0)",
+            [],
+        )
+        .map_err(|error| AppError::Memory(format!("初始化主动控制状态失败: {error}")))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure(conn: &Connection) -> AppResult<()> {
+    create_objects(conn)?;
+    initialize_rows(conn)
 }

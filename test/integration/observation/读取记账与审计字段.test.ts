@@ -72,8 +72,8 @@ describe("静默了解审计字段", () => {
   it("了解记录随 targets 落盘，旧记录没有 targets 仍可读取 [observation-audit-targets]", async () => {
     const now = Date.now()
     await appendUnderstanding([
-      { sourceId: "dir-source", kind: "dir", observedAt: now, expiresAt: now + 60_000, summary: "工作目录结构", targets: ["/Users/example/work"] },
-      { sourceId: "legacy-source", kind: "file", observedAt: now, expiresAt: now + 60_000, summary: "旧记录没有审计字段" },
+      { sourceId: "dir-source", evidenceId: "a".repeat(64), evidenceHash: "b".repeat(64), kind: "dir", observedAt: now, expiresAt: now + 60_000, summary: "工作目录结构", targets: ["/Users/example/work"] },
+      { sourceId: "legacy-source", evidenceId: "c".repeat(64), evidenceHash: "d".repeat(64), kind: "file", observedAt: now, expiresAt: now + 60_000, summary: "旧记录没有审计字段" },
     ])
     const stored = await readStore()
     expect(stored.observations.find(row => row.sourceId === "dir-source")?.targets, "读取路径没有随了解记录持久").toEqual(["/Users/example/work"])

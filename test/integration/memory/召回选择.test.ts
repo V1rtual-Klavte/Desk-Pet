@@ -8,6 +8,15 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/services/config", () => ({ memoryConfig: mocks.memoryConfig }))
+// provider → conversation/sources 会静态拉起 session barrel（manager/read-model → native-ui 投影链）；
+// query.ts 经 `@/services/context` barrel 又会拉入 builder → tool → native-ui 链路。
+// 本文件只考召回选择，按新测试同一模式在这两处边界切断，避免拖入无关模块图。
+vi.mock("@/services/session", () => ({
+  readVisibleSessionTranscript: async () => ({ entries: [], messages: [] }),
+}))
+vi.mock("@/services/context", () => ({ currentTimeNote: () => "[当前时间] 2026-10-05 12:00 周一" }))
+// 证据撤销有自己的事务/重试套件；本文件只考召回选择，按姊妹测试同一写法隔离该边界。
+vi.mock("@/services/agent/memory/evidence", () => ({ reconcileDerivedMemoryEvidence: async () => undefined }))
 vi.mock("@/services/agent/memory/ipc", () => ({
   getMemoryRecallCandidates: mocks.recallCandidates,
 }))
@@ -77,13 +86,17 @@ describe("本地与adaptive召回选择", () => {
 
   it("仅返回模型选择的有序子集，未发送候选ID不能进入投影", async () => {
     configure(Array.from({ length: 13 }, (_, index) => item(`dynamic-${index}`)))
-    mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-0","dynamic-12"]' })
+    mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-3","dynamic-0"]' })
     const rows = await sqliteMemoryProvider.recall(request())
     const sent = JSON.parse(mocks.completePiText.mock.calls[0]![0].userText) as { candidates: Array<{ id: string }> }
     expect(sent.candidates.length).toBeLessThanOrEqual(12)
     expect(sent.candidates.some(candidate => candidate.id === "dynamic-12")).toBe(false)
-    expect(rows.map(row => row.sourceId)).toEqual(["dynamic-0@1"])
+    expect(rows.map(row => row.sourceId)).toEqual(["dynamic-3@1", "dynamic-0@1"])
     expect(estimateContextTokens(`${mocks.completePiText.mock.calls[0]![0].systemPrompt}\n${mocks.completePiText.mock.calls[0]![0].userText}`)).toBeLessThanOrEqual(512)
+    // 白名单外 id 让整份输出判无效并回退本地同一顺序（mm-02：未知 id 不裁掉放行）。
+    mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-0","dynamic-12"]' })
+    const fallback = await sqliteMemoryProvider.recall(request())
+    expect(fallback.map(row => row.sourceId)).toEqual(Array.from({ length: 6 }, (_, index) => `dynamic-${index}@1`))
   })
 
   it("格式无效才回退到本地排序，写后刷新可显式跳过重排", async () => {
@@ -107,7 +120,8 @@ describe("本地与adaptive召回选择", () => {
     })
     const input = { ...request(), targets: [{ id: "expired-target", version: 1 }], allowExpiredTargets: true }
     const rows = await sqliteMemoryProvider.recall(input)
-    expect(mocks.recallCandidates).toHaveBeenCalledWith("当前问题", "card", "session", input.targets, true)
+    // 精确目标模式不扩展检索：事实查询用空 query 只取核心画像与指定目标（mm-51）。
+    expect(mocks.recallCandidates).toHaveBeenCalledWith("", "card", "session", input.targets, true)
     expect(mocks.completePiText).not.toHaveBeenCalled()
     expect(rows.map(row => row.sourceId)).toEqual(["expired-target@1"])
     expect(input.readRevision).toBe(10)

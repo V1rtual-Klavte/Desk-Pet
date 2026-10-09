@@ -1,3 +1,4 @@
+// 2026-10-09 最终静态复核：HostCommandMap新增会话索引命令，更新命令名字、参数与Node请求隔离保持原义；未执行测试。
 // 应用内更新契约（Node 侧只有边界：命令形状 + 不承载更新动作）。
 //
 // 范围：`test/unit/release/update.test.ts` 的全部 caseId 锚点。更新真相源与安装
@@ -78,7 +79,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "78bf51af52d9d455829872045cfa291debb071f16d523fb8026f806cce564e8d",
+  sourceHash: "351c17c1427865d6fa48bcf9fc243afbdca610a8ba3a76ca5834b594f7230782",
   coverage: [
     {
       id: "up-01",

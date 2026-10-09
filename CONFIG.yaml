@@ -79,6 +79,8 @@ ai:
     enabled: true
     coreTokenBudget: 320
     recallTokenBudget: 1000
+    # 统一事实/画像/原话查询改写：off | adaptive；技术参数，修改本文件后重启生效
+    queryRewrite: adaptive
     rerank: off
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500

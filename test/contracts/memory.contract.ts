@@ -1,3 +1,4 @@
+// 2026-10-09 最终静态复核：联合改写重排、会话原话索引、数据库结构修复与派生证据撤销已静态复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
 // 2026-10-05 设置页 Card 增删改查 + 模版批次：本契约 sourceFiles 中仅
 // `crates/native-host/src/host/dispatch.rs` 变化 —— 新增一条 `personality_file_delete`
 // 分派臂（命令矩阵 128→129），memory_* 命令的既有接线与错误语义未改。mm-* 逐点复核
@@ -232,6 +233,13 @@ export const memoryContract: ModuleContract = {
     "src/services/agent/memory/protocol.json",
     "src/services/agent/memory/protocol.ts",
     "src/services/agent/memory/provider.ts",
+    "src/services/agent/memory/query.ts",
+    "src/services/agent/memory/evidence.ts",
+    "src/services/agent/memory/conversation.ts",
+    "crates/native-host/src/memory/conversation.rs",
+    "src/services/session/manager.ts",
+    "src/services/session/read-model.ts",
+    "src/services/session/repo.ts",
     "src/services/agent/memory/rerank.ts",
     "src/services/agent/memory/sources.ts",
     "src/services/agent/memory/visible-query.ts",
@@ -269,8 +277,37 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "a78333a2dab7757dfa92a23b67ca766d38404f79b32a78443cd95661f1221e58",
+  sourceHash: "b1381be1887df1c21b7e4551c020d6ac272ce264631ffd666897a42f23b21a31",
   coverage: [
+    { id: "mm-52", feature: "派生证据升级闭环", description: "默认召回与派生登记前处理持久失效待办；行为计量升级撤销全部系统观察，旧了解证据仅撤销 understanding 范围，两者同时发生共用一次全量闭包。事务失败不确认待办且允许重试，无待办不写库。了解来源必须绑定稳定 artifact 与输入版本，缺证据不能登记，用户事实不参与该闭包", why: "只隔离旧缓冲文件会留下已沉淀的旧口径结论继续被召回；确认待办早于事务会导致永久漏清理", layer: "unit", depth: "deep", scenarios: ["derived-evidence-coalesces-all-scopes", "derived-evidence-retry-after-transaction-failure", "derived-evidence-understanding-scope-only", "derived-evidence-no-pending-no-transaction"] },
+    { id: "mm-53", feature: "了解沉淀的证据准入", description: "了解摘要来源身份绑定稳定 artifact、实际输入 hash 与摘要；同 artifact 只取最新可验证观察，无 evidenceId 或 evidenceHash 不登记。contentHash 仍校验摘要原文", why: "重复采样不是独立来源，只有摘要文本无法证明实际读过什么", layer: "integration", depth: "deep", scenarios: ["understanding-source-requires-evidence"] },
+    {
+      id: "mm-51",
+      feature: "事实、画像与原话的统一查询改写和重排",
+      description: "默认SQLite策略保留原问题并补有界改写查询；显式指代只是路由线索，零非置顶动态命中时个人/历史问句可在空当前上下文做中性扩词，短跟进须有before前可见上文，社交确认或关闭模式不另调模型。候选并集标记用户事实/派生观察/原话角色，一次重排只认实际发送ID，未知ID/坏输出回退本地同份结果，合法空选择不补回。主动/精确目标不扩展检索；空query保留核心画像但不暖全库；版本不一致丢旧原话，冷索引/增强超时保留已预算的本地事实，真实取消不返回投影",
+      why: "各通道各自改写或排序会重复付费且丢失可比性；词表一票否决会漏自然措辞，空历史、超时和取消也必须有一致且可审计的退化语义",
+      layer: "unit",
+      depth: "deep",
+      scenarios: ["memory-query-context-roles", "memory-query-personal-history-empty-context", "memory-query-contextual-followup", "memory-query-social-no-rewrite", "memory-query-rewrite-off", "memory-recall-joint-candidates", "memory-recall-joint-fallback", "memory-recall-targeted-isolation", "memory-recall-empty-query-core-only", "memory-query-rewrite-fallback", "memory-recall-revision-consistency", "memory-recall-empty-history-no-revision-failure", "memory-recall-local-deadline-fallback"],
+    },
+    {
+      id: "mm-50",
+      feature: "可见原话不包含内部写回协议",
+      description: "会话读模型仅把助手text作为可见原话；RUNTIME_DATA跨text分块时先按完整正文解析去除，thinking不混入text，原entry身份与assistant角色保持。原话索引复用该投影，不另建协议解析规则",
+      why: "只逐textpart解析会让跨分块的内部元数据进入会话检索和下一次模型输入",
+      layer: "unit",
+      depth: "shallow",
+      scenarios: ["conversation-visible-text-only"],
+    },
+    {
+      id: "mm-49",
+      feature: "当前与跨会话原文索引的来源、分批发布和治理接线",
+      description: "会话原文走独立只读引用通道，不把助手原话登记为用户事实；索引全部当前数据根会话而非打开标签，依照既有可见投影过滤可信用户/可见助手并保存角色、时间、原条目及锚点。长正文分成有界Unicode片段，512条一批暂存，仅最后complete发布完整快照；取消不继续发布。清空捕获实际seq上界而非时间，删除后按真实会话白名单prune且召回返回前复核来源仍存在；明确短指代只有关键词无命中才请求近期兜底，普通miss不补随机历史。该单元层只验证TS接口与引用接线；Rust FTS/事务、墓碑与跨IPC运行由内联Rust用例和后续原生验收负责，不冒充已运行的端到端证据",
+      why: "只保留用户事实无法回答助手过去说过什么；整会话巨型提交、旧快照回写或原文绕过遗忘会让会话检索不可靠，需要把引用、预算和治理贯穿新通道",
+      layer: "unit",
+      depth: "deep",
+      scenarios: ["conversation-index-batch-publish", "conversation-index-abort-staging", "conversation-index-sessions", "conversation-clear-seq-fence", "conversation-referential-fallback", "conversation-revalidate-deleted-source", "conversation-empty-query-no-scan"],
+    },
     { id: "mm-01", feature: "记忆来源准入（两类通道，不混池）", description: "准入分两条互不混淆的通道：用户事实只收 origin=user + taint=trusted_user + eligibleForMemory=true 的已提交条目（助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局）；系统观察只收 origin=derived_behavior + taint=derived + eligibleForMemory=true 的系统观察来源（画像稳定结论与静默了解观察摘要两个子类，见 mm-47），错配（如 derived_behavior+trusted_user）拒收。投递时刻冻结的 cardId 随来源落盘；派生来源独立登记（合成会话 behavior、身份含内容文本 hash），不冒充用户事实", why: "「谁说的」是记忆的准入判据：把工具/助手来源放进去，模型的一次措辞就会被当成用户长期事实；把系统观察混进用户事实池，归纳出的推断会被说成「你告诉过我」", layer: "integration", depth: "deep", scenarios: ["memory-source-admission", "derived-behavior-source-registration", "derived-behavior-gate-blocks-registration", "derived-behavior-new-source-version"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },
     { id: "mm-37", feature: "adaptive 选择门槛与调用边界", description: "只在动态候选超过6条时调用重排，core不参加；最多发送12个真实候选且受总输入预算限制，白名单只认已发送ID；合法空数组表示不投影动态记忆，非空只投影有序子集；写后刷新可显式跳过重排、不重复调用；精确反馈目标不参加重排并沿用同一次原子读取的revision", why: "重排的开销和模型可见范围必须由宿主冻结：候选太少不值得调用，未发送的候选不能进入白名单，合法的空选择不能被补回全部", layer: "integration", depth: "deep", scenarios: ["memory-recall-selection"] },
@@ -311,8 +348,8 @@ export const memoryContract: ModuleContract = {
     { id: "mm-43", feature: "记忆整理的前置查询（无新来源不开作业）", description: "dreaming 在创建 Review 作业前先查「水位之后还有没有待处理来源」（`memory_pending_source_count`，与 `memory_job_sources` 共用同一段水位判定 SQL，2026-10-06 起按来源类别分开查——用户事实与系统观察各自成作业，只有派生来源时照常开派生区作业）：该类没有 → 不开该类 Review 作业、不动预算/租约，以 empty 如实回报（手动入口走同一条前置查询——Review 的输入只有这些来源，空跑与跳过对用户是同一种结果，文案如实说明）；两区都没有新来源时不整段跳过，转入库内合并整理（`runMergeSweep`：先一次有界列举，无「同 origin 区内、同 scope、同 kind、≥2 条」分组时零写早退——不创建作业、不动预算、不调模型；有分组时只合并用户区，走模型产出合并候选（最多 3 组、单组最多吸收 4 条＝Rust `SUPERSEDES_MAX`＝protocol `maxItems`），Rust 发布事务复核被吸收条目（仍在库、同 scope/kind、未置顶、同来源类别）并把旧条目来源并入候选来源集合（来源并集在事务内强制、旧条目自己的来源一条不丢，墓碑复核按并集后集合），多目标逐个 supersede（旧行与版本链保留）；`supersedesIds` 只经 dreaming 发布路径接受、治理写入明确拒绝；冲突按 MEMORY_CONFLICT 如实失败）；有 → 照常创建 Review 作业；恢复既有作业（resumeJobId）不经前置查询，job 自带游标、水位为空也要能继续（恢复不分类别，水位按会话隔离、两区互不吞并）", why: "空闲命中即开作业会在没有任何新来源时白耗一次 job 创建与租约；而「水位之后有无来源」的判定必须与批内取数同源——另建一套水位口径会让两处静默漂移，跳过判断就会漏掉或虚报来源；两区混在一个作业里会让一区的积压吞掉另一区的批；无新来源时的库内合并也要有界（分组上限、零写早退），旧条目复核与来源并集必须在发布事务里强制，否则合并会丢来源或吞掉别的分区", layer: "integration", depth: "shallow", scenarios: ["dreaming-pending-gate-skip", "dreaming-pending-gate-proceed", "dreaming-pending-gate-manual", "dreaming-pending-gate-resume"] },
     { id: "mm-44", feature: "记忆整理的档位门禁与数值消费", description: "定时调度器按 ai.memory.dreaming.tier 档位表取值（2026-10-06 固定钟点裁决：不再要求系统空闲）：off = 早退（不查 token 账、不自动开整理作业；手动入口 runDreamingSweep 不受档位影响）；三档决定固定钟点表（低 12/20、中 10/14/18/22、高 9/11/13/15/17/19——钟点后 15 分钟追赶窗口内到点即跑、同一钟点只跑一轮、表外钟点与 23–9 静默时段不跑；判定纯函数与静默了解共用 proactive/schedule.ts）与最小间隔（240 / 60 / 30 分钟；钟点间隔已大于它，保留为防重兜底）。日 token 上限已按 2026-10-06 用户裁决撤除：当日 token 账烧过旧上限（低档 24000，已用 30000）后作业仍照开，调度层不再读 token 账，批次也不再被 token 账中止；token 的预留/结算照记（账照记、不作准入），档位表中的 dailyTokens 与 idleSeconds 字段整体删除。数值唯一来源是 proactive tiers 档位表，不是旧 flat 常量", why: "档位若不落到钟点/间隔两个消费点，配置选择形同虚设（off 仍自动跑、空闲要求回归、高档被旧间隔挡住）；而日 token 上限是会与功能相互踩的资源账（烧满即表现为整理莫名不工作），不再是准入条件，档位表若残留该字段会读起来像门禁", layer: "integration", depth: "shallow", scenarios: ["dreaming-tier-off", "dreaming-tier-medium-slots", "dreaming-tier-quiet-hours", "dreaming-tier-low-values", "dreaming-tier-high-slots"] },
     { id: "mm-45", feature: "估算偏差对账用真实输入量", description: "对账的 actual 取 `totalInputTokens(usage)` = `usage.input` + (`cacheRead` ?? 0) + (`cacheWrite` ?? 0)：`usage.input` 只是未命中缓存的一截，缓存命中记在 `cacheRead`、写入记在 `cacheWrite`，三者相加才是这次请求实际发出去的输入规模 —— 也正是 `estimateRequestTokens` 估算的对象。真机夹具（工具循环回合的一次 provider 回执）逐项钉死：input 387 / cacheRead 14208 / 估算 16679 ⇒ 单比 input ≈43×（曾经把偏差放大几十倍、越过 ESTIMATE_DRIFT_WARN_RATIO 刷告警），相加 14595 ⇒ 比值 ≈1.14×，落在阈值之下；cacheWrite 同样计入、缺省按 0。同一取数点同时服务落盘快照的两个字段：`deskpet.prompt_snapshot` 的 `actualInputTokens` 与 `tokenDrift.actual` 与之同源（主回合经 runtime.ts、一次性摘要经 model-gateway.ts 各自调用，口径一致）", why: "只比 usage.input 会在缓存生效时把偏差放大几十倍：告警刷屏成噪音、落盘对账记录失真，真实的小偏差反而被淹没；把口径收在 context/budget.ts 的唯一纯函数里，两条调用路径不会再分叉出第二份算法", layer: "unit", depth: "shallow", scenarios: ["memory-estimate-drift-total-input"] },
-    { id: "mm-46", feature: "画像稳定结论的来源登记（系统观察准入）", description: "`collectBehaviorMemorySources` 把画像层 `sedimentConclusions` 的产出登记为 `derived_behavior` 来源：合成会话身份 `behavior`、条目 `conclusion:<slot>`、sourceId/eventId 含结论文本 hash（同结论幂等、新结论即新版本，seq 取登记时刻推进水位）；每条 `taint=derived`、`eligibleForMemory=true`、evidence 即结论文本（含判据）。非 reliable 档（unavailable/insufficient）返回空数组且不登记任何来源——原始观察不可能经这条链进入记忆", why: "准入闸门必须落在唯一的抽取出口上：门禁错位（例如在登记处再判一次画质）会让非 reliable 的数据漏进候选，或让可靠结论被静默丢弃", layer: "integration", depth: "deep", scenarios: ["derived-behavior-source-registration", "derived-behavior-gate-blocks-registration", "derived-behavior-new-source-version"] },
-    { id: "mm-47", feature: "系统观察的整理（确定性 Review 与分区）", description: "dreaming 来源分两区、各自成作业（前置查询与批内取数按 origin 过滤）：用户区走模型 Review（prompt 里只有用户来源，派生来源不混池）；系统观察区走确定性 Review，两个子类的正文都原样沉淀、不经模型改写或演绎、不解析模型、不占 token 预算与预留（kind=fact、scope=user、pinned=false）——① 画像稳定结论（`conclusion:<槽位>`，别名含 `behavior-slot:<槽位>` 标记）：同槽位已有旧条目时携带 `supersedesId` 覆盖（Rust 发布事务把旧条目置为 superseded 并失效主动引用）；② 静默了解观察摘要（`understanding:<内容 hash 前 16 位>`，别名含 `behavior-understanding:<hash16>` 与「静默了解」标记）：同文本幂等，在库了解条目以 12 条为上限，达上限后多出的新观察按最旧优先逐个携带 `supersedesId` 覆盖旧条目（一个候选覆盖一条、作业内不重复使用同一目标，目标用尽后不再产出）；清除静默了解时按 `understanding:` 前缀的同一 Rust 闭包（`forget_understanding`）失效了解沉淀（写墓碑、删条目/候选、推进遗忘代；画像结论不在范围）。同输入重跑候选指纹稳定", why: "观察结论若再交给模型演绎，等于让模型替观察下结论；两区若是同一批/同一 prompt，模型会把系统归纳当成用户陈述整理；没有槽位覆盖与有界窗口，几周内的结论漂移与重复观察会无界堆积成几十条过时「了解」", layer: "integration", depth: "deep", scenarios: ["derived-behavior-deterministic-review", "derived-behavior-supersede-chain", "derived-behavior-pool-separation"] },
+    { id: "mm-46", feature: "画像稳定结论的来源登记（系统观察准入）", description: "`collectBehaviorMemorySources` 把画像层 `sedimentConclusions` 的产出登记为 `derived_behavior` 来源：合成会话身份 `behavior`、条目 `conclusion:<slot>:<measurementVersion>`、sourceId/eventId 含计量版本与结论文本 hash（同结论幂等、新结论即新版本，seq 取登记时刻推进水位）；每条 `taint=derived`、`eligibleForMemory=true`、evidence 即结论文本（含判据）。非 reliable 档（unavailable/insufficient）返回空数组且不登记任何来源——原始观察不可能经这条链进入记忆", why: "准入闸门必须落在唯一的抽取出口上：门禁错位（例如在登记处再判一次画质）会让非 reliable 的数据漏进候选，或让可靠结论被静默丢弃", layer: "integration", depth: "deep", scenarios: ["derived-behavior-source-registration", "derived-behavior-gate-blocks-registration", "derived-behavior-new-source-version"] },
+    { id: "mm-47", feature: "系统观察的整理（确定性 Review 与分区）", description: "dreaming 来源分两区、各自成作业（前置查询与批内取数按 origin 过滤）：用户区走模型 Review（prompt 里只有用户来源，派生来源不混池）；系统观察区走确定性 Review，两个子类的正文都原样沉淀、不经模型改写或演绎、不解析模型、不占 token 预算与预留（kind=fact、scope=user、pinned=false）——① 画像稳定结论（`conclusion:<槽位>:<计量版本>`，别名含 `behavior-slot:<槽位>` 标记）：同槽位已有旧条目时携带 `supersedesId` 覆盖（Rust 发布事务把旧条目置为 superseded 并失效主动引用）；② 静默了解观察摘要（`understanding:<证据与摘要身份 hash 前 16 位>`，别名含 `behavior-understanding:<hash16>` 与「静默了解」标记）：同 artifact 的相同输入幂等，缺证据摘要不得登记，在库了解条目以 12 条为上限，达上限后多出的新观察按最旧优先逐个携带 `supersedesId` 覆盖旧条目（一个候选覆盖一条、作业内不重复使用同一目标，目标用尽后不再产出）；清除静默了解时按 `understanding:` 前缀的同一 Rust 闭包（`forget_understanding`）失效了解沉淀（写墓碑、删条目/候选、推进遗忘代；画像结论不在范围）。同输入重跑候选指纹稳定", why: "观察结论若再交给模型演绎，等于让模型替观察下结论；两区若是同一批/同一 prompt，模型会把系统归纳当成用户陈述整理；没有槽位覆盖与有界窗口，几周内的结论漂移与重复观察会无界堆积成几十条过时「了解」", layer: "integration", depth: "deep", scenarios: ["derived-behavior-deterministic-review", "derived-behavior-supersede-chain", "derived-behavior-pool-separation"] },
     { id: "mm-48", feature: "系统观察的呈现标记（分区呈现）", description: "召回投影按条目的 origin 区分呈现：`derived_behavior` 条目的 provenance 位固定为「系统观察·可撤销的推断（非用户原话）」（`DERIVED_PROVENANCE_MARK`），用户事实仍是 `memory:<scope>:<sources>`；记忆块逐行渲染 `[标签 | provenance] 正文`，标记占用行预算", why: "提示里不区分来源，模型会把系统归纳说成「你告诉过我」——这是用户可见的失实；标记必须在投影层逐行带上，不能只在文档里约定", layer: "integration", depth: "shallow", scenarios: ["derived-behavior-provenance-mark"] },
   ],
   // W0–W7 把本契约的场景迁出 L4 后按 L4 侧当前值重标定：门槛=当前 rules 声明值，

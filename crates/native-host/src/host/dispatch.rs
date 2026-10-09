@@ -1,7 +1,7 @@
 //! 原生宿主完整命令分派器（W4）。
 //!
-//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 136 条（总数以 types.ts
-//! 为准；分项已复核为「107 冻结 + 29 扩展」：冻结件删 `profile_clone`（「新建 Profile」
+//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 140 条（总数以 types.ts
+//! 为准；分项已复核为「107 冻结 + 33 扩展」：冻结件删 `profile_clone`（「新建 Profile」
 //! 改造）与 `mcp_send`，MCP 裸行收发改由 `mcp_write` / `mcp_read` 两条有意扩展承担）。
 //! A2 追加 `apply_chat_projection` / `apply_titlebar_status`，
 //! A3 追加 `set_popup_placement` / `set_popup_size`，管理面批次追加通用文件对话框
@@ -10,7 +10,9 @@
 //! `personality_file_delete`，自带 MCP 批次追加凭据读写 `mcp_credential_set` /
 //! `mcp_credential_delete` / `mcp_credential_status` / `mcp_credential_get`，
 //! 聊天图片批次追加删会话清理 `chat_delete_session_images`，
-//! 折叠批次追加会话根写入 `session_write_text`（会话专用放宽路径，边界钉在会话根）。
+//! 折叠批次追加会话根写入 `session_write_text`（会话专用放宽路径，边界钉在会话根）；
+//! 会话检索批次追加 `conversation_index_status` / `conversation_index_replace` /
+//! `conversation_index_prune` / `conversation_search`。
 //! 每条：从 JSON 参数解出（**参数名逐字对齐矩阵的 camelCase 线格式**）
 //! → 调用 `commands/**` 或对应域的实现 → 结果按矩阵形状序列化。
 //!
@@ -47,7 +49,7 @@
 //! `e2e_memory_reset` / `e2e_memory_performance` 的域实现自带「debug + is_e2e」
 //! 双闸；`e2e_options` / `e2e_complete` / `e2e_trace` 是宿主级测试协议（需要
 //! `main.rs` 的 E2E 私有通道），由 `E2eDispatcher` 承接 —— 本分派器对这三条给出
-//! 明确错误而不是未知方法，保证 136 条在分派面上「条条有着落」。
+//! 明确错误而不是未知方法，保证 140 条在分派面上「条条有着落」。
 
 use std::collections::HashMap;
 use std::sync::{
@@ -818,6 +820,47 @@ impl NativeDispatcher {
 
             // ── 记忆（memory/commands.rs）──
             // 失败（含 MEMORY_CONFLICT）走结构化 AppError；结果形状与协议生成物一致。
+            "conversation_index_status" => {
+                memory_commands::conversation_index_status(self.memory()?)
+            }
+            "conversation_index_replace" => {
+                let expected_fingerprint = match args.get("expectedFingerprint") {
+                    Some(Value::Null) => None,
+                    Some(Value::String(value)) => Some(value.clone()),
+                    Some(_) => {
+                        return Err(AppError::Config(
+                            "参数不是字符串或 null: expectedFingerprint".into(),
+                        ))
+                    }
+                    None => {
+                        return Err(AppError::Config("命令缺少参数: expectedFingerprint".into()))
+                    }
+                };
+                memory_commands::conversation_index_replace(
+                    self.memory()?,
+                    arg_str(args, "sessionId")?,
+                    arg_str(args, "fingerprint")?,
+                    expected_fingerprint,
+                    arg_i64(args, "expectedForgetEpoch")?,
+                    arg_value(args, "entries")?,
+                    args.get("batch").filter(|value| !value.is_null()).cloned(),
+                )
+                .map(Value::from)
+            }
+            "conversation_index_prune" => {
+                Ok(Value::from(memory_commands::conversation_index_prune(
+                    self.memory()?,
+                    arg_strings(args, "sessionIds")?,
+                )?))
+            }
+            "conversation_search" => memory_commands::conversation_search(
+                self.memory()?,
+                arg_str(args, "query")?,
+                arg_str(args, "sessionId")?,
+                arg_opt_i64(args, "limit")?,
+                arg_opt_i64(args, "before")?,
+                arg_opt_bool(args, "recentFallback")?,
+            ),
             "memory_status" => memory_commands::memory_status(self.memory()?),
             "memory_list" => ser(memory_commands::memory_list(
                 self.memory()?,
@@ -888,6 +931,15 @@ impl NativeDispatcher {
                     actor,
                     arg_opt_str(args, "trustedUserEventId")?,
                     trusted_session_id,
+                    match args.get("conversationFences") {
+                        None | Some(Value::Null) => None,
+                        Some(value @ Value::Array(_)) => Some(value.clone()),
+                        Some(_) => {
+                            return Err(AppError::Config(
+                                "conversationFences 不是数组或 null".into(),
+                            ))
+                        }
+                    },
                 )?))
             }
             "memory_job_start" => memory_commands::memory_job_start(
@@ -922,12 +974,12 @@ impl NativeDispatcher {
                 arg_str(args, "jobId")?,
                 arg_opt_str(args, "origin")?,
             )?),
-            "memory_pending_source_count" => Ok(Value::from(
-                memory_commands::memory_pending_source_count(
+            "memory_pending_source_count" => {
+                Ok(Value::from(memory_commands::memory_pending_source_count(
                     self.memory()?,
                     arg_opt_str(args, "origin")?,
-                )?,
-            )),
+                )?))
+            }
             "memory_source_evidence" => ser(memory_commands::memory_source_evidence(
                 self.memory()?,
                 arg_str(args, "sourceId")?,
@@ -1640,7 +1692,19 @@ mod tests {
         // 折叠批次追加 `session_write_text`（会话根专用写入路径：折叠结果超工具面 5 MiB
         // 时由它落地；漏登记会让折叠结果写不出去、`too-large` 无声回归）—— 分项变为
         // 「107 冻结 + 29 扩展」。
-        assert_eq!(names.len(), 136, "HostCommandMap 条数（以 types.ts 为准）");
+        // 会话原文索引追加四条 conversation_*，分项为「107 冻结 + 33 扩展」。
+        assert_eq!(names.len(), 140, "HostCommandMap 条数（以 types.ts 为准）");
+        for name in [
+            "conversation_index_status",
+            "conversation_index_replace",
+            "conversation_index_prune",
+            "conversation_search",
+        ] {
+            assert!(
+                names.contains(&name.to_string()),
+                "新会话检索命令未登记: {name}"
+            );
+        }
         assert!(names.contains(&"init_memory_files".to_string()));
         assert!(names.contains(&"e2e_memory_reset".to_string()));
         // A2 追加的两条必须在分派面上（本测试只对账「有臂」，行为见下方专项测试）。
@@ -1916,7 +1980,8 @@ mod tests {
                     "operationId": "test-clear",
                     "baseRevision": base,
                     "action": "clear",
-                    "actor": "internal"
+                    "actor": "internal",
+                    "conversationFences": []
                 }),
             )
             .unwrap();
@@ -1941,8 +2006,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            env.call("mcp_credential_get", json!({ "server": "github", "var": "GITHUB_TOKEN" }))
-                .unwrap(),
+            env.call(
+                "mcp_credential_get",
+                json!({ "server": "github", "var": "GITHUB_TOKEN" })
+            )
+            .unwrap(),
             json!("probe-token")
         );
         // 名单命令只回变量名：值不得出现在 status 回执里。
@@ -1953,18 +2021,27 @@ mod tests {
         assert!(!status.to_string().contains("probe-token"), "{status}");
         // 未设置也是成功回执（null），由 Node 按「变量缺失」如实失败。
         assert_eq!(
-            env.call("mcp_credential_get", json!({ "server": "github", "var": "OTHER" }))
-                .unwrap(),
+            env.call(
+                "mcp_credential_get",
+                json!({ "server": "github", "var": "OTHER" })
+            )
+            .unwrap(),
             Value::Null
         );
         assert_eq!(
-            env.call("mcp_credential_delete", json!({ "server": "github", "var": "GITHUB_TOKEN" }))
-                .unwrap(),
+            env.call(
+                "mcp_credential_delete",
+                json!({ "server": "github", "var": "GITHUB_TOKEN" })
+            )
+            .unwrap(),
             json!(true)
         );
         assert_eq!(
-            env.call("mcp_credential_delete", json!({ "server": "github", "var": "GITHUB_TOKEN" }))
-                .unwrap(),
+            env.call(
+                "mcp_credential_delete",
+                json!({ "server": "github", "var": "GITHUB_TOKEN" })
+            )
+            .unwrap(),
             json!(false)
         );
         // 空值拒绝走结构化 CONFIG（不静默存空、不折成成功）。

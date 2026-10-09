@@ -217,7 +217,7 @@ describe("deleteSession 与托管聊天图片清理", () => {
     // 与 @/services/observation/topics 的 sourceIdFor 同算法：来源身份 = SHA-256(sessionId 换行 entryId) 前 16 字节。
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${sessionId}\n${userEntry!.id}`))
     const sourceId = `topic-${[...new Uint8Array(digest)].slice(0, 16).map(value => value.toString(16).padStart(2, "0")).join("")}`
-    await appendTopicEvidence([{ topic: "rust", weight: 1, sourceId, observedAt: Date.now() }])
+    await appendTopicEvidence([{ topic: "rust", category: "technology", stance: "neutral", sensitivity: "none", weight: 1, sourceId, observedAt: Date.now() }])
     expect(hasTopicSource(sourceId), "话题证据未写入（夹具失效）").toBe(true)
 
     await expect(deleteSession(sessionId)).resolves.toBe(true)

@@ -8,7 +8,9 @@ use super::store::{
     JOB_LEASE_MS, JOB_LIST_LIMIT_DEFAULT, LIST_LIMIT_DEFAULT, QUERY_LIMIT_DEFAULT,
     RECALL_LIMIT_DEFAULT,
 };
+use super::conversation::ConversationIndexEntry;
 use super::MemoryState;
+use super::{ConversationClearFence, ConversationIndexBatch};
 use crate::error::{AppError, AppResult};
 // 窗口身份（label 字符串）的唯一定义点在 `host/mod.rs` 的 `WindowId`；这里的
 // window_label 比较一律取 `WindowId::*.label()`，不写第二份字面量。
@@ -101,6 +103,59 @@ pub fn memory_get_items(state: &MemoryState, ids: Vec<String>) -> AppResult<Vec<
     state.0.get_items(&ids)
 }
 
+pub(crate) fn conversation_index_status(state: &MemoryState) -> AppResult<Value> {
+    state.0.conversation_index_status()
+}
+
+pub(crate) fn conversation_index_replace(
+    state: &MemoryState,
+    session_id: String,
+    fingerprint: String,
+    expected_fingerprint: Option<String>,
+    expected_forget_epoch: i64,
+    entries: Value,
+    batch: Option<Value>,
+) -> AppResult<i64> {
+    let entries: Vec<ConversationIndexEntry> = serde_json::from_value(entries)
+        .map_err(|error| AppError::Config(format!("会话索引 entries 参数无效: {error}")))?;
+    let batch: Option<ConversationIndexBatch> = batch
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| AppError::Config(format!("会话索引 batch 参数无效: {error}")))?;
+    state.0.conversation_index_replace(
+        &session_id,
+        &fingerprint,
+        expected_fingerprint.as_deref(),
+        expected_forget_epoch,
+        &entries,
+        batch,
+    )
+}
+
+pub(crate) fn conversation_index_prune(
+    state: &MemoryState,
+    session_ids: Vec<String>,
+) -> AppResult<i64> {
+    state.0.conversation_index_prune(&session_ids)
+}
+
+pub(crate) fn conversation_search(
+    state: &MemoryState,
+    query: String,
+    session_id: String,
+    limit: Option<i64>,
+    before: Option<i64>,
+    recent_fallback: Option<bool>,
+) -> AppResult<Value> {
+    state.0.conversation_search(
+        &query,
+        &session_id,
+        limit,
+        before,
+        recent_fallback.unwrap_or(false),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn memory_apply_change(
     window_label: &str,
@@ -114,7 +169,24 @@ pub fn memory_apply_change(
     actor: String,
     trusted_user_event_id: Option<String>,
     trusted_session_id: Option<String>,
+    conversation_fences: Option<Value>,
 ) -> AppResult<i64> {
+    let conversation_fences: Option<Vec<ConversationClearFence>> = conversation_fences
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| AppError::Config(format!("conversationFences 参数无效: {error}")))?;
+    match (action.as_str(), conversation_fences.as_ref()) {
+        ("clear", Some(_)) => {}
+        ("clear", None) => {
+            return Err(AppError::Config("clear 操作缺少 conversationFences".into()))
+        }
+        (_, Some(_)) => {
+            return Err(AppError::Config(
+                "conversationFences 只允许用于 clear 操作".into(),
+            ))
+        }
+        (_, None) => {}
+    }
     let store_actor = match actor.as_str() {
         "current_input" if window_label == WindowId::Main.label() => "current_input",
         "user_ui" if window_label == WindowId::Settings.label() => "user_ui",
@@ -151,6 +223,7 @@ pub fn memory_apply_change(
         store_actor,
         trusted_user_event_id.as_deref(),
         trusted_session_id.as_deref(),
+        conversation_fences.as_deref(),
     )
 }
 
@@ -215,10 +288,7 @@ pub fn memory_job_sources(
 
 /// 开作业前的只读前置查询：水位之后是否已有待处理来源（与 `memory_job_sources` 同一水位判定）；
 /// `origin` 过滤来源类别，缺省 = 两类合计。
-pub fn memory_pending_source_count(
-    state: &MemoryState,
-    origin: Option<String>,
-) -> AppResult<i64> {
+pub fn memory_pending_source_count(state: &MemoryState, origin: Option<String>) -> AppResult<i64> {
     state.0.pending_source_count(origin.as_deref())
 }
 

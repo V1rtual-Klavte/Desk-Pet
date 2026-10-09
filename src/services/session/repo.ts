@@ -70,6 +70,31 @@ export async function deleteAllPiSessionsForTest(): Promise<number> {
  * 不要自行 createPiSessionRepo() 打开同一会话。
  */
 const openSessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>()
+const sessionFileLockTails = new Map<string, Promise<void>>()
+
+/** Whether this process already owns a live session handle. */
+export function isPiSessionOpen(sessionId: string): boolean {
+  return openSessions.has(sessionId)
+}
+
+/**
+ * Serialize transcript indexing/clear snapshots with file deletion for one session.
+ * Ordinary session writes retain their existing Harness ownership and do not use this lock.
+ */
+export async function withPiSessionFileLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
+  const previous = sessionFileLockTails.get(sessionId) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>(resolve => { release = resolve })
+  const tail = previous.then(() => current)
+  sessionFileLockTails.set(sessionId, tail)
+  await previous
+  try {
+    return await operation()
+  } finally {
+    release()
+    if (sessionFileLockTails.get(sessionId) === tail) sessionFileLockTails.delete(sessionId)
+  }
+}
 
 /** 已留过证据的跨根会话 id：同一批跨根项只报一次，不随每次列举刷日志。 */
 const reportedForeignRootIds = new Set<string>()
@@ -248,16 +273,18 @@ export async function persistPiSessionName(sessionId: string, name: string): Pro
 
 /** 删除会话文件；先释放句柄（仓库要求删除时会话未打开）。 */
 export async function deletePiSession(sessionId: string): Promise<boolean> {
-  const repo = await getPiSessionRepo()
-  const metadata = (await repo.list(undefined, BACKGROUND_CONTEXT)).find(item => item.id === sessionId)
-  if (!metadata) {
-    log.warn("待删除会话不存在:", sessionId)
-    return false
-  }
-  await releasePiSession(sessionId)
-  await repo.delete(metadata, BACKGROUND_CONTEXT)
-  log.info("已删除会话:", sessionId)
-  return true
+  return withPiSessionFileLock(sessionId, async () => {
+    const repo = await getPiSessionRepo()
+    const metadata = (await repo.list(undefined, BACKGROUND_CONTEXT)).find(item => item.id === sessionId)
+    if (!metadata) {
+      log.warn("待删除会话不存在:", sessionId)
+      return false
+    }
+    await releasePiSession(sessionId)
+    await repo.delete(metadata, BACKGROUND_CONTEXT)
+    log.info("已删除会话:", sessionId)
+    return true
+  })
 }
 
 /** 读取会话全部 entry（按 seq 升序），供展示读模型映射历史消息。 */
@@ -277,7 +304,14 @@ export async function readPiSessionEntriesOnce(sessionId: string, query?: EntryQ
   try {
     return await session.findEntries(query ?? { order: "asc" }, BACKGROUND_CONTEXT)
   } finally {
-    if (!alreadyOpen) await releasePiSession(sessionId)
+    if (!alreadyOpen) {
+      // 动态导入必须指名具体模块：桶命名空间在 inlineDynamicImports 下急切求值，
+      // 与循环网叠加会触发 L4 构建守卫（见 test/host/native/build.mjs）与 bundle TDZ。
+      const [{ getActiveSessionId }, { harnessSlots }] = await Promise.all([
+        import("./store"), import("@/services/engine/harness/harness-slot"),
+      ])
+      if (getActiveSessionId() !== sessionId && !harnessSlots.peek(sessionId)) await releasePiSession(sessionId)
+    }
   }
 }
 

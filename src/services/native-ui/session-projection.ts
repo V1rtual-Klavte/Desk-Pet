@@ -35,7 +35,7 @@
 // 触发时机（调用点）：
 //   - 会话读模型变化（`session-signal` 的通知；新建/关闭/恢复/删除/切换/改名/中断标记）——
 //     切换路径里 `chatHistory` 已装载目标会话正文，帧内正文与 `sessionId` 同源同刻；
-//   - **正文提交**（`startTranscriptPush` 的可见列表长度监听：用户消息/助手回复/
+//   - **正文提交**（`startTranscriptPush` 的可见列表浅快照监听：用户消息/助手回复/
 //     系统提示/欢迎语落进 `chatHistory`）。流式增量不在触发面内：增量走
 //     `deskpet-assistant-stream` 事件，Rust 侧由瞬时尾巴合并、终态向提交读模型收敛，
 //     提交帧只在有新条目落盘时推一次（不推得比 Rust 收敛所需的更频繁）；提交帧
@@ -479,8 +479,9 @@ let stopTranscriptWatch: (() => void) | undefined
 /**
  * 订阅「正文提交」（`chatHistory` 可见列表的变化）→ 重推整帧。
  *
- * 判据是**长度**变化：正文的落进与替换都经 `chatHistory.push/splice`
- * （`pushMessageFor` / `replaceMessages` / `clearMessages`），长度必变；帧内字段
+ * 监听可见列表的浅快照：正文落进、裁剪和替换都经 `chatHistory.push/splice`
+ * （`pushMessageFor` / `replaceMessages` / `clearMessages`），达到上限后长度虽然不变，
+ * 列表中的条目仍会变化。帧内字段
  * （id/role/text/parts/imagePaths/toolCalls/thinking/isError/toolCallId/timestamp）
  * 只在新条目或整表替换时写入，没有原地改字段的路径（`isProactive` 的原地更新不进
  * 本帧）。Vue 的 watcher 在同一 tick 内合并多次变更 —— 一次提交只推一帧；
@@ -491,14 +492,21 @@ let stopTranscriptWatch: (() => void) | undefined
  */
 export function startTranscriptPush(): void {
   if (stopTranscriptWatch) return
+  let observedSessionId = getActiveSessionId()
   stopTranscriptWatch = watch(
-    () => chatHistory.length,
-    (newLength, oldLength) => {
+    () => chatHistory.slice(),
+    (messages, previous) => {
+      const sessionId = getActiveSessionId()
+      const sameSession = sessionId === observedSessionId
+      observedSessionId = sessionId
+      const latest = messages[messages.length - 1]
       // 保留旧 ChatPanel 的 reply 事件语义：首条问候不响，只在可见列表新增助手条目时播放。
+      // 满列表裁剪不会增加长度；以新条目身份判断，切换/重载/重排不误响。
       if (
-        newLength > oldLength &&
-        oldLength > 0 &&
-        chatHistory[newLength - 1]?.role === "assistant"
+        sameSession &&
+        previous.length > 0 &&
+        latest?.role === "assistant" &&
+        !previous.some((message) => message.id === latest.id)
       ) {
         void Promise.resolve()
           .then(() => playEventSound("reply"))

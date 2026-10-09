@@ -47,6 +47,10 @@ describe("reportRetentionGroupKey", () => {
     expect(reportRetentionGroupKey(`${stamp(1)}.html`)).toBe(stamp(1))
     expect(reportRetentionGroupKey(`${stamp(1)}.json.review.json`)).toBe(stamp(1))
     expect(reportRetentionGroupKey(`${stamp(1)}.txt.scored.json`)).toBe(stamp(1))
+    expect(reportRetentionGroupKey(`${stamp(1)}.json.scored-judge-a-abc123.json`)).toBe(stamp(1))
+    expect(reportRetentionGroupKey(`${stamp(1)}.json.scored-judge-a-abc123.html`)).toBe(stamp(1))
+    expect(reportRetentionGroupKey(`${stamp(1)}.json.hypotheses-abc123.jsonl`)).toBe(stamp(1))
+    expect(reportRetentionGroupKey(`${stamp(1)}.json.verdicts-judge-a-abc123.jsonl`)).toBe(stamp(1))
     expect(reportRetentionGroupKey("caseids-unit.json")).toBeNull()
     expect(reportRetentionGroupKey("flaky.json")).toBeNull()
     // 基名不是日期戳的人工文件（如 notes.review.json）不属于保留体系
@@ -72,6 +76,22 @@ describe("pruneRetainedGroups", () => {
     const result = pruneRetainedGroups(dir, { groupKey: reportRetentionGroupKey })
     expect(result.kept).toBe(3)
     expect(listing(dir)).toEqual([2, 3, 4].flatMap(i => [`${stamp(i)}.html`, `${stamp(i)}.json`]).sort())
+  })
+
+  it("外部判分的 JSON/HTML 卫星跟随原报告作为同一保留组 [report-retention-scored-satellite-pair]", () => {
+    const dir = fixture()
+    const scored = `${stamp(1)}.json.scored-judge-a-abc123`
+    write(dir, `${stamp(1)}.json`, 10, BASE + 1000)
+    write(dir, `${stamp(1)}.html`, 10, BASE + 1000)
+    write(dir, `${scored}.json`, 10, BASE + 1001)
+    write(dir, `${scored}.html`, 10, BASE + 1002)
+    write(dir, `${stamp(1)}.json.verdicts-judge-a-abc123.jsonl`, 10, BASE + 1003)
+    write(dir, `${stamp(1)}.json.hypotheses-abc123.jsonl`, 10, BASE + 1004)
+    for (let i = 2; i <= 4; i++) write(dir, `${stamp(i)}.json`, 10, BASE + i * 1000)
+    const result = pruneRetainedGroups(dir, { groupKey: reportRetentionGroupKey })
+    expect(result.evicted).toContain(stamp(1))
+    expect(listing(dir).some(name => name.startsWith(`${stamp(1)}.`))).toBe(false)
+    expect(result.kept).toBe(3)
   })
 
   it("最新一组即使单独超字节上限也恒留，其余组按上限淘汰 [report-retention-newest-kept-over-budget]", () => {
@@ -117,6 +137,9 @@ describe("pruneReportArtifacts", () => {
     write(dir, `${stamp(1)}.json`, 10, BASE + 1000)
     write(dir, `${stamp(1)}.json.review.json`, 10, BASE + 1500)
     write(dir, `${stamp(9)}.json.review.json`, 10, BASE + 2000)
+    write(dir, `${stamp(9)}.json.scored-judge-a-abc123.html`, 10, BASE + 2100)
+    write(dir, `${stamp(9)}.json.verdicts-judge-a-abc123.jsonl`, 10, BASE + 2200)
+    write(dir, `${stamp(9)}.json.hypotheses-abc123.jsonl`, 10, BASE + 2300)
     pruneReportArtifacts(dir)
     expect(listing(dir)).toEqual([`${stamp(1)}.json`, `${stamp(1)}.json.review.json`].sort())
   })

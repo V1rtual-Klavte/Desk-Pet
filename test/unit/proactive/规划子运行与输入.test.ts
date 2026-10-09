@@ -198,12 +198,20 @@ describe("规划子运行的运行参数", () => {
 
 describe("规划输入补齐", () => {
   const reliable = {
-    revision: 3, generatedAt: 0,
+    measurementVersion: 2, revision: 3, generatedAt: 0,
     quality: { status: "reliable", sampleDays: 5, coverageRatio: 0.9, eligibleCollectionMs: 1000, reasons: [] },
+    apps: { categoryShare: {}, commonAppIds: [], unknownRatio: 0, classificationRatio: 1, classifiedMs: 1000, unclassifiedMs: 0 },
+    focus: { segments: 0, totalMs: 0, longestMs: 0, meanMs: 0, switchesPerHour: 0, currentContinuousMs: 0, currentCategory: null },
+    activity: { byHour: Array(24).fill(0), activeMs: 0, idleMs: 0, unknownMs: 0, unobservedMs: 0, petForegroundMs: 0 },
     rhythm: {
       weekdays: Array.from({ length: 24 }, (_, hour) => 100 + hour),
       weekends: Array.from({ length: 24 }, (_, hour) => 200 + hour),
       days7: 5, days30: 30,
+    },
+    weekly: {
+      days: 5,
+      focus: { segments: 0, totalMs: 0, longestMs: 0, meanMs: 0, switchesPerHour: 0, coveredMs: 0 },
+      activity: { byHour: Array(24).fill(0), activeMs: 0, idleMs: 0, unknownMs: 0, unobservedMs: 0, petForegroundMs: 0 },
     },
   }
 
@@ -280,7 +288,7 @@ describe("规划输入补齐", () => {
     expect(task.localTime).toMatch(/^2026-10-05 周一 12:00 \(.+\)$/)
 
     // 有画像但结构缺 rhythm：rhythm 段为 null，quality 仍在，整体仍是可判输入。
-    mocks.behavior = { revision: 1, quality: { status: "insufficient", sampleDays: 0, coverageRatio: 0, eligibleCollectionMs: 0, reasons: ["no_eligible_collection_time"] } }
+    mocks.behavior = { measurementVersion: 2, revision: 1, quality: { status: "insufficient", sampleDays: 0, coverageRatio: 0, eligibleCollectionMs: 0, reasons: ["no_eligible_collection_time"] } }
     const partial = JSON.parse((await planningInput([], owner, now, new AbortController().signal)).task) as
       { behavior: { quality: { status: string }; rhythm: null } }
     expect(partial.behavior.quality.status).toBe("insufficient")
