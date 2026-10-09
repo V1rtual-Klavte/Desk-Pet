@@ -1,3 +1,4 @@
+// 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：会话投影侦听同长度追加，提示音限定同会话新助手身份，既有图片与意图边界保留；未执行测试。
 // 原生 UI 桥契约（Node ↔ 原生宿主的数据流面）。
 //
@@ -206,7 +207,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "71e4698f5252638860738af9a607fe28da4df8222ac6bbbca9584ae60a431fea",
+  sourceHash: "74d497417da80eb05b5d3628073e3251dc501e0db6a429cc5579a921dde87e2b",
   coverage: [
     {
       id: "nui-34",

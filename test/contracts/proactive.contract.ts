@@ -1,3 +1,4 @@
+// 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 最终静态复核：派生治理复用既有闭包，回顾标记观察代理指标，选材保留话题立场；既有次数与授权裁决未改，未执行测试。
 // 2026-10-08 存量债收口（本批刷新）：本次 STALE 是历史挂账的延续，不是新改动 —— 声明值
 // c5a0f52… 不等于 cebb2b5 自身提交树的哈希（671a6490…），而等于其刷新时工作区（含另会话
@@ -258,7 +259,7 @@ import type { ModuleContract } from "../host/types"
 // `setOverride + flushConfig` 组合（抽屉/设置/主动斜杠等）的写盘次数由 2 降为 1（内容不变），
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "e411aad2ea6eb1a52ffd9f9b6cf50ba33da599d8749b309aa06f5c153d87e3a5",
+  module:"proactive",sourceHash: "5fbe90ae0d10794d6ef8a54650ecf1d245237c0df1b919e6db6c7a512f5f5fd4",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

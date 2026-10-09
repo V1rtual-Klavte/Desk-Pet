@@ -18,7 +18,8 @@
 //   2. 提交后的首个揭示状态是 held（revealed=0、partCount=2）—— 删掉/绕过
 //      runner 的 enqueueCommitted、或退化成「提交即全显」即红；
 //   3. 首泡揭示释放顶栏 typing 所有权 —— 断开 runtime 的 setFirstRevealHandler
-//      接线即红；
+//      接线即红。此处也是「defer 判据与 runner 入队条件分叉」的回归锚点：断言只读文本，
+//      早先回合残留的 owner 会顶住 typing 文案（2026-10-09 全量连跑首次暴露该分叉）；
 //   4. 第二泡按泡间节奏延后（首泡揭示后 1.5s 窗口内不得 revealed=2）—— 调度器
 //      退化成「首泡后立刻全显」即红（首泡刻意写长：延迟 = 字数 × 220ms 且封顶
 //      6000ms，窗口观测余量充足）；

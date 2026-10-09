@@ -31,7 +31,7 @@ import type { PersonalityCard } from "@/services/personality/types"
 import { getPoolSnapshot, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
 import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality/stages-cache"
 import type { SimpleStageKey } from "@/services/personality/stages-cache"
-import { releaseTitlebarStatus, setTitlebarStatus } from "@/services/titlebar"
+import { listTitlebarOwners, releaseTitlebarStatus, setTitlebarStatus } from "@/services/titlebar"
 import { clearRuntimeDataMissing, generateReply, hasLlmWritableCardVars, hasRuntimeDataReminder, markRuntimeDataMissing, parseRuntimeData, RUNTIME_DATA_REMINDER_TEXT, RUNTIME_DATA_TAG } from "@/services/reply"
 import { authorizeToolExecution, freezePermissionPolicy, invalidatePermissionScope } from "@/services/safety"
 import type { PermissionPolicySnapshot } from "@/services/safety"
@@ -1547,6 +1547,40 @@ function processTitlebarOwner(sessionId: string, generation: number): string {
   return `agent-process:${sessionId}:${generation}`
 }
 
+/**
+ * 释放同会话中代际早于 `generation` 的过程 owner（遗弃回合的自愈出口）。
+ *
+ * 被崩溃中断/被遗弃的回合可能永远走不到收尾：driveTurn 的 finally 不执行（挂起的
+ * await 链），或延后释放等不到首次揭示 —— 顶栏「正在输入」会永久滞留，且断言只读
+ * 文本，跨场景残留会顶住后续同文案状态（2026-10-09 全量 e2e 的 humanizer 场景即以
+ * 此暴露：两个中断场景的回合各留一个 owner）。不依赖回合收尾的兜底就是这条：新回合
+ * 开始时把旧代际清一遍；owner 键仍带代际，旧回合的迟到释放不会误删新回合的状态。
+ */
+function releaseStaleProcessTitlebarOwners(sessionId: string, generation: number): void {
+  const prefix = `agent-process:${sessionId}:`
+  for (const owner of listTitlebarOwners()) {
+    if (!owner.startsWith(prefix)) continue
+    const staleGeneration = Number(owner.slice(prefix.length))
+    if (Number.isInteger(staleGeneration) && staleGeneration < generation) releaseTitlebarStatus(owner)
+  }
+}
+
+/**
+ * 拟人化回合把顶栏 typing 所有权交给揭示调度器（首泡揭示时释放）的唯一判据。
+ *
+ * 必须与 runner 的入队条件严格同集（`runner.ts` 的 `pushTurnOutcome`）：runner 只对
+ * 「未停止、有正文、无工具轮」的拟人回合调用 `enqueueCommitted`。判据一旦放宽（例如
+ * 漏掉工具轮或已停止的回合），被延后的 owner 永远等不到 firstReveal，顶栏 typing 文案
+ * 会永久滞留 —— 2026-10-09 全量 e2e 的 humanizer 场景正是以「泄漏 owner 顶住文本」的
+ * 形态暴露了这处不一致（带工具轮的拟人回合 defer 了却从不入队）。
+ */
+export function defersTitlebarReleaseToReveal(
+  output: Pick<PiAgentTurnOutput, "humanized" | "silent" | "reply" | "abortedByStop" | "toolCallHistory">,
+): boolean {
+  return output.humanized === true && output.silent !== true && Boolean(output.reply)
+    && output.abortedByStop !== true && output.toolCallHistory.length === 0
+}
+
 // The scheduler runs after the committed message reaches the runner; its first visible bubble ends
 // the typing titlebar owner even though the lane itself may already have settled.
 setFirstRevealHandler(state => releaseTitlebarStatus(processTitlebarOwner(state.sessionId, state.runGeneration)))
@@ -1743,6 +1777,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   }
   // 建用点：回合所有权需要槽存在（代际在 begin 时已确定）。
   const slot = harnessSlots.ensure(turnSessionId)
+  // 自愈清扫：旧代际的过程 owner（被中断/被遗弃的回合留下的顶栏文案）在新回合开始即清。
+  releaseStaleProcessTitlebarOwners(turnSessionId, generation)
   const runIsCurrent = () => harnessSlots.isCurrent(turnSessionId, generation)
   const activeOwner: ProactiveOwner | undefined = input.activeRequest ? {
     sessionId: turnSessionId,
@@ -2109,7 +2145,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         output.failure = { kind: "unknown", message: "主动表达没有可核实的助手提交条目" }
       }
     }
-    deferTypingTitlebarRelease = output.humanized === true && output.silent !== true && Boolean(output.reply)
+    deferTypingTitlebarRelease = defersTitlebarReleaseToReveal(output)
       && (input.ingress !== undefined || input.activeRequest !== undefined)
       && getActiveSessionId() === turnSessionId
     return output

@@ -56,3 +56,8 @@ export function setTitlebarStatus(owner: string, text: string, priority: number)
 export function releaseTitlebarStatus(owner: string): void {
   if (owners.delete(owner)) renderOwner()
 }
+
+/** 当前所有 owner 键（只读快照）；供持有命名约定的上层做自愈清扫。 */
+export function listTitlebarOwners(): string[] {
+  return [...owners.keys()]
+}

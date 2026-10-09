@@ -9,7 +9,7 @@ import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getCommandReply, getFallbackReply } from "@/services/personality/stages-cache"
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import { conversationConfig } from "@/services/config"
-import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/harness"
+import { createActiveMessage, defersTitlebarReleaseToReveal, deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/harness"
 import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/harness"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { preProcess } from "@/services/engine/preprocessor"
@@ -358,7 +358,9 @@ async function pushTurnOutcome(result: PiAgentTurnOutput, sessionId: string): Pr
   if (result.silent) return
   // 条目关联的截图路径与条目本身同一次提交；实时界面消息必须带上同一份路径（重载由读模型带回）。
   const message = pushAssistantMessage(result.reply, sessionId, result.replyParts, result.committedAssistantEntryId, result.userImagePaths)
-  if (result.humanized && result.toolCallHistory.length === 0) {
+  // 入队条件与 runtime 的 defer 判据同集（同一导出函数）：不同集会留下永不释放的
+  // 顶栏 typing owner（工具轮/已停止的回合曾漏判，见 runtime 的判据注释）。
+  if (defersTitlebarReleaseToReveal(result)) {
     enqueueCommitted({
       sessionId, runGeneration: result.runGeneration ?? 0,
       messageId: message.id, parts: result.replyParts ?? [result.reply], isActiveMessage: false,

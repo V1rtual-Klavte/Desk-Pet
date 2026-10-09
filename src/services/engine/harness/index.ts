@@ -6,6 +6,7 @@ export {
   continueInterruptedRun,
   createActiveMessage,
   createTurnNoteMessage,
+  defersTitlebarReleaseToReveal,
   deliverActiveTurn,
   discardPlan,
   discardInterruptedRun,

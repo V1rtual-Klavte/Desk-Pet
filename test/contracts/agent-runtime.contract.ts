@@ -1,3 +1,4 @@
+// 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：空工具回合与准入去重已沿生产调用链复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新（含保存会话动态导入改指名 harness-slot，行为不变）。
 // 2026-10-06 验收批次：声明更新，sourceHash 批量刷新（主会话统一复算）。
 // 2026-10-05 本批复查与刷新（RUNTIME_DATA 协议缺失检测与提醒）：sourceFiles 变化 ——
@@ -227,7 +228,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "b7f1522b5ec0b3cf9ed5edf4dffcd1212958d96b0a31363064926e6b8531b549",
+  sourceHash: "0b6e71509ac3ea5da4b0ccae627f60e1f71f1148c40ce49024bf817e4d68c260",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

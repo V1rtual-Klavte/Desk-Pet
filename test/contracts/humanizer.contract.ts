@@ -1,3 +1,4 @@
+// 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：输入去重和空工具选项不改变分泡、提交与顶栏所有权，覆盖点静态对照；未执行测试。
 // 2026-10-05 本批复查与刷新：契约 sourceFiles 里 runtime.ts 由另一会话同批写入
 // （新增 emitToolStageTitlebar：工具过程文案改推顶栏，与阶段提示共用同一 owner 与释放点），
@@ -80,7 +81,7 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "48b65aad4e3be726bd2fd854a32cdea70c5b8a0974c5fde8f4d2d0452eef4f1d",
+  sourceHash: "21bb62454c0e7ced341f361c7bb8848f2a16dec16a3f826598ec965f0683c3b7",
   coverage: [
     {
       id: "hz-01",
