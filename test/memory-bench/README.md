@@ -194,6 +194,12 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
   存储为隔离 E2E 根内的真实 Rust SQLite。
 - 模型工具/权限边界不变；**不为拉高分改产品**：recall 预算（CONFIG `ai.memory.core/recall`）、
   dreaming 截断（1200）/丢弃（4800）造成的压分照实记录（`ingest` + `manifest.memoryConfig`）。
+- **召回时限（2026-10-09 起）**：bench 把 `ai.memory.recallTimeoutMs` 覆盖为 120 秒（生产默认 4 秒）。
+  这是**测量口径**而非给产品放水：生产进程长期在线、会话索引随召回增量建立，4 秒交互延迟预算
+  够用；而基准每题一组全新库 = 每题都付一次整组冷索引，4 秒内原文通道必然退化为空
+  （2026-10-09 oracle 实测：索引 0 会话、assistant 题 8/8 零候选），测得的是冷启动伪影而不是
+  检索能力。token 预算与 dreaming 截断仍按上一条照实记录、不调整；时限覆盖记录在报告
+  `manifest.memoryConfig` 供审计。
 - 题目基准日（2026-10-03 修正）：官方 LongMemEval 以 `question_date` 为「当前日期」，
   适配器把提问回合的尾随注记 `[当前时间]` 锚到题目基准日（**本地墙钟**，`questionTimeAnchor`），
   相对日期题（「多少天前」「上周二」）从此在官方口径下测量；锚点只活在该提问回合内、

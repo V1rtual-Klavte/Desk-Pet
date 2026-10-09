@@ -1,10 +1,11 @@
+// 2026-10-09 验收修复：bench 覆盖 ai.memory.recallTimeoutMs=120s——生产的 4s 是交互预算，每题一组冷库的整组会话索引在 4s 内跑不完会让原文通道整组退化为空（测得冷启动伪影而非检索能力）；token 预算与 dreaming 截断不调整，生效值随报告 manifest 记录。sourceHash 按当前源码刷新。
 // 2026-10-09 最终静态复核：空工具样本污染分账、真实多会话夹具及绑定式外判分回填已复核，覆盖声明同步；未执行测试。
 import type { ModuleContract } from "../host/types"
 
 export const memoryBenchContract: ModuleContract = {
   module: "memory-bench",
   sourceFiles: ["test/memory-bench/upstream-lock.json", "test/memory-bench/prepare.mjs", "test/memory-bench/index.mjs", "test/memory-bench/judge.mjs", "test/memory-bench/export-hypotheses.mjs", "test/memory-bench/import-verdicts.mjs", "test/memory-bench/report.mjs", "test/memory-bench/scope-normalize.mjs", "test/memory-bench/bench-adapter.ts", "test/memory-bench/datasets/longmemeval/importer.mjs", "test/memory-bench/datasets/longmemeval/scorer.mjs", "test/memory-bench/datasets/locomo/importer.mjs", "test/memory-bench/datasets/locomo/porter.mjs", "test/memory-bench/datasets/locomo/scorer.mjs", "test/memory-bench/datasets/memorybank/importer.mjs", "test/memory-bench/datasets/memorybank/scorer.mjs"],
-  sourceHash: "3c977d878538e49c30dfa2d99bba74efd8226e94256f233e272cc2a466f03fb6",
+  sourceHash: "2342db00055db300113a685341493d86ac7820643b361af5ec4682e83454dc7d",
   coverage: [
     { id: "mb-07", feature: "外部判分回填与工具污染分账", description: "导出并校验 report/case/question/hypothesis 绑定，外部 yes/no 或官方 autoeval_label 必须有具名判分者、口径和时间；拒绝重复未知或错绑行，部分回填不混本地 verdict。按完整所选题集报告类型、失败、未知与严格空工具子集，助手题仍在总分；旧报告缺逐题类型保持未知。原始报告不覆盖，派生报告显示来源与判分审计。提问回合冻结 toolMode none，若出现工具调用仍保留回答并单独统计污染", why: "适配错误不能丢弃可能答对的样本，口头分数与无法绑定原回答的 verdict 不能成为可信结果", layer: "unit", depth: "deep", scenarios: ["bench-external-hypotheses-binding", "bench-external-score-roster", "bench-external-score-isolation", "bench-external-legacy-unknown-types", "bench-external-judge-identity", "bench-external-verdict-rejection", "bench-report-external-audit", "bench-lme-planned-tooling-breakdown"] },
     {"id": "mb-01", "feature": "版本锁定与安装器", "description": "上游 revision 与 SHA-256 全部固定且校验失败拒绝使用；仓库许可原文副本与锁定哈希逐字节一致（NC 合规红线）；数据一律不进仓库目录、按锁下载到 data-dir（可指定）", "why": "外部基准的权威性依赖「同一 revision + 同一校验和 = 同一份数据」；锁定失效或数据回流仓库会让复现性无声破裂", "layer": "unit", "depth": "deep", "scenarios": ["bench-lock-pinned", "bench-lock-license", "bench-lock-no-vendored-data"]},

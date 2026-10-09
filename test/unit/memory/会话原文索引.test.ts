@@ -260,4 +260,70 @@ describe("会话原文索引", () => {
     const result = await recallConversation({ sessionId: "current", query: "原话", tokenBudget: 500, signal: new AbortController().signal })
     expect(result).toEqual([])
   })
+
+  it("会话文件统计走 metadata 的绝对路径（file_info 不接受数据根相对路径）[conversation-index-session-absolute-path]", async () => {
+    const current = session("absolute-path-session")
+    fixture.metadata = [current]
+    const entry = messageEntry("user-entry", 1, "user", 100, "event-user")
+    fixture.transcripts.set(current.id, {
+      entries: [entry],
+      messages: [{ id: entry.id, eventId: "event-user", role: "user", text: "原文", timestamp: 100, isUserInput: true }],
+    })
+    installBridge()
+
+    await recallConversation({ sessionId: current.id, query: "原文", tokenBudget: 500, signal: new AbortController().signal })
+
+    // 通用文件 API 按绝对路径解析；传数据根相对路径（`sessions/<id>.jsonl`）会被按宿主进程
+    // cwd 解析并整轮以 PATH_NOT_FOUND 失败——会话原文通道在真实宿主里曾因此从未建起来。
+    const stats = fixture.calls.filter(call => call.method === "file_info")
+    expect(stats.length).toBeGreaterThan(0)
+    expect(stats.every(call => call.args.path === current.path)).toBe(true)
+  })
+
+  it("空会话（条目文件未落盘）跳过而不是中止整轮索引 [conversation-index-empty-session-skipped]", async () => {
+    const empty = session("empty-session")
+    const normal = session("normal-session")
+    fixture.metadata = [empty, normal]
+    const entry = messageEntry("normal-user", 1, "user", 100, "event-normal")
+    fixture.transcripts.set(normal.id, {
+      entries: [entry],
+      messages: [{ id: entry.id, eventId: "event-normal", role: "user", text: "正常原文", timestamp: 100, isUserInput: true }],
+    })
+    fixture.searchEntries = [{ sessionId: normal.id, entryId: "normal-user", eventId: "event-normal", seq: 1, chunk: 0,
+      role: "user", text: "正常原文", timestamp: 100, score: 1 }]
+    // 空会话的 file_info 报 PATH_NOT_FOUND；其余命令沿用同一替身语义。
+    const bridge = {
+      async request(method: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown> {
+        if (method === "file_info" && args.path === empty.path) {
+          throw Object.assign(new Error(`路径不存在: ${String(args.path)}`), { code: "PATH_NOT_FOUND" })
+        }
+        fixture.calls.push({ method, args, options })
+        if (method === "conversation_index_status") {
+          return { sessions: [...fixture.indexed], stagedSessionIds: [], revision: 0, forgetEpoch: 0 }
+        }
+        if (method === "file_info") return { name: "session.jsonl", path: args.path, kind: "file", size: 1024, mtimeMs: 10 }
+        if (method === "conversation_index_replace") {
+          const batch = args.batch as { id: string; complete: boolean }
+          if (batch.complete) {
+            fixture.indexed = fixture.indexed.filter(item => item.sessionId !== args.sessionId)
+            fixture.indexed.push({ sessionId: args.sessionId as string, fingerprint: args.fingerprint as string })
+          }
+          return 1
+        }
+        if (method === "conversation_search") return { revision: 1, memoryRevision: 7, forgetEpoch: 0, entries: [...fixture.searchEntries] }
+        throw new Error(`unexpected host command: ${method}`)
+      },
+      subscribe: () => () => undefined,
+      readBlob: async () => new Uint8Array(),
+      releaseBlob: async () => undefined,
+    }
+    setHostBridge(bridge as unknown as HostBridge)
+
+    const result = await recallConversation({ sessionId: normal.id, query: "正常原文", tokenBudget: 500, signal: new AbortController().signal })
+
+    const replaced = fixture.calls.filter(call => call.method === "conversation_index_replace").map(call => call.args.sessionId)
+    expect(replaced).toContain(normal.id)
+    expect(replaced).not.toContain(empty.id)
+    expect(result.map(item => item.conversation?.entryId)).toEqual(["normal-user"])
+  })
 })

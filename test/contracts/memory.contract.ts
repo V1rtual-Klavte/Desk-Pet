@@ -1,3 +1,4 @@
+// 2026-10-09 验收修复：会话索引两处实机缺陷——(1) 会话文件统计改走 metadata 绝对路径（此前把数据根相对路径喂给 file_info，按宿主进程 cwd 解析必失败，真实宿主里索引从未建起来：LME oracle 实测 0 会话、assistant 题 8/8 零候选）；(2) 空会话（条目文件未落盘）按会话跳过而非中止整轮索引。新增 caseId conversation-index-session-absolute-path / conversation-index-empty-session-skipped；sourceHash 按当前源码刷新。
 // 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 最终静态复核：联合改写重排、会话原话索引、数据库结构修复与派生证据撤销已静态复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
 // 2026-10-05 设置页 Card 增删改查 + 模版批次：本契约 sourceFiles 中仅
@@ -278,7 +279,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "d1a1958a5c94323afbabb304d18340183e3aab661a7cbbfb7859782bafc744c1",
+  sourceHash: "2b585219a95cb5d79eb8003312009af53105b127cee6ae30b39b8ae65256c6a6",
   coverage: [
     { id: "mm-52", feature: "派生证据升级闭环", description: "默认召回与派生登记前处理持久失效待办；行为计量升级撤销全部系统观察，旧了解证据仅撤销 understanding 范围，两者同时发生共用一次全量闭包。事务失败不确认待办且允许重试，无待办不写库。了解来源必须绑定稳定 artifact 与输入版本，缺证据不能登记，用户事实不参与该闭包", why: "只隔离旧缓冲文件会留下已沉淀的旧口径结论继续被召回；确认待办早于事务会导致永久漏清理", layer: "unit", depth: "deep", scenarios: ["derived-evidence-coalesces-all-scopes", "derived-evidence-retry-after-transaction-failure", "derived-evidence-understanding-scope-only", "derived-evidence-no-pending-no-transaction"] },
     { id: "mm-53", feature: "了解沉淀的证据准入", description: "了解摘要来源身份绑定稳定 artifact、实际输入 hash 与摘要；同 artifact 只取最新可验证观察，无 evidenceId 或 evidenceHash 不登记。contentHash 仍校验摘要原文", why: "重复采样不是独立来源，只有摘要文本无法证明实际读过什么", layer: "integration", depth: "deep", scenarios: ["understanding-source-requires-evidence"] },
@@ -307,7 +308,7 @@ export const memoryContract: ModuleContract = {
       why: "只保留用户事实无法回答助手过去说过什么；整会话巨型提交、旧快照回写或原文绕过遗忘会让会话检索不可靠，需要把引用、预算和治理贯穿新通道",
       layer: "unit",
       depth: "deep",
-      scenarios: ["conversation-index-batch-publish", "conversation-index-abort-staging", "conversation-index-sessions", "conversation-clear-seq-fence", "conversation-referential-fallback", "conversation-revalidate-deleted-source", "conversation-empty-query-no-scan"],
+      scenarios: ["conversation-index-batch-publish", "conversation-index-abort-staging", "conversation-index-sessions", "conversation-clear-seq-fence", "conversation-referential-fallback", "conversation-revalidate-deleted-source", "conversation-empty-query-no-scan", "conversation-index-session-absolute-path", "conversation-index-empty-session-skipped"],
     },
     { id: "mm-01", feature: "记忆来源准入（两类通道，不混池）", description: "准入分两条互不混淆的通道：用户事实只收 origin=user + taint=trusted_user + eligibleForMemory=true 的已提交条目（助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局）；系统观察只收 origin=derived_behavior + taint=derived + eligibleForMemory=true 的系统观察来源（画像稳定结论与静默了解观察摘要两个子类，见 mm-47），错配（如 derived_behavior+trusted_user）拒收。投递时刻冻结的 cardId 随来源落盘；派生来源独立登记（合成会话 behavior、身份含内容文本 hash），不冒充用户事实", why: "「谁说的」是记忆的准入判据：把工具/助手来源放进去，模型的一次措辞就会被当成用户长期事实；把系统观察混进用户事实池，归纳出的推断会被说成「你告诉过我」", layer: "integration", depth: "deep", scenarios: ["memory-source-admission", "derived-behavior-source-registration", "derived-behavior-gate-blocks-registration", "derived-behavior-new-source-version"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },

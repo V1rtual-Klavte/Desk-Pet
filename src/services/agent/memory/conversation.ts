@@ -225,6 +225,13 @@ async function ensureSessionIndex(
   inFlightIndexes.set(flightKey, update)
   try {
     return await update
+  } catch (error) {
+    // 空会话（元数据已建、条目文件尚未落盘）是合法状态：跳过该会话，不让它中止整轮索引。
+    // 此前一次 PATH_NOT_FOUND 会掀翻整条会话检索——召回端把它当可选失败吞掉后索引永远建不
+    // 起来（2026-10-09 LME oracle 实测：索引 0 会话、assistant 题 8/8 零候选）。文件落盘后
+    // 列表指纹变化自然触发重索，跳过不会留下永久缺口。
+    if (errorCode(error) !== "PATH_NOT_FOUND") throw error
+    return 0
   } finally {
     if (inFlightIndexes.get(flightKey) === update) inFlightIndexes.delete(flightKey)
   }
@@ -243,12 +250,12 @@ async function replaceStableSessionIndex(
 
     for (let attempt = 0; attempt <= MAX_INDEX_RETRIES; attempt += 1) {
       if (signal.aborted) return 0
-      const before = await statSession(session.metadata, session.relativePath, signal)
+      const before = await statSession(session.metadata, signal)
       const transcript = await readVisibleSessionTranscript(session.metadata.id, { releaseIfIdle: true })
       if (transcript.error) {
         throw new Error(`会话索引源读取不完整 (${session.metadata.id}): ${transcript.error}`)
       }
-      const after = await statSession(session.metadata, session.relativePath, signal)
+      const after = await statSession(session.metadata, signal)
       const afterFingerprint = fingerprint(session.metadata, session.relativePath, after.mtimeMs)
       if (before.mtimeMs !== after.mtimeMs) {
         if (attempt === MAX_INDEX_RETRIES) {
@@ -273,7 +280,7 @@ async function replaceStableSessionIndex(
       } catch (error) {
         if (error instanceof SessionChangedDuringIndexError) {
           if (attempt === MAX_INDEX_RETRIES) throw error
-          const changed = await statSession(session.metadata, session.relativePath, signal)
+          const changed = await statSession(session.metadata, signal)
           session = { ...session, fingerprint: fingerprint(session.metadata, session.relativePath, changed.mtimeMs) }
           continue
         }
@@ -286,7 +293,7 @@ async function replaceStableSessionIndex(
         if (winner?.fingerprint === afterFingerprint) return latest.revision
         if (attempt === MAX_INDEX_RETRIES) throw error
 
-        const stillStable = await statSession(session.metadata, session.relativePath, signal)
+        const stillStable = await statSession(session.metadata, signal)
         if (stillStable.mtimeMs !== after.mtimeMs) {
           session = { ...session, fingerprint: fingerprint(session.metadata, session.relativePath, stillStable.mtimeMs) }
           continue
@@ -298,8 +305,12 @@ async function replaceStableSessionIndex(
   })
 }
 
-async function statSession(metadata: JsonlSessionMetadata, relativePath: string, signal?: AbortSignal): Promise<FileInfoPayload> {
-  const info = await getHostBridge().request("file_info", { path: relativePath }, signal ? { signal } : undefined)
+async function statSession(metadata: JsonlSessionMetadata, signal?: AbortSignal): Promise<FileInfoPayload> {
+  // 通用文件 API（file_info/file_read 族）收**绝对路径**：域内相对路径是 `session_*` 专用
+  // 命令的语义、且会被按宿主进程 cwd 解析。会话文件一律用 metadata.path 直读；此前把数据根
+  // 相对路径喂给 file_info，整轮索引以 PATH_NOT_FOUND 失败 → 会话原文通道在真实宿主里从未
+  // 建起来（2026-10-09 LME oracle 实测：索引 0 会话、assistant 题 8/8 零候选）。
+  const info = await getHostBridge().request("file_info", { path: metadata.path }, signal ? { signal } : undefined)
   if (info.kind !== "file") throw new Error(`会话索引源不是普通文件: ${metadata.id}`)
   return info
 }
@@ -431,7 +442,7 @@ async function replaceIndexBatches(request: ReplaceIndexBatchesRequest): Promise
   let offset = 0
 
   if (first.done) {
-    const finalStat = await statSession(request.session.metadata, request.session.relativePath, request.signal)
+    const finalStat = await statSession(request.session.metadata, request.signal)
     if (finalStat.mtimeMs !== request.sourceMtimeMs) throw new SessionChangedDuringIndexError("会话在索引发布前发生变化")
     return commitIndexBatch([], true)
   }
@@ -442,7 +453,7 @@ async function replaceIndexBatches(request: ReplaceIndexBatchesRequest): Promise
     const next = iterator.next()
     const complete = next.done === true
     if (complete) {
-      const finalStat = await statSession(request.session.metadata, request.session.relativePath, request.signal)
+      const finalStat = await statSession(request.session.metadata, request.signal)
       if (finalStat.mtimeMs !== request.sourceMtimeMs) throw new SessionChangedDuringIndexError("会话在索引发布前发生变化")
     }
     const revision = await commitIndexBatch(currentBatch, complete)

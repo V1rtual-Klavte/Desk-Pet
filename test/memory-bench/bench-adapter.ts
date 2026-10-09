@@ -40,6 +40,14 @@ const EVIDENCE_CHARS = 2_000
 const OVERSIZED_SOURCE_CHARS = 4_800
 const DREAMING_SWEEP_CAP = 40
 const JUDGE_TIMEOUT_MS = 120_000
+/**
+ * bench 召回总预算覆盖：生产默认 `ai.memory.recallTimeoutMs`（4 秒）是交互 UX 预算，
+ * 而外部基准每题一组 = 每题全新库，会话检索的懒索引（首扫整组 JSONL 建索引）必然跑不完
+ * —— 2026-10-09 oracle 实测：assistant 题 8/8 零候选、多会话/偏好题大面积零证据，
+ * 总正确率被压到 30.8%。基准测的是检索质量本身，这里放开预算让整组索引与检索在同一
+ * 回合内完成；生效值随报告记录（memoryConfig 快照），生产语义不变。
+ */
+const BENCH_RECALL_TIMEOUT_MS = 120_000
 const log = createLogger("MemoryBench")
 
 export interface BenchEvidenceRef {
@@ -431,7 +439,7 @@ export function createLiveMemoryBenchAdapter(): {
   async function prepareGroup(groupKey: string, caseDef: BenchCase, traces: unknown[], signal?: AbortSignal):
     Promise<{ ok: true; group: PreparedGroup } | { ok: false; error: string; ingest: NonNullable<BenchCellOutcome["ingest"]> }> {
     const storeReset = await resetEvalMemoryStore()
-    setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.tier": "off" })
+    setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.tier": "off", "ai.memory.recallTimeoutMs": BENCH_RECALL_TIMEOUT_MS })
     await flushConfig()
     installMemoryProvider(sqliteMemoryProvider)
     await createNewSession()
@@ -506,7 +514,7 @@ export function createLiveMemoryBenchAdapter(): {
           groupReused = false
         } else {
           // standardSetup 会把配置拉回基线；组内复用时提问回合必须重新冻结记忆开关。
-          setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.tier": "off" })
+          setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.tier": "off", "ai.memory.recallTimeoutMs": BENCH_RECALL_TIMEOUT_MS })
           await flushConfig()
         }
         const timeAnchor = dataset === "longmemeval" ? questionTimeAnchor(caseDef.questionDate) : null
