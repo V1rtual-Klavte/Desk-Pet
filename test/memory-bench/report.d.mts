@@ -57,6 +57,20 @@ export interface BenchSummary {
   firstTextSamples: number
   ingest: { registeredSources: number; processedSources: number; oversizedSources: number; sweeps: number; scopeNormalized: number }
   retrieval: Record<string, unknown> | null
+  externalAdjudication: {
+    judge: string
+    method: string
+    scope: string
+    judgedAt: string
+    importedAt: string
+    sourceReportSha256: string
+    verdictLogSha256: string
+    hypothesesFile?: string
+    hypothesesFileSha256?: string
+    verdictLogFile?: string
+    coverage: Record<string, number | string>
+    note: string
+  } | null
   failures: Array<{ caseId: string | null; kind: string; message: string }>
   rows: BenchSummaryRow[]
 }

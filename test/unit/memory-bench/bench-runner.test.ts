@@ -142,12 +142,20 @@ describe("bench runner 编排（fake adapter）", () => {
   })
 
   it("连续 3 次基础设施失败后中止剩余题，显式记录未跑的题数 [bench-runner-abort]", async () => {
-    const many = lmeFile([lmeCase("a"), lmeCase("b"), lmeCase("c"), lmeCase("d"), lmeCase("e")])
+    const many = lmeFile([lmeCase("a"), lmeCase("b", "multi-session", true), lmeCase("c"), lmeCase("d"), lmeCase("e")])
     const adapter = fakeAdapter({ fail: () => true })
     const report = await runMemoryBenchEvaluation({ adapter, dataset: "longmemeval", split: "oracle",
       file: many, seed: "s", judgeModel: "judge-model-x" }) as Record<string, any>
     expect(report.plannedCells).toBe(5)
+    expect(report.attemptedCells).toBe(3)
     expect(report.completedCells).toBe(0)
+    expect(report.scores.cases).toBe(5)
+    expect(report.scores.byType.reduce((sum: number, row: { cases: number }) => sum + row.cases, 0)).toBe(5)
+    expect(report.subsetDescription.caseRefs).toHaveLength(5)
+    expect(report.subsetDescription.caseRefs.map((ref: { caseId: string }) => ref.caseId))
+      .toEqual(report.subsetDescription.requestedCaseIds)
+    expect(report.subsetDescription.caseRefs.find((ref: { abstention: boolean }) => ref.abstention))
+      .toMatchObject({ questionType: "multi-session", abstention: true })
     expect(report.gates.complete).toBe(false)
     const aborted = report.failures.find((failure: Record<string, unknown>) => failure.kind === "aborted")
     expect(aborted).toMatchObject({ remainingCells: 2 })

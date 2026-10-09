@@ -3,8 +3,8 @@
 // ==========================================
 //
 // 与 test/memory-quality/live-adapter.ts 的差异（外部基准的本质不同）：
-//   · 不做 fact 金标与 fixture 指纹配对；历史注入 = 直登记 MemorySource（不写会话 JSONL、不逐轮重放）；
-//   · 提取走真实 dreaming（档位 off + 手动 sweep，循环直至无待处理来源）；session-scope 候选归一为 user scope；
+//   · 不做 fact 金标与 fixture 指纹配对；LongMemEval 历史写完整 user/assistant JSONL，用户事实单独登记；
+//   · 提取走真实 dreaming（档位 off + 手动 sweep）；LME 保留生产 scope，其余数据集夹具归一到 user scope；
 //   · 每题新建会话提问；cell = 题 × 1 trial（观测证据，不套自建集的 ≥3 trial 配对纪律）；
 //   · LoCoMo / MemoryBank 按「组」灌一次库、组内多题复用（对话级/角色级分组）。
 // 证据与计量：memory_recall_rendered / memory_recall_candidates trace + summarizeMemoryQualityUsage。
@@ -22,8 +22,12 @@ import { completePiText, getPiModel } from "@/services/engine/harness"
 import type { PiModel } from "@/services/engine/harness"
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
 import { publishedUiEventRecords } from "../host/ui-event-tap"
-import { createNewSession } from "@/services/session"
-import { listAll, register, unregister } from "@/services/tool"
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
+import { fauxAssistantMessage } from "@earendil-works/pi-ai"
+import { acquirePiSession, createPiSession, createNewSession, deleteSession, PI_LANE, readPiSessionEntries, releasePiSession } from "@/services/session"
+import { userInputMessage } from "@/services/engine/runtime"
+import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 import { standardSetup } from "../host/standard-setup"
 import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, parseJudgeVerdict } from "./judge.mjs"
 import { questionTimeAnchor } from "./datasets/longmemeval/importer.mjs"
@@ -36,6 +40,7 @@ const EVIDENCE_CHARS = 2_000
 const OVERSIZED_SOURCE_CHARS = 4_800
 const DREAMING_SWEEP_CAP = 40
 const JUDGE_TIMEOUT_MS = 120_000
+const log = createLogger("MemoryBench")
 
 export interface BenchEvidenceRef {
   sourceId: string
@@ -43,6 +48,8 @@ export interface BenchEvidenceRef {
   turnIndex?: number
   diaId?: string
   observedAt?: number
+  role?: "user" | "assistant"
+  channel?: "fact" | "conversation"
 }
 
 export interface BenchCellOutcome {
@@ -50,6 +57,11 @@ export interface BenchCellOutcome {
   questionId?: string | null
   status: "complete" | "failed"
   answer?: string
+  usedTools?: boolean
+  protocolViolations?: string[]
+  tooling?: { requestedMode: "none"; observedCalls: number }
+  toolCalls?: { toolName: string; status: string }[]
+  fixtureCleanup?: { ok: boolean; error?: string }
   evidence: BenchEvidenceRef[]
   candidateSessionIds?: string[]
   groupReused: boolean
@@ -72,7 +84,7 @@ export interface BenchJudgment {
   usage?: { inputTokens: number; outputTokens: number }
 }
 
-interface SourceMeta { observedAt: number; sessionId?: string; turnIndex?: number; diaId?: string }
+interface SourceMeta { observedAt: number; sessionId?: string; turnIndex?: number; diaId?: string; role?: "user" | "assistant" }
 
 interface BenchCase {
   caseId: string
@@ -90,6 +102,7 @@ interface PreparedGroup {
   storeGeneration: string
   sourceMeta: Map<string, SourceMeta>
   ingest: NonNullable<BenchCellOutcome["ingest"]>
+  cleanupFailure?: string
 }
 
 async function sha256(text: string): Promise<string> {
@@ -105,35 +118,52 @@ async function resetEvalMemoryStore(): Promise<EvalMemoryReset> {
   return result
 }
 
-/** 与 memory-quality 相同的工具隔离：本基准只观测记忆通道，模型工具一律撤下。 */
-function isolateTools(): () => void {
-  const tools = listAll()
-  for (const tool of tools) unregister(tool.id)
-  return () => { for (const tool of tools) register(tool) }
-}
+// ── 隔离组夹具：保留原角色和时间，不执行历史轮次、不将金标喂给 reader ──
 
-// ── 组来源构造（纯数据变换）──
-
-function longMemEvalSources(caseDef: BenchCase): { sources: MemorySource[]; meta: Map<string, SourceMeta> } {
+async function longMemEvalSources(caseDef: BenchCase): Promise<{ sources: MemorySource[]; meta: Map<string, SourceMeta> }> {
   const sources: MemorySource[] = []
   const meta = new Map<string, SourceMeta>()
   let seq = 0
   const sessions = (caseDef.sessions ?? []) as Array<{ sessionId: string; observedAt: number;
     turns: Array<{ role: string; content: string; turnIndex: number }> }>
   for (const session of sessions) {
+    const fixture = await createPiSession(`bench-history-${session.sessionId}`)
+    const sessionSources: MemorySource[] = []
+    try {
+    const handle = await acquirePiSession(fixture.id)
+    const branch = await handle.createBranch(PI_LANE, null, BACKGROUND_CONTEXT)
     for (const turn of session.turns) {
-      // 产品只吃 user-origin 来源：assistant 证据题结构性不可答（单列出桶，不为评测改产品）。
-      if (turn.role !== "user") continue
+      if (turn.role !== "user" && turn.role !== "assistant") throw new Error(`未知 LongMemEval 历史角色: ${turn.role}`)
       seq += 1
-      const sourceId = `${session.sessionId}:${turn.turnIndex}`
-      sources.push({ sourceId, sessionId: session.sessionId, entryId: `${turn.turnIndex}`,
-        eventId: `bench-lme-${caseDef.caseId}-${seq}`, seq, contentHash: "",
+      const observedAt = session.observedAt + turn.turnIndex * 1_000
+      const eventId = `bench-lme-${caseDef.caseId}-${seq}`
+      const message = turn.role === "assistant"
+        ? fauxAssistantMessage(turn.content, { timestamp: observedAt })
+        : { ...userInputMessage(turn.content, eventId, {
+          origin: "user", querySource: "chat", priority: "now", taint: "trusted_user", eligibleForMemory: true,
+        }), timestamp: observedAt }
+      const entryId = await branch.appendMessage(message, BACKGROUND_CONTEXT)
+      const sourceId = `${fixture.id}:${entryId}`
+      const sourceMeta: SourceMeta = { observedAt, sessionId: session.sessionId, turnIndex: turn.turnIndex, role: turn.role }
+      meta.set(`conversation:${fixture.id}:${entryId}`, sourceMeta)
+      if (turn.role !== "user") continue // Assistant is searchable dialogue, never a user fact.
+      const source: MemorySource = { sourceId, sessionId: fixture.id, entryId,
+        eventId, seq, contentHash: "",
         evidence: turn.content.slice(0, EVIDENCE_CHARS), sourceLength: turn.content.length,
         eligibleForMemory: true, taint: "trusted_user", origin: "user",
-        observedAt: session.observedAt + turn.turnIndex * 1_000 })
-      meta.set(sourceId, { observedAt: session.observedAt + turn.turnIndex * 1_000,
-        sessionId: session.sessionId, turnIndex: turn.turnIndex })
+        observedAt }
+      sessionSources.push(source)
+      meta.set(sourceId, sourceMeta)
     }
+    const entries = await handle.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)
+    const seqById = new Map(entries.map(entry => [entry.id, entry.seq]))
+    for (const source of sessionSources) {
+      const entrySeq = seqById.get(source.entryId)
+      if (entrySeq === undefined) throw new Error("LongMemEval JSONL 来源未提交")
+      source.seq = entrySeq
+      sources.push(source)
+    }
+    } finally { await releasePiSession(fixture.id) }
   }
   return { sources, meta }
 }
@@ -255,14 +285,22 @@ function evidenceFromTraceEvents(traces: unknown[], sourceMeta: Map<string, Sour
     const sourceIds = Array.isArray(event.payload?.sourceIds)
       ? event.payload.sourceIds.filter((id): id is string => typeof id === "string") : []
     for (const projectionId of sourceIds) {
+      if (projectionId.startsWith("conversation:")) continue
       const itemId = projectionId.split("@")[0] ?? ""
       const item = itemById.get(itemId)
       if (!item) throw new Error(`trace refers to unknown Rust memory item ${projectionId}`)
       for (const sourceId of item.draft.sourceIds) {
         const meta = sourceMeta.get(sourceId)
         if (!meta) continue
-        refs.set(sourceId, { sourceId, ...meta })
+        refs.set(sourceId, { sourceId, ...meta, channel: "fact" })
       }
+    }
+    const conversationRefs = Array.isArray(event.payload?.conversationRefs) ? event.payload.conversationRefs : []
+    for (const value of conversationRefs) {
+      const ref = value as { sourceId?: string; sessionId?: string; entryId?: string }
+      if (typeof ref.sourceId !== "string" || !sourceIds.includes(ref.sourceId)) continue
+      const meta = sourceMeta.get(`conversation:${ref.sessionId}:${ref.entryId}`)
+      if (meta) refs.set(ref.sourceId, { sourceId: ref.sourceId, ...meta, channel: "conversation" })
     }
   }
   return [...refs.values()]
@@ -323,38 +361,56 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
   const questionSession = await createNewSession()
   let start = 0
   let firstDeliveredTextDeltaMs: number | undefined
-  const restoreTools = isolateTools()
+  let captured: BenchCellOutcome | undefined
   start = performance.now()
   try {
     // LongMemEval 官方协议以 question_date 为「今天」：提问回合的尾随注记锚到题目基准日，
     // 相对日期题才在官方口径下被测量；其余数据集 timeAnchor 为 null，保持真实时钟。
     // 锚点只活在这个回合内，finally 复位，绝不外溢到下一题。
     setCurrentTimeNoteAnchor(timeAnchor)
-    const result = await sendMessage(String(caseDef.question), { requestId: `${groupKey}-q${sequence}-of-${total}` })
+    const result = await sendMessage(String(caseDef.question), { requestId: `${groupKey}-q${sequence}-of-${total}`, toolMode: "none" })
     const firstDelta = publishedUiEventRecords("deskpet-assistant-stream")
       .find(({ payload }) => payload.sessionId === questionSession.id && payload.delta.trim())
     firstDeliveredTextDeltaMs = firstDelta === undefined ? undefined : firstDelta.publishedAt - start
     if (result.outcome !== "succeeded" || result.persistFailed)
       throw new Error(`question turn failed or was not committed: ${result.failure?.message ?? result.outcome}`)
-    if (result.toolCallsMade !== 0) throw new Error("question turn bypassed bench tool isolation")
+    const questionEntries = await readPiSessionEntries(questionSession.id)
+    const emittedToolCalls = questionEntries.reduce((count, entry) => count + (entry.type === "message" && entry.message.role === "assistant"
+      ? entry.message.content.filter(part => part.type === "toolCall").length : 0), 0)
+    // Count attempted calls too, including an unknown name rejected before execution.
+    const observedToolCalls = Math.max(result.toolCallsMade, emittedToolCalls)
     const projectionIds = [...new Set((traces as Array<{ kind?: string; payload?: Record<string, unknown> }>)
       .filter(event => event.kind === "memory_recall_rendered")
       .flatMap(event => Array.isArray(event.payload?.sourceIds)
         ? (event.payload.sourceIds as unknown[]).filter((id): id is string => typeof id === "string") : []))]
-    const itemIds = projectionIds.map(id => id.split("@")[0] ?? "").filter(Boolean)
+    const itemIds = projectionIds.filter(id => !id.startsWith("conversation:")).map(id => id.split("@")[0] ?? "").filter(Boolean)
     const items = await getMemoryItems(itemIds)
     const itemById = new Map(items.map(item => [item.id, item]))
     const evidence = evidenceFromTraceEvents(traces, group.sourceMeta, itemById)
     const measured = summarizeMemoryQualityUsage(traces)
-    return { caseId: String(caseDef.caseId),
+    return captured = { caseId: String(caseDef.caseId),
       questionId: typeof caseDef.questionId === "string" ? caseDef.questionId : null,
       status: "complete", answer: result.reply,
+      usedTools: observedToolCalls > 0,
+      protocolViolations: observedToolCalls > 0 ? ["空工具回合出现工具调用，可比性受影响"] : [],
+      tooling: { requestedMode: "none", observedCalls: observedToolCalls },
+      toolCalls: result.toolCalls,
       evidence, candidateSessionIds: candidateSessionIds(traces, itemById, group.sourceMeta),
       groupReused, storeGeneration: group.storeGeneration, ingest: group.ingest,
       metrics: { firstDeliveredTextDeltaMs }, usage: measured.usage, cache: { status: measured.cache } }
   } finally {
     setCurrentTimeNoteAnchor(null)
-    restoreTools()
+    // A previous benchmark answer is not evidence for another question in the group.
+    try {
+      if (!await deleteSession(questionSession.id)) throw new Error("提问会话删除未成功")
+      if (captured) captured.fixtureCleanup = { ok: true }
+    } catch (error) {
+      // Preserve this answer; subsequent questions must not run against its leftover history.
+      const message = `评测提问会话清理失败，该组停止继续提问: ${formatError(error)}`
+      group.cleanupFailure = message
+      if (captured) captured.fixtureCleanup = { ok: false, error: message }
+      log.error(message)
+    }
   }
 }
 
@@ -380,7 +436,7 @@ export function createLiveMemoryBenchAdapter(): {
     installMemoryProvider(sqliteMemoryProvider)
     await createNewSession()
     let built: { sources: MemorySource[]; meta: Map<string, SourceMeta> }
-    if (dataset === "longmemeval") built = longMemEvalSources(caseDef)
+    if (dataset === "longmemeval") built = await longMemEvalSources(caseDef)
     else if (dataset === "locomo") {
       const conversation = (file.conversations ?? []).find(item => (item as { sampleId?: string }).sampleId === groupKey)
       if (!conversation) throw new Error(`找不到对话 ${groupKey}`)
@@ -395,7 +451,9 @@ export function createLiveMemoryBenchAdapter(): {
     const ingest = { registeredSources: built.sources.length, processedSources: drained.processed,
       oversizedSources: drained.oversized, scopeNormalized: 0, sweeps: drained.sweeps }
     if (drained.incompleteOutput) return { ok: false, error: drained.incompleteOutput, ingest }
-    const scopeNormalized = await normalizeSessionScope()
+    // Full-dialogue LongMemEval uses production scope rules. add+forget fixture
+    // normalization would tombstone real conversation sources and distort recall.
+    const scopeNormalized = dataset === "longmemeval" ? 0 : await normalizeSessionScope()
     ingest.scopeNormalized = scopeNormalized
     return { ok: true, group: { groupKey, storeGeneration: String(storeReset.generation), sourceMeta: built.meta, ingest } }
   }
@@ -406,15 +464,17 @@ export function createLiveMemoryBenchAdapter(): {
     async manifest() {
       const cfg = { provider: aiConfig.provider, model: aiConfig.model,
         coreTokenBudget: memoryConfig.coreTokenBudget, recallTokenBudget: memoryConfig.recallTokenBudget,
-        rerank: memoryConfig.rerank, dreamingTier: memoryConfig.dreamingTier }
+        queryRewrite: memoryConfig.queryRewrite, rerank: memoryConfig.rerank, dreamingTier: memoryConfig.dreamingTier }
       return { provider: aiConfig.provider, model: aiConfig.model, entry: "production", providerMode: "real",
         storageMode: "rust-ipc", configHash: await sha256(JSON.stringify(cfg)),
         toolIsolation: "all model tools disabled; host fixture/governance IPC remains real",
-        ingestion: "direct MemorySource registration (no JSONL replay); dreaming manual sweep; session scope normalized to user",
+        ingestion: dataset === "longmemeval"
+          ? "full user/assistant JSONL fixture; user-only fact registration; dreaming manual sweep; production scope rules"
+          : "direct MemorySource registration; dreaming manual sweep; session scope normalized to user",
         questionTimeAnchoring: dataset === "longmemeval"
           ? "LongMemEval: question_date 作为提问回合的 [当前时间]（本地墙钟）；其余数据集用真实时钟"
           : "真实时钟（该数据集没有题目基准日）",
-        memoryConfig: { rerank: memoryConfig.rerank, coreTokenBudget: memoryConfig.coreTokenBudget,
+        memoryConfig: { queryRewrite: memoryConfig.queryRewrite, rerank: memoryConfig.rerank, coreTokenBudget: memoryConfig.coreTokenBudget,
           recallTokenBudget: memoryConfig.recallTokenBudget, recallTimeoutMs: memoryConfig.recallTimeoutMs,
           rerankTimeoutMs: memoryConfig.rerankTimeoutMs },
         evidenceCapChars: EVIDENCE_CHARS, oversizedSourceChars: OVERSIZED_SOURCE_CHARS,
@@ -423,17 +483,19 @@ export function createLiveMemoryBenchAdapter(): {
 
     async runCell({ caseDef, groupKey, sequence, total, signal }): Promise<BenchCellOutcome> {
       if (signal?.aborted) throw new Error("cancelled before bench cell")
-      await standardSetup()
       // trace 订阅覆盖灌库 + 提问整段：dreaming 的失败分类（长度上限 vs 基础设施）也依赖事件。
       const traces: unknown[] = []
       const unsubscribe = subscribeRuntimeTrace(event => { traces.push(event) })
       try {
         const knownFailure = failedGroups.get(groupKey)
+          ?? (prepared?.groupKey === groupKey ? prepared.cleanupFailure : undefined)
         if (knownFailure !== undefined)
           return { caseId: String(caseDef.caseId), status: "failed", error: knownFailure, evidence: [],
             groupReused: true, storeGeneration: prepared?.storeGeneration ?? "unprepared" }
         let groupReused = true
         if (!prepared || prepared.groupKey !== groupKey) {
+          // Reset once per group. Per-question setup would erase the reused store/history.
+          await standardSetup()
           const result = await prepareGroup(groupKey, caseDef, traces, signal)
           if (!result.ok) {
             failedGroups.set(groupKey, result.error)

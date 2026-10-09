@@ -20,7 +20,7 @@
 | 契约 | 模块行为覆盖门禁（sourceHash + caseId 三层记账） | README「Contract 与 sourceHash」；`test/contracts/` | 预检 attestation；caseids-*.json |
 | trace 证据 | 运行线路完整落盘、完整性核对、理想稿审阅 | README「Trace、记忆质量与性能门禁」；`test:trace-review` | `test/reports/traces/trace-bundle-*`（bench / quality 在各自子目录的 `traces/`） |
 | 理想稿 | 用户手写的"期望线路"，审阅对照基准（只由用户写） | [ideal-traces/README.md](ideal-traces/README.md) | 审阅 JSON（与报告配对、连带淘汰） |
-| 外部记忆基准（权威对照） | 质量主口径：LongMemEval / MemoryBank cn / LoCoMo（基于官方判分移植；按消耗分层跑，不进 CI／发布门禁） | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses |
+| 外部记忆基准（权威对照） | 质量主口径：LongMemEval / MemoryBank cn / LoCoMo（基于官方判分移植；按消耗分层跑，不进 CI／发布门禁） | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
 | 记忆质量（自建兜底） | 兜底冒烟与治理语义回归：外部集未覆盖的来源/scope 反例、纠正、遗忘、称呼/偏好（真实 Provider，烧 token） | README 记忆质量段；`test:memory-quality` | 报告 + review/scored 包（组保留） |
 | 记忆性能 | release 存储 + debug IPC 的资源账（1k/10k 库、P95） | README 性能段；`test:memory-performance` | `test/reports/performance/`（3 份滚动） |
 | 缺陷注入 | 快层的区分力观测（植入缺陷看抓不抓得到） | README「缺陷注入」；`test:mutation` | 控制台（不设阈值） |
@@ -72,6 +72,9 @@
   judge 必须异构于被测模型，不许被测模型自评；上游数据不进仓库（`upstream-lock.json` 锁定
   revision + SHA-256，数据装到 data-dir）。
 - **产物边界**：测试产物一律在 `test/` 下，不落仓库外；保留单元是「组」（报告与审阅/评分卫星连带淘汰、临时根按已知前缀 + 年龄回收），查看方式与口径见 README「报告在哪、怎么看」；L4 的 Node runner bundle 在 `test/.tmp/native-host-e2e/`（每次运行重建，不进保留链）；
+  memory-bench 外部判分导出/回填使用 `<stamp>.json.hypotheses-<report-hash>.jsonl`、
+  `<stamp>.json.verdicts-judge-<judge-hash>-<verdict-log-hash>.jsonl` 与
+  `<stamp>.json.scored-judge-<judge-hash>-<verdict-log-hash>.json/.html`，均按父报告卫星归组，原始 run 文件保持只读；
   理想稿只由用户编写、不被清理，见 [ideal-traces/README.md](ideal-traces/README.md)。
 
 ## 维护义务（改了什么 → 必须同步什么）

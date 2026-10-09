@@ -54,14 +54,19 @@ export function summarizeBenchReport(report) {
   const outcomes = Array.isArray(report?.outcomes) ? report.outcomes : []
   const dataset = report?.dataset ?? "unknown"
   const failures = Array.isArray(report?.failures) ? report.failures : []
+  const externalAdjudication = report?.externalAdjudication ?? null
 
   // 质量口径按数据集归一：LongMemEval 有 overall/分组，MemoryBank 是单一 accuracy，LoCoMo 是 F1。
   let quality = { kind: dataset, overall: null, buckets: [], breakdown: [], breakdownLabel: "分组" }
   if (dataset === "longmemeval") {
     const bucket = name => ({ name, ...(scores[name] ?? {}) })
     quality.overall = bucket("overall")
+    const assistantBucket = { ...bucket("assistantOnly"),
+      name: scores.assistantOnly?.includedInOverall === true ? "助手题型（计入总计）" : "助手题型（原报告未声明纳入总计）" }
     quality.buckets = [bucket("regular"), bucket("abstention"),
-      { ...bucket("assistantOnly"), name: "仅助手轮（结构性不可答，不计入总计）" }]
+      assistantBucket,
+      { ...(scores.productUserFactSubset ?? {}), name: "产品用户事实子集（范围见说明）", excludedFromTotal: true },
+      { ...(scores.strictEmptyTool ?? {}), name: "严格空工具子集", excludedFromTotal: true }]
     quality.breakdown = (scores.byType ?? []).map(row => ({ name: row.questionType, ...row }))
     quality.breakdownLabel = "题型"
   } else if (dataset === "memorybank") {
@@ -86,10 +91,11 @@ export function summarizeBenchReport(report) {
   }
   const judgeUsage = { inputTokens: 0, outputTokens: 0, adjudicated: 0 }
   for (const outcome of outcomes) {
-    const usage = outcome?.judgment?.usage
+    const localJudgment = outcome?.localJudgment ?? outcome?.judgment
+    const usage = localJudgment?.usage
     if (typeof usage?.inputTokens === "number") judgeUsage.inputTokens += usage.inputTokens
     if (typeof usage?.outputTokens === "number") judgeUsage.outputTokens += usage.outputTokens
-    if (outcome?.judgment?.adjudicated === true) judgeUsage.adjudicated += 1
+    if (localJudgment?.adjudicated === true) judgeUsage.adjudicated += 1
   }
   const missingUsage = outcomes.filter(outcome => outcome?.status === "complete" && !outcome?.usage).length
   const started = Date.parse(report?.startedAt ?? "")
@@ -109,7 +115,9 @@ export function summarizeBenchReport(report) {
   }
 
   const rows = outcomes.map(outcome => {
-    const judgment = outcome?.judgment ?? null
+    const judgment = report?.externalAdjudication
+      ? outcome?.externalJudgment ?? null
+      : outcome?.externalJudgment ?? outcome?.judgment ?? null
     const correct = judgment?.adjudicated === true ? judgment.correct === true : null
     return {
       caseId: outcome?.caseId ?? "?",
@@ -137,7 +145,7 @@ export function summarizeBenchReport(report) {
     source: report?.source ?? null,
     model: report?.manifest?.model ?? null,
     provider: report?.manifest?.provider ?? null,
-    judgeModel: report?.judgeModel ?? report?.judge?.model ?? null,
+    judgeModel: externalAdjudication?.judge ?? report?.judgeModel ?? report?.judge?.model ?? null,
     seed: report?.seed ?? null,
     commit: report?.runEvidence?.commit ?? null,
     upstreamRevision: report?.upstream?.revision ?? null,
@@ -153,6 +161,7 @@ export function summarizeBenchReport(report) {
     firstTextSamples: firstText.length,
     ingest: ingestTotals,
     retrieval: scores.retrieval ?? null,
+    externalAdjudication,
     failures: failures.map(failure => ({ caseId: failure?.caseId ?? null, kind: failure?.kind ?? "unknown", message: failure?.message ?? "" })),
     rows,
   }
@@ -181,10 +190,15 @@ export function formatBenchSummary(summary, options = {}) {
     lines.push(`  ${summary.quality.breakdownLabel}：` + breakdown.slice(0, 8)
       .map(row => `${row.name} ${row.accuracy === null || row.accuracy === undefined ? "—" : pct(row.accuracy)}`).join(" · "))
   }
+  if (summary.quality.kind === "longmemeval") {
+    for (const bucket of summary.quality.buckets ?? [])
+      if (bucket.note) lines.push(`  ${bucket.name}口径：${bucket.note}`)
+  }
   const usage = summary.agentUsage
+  const localJudgeLabel = summary.externalAdjudication ? "本地 judge" : "judge"
   lines.push(`成本：输入 ${num(usage.inputTokens)}（未缓存 ${num(usage.uncachedInputTokens)}）· 输出 ${num(usage.outputTokens)}`
     + ` · 缓存读 ${num(usage.cacheReadTokens)}${usage.cacheWriteTokens ? ` / 写 ${num(usage.cacheWriteTokens)}` : ""}`
-    + ` · 请求 ${num(usage.requests)}${summary.judgeUsage.adjudicated ? ` · judge ${summary.judgeUsage.adjudicated} 次（入 ${num(summary.judgeUsage.inputTokens)} / 出 ${num(summary.judgeUsage.outputTokens)}）` : ""}`
+    + ` · 请求 ${num(usage.requests)}${summary.judgeUsage.adjudicated ? ` · ${localJudgeLabel} ${summary.judgeUsage.adjudicated} 次（入 ${num(summary.judgeUsage.inputTokens)} / 出 ${num(summary.judgeUsage.outputTokens)}）` : ""}`
     + (summary.missingUsage ? ` · 缺 usage ${summary.missingUsage} 条` : ""))
   const ingest = summary.ingest
   lines.push(`灌库：登记 ${num(ingest.registeredSources)} · 处理 ${num(ingest.processedSources)} · sweeps ${num(ingest.sweeps)}`
@@ -200,6 +214,17 @@ export function formatBenchSummary(summary, options = {}) {
   if (options.reportPath) lines.push(`报告：${options.reportPath}`)
   if (options.htmlPath) lines.push(`HTML：${options.htmlPath}`)
   if (options.hypothesesPath) lines.push(`逐题 hypotheses：${options.hypothesesPath}`)
+  const adjudication = summary.externalAdjudication
+  if (adjudication) {
+    const coverage = adjudication.coverage ?? {}
+    lines.push(`外部逐题判分：${adjudication.judge} · ${adjudication.method} · scope ${adjudication.scope}`)
+    lines.push(`判分时间 ${adjudication.judgedAt} · coverage ${coverage.verdictsAccepted ?? 0}/${coverage.selectedCases ?? "?"}`
+      + `（未导出回答 ${coverage.missingHypotheses ?? "?"} · 缺 verdict ${coverage.missingVerdicts ?? "?"}）`)
+    if (coverage.unknownCaseTypeCount || coverage.unknownAbstentionCount)
+      lines.push(`旧报告题级映射未知：题型 ${coverage.unknownCaseTypeCount ?? 0} 道 · abstention ${coverage.unknownAbstentionCount ?? 0} 道；题型 cases 仅沿用报告 aggregate 计数`)
+    if (adjudication.hypothesesFile || adjudication.verdictLogFile)
+      lines.push(`判分文件：hypotheses ${adjudication.hypothesesFile ?? "—"} · verdict log ${adjudication.verdictLogFile ?? "—"}`)
+  }
   return lines.join("\n")
 }
 
@@ -217,9 +242,12 @@ function qualityCards(summary) {
   }
   for (const bucket of summary.quality?.buckets ?? []) {
     if (!bucket || bucket.judged === undefined) continue
+    const detail = bucket.eligible !== undefined
+      ? `${bucket.correct ?? 0}/${bucket.judged ?? 0} · 严格样本 ${bucket.eligible} · 污染 ${bucket.contaminated ?? 0} · 未知 ${bucket.unknown ?? 0} · 未完成 ${bucket.notCompleted ?? bucket.incomplete ?? 0}`
+      : `${bucket.correct ?? "?"}/${bucket.judged ?? "?"}`
     cards.push({ label: bucket.name + (bucket.excludedFromTotal && !String(bucket.name).includes("不计") ? "（不计总计）" : ""),
       value: bucket.accuracy === null || bucket.accuracy === undefined ? "—" : pct(bucket.accuracy),
-      detail: `${bucket.correct ?? "?"}/${bucket.judged ?? "?"}` })
+      detail, note: bucket.note ?? null })
   }
   return cards
 }
@@ -253,6 +281,10 @@ export function renderBenchHtmlReport(report, options = {}) {
     ? `<section><h2>失败（${summary.failures.length}）</h2><ul>${summary.failures.map(failure =>
       `<li><b>${escapeHtml(failure.caseId ?? "(run)")}</b> [${escapeHtml(failure.kind)}] ${escapeHtml(failure.message)}</li>`).join("")}</ul></section>`
     : ""
+  const adjudication = summary.externalAdjudication
+  const adjudicationHtml = adjudication
+    ? `<section><h2>外部逐题判分与覆盖</h2><div class="meta-grid"><span>判分者：${escapeHtml(adjudication.judge)}</span><span>口径：${escapeHtml(adjudication.method)}</span><span>scope：${escapeHtml(adjudication.scope)}</span><span>判分时间：${escapeHtml(adjudication.judgedAt)}</span><span>导入时间：${escapeHtml(adjudication.importedAt)}</span><span>原始报告 SHA-256：${escapeHtml(adjudication.sourceReportSha256)}</span><span>hypotheses：${escapeHtml(adjudication.hypothesesFile ?? "未记录")}</span><span>hypotheses SHA-256：${escapeHtml(adjudication.hypothesesFileSha256 ?? "未记录")}</span><span>判分日志：${escapeHtml(adjudication.verdictLogFile ?? "未记录")}</span><span>判分日志 SHA-256：${escapeHtml(adjudication.verdictLogSha256)}</span><span>覆盖：${adjudication.coverage?.verdictsAccepted ?? 0}/${adjudication.coverage?.selectedCases ?? "?"}；未导出回答 ${adjudication.coverage?.missingHypotheses ?? "?"}；缺 verdict ${adjudication.coverage?.missingVerdicts ?? "?"}</span><span>题型映射：${escapeHtml(adjudication.coverage?.caseTypeMapping ?? "未记录")}；题型未知 ${adjudication.coverage?.unknownCaseTypeCount ?? 0}；abstention 未知 ${adjudication.coverage?.unknownAbstentionCount ?? 0}</span></div><p class="note">${escapeHtml(adjudication.note ?? "")}</p></section>`
+    : ""
   const breakdownHtml = breakdown.length
     ? `<section><h2>${escapeHtml(summary.quality.breakdownLabel)}</h2><table><thead><tr><th>名称</th><th>样本</th><th>判分</th><th>${summary.quality.kind === "locomo" ? "F1" : "正确率"}</th></tr></thead><tbody>${
       breakdown.map(row => `<tr><td>${escapeHtml(row.name)}</td><td>${row.cases ?? "—"}</td><td>${row.judged ?? "—"}</td><td>${row.accuracy === null || row.accuracy === undefined ? "—" : pct(row.accuracy)}</td></tr>`).join("")
@@ -263,7 +295,7 @@ export function renderBenchHtmlReport(report, options = {}) {
     ? `<section><h2>检索（本仓适配口径）</h2><table><tbody>${
       Object.entries(retrieval).filter(([, value]) => typeof value === "number")
         .map(([key, value]) => `<tr><td>${escapeHtml(key)}</td><td>${num(value, 3)}</td></tr>`).join("")
-    }</tbody></table></section>`
+    }</tbody></table>${retrieval.note ? `<p class="note">${escapeHtml(retrieval.note)}</p>` : ""}</section>`
     : ""
 
   return `<!doctype html>
@@ -317,14 +349,15 @@ export function renderBenchHtmlReport(report, options = {}) {
     <span>用时：${summary.durationMs === null ? "—" : `${(summary.durationMs / 60000).toFixed(1)} 分钟`}</span>
   </div>
   <section><h2>质量参考</h2><div class="cards">${cards.map(card =>
-    `<div class="card"><div class="label">${escapeHtml(card.label)}</div><div class="value">${escapeHtml(card.value)}</div><div class="detail">${escapeHtml(card.detail)}</div></div>`).join("")}</div></section>
+    `<div class="card"><div class="label">${escapeHtml(card.label)}</div><div class="value">${escapeHtml(card.value)}</div><div class="detail">${escapeHtml(card.detail)}${card.note ? `<br />${escapeHtml(card.note)}` : ""}</div></div>`).join("")}</div></section>
   ${breakdownHtml}
+  ${adjudicationHtml}
   <section><h2>成本</h2><table><tbody>
     <tr><td>输入（未缓存）</td><td>${num(summary.agentUsage.inputTokens)}（${num(summary.agentUsage.uncachedInputTokens)}）</td></tr>
     <tr><td>输出</td><td>${num(summary.agentUsage.outputTokens)}</td></tr>
     <tr><td>缓存读 / 写</td><td>${num(summary.agentUsage.cacheReadTokens)} / ${num(summary.agentUsage.cacheWriteTokens)}</td></tr>
     <tr><td>模型请求</td><td>${num(summary.agentUsage.requests)}${summary.missingUsage ? ` · 缺 usage ${summary.missingUsage} 条` : ""}</td></tr>
-    ${summary.judgeUsage.adjudicated ? `<tr><td>judge（${summary.judgeUsage.adjudicated} 次）</td><td>入 ${num(summary.judgeUsage.inputTokens)} / 出 ${num(summary.judgeUsage.outputTokens)}</td></tr>` : ""}
+    ${summary.judgeUsage.adjudicated ? `<tr><td>${summary.externalAdjudication ? "本地 judge" : "judge"}（${summary.judgeUsage.adjudicated} 次）</td><td>入 ${num(summary.judgeUsage.inputTokens)} / 出 ${num(summary.judgeUsage.outputTokens)}</td></tr>` : ""}
     ${summary.firstTextMeanMs !== null ? `<tr><td>首文本均值</td><td>${num(summary.firstTextMeanMs)}ms（n=${summary.firstTextSamples}）</td></tr>` : ""}
   </tbody></table></section>
   <section><h2>灌库</h2><table><tbody>

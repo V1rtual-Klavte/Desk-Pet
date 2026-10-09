@@ -69,7 +69,7 @@ describe("记忆基准报告呈现", () => {
   it("汇总 LongMemEval 质量、成本、灌库与失败，且不把观测指标说成门禁", () => {
     const summary = summarizeBenchReport(longMemEvalReport())
     expect(summary.quality.overall).toMatchObject({ judged: 1, correct: 1, accuracy: 1 })
-    expect(summary.quality.buckets.map(bucket => bucket.name)).toContain("仅助手轮（结构性不可答，不计入总计）")
+    expect(summary.quality.buckets.map(bucket => bucket.name)).toContain("助手题型（原报告未声明纳入总计）")
     expect(summary.agentUsage.inputTokens).toBe(100)
     expect(summary.agentUsage.cacheReadTokens).toBe(30)
     expect(summary.judgeUsage).toMatchObject({ adjudicated: 1, inputTokens: 10, outputTokens: 2 })
@@ -108,7 +108,7 @@ describe("记忆基准报告呈现", () => {
   })
 
   it("HTML 报告自包含、可读且转义题面与回答", () => {
-    const report = longMemEvalReport()
+    const report = longMemEvalReport() as Record<string, any>
     report.outcomes[0]!.caseRef.question = "<script>alert(1)</script>"
     const html = renderBenchHtmlReport(report, { reportPath: "/tmp/r.json" })
     expect(html).toContain("记忆基准 · LongMemEval/oracle")
@@ -116,5 +116,31 @@ describe("记忆基准报告呈现", () => {
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;")
     expect(html).not.toContain("<script>alert(1)</script>")
     expect(html).toContain("逐题（2）")
+  })
+
+  it("派生报告显示外部判分身份、scope、时间、覆盖和哈希来源 [bench-report-external-audit]", () => {
+    const report = longMemEvalReport() as Record<string, any>
+    report.externalAdjudication = {
+      judge: "official-judge", method: "LongMemEval official evaluate_qa.py autoeval_label",
+      scope: "oracle selected answers", judgedAt: "2026-10-08T07:30:00.000Z", importedAt: "2026-10-08T08:00:00.000Z",
+      sourceReportSha256: "a".repeat(64), verdictLogSha256: "b".repeat(64),
+      coverage: { selectedCases: 2, hypothesesExported: 2, verdictsAccepted: 1, missingHypotheses: 0, missingVerdicts: 1 },
+      note: "仅逐题 verdict 参与判分",
+    }
+    report.scores.assistantOnly.includedInOverall = true
+    report.scores.productUserFactSubset = { cases: 2, judged: 1, correct: 1, accuracy: 1,
+      note: "按题型排除 single-session-assistant" }
+    report.scores.strictEmptyTool = { cases: 2, eligible: 1, judged: 1, correct: 1, accuracy: 1,
+      contaminated: 1, unknown: 0, incomplete: 0, note: "显式观测零工具调用" }
+    report.scores.retrieval.note = "turnRecall=user 事实轮；assistantTurnRecall=assistant 对话轮"
+    const summary = summarizeBenchReport(report)
+    expect(summary.judgeModel).toBe("official-judge")
+    expect(formatBenchSummary(summary)).toContain("coverage 1/2")
+    const html = renderBenchHtmlReport(report)
+    expect(html).toContain("原始报告 SHA-256")
+    expect(html).toContain("oracle selected answers")
+    expect(html).toContain("按题型排除 single-session-assistant")
+    expect(html).toContain("显式观测零工具调用")
+    expect(html).toContain("assistantTurnRecall=assistant 对话轮")
   })
 })

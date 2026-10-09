@@ -186,18 +186,19 @@ describe("LongMemEval 计分", () => {
     { caseId: "lme-oracle-c", status: "complete", answer: "wrong", evidence: [], candidateSessionIds: [] },
   ]
 
-  it("总正确率排除 assistant-only 桶；弃权/常规分开统计", () => {
+  it("总正确率包含 assistant-only；产品用户事实子集另列，弃权/常规分开统计", () => {
     const score = scoreLongMemEval(cases as never, outcomes as never, {
       "lme-oracle-a": { adjudicated: true, correct: true },
       "lme-oracle-b": { adjudicated: true, correct: false },
       "lme-oracle-c": { adjudicated: true, correct: false },
     }) as Record<string, any>
-    expect(score.overall).toMatchObject({ cases: 2, judged: 2, correct: 1 })
-    expect(score.overall.accuracy).toBeCloseTo(0.5)
+    expect(score.overall).toMatchObject({ cases: 3, judged: 3, correct: 1 })
+    expect(score.overall.accuracy).toBeCloseTo(1 / 3)
     expect(score.abstention).toMatchObject({ cases: 1, judged: 1, correct: 0 })
-    expect(score.regular).toMatchObject({ cases: 1, judged: 1, correct: 1 })
-    expect(score.assistantOnly.excludedFromTotal).toBe(true)
+    expect(score.regular).toMatchObject({ cases: 2, judged: 2, correct: 1 })
+    expect(score.assistantOnly.includedInOverall).toBe(true)
     expect(score.assistantOnly).toMatchObject({ cases: 1, judged: 1, correct: 0 })
+    expect(score.productUserFactSubset).toMatchObject({ cases: 2, judged: 2, correct: 1, accuracy: 0.5 })
   })
 
   it("检索口径：sessionRecall 用 gold answer_session_ids，turnRecall 只算 user 证据轮", () => {
@@ -207,7 +208,19 @@ describe("LongMemEval 计分", () => {
     expect(score.retrieval.sessionRecallMean).toBeCloseTo(1 / 3) // a 命中 1/1，b、c 命中 0/1
     expect(score.retrieval.turnCaseCount).toBe(1) // 只有 a 的 user 证据轮参与
     expect(score.retrieval.turnRecallMean).toBeCloseTo(1)
+    expect(score.retrieval.assistantTurnCaseCount).toBe(1)
+    expect(score.retrieval.assistantTurnRecallMean).toBe(0)
     expect(score.retrieval.candidateSessionRecallMean).toBeCloseTo(1 / 3)
+  })
+
+  it("assistant 对话引用只计 assistantTurnRecall，不挪入 user 事实 turnRecall", () => {
+    const withAssistantDialogue = outcomes.map(outcome => outcome.caseId === "lme-oracle-c"
+      ? { ...outcome, evidence: [{ sourceId: "conversation:s3:e0", sessionId: "s3", turnIndex: 0,
+        role: "assistant", channel: "conversation" }] }
+      : outcome)
+    const score = scoreLongMemEval(cases as never, withAssistantDialogue as never) as Record<string, any>
+    expect(score.retrieval.turnRecallMean).toBeCloseTo(1)
+    expect(score.retrieval.assistantTurnRecallMean).toBeCloseTo(1)
   })
 
   it("judge 失败的题不进正确率分母，另计 judgeFailures", () => {
@@ -218,5 +231,23 @@ describe("LongMemEval 计分", () => {
     expect(score.judgeFailures).toBe(1)
     expect(score.overall).toMatchObject({ judged: 1, correct: 1 })
     expect(score.overall.accuracy).toBe(1)
+  })
+
+  it("题型 cases 覆盖计划题集，缺 outcome 不进 verdict 分母，污染不混入严格空工具基线 [bench-lme-planned-tooling-breakdown]", () => {
+    const planned = [...cases, { caseId: "lme-oracle-d", questionId: "d", questionType: "temporal-reasoning",
+      abstention: false, answerSessionIds: [], evidenceTurns: [], sessions: [] }]
+    const observed = [
+      { ...outcomes[0], usedTools: false, protocolViolations: [], tooling: { requestedMode: "none", observedCalls: 0 } },
+      { ...outcomes[2], usedTools: true, protocolViolations: [], tooling: { requestedMode: "none", observedCalls: 1 } },
+    ]
+    const score = scoreLongMemEval(planned as never, observed as never, {
+      "lme-oracle-a": { adjudicated: true, correct: true },
+      "lme-oracle-c": { adjudicated: true, correct: false },
+    }) as Record<string, any>
+    expect(score.cases).toBe(4)
+    expect(score.overall).toMatchObject({ cases: 4, judged: 2, correct: 1 })
+    expect(score.byType.find((row: any) => row.questionType === "temporal-reasoning"))
+      .toMatchObject({ cases: 1, judged: 0, correct: 0, accuracy: null })
+    expect(score.strictEmptyTool).toMatchObject({ eligible: 1, judged: 1, correct: 1, contaminated: 1, incomplete: 2 })
   })
 })

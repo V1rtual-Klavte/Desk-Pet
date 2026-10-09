@@ -117,10 +117,10 @@ function judgeInputFor(dataset, file, caseDef, outcome) {
 }
 
 /** 同一数据集的判分调度；judgments 缺省时只出检索确定性指标。 */
-export function scoreBenchDataset(dataset, file, outcomes, judgments = {}) {
-  if (dataset === "longmemeval") return scoreLongMemEval(file.cases, outcomes, judgments)
-  if (dataset === "locomo") return scoreLocomo(file.cases, outcomes)
-  if (dataset === "memorybank") return scoreMemoryBank(file.cases, outcomes, judgments)
+export function scoreBenchDataset(dataset, file, outcomes, judgments = {}, cases = file.cases) {
+  if (dataset === "longmemeval") return scoreLongMemEval(cases, outcomes, judgments)
+  if (dataset === "locomo") return scoreLocomo(cases, outcomes)
+  if (dataset === "memorybank") return scoreMemoryBank(cases, outcomes, judgments)
   throw new Error(`未登记的判分数据集: ${dataset}`)
 }
 
@@ -206,19 +206,26 @@ export async function runMemoryBenchEvaluation({
     judgeModel: judgeEnabled ? judgeModel : null,
     subsetDescription: { policy: file.selection?.policy ?? null, caseCount: cells.length,
       requestedCaseIds: cells.map(cell => cell.caseId), fileCaseCount: file.cases.length,
-      countsByType: file.selection?.countsByType ?? null, abstentionCount: file.selection?.abstentionCount ?? null },
+      caseRefs: cells.map(cell => ({ caseId: cell.caseId, questionId: cell.questionId,
+        questionType: cell.caseDef.questionType ?? null, abstention: cell.caseDef.abstention === true,
+        productUserFactEligible: dataset === "longmemeval" && cell.caseDef.questionType !== "single-session-assistant" })),
+      countsByType: dataset === "longmemeval" ? cells.reduce((counts, cell) => {
+        const questionType = cell.caseDef.questionType
+        counts[questionType] = (counts[questionType] ?? 0) + 1
+        return counts
+      }, {}) : file.selection?.countsByType ?? null,
+      abstentionCount: cells.filter(cell => cell.caseDef.abstention === true).length },
     // 外部基准是观测证据：不设质量阈值，字段显式为 null（区别于自建 80 题的门禁）。
     qualityThresholds: null,
     gates: { complete, infrastructureFailures: failures.filter(failure => failure.kind !== "cancelled").length },
     manifest: await adapter.manifest?.() ?? null,
     plannedCells: cells.length,
-    // attempted = 产生过结果（含失败）的 cell；completed = 真正完整跑完的 cell。
-    attemptedCells: outcomes.length,
+    // attempted = 实际进入执行的 cell（包括抛错而未产生 outcome 的基础设施失败）。
+    attemptedCells: attempted,
     completedCells: outcomes.filter(outcome => outcome.status === "complete").length,
     failures,
     outcomes,
-    scores: scoreBenchDataset(dataset, file, outcomes, judgments),
+    scores: scoreBenchDataset(dataset, file, outcomes, judgments, cells.map(cell => cell.caseDef)),
   }
   return report
 }
-

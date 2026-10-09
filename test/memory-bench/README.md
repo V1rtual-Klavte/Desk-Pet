@@ -91,13 +91,38 @@ pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
 逐题结果作为 bundle 成员 `test/reports/bench/traces/trace-bundle-<stamp>.memory-bench.jsonl`
 （复用现有成员名后缀，未改 `scripts/trace-evidence.mjs`）。
 
-**LongMemEval 的逐题 JSONL 行同时携带 `question_id` 与 `hypothesis`**，官方
-`src/evaluation/evaluate_qa.py <metric_model> <hyp_file> <ref_file>` 可直接消费（多余字段被官方脚本忽略）；
-`ref_file` 用官方原始 LongMemEval 数据。另一条导出路径：
+**LongMemEval 逐题 JSONL**同时携带 `question_id`、`hypothesis`、`case_id`、原报告字节 SHA-256
+与该回答的 SHA-256；官方 `src/evaluation/evaluate_qa.py <metric_model> <hyp_file> <ref_file>`
+可直接消费并在结果行保留这些绑定字段（`ref_file` 用官方原始 LongMemEval 数据）。
+导出默认写到同组 `<stamp>.json.hypotheses-<report-sha12>.jsonl` 并打印路径；`--out` 也必须留在原报告目录，确保随组保留。
+导出后必须导入官方脚本生成的 `.eval-results-<model>` JSONL，或带同样绑定字段的人工 yes/no 逐题文件：
 
 ```bash
-node test/memory-bench/export-hypotheses.mjs test/reports/bench/<stamp>.json --out /tmp/hypotheses.jsonl
+node test/memory-bench/export-hypotheses.mjs test/reports/bench/STAMP.json
+python test/memory-bench/.data/reference/longmemeval-evaluate_qa.py JUDGE_MODEL test/reports/bench/STAMP.json.hypotheses-REPORT_SHA.jsonl test/memory-bench/.data/raw/longmemeval_oracle.json
+node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/reports/bench/STAMP.json.hypotheses-REPORT_SHA.jsonl.eval-results-JUDGE_MODEL \
+  --scope "LongMemEval official evaluate_qa.py autoeval_label" --judged-at JUDGMENT_COMPLETION_ISO_TIME
 ```
+
+将 `STAMP` 换成主报告时间戳，`REPORT_SHA` 换成导出脚本打印路径里的 12 位原报告哈希，`JUDGE_MODEL` 换成官方脚本支持的异构判分模型别名，将 `JUDGMENT_COMPLETION_ISO_TIME` 换成真实判分完成时刻；
+若 prepare 使用了自定义 data-dir，reference 文件也要指向该目录的 `raw/longmemeval_oracle.json`。
+
+导出为每条 hypothesis 写入原报告 SHA-256 与 UTF-8 回答 SHA-256。导入会逐条验证原报告、唯一
+`question_id`、`case_id`、回答文本与回答哈希；重复、未知、报告不匹配或回答被改动的判分行会整体拒绝。
+官方日志中的 `autoeval_label.model/label` 是判分者与 yes/no；人工文件使用同一导出行并添加
+`"verdict":"yes"` 或 `"verdict":"no"`，同时必须传 `--judge` 身份。两种来源均须明确写出
+`--scope` 与 `--judged-at`。导入只生成新的
+`<stamp>.json.scored-judge-<judge-hash>-<verdict-log-hash>.json/.html`，使用独占创建模式，
+保留源 run 报告；每个判分身份与判分日志内容拥有独立文件名，重复导入不会覆写既有版本。
+这些派生文件按报告卫星纳入原 run 的同一保留组，原报告滚出最近三场时一并淘汰。派生报告记录
+判分日志 SHA-256、身份、判分口径/范围/时间，以及所选题、已导出回答、
+已回填 verdict、未导出回答和缺失 verdict 覆盖数。只有题级数据可以导入；像「17/45」这类没有题号与回答绑定
+信息的汇总比例不会被拆成或推造成逐题 verdict。
+导出的 hypotheses 与导入时复制留档的 verdict log 也会作为 `.hypotheses-*.jsonl` / `.verdicts-*.jsonl`
+卫星跟随原 run 保留，报告记录它们的文件名与 SHA-256。
+新 run 在 `subsetDescription.caseRefs` 保存每个 planned case 的 ID、题型和 abstention（包括失败/未执行题）。
+回填旧报告时，只从已记录 outcome 的 `caseRef` 读取题级分类；缺失分类的 ID 保持未知，不按 ID 顺序或 `_abs` 后缀猜题型/abstention。
+若旧报告自带的 `countsByType` / `abstentionCount` 与 planned 总数一致，报告会用它们作为 aggregate cases 分母，并明确标出未映射 ID 数；否则只报告可映射题型，其他题留在未知桶。
 
 ## 5. 判分口径
 
@@ -116,10 +141,19 @@ node test/memory-bench/export-hypotheses.mjs test/reports/bench/<stamp>.json --o
   被测模型**（配置相同会在开跑前报错），报告顶层记录 `judgeModel`。judge 失败（超时/空响应）只记
   「未裁决」，不进正确率分母，另计 `judgeFailures`。
 - 确定性检索指标（不依赖 judge）：`sessionRecall`（gold `answer_session_ids` 被渲染证据覆盖的比例）、
-  `turnRecall`（gold `has_answer` 的 **user** 轮被覆盖的比例）、`candidateSessionRecall`（候选池会话级覆盖）。
+  `turnRecall`（gold `has_answer` 的 **user 事实轮**被覆盖的比例）、`assistantTurnRecall`
+  （gold `has_answer` 的 assistant 对话轮被覆盖的比例）、`candidateSessionRecall`（候选池会话级覆盖）。
   **本仓适配口径，不是官方 R@k**。
-- `single-session-assistant`（56/500）**单列出桶、不计总正确率**：证据在 assistant 轮，
-  而产品只吃 user-origin 来源，结构性不可答 —— 不为评测改产品。
+- 每个题型的 `cases` 都按本次完整 selected subset 计数；未执行、失败与 judge 未裁决均留在题数分母，
+  但只有有逐题 verdict 的题进入正确率分母。`attemptedCells` 记录实际进入执行的 cell 数，
+  不从已产出 outcome 数反推。
+- `single-session-assistant` 按题型单列且**计入全部所选题集的总正确率**。另报产品用户事实子集，
+  按题型排除 `single-session-assistant`，作为用户来源事实的附加比较口径；完整对话检索仍以全选中题集为主口径。
+  当前采集夹具会保留 assistant 对话轮供检索，单列类型不表示当前产品结构性不可回答。
+- `strictEmptyTool` 单独列出严格空工具结果：只纳入完整回答且显式记录 `usedTools=false`、
+  `protocolViolations=[]`、`requestedMode=none`、`observedCalls=0` 的题。工具调用/协议违规样本不从全题质量分数剔除，
+  仍按 verdict 判分；它们只归为污染样本，不能混入严格空工具 baseline。旧报告或工具观测字段缺失的 run 会记为未知，
+  不会被追认为严格空工具。
 
 ### LoCoMo（确定性词面 F1，不用 judge）
 
@@ -140,21 +174,24 @@ node test/memory-bench/export-hypotheses.mjs test/reports/bench/<stamp>.json --o
 
 ## 6. 采集管线（与自建集的差异）
 
-- 历史注入 = **直登记 `MemorySource`**：每个 haystack user 轮（LoCoMo 为两个说话人全部轮次；
-  MemoryBank 为 `query` 轮）登记一条来源，`sourceId` 即证据坐标（LME `会话id:轮下标`、
-  LoCoMo `样本id:dia_id`、MemoryBank `日期#轮下标`），`evidence` 截 2000 字符（对齐产品
-  `EVIDENCE_CHARS`），`sourceLength` 保留原文长度（产品 dreaming 对 >4800 字符的整条来源丢弃，
-  次数如实计入报告）。不写会话 JSONL、不逐轮 `sendMessage` 重放。
+- LongMemEval 每个原始会话建立隔离 JSONL 夹具，按顺序保留 user/assistant 角色与题目时间；不逐轮调用
+  `sendMessage` 重放。所有角色消息进入对话检索，只有 user 轮另登记为用户事实 `MemorySource`，assistant
+  轮不会伪装成用户记忆。LoCoMo 仍为两个说话人的全部轮次直登记来源，MemoryBank 为 `query` 轮登记来源；
+  其来源坐标分别是 LME `会话id:轮下标`、LoCoMo `样本id:dia_id`、MemoryBank `日期#轮下标`。
+  `evidence` 截 2000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留原文长度（产品 dreaming
+  对 >4800 字符的整条来源丢弃，次数如实计入报告）。
 - 提取走**真实 dreaming**（`manual` 模式，绕开每日预算；循环 sweep 直至无待处理来源）。
-- **session-scope 候选归一为 user scope**：Rust 禁止跨范围改归属，用 `add`（同内容/来源）+ `forget`
+- LoCoMo 与 MemoryBank 的 **session-scope 候选归一为 user scope**：Rust 禁止跨范围改归属，用 `add`（同内容/来源）+ `forget`
   原条目实现；否则提问发生在新建会话会漏召回。次数记入 `ingest.scopeNormalized`。
   **必须两段式**（先全部 `add`、再全部 `forget`，规划在 `scope-normalize.mjs`）：Rust 的遗忘
   按来源事件写 `block_extraction` 墓碑，之后任何引用该来源的 `add` 都会判「来源未登记」；
   逐条 `add→forget` 在共享来源的候选上会把整题打成基础设施失败（2026-10-03 LME oracle
-  `lme-oracle-e01b8e2f` 的故障），而不是被测能力问题。
+  `lme-oracle-e01b8e2f` 的故障），而不是被测能力问题。LongMemEval 保持生产 scope 规则，不做 add+forget
+  归一；完整对话由会话检索读取，user-origin 事实仍按产品的来源与 scope 语义治理。
 - 提问：每题新建会话；cell = 题 × 1 trial（外部集是观测证据，不套自建集的 ≥3 trial 配对纪律）。
 - 组复用：LoCoMo 一段对话灌一次库、组内多题提问；MemoryBank 一个角色同理；LongMemEval 每题一组。
-- 工具全部撤下（与 memory-quality 相同的隔离）；存储为隔离 E2E 根内的真实 Rust SQLite。
+- 每个提问回合通过 `toolMode: "none"` 请求禁用模型工具，并记录实际调用数与协议违规；不改全局工具注册表。
+  存储为隔离 E2E 根内的真实 Rust SQLite。
 - 模型工具/权限边界不变；**不为拉高分改产品**：recall 预算（CONFIG `ai.memory.core/recall`）、
   dreaming 截断（1200）/丢弃（4800）造成的压分照实记录（`ingest` + `manifest.memoryConfig`）。
 - 题目基准日（2026-10-03 修正）：官方 LongMemEval 以 `question_date` 为「当前日期」，

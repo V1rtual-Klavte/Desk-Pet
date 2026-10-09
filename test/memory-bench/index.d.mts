@@ -41,6 +41,13 @@ export interface BenchCellContext {
   total: number
 }
 
+export interface BenchCaseRef {
+  caseId: string
+  questionId: string | null
+  questionType: string | null
+  abstention: boolean
+}
+
 export interface BenchReport {
   schemaVersion: "desk-pet-memory-bench/v1"
   source: "external"
@@ -58,7 +65,12 @@ export interface BenchReport {
   importTransformVersion: string | null
   judge: { enabled: boolean; model: string | null }
   judgeModel: string | null
-  subsetDescription: Record<string, unknown>
+  subsetDescription: Record<string, unknown> & {
+    requestedCaseIds?: string[]
+    caseRefs?: BenchCaseRef[]
+    countsByType?: Record<string, number> | null
+    abstentionCount?: number | null
+  }
   qualityThresholds: null
   gates: { complete: boolean; infrastructureFailures: number }
   manifest: Record<string, unknown> | null
@@ -77,7 +89,7 @@ export const BENCH_DATASETS: Record<string, { name: string; defaultSplit: string
 export function benchSplitInfo(dataset: string, split?: string): { dataset: string; split: string; namespace: string; label: string; datasetName: string }
 export function validateBenchCaseFile(dataset: string, file: unknown): string[]
 export function planBenchCells(dataset: string, file: { cases: Array<Record<string, unknown>> }, options?: { limit?: number; caseFilter?: string[]; seed?: string }): Array<{ caseId: string; groupKey: string; questionId: string | null; caseDef: Record<string, unknown>; sequence: number; total: number }>
-export function scoreBenchDataset(dataset: string, file: unknown, outcomes: unknown[], judgments?: Record<string, unknown>): Record<string, unknown>
+export function scoreBenchDataset(dataset: string, file: unknown, outcomes: unknown[], judgments?: Record<string, unknown>, cases?: unknown[]): Record<string, unknown>
 export function runMemoryBenchEvaluation(options: {
   adapter: {
     init?(input: { dataset: string; split: string; file: unknown; evalRunId: string }): void | Promise<void>
