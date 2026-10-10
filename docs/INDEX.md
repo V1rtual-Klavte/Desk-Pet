@@ -6,7 +6,7 @@
 
 | 要解决的问题 | 先读 | 需要时再读 |
 |---|---|---|
-| 安装、运行、能力概览 | [README](../README.md) | [工程参考](current/development.md) |
+| 安装、运行、能力概览 | [README](../README.md)（[English](../README.en.md)） | [工程参考](current/development.md) |
 | 产品定位、Card/Profile 玩法、交互 | [DES](DES.md) 对应章节 | [人格与回复](current/personality.md)、[资源所有权](current/runtime-data.md) |
 | 找模块、跟踪主调用链 | [系统地图](current/system-design.md) | 目标源码与对应 current 文档 |
 | TypeScript 业务服务与 HostBridge 接线规则 | [services AGENTS](../src/services/AGENTS.md) | 目标领域 current 与源码 |
@@ -19,8 +19,8 @@
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
 | 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |
-| 主动消息/静默了解/记忆整理的频率档位与锁屏语义 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[运行时数据](current/runtime-data.md)；剩余 W5-B 见[未完成总表](plans/active/未完成工作与已知缺口.md) §12 |
-| 原生宿主（Rust）+ 唯一 Node Harness、私有 IPC 与轻量化收尾 | [未完成总表](plans/active/未完成工作与已知缺口.md) §10 | [系统地图](current/system-design.md) 与目标源码；目标契约已归档（见下方历史入口） |
+| 主动消息/静默了解/记忆整理的频率档位与锁屏语义 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[运行时数据](current/runtime-data.md)；剩余开放问题见[未完成总表](plans/active/未完成工作与已知缺口.md) §10 |
+| 原生宿主（Rust）+ 唯一 Node Harness、私有 IPC 与轻量化收尾 | [未完成总表](plans/active/未完成工作与已知缺口.md) §8、§9 | [系统地图](current/system-design.md) 与目标源码；目标契约已归档（见下方历史入口） |
 | 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [当前记忆](current/memory.md)及相关源码（B 方案契约已归档） |
 
 ## 文档职责与维护
@@ -47,19 +47,19 @@
 
 ## 未完成工作
 
-- [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆 B 方案的剩余验收、活人感与整链陪伴的剩余环境验收、已知代码缺口、验证缺口与已决策的不修边界。
+- [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆剩余问题、活人感与整链陪伴的剩余环境验收、已知代码缺口与验证缺口。
 
 ## 历史入口
 
 以下只保留归档目录索引，不作为后续任务的阅读入口；不再读取或修改这些文件。当前问题与进度只看未完成总表。
 
-- [回合治理与图片生命周期执行契约 2026-10-06 归档](history/implementation/回合治理与图片生命周期执行契约-2026-10-06归档.md)：四项治理的目标契约与工作包清单——工具循环上限对齐主流（取消计数硬上限、病理检测替代）、AI 生成锁由回合状态推导（删 30s 定时强解与 cooldown 模块）、冷却锁搬进 Rust 账本、截图 200 上限取消与粘贴草稿回滚；**已实施（快层与 Rust 门禁全绿、契约按 analyze→generate 刷新）**，逐项进度与未验证面见未完成总表 §13/§14。
-- [主动陪伴与记忆频率档位执行契约 2026-10-06 归档](history/implementation/主动陪伴与记忆频率档位执行契约-2026-10-06归档.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏语义、三处「关/低/中/高」频率档位、带工具规划器与自带 MCP 的目标契约与 W1–W5 波次；**W1–W4 与 W5-A 已实现后归档**（对照基线 `05bd0c1` + 工作树），W5-B（MCP 编辑面表单化）与 server-pdf 待定项已折入[未完成总表](plans/active/未完成工作与已知缺口.md) §12；Live 验收锚点已于 2026-10-06 达成（observed／understanding.json／proactive 表非 0），e2e 严格全量未跑。
+- [回合治理与图片生命周期执行契约 2026-10-06 归档](history/implementation/回合治理与图片生命周期执行契约-2026-10-06归档.md)：四项治理的目标契约与工作包清单——工具循环上限对齐主流（取消计数硬上限、病理检测替代）、AI 生成锁由回合状态推导（删 30s 定时强解与 cooldown 模块）、冷却锁搬进 Rust 账本、截图 200 上限取消与粘贴草稿回滚；**已实施（快层与 Rust 门禁全绿、契约按 analyze→generate 刷新）**，不再列入未完成总表。
+- [主动陪伴与记忆频率档位执行契约 2026-10-06 归档](history/implementation/主动陪伴与记忆频率档位执行契约-2026-10-06归档.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏语义、三处「关/低/中/高」频率档位、带工具规划器与自带 MCP 的目标契约与 W1–W5 波次；**W1–W4 与 W5-A 已实现后归档**（对照基线 `05bd0c1` + 工作树），server-pdf 等剩余开放问题见[未完成总表](plans/active/未完成工作与已知缺口.md) §10；Live 验收锚点已于 2026-10-06 达成（observed／understanding.json／proactive 表非 0）。
 - [主题设计稿（三套预设）](history/design/theme-candidates.html)：三套主题预设（`brushed` / `chrome` / `verdigris`）的视觉基准与 55 个自定义属性取值。**例外说明**：它同时是 `crates/native-host/src/ui/theme/tokens.rs` 的 `include_str!` **编译期依赖**（常量 `DESIGN_DOC`），移动即编译失败；主题逐屏对照收尾前仍作视觉基准使用，改色值须与 `tokens.rs` 两处同改。2026-10-05 由 `docs/plans/active/` 移入，路径引用已全仓同步。
 - [主题设计稿（两款 · 聊天面）](history/design/theme-candidates-2.html)：2026-10-05 聊天面板改版的视觉基准（`.rail` / `.insp` 等结构与尺寸），`macos_chat.rs` 三处注释引用；同批移入归档。
-- [原生宿主轻量化执行契约 2026-10-04 基线](history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md)：用户已定功能边界、最终接口、源码映射与 W0–W11 执行/验收条件；**W0–W9 已实现后归档**，W10/W11 的验收条件、打包定案、L4 重接与资源口径已折入[未完成总表](plans/active/未完成工作与已知缺口.md) §10。
-- [原生宿主迁移过程记录 2026-10-04 基线](history/implementation/原生宿主迁移过程记录-2026-10-04基线.md)：W0 只读盘点基线、W0/W1 已发现的问题、W0 冻结决定（含**仍具约束力的六条裁定**：Node 不得驱动窗口显隐与层级、不静默改线格式字段名、契约 sourceFiles 只指向 native-host、命令矩阵冻结流程、光标事件不进 Node 事件表、`window-observed` 双投）、W1 行为差异对照，以及功能对等接线批次与设置管理面的交付记录；W0–W9 实现落地后归档，剩余工作已转入未完成总表 §10。
-- [活人感（拟人化）运行时契约 2026-10-04 基线](history/implementation/拟人化运行时契约-2026-10-04基线.md)：分条气泡、打字节奏、正在输入、回合分流、主动消息同路径与三个开关、静默了解、话题画像、主动纪律和图片输入的目标契约与自动验收检查点（§12）；实现完成后归档，剩余环境验收已转入未完成总表 §7。
+- [原生宿主轻量化执行契约 2026-10-04 基线](history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md)：用户已定功能边界、最终接口、源码映射与 W0–W11 执行/验收条件；**W0–W9 已实现后归档**，剩余资源测量与原生 UI 设施见[未完成总表](plans/active/未完成工作与已知缺口.md) §8。
+- [原生宿主迁移过程记录 2026-10-04 基线](history/implementation/原生宿主迁移过程记录-2026-10-04基线.md)：W0 只读盘点基线、W0/W1 已发现的问题、W0 冻结决定（含**仍具约束力的六条裁定**：Node 不得驱动窗口显隐与层级、不静默改线格式字段名、契约 sourceFiles 只指向 native-host、命令矩阵冻结流程、光标事件不进 Node 事件表、`window-observed` 双投）、W1 行为差异对照，以及功能对等接线批次与设置管理面的交付记录；W0–W9 实现落地后归档，剩余工作见未完成总表 §8、§9。
+- [活人感（拟人化）运行时契约 2026-10-04 基线](history/implementation/拟人化运行时契约-2026-10-04基线.md)：分条气泡、打字节奏、正在输入、回合分流、主动消息同路径与三个开关、静默了解、话题画像、主动纪律和图片输入的目标契约与自动验收检查点（§12）；实现完成后归档，纯环境验收不再列入未完成总表。
 - [主动陪伴运行时执行方案 2026-10-03 基线](history/implementation/主动陪伴运行时执行方案-2026-10-03基线.md)：完整目标契约、实现对照矩阵与检查点；核心链路已接入，核对后的实现与验收缺口已转入未完成总表，归档不表示完整验收。
 - [记忆 check-in 与主动扫描器设计 2026-10-03 基线](history/design/记忆checkin与主动扫描器设计-2026-10-03基线.md)：原始功能／效果蓝图；旧数据结构、分轮安排及范围修订由执行基线的对照说明承接，不再作为当前指令。
 - [测试分层重构契约 2026-09-29 基线](history/implementation/测试分层重构契约-2026-09-29基线.md)：推翻单一 Live 层的论证、L0–L5 目标分层、观测性与证据强度要求、测试树落位 `test/` 与跨层契约门禁；W0–W7 已实施后归档，三处未完成项（L4 端到端实跑、Windows CI job 真实触发、`entry: "unit"` 枚举值删除）已转登记到未完成总表。

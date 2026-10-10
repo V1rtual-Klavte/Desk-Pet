@@ -3,7 +3,7 @@
 // ==========================================
 //
 // 事实存储归 Rust（memory.sqlite3），会话正文归 sessions/ 的 JSONL。
-// 这里只组装三件事：类型化 IPC 客户端、召回端口、dreaming 编排。
+// 这里组装类型化 IPC 客户端、召回与临时阅读端口、dreaming 编排。
 // 不再有第二份内存数组，也不再有 Markdown 注册表。
 
 import { initPaths } from "@/services/paths"
@@ -14,6 +14,11 @@ import { installMemoryProvider, sqliteMemoryProvider, recallMemory } from "./pro
 import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
 
 export type { TemporalAnchor, ProactiveRecurrence, ProactiveOwner, ProactiveTask, ProactiveSourceRef } from "./protocol"
+
+export { deriveMemoryRecallBudget } from "./budget"
+export type { MemoryRecallBudget } from "./budget"
+export { renderMemoryRecall } from "./projection"
+export { focusMemoryEvidence } from "./reader"
 
 export { parseRerankIds } from "./rerank"
 export { invalidateConversationSession, recallConversation, validateConversationProjections } from "./conversation"

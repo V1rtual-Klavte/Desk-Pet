@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Desk-Pet memory IPC protocol",
   "version": 3,
-  "constants": {"conversation": {"batchChunks": 512, "maxSearchResults": 20}},
+  "constants": {"conversation": {"batchChunks": 512, "maxSearchResults": 50}},
   "definitions": {
     "ConversationIndexEntry": {
       "type": "object",

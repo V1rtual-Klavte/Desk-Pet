@@ -6,6 +6,7 @@ const fixture = vi.hoisted(() => ({
   entries: new Map<string, unknown[]>(),
   indexed: [] as Array<{ sessionId: string; fingerprint: string }>,
   searchEntries: [] as unknown[],
+  searchSnapshots: new Map<string, { revision: number; memoryRevision: number; forgetEpoch: number; entries: unknown[] }>(),
   calls: [] as Array<{ method: string; args: Record<string, unknown>; options?: { signal?: AbortSignal } }>,
   onReplace: undefined as undefined | ((args: Record<string, unknown>) => void),
 }))
@@ -32,7 +33,8 @@ vi.mock("@/services/observation", () => ({ clearSilentUnderstanding: async () =>
 
 import type { HostBridge } from "@/services/host"
 import { setHostBridge } from "@/services/host"
-import { captureConversationClearFences, invalidateConversationSession, recallConversation } from "@/services/agent/memory/conversation"
+import { captureConversationClearFences, invalidateConversationSession, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
+import { estimateContextTokens } from "@/services/context/budget"
 import { applyMemoryChange } from "@/services/agent/memory/ipc"
 import type { Entry } from "@earendil-works/pi-agent-core"
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
@@ -81,7 +83,8 @@ function installBridge() {
         return fixture.indexed.length
       }
       if (method === "conversation_search") {
-        return { revision, memoryRevision: 7, forgetEpoch: 0, entries: [...fixture.searchEntries] }
+        const override = fixture.searchSnapshots.get(args.query as string)
+        return override ?? { revision, memoryRevision: 7, forgetEpoch: 0, entries: [...fixture.searchEntries] }
       }
       if (method === "memory_apply_change") return 8
       throw new Error(`unexpected host command: ${method}`)
@@ -99,6 +102,7 @@ function resetFixtures(): void {
   fixture.entries.clear()
   fixture.indexed = []
   fixture.searchEntries = []
+  fixture.searchSnapshots.clear()
   fixture.onReplace = undefined
 }
 
@@ -151,6 +155,27 @@ describe("会话原文索引", () => {
     const indexed = batches.flatMap(call => call.args.entries as Array<Record<string, unknown>>)
     expect(indexed.every(item => item.entryId === "user-entry" && item.role === "user" && item.seq === 4)).toBe(true)
     expect(indexed.map(item => item.chunk)).toEqual(indexed.map((_, index) => index))
+    expect(indexed.every(item => (item.text as string).length <= 1_600 && estimateContextTokens(item.text as string) <= 400)).toBe(true)
+  })
+
+  it("英文原话按约400 token切块且字符上限仍受限 [conversation-index-token-bounded-chunks]", async () => {
+    const current = session("english-chunks")
+    fixture.metadata = [current]
+    const entry = messageEntry("english-user", 1, "user", 100, "english-event")
+    fixture.transcripts.set(current.id, {
+      entries: [entry],
+      messages: [{ id: entry.id, eventId: "english-event", role: "user", text: "A".repeat(8_000), timestamp: 100, isUserInput: true }],
+    })
+    installBridge()
+
+    await recallConversation({ sessionId: current.id, query: "english", tokenBudget: 500, signal: new AbortController().signal })
+
+    const chunks = fixture.calls
+      .filter(call => call.method === "conversation_index_replace")
+      .flatMap(call => call.args.entries as Array<Record<string, unknown>>)
+    expect(chunks.length).toBeGreaterThan(4)
+    expect(chunks[0]?.text).toHaveLength(1_600)
+    expect(chunks.every(item => (item.text as string).length <= 1_600 && estimateContextTokens(item.text as string) <= 400)).toBe(true)
   })
 
   it("取消发生在 staging 后不会发送 complete 批次 [conversation-index-abort-staging]", async () => {
@@ -253,11 +278,112 @@ describe("会话原文索引", () => {
     expect(fixture.calls.find(call => call.method === "conversation_search")?.args.recentFallback).toBeUndefined()
   })
 
+  it("多个词面query独立检索后轮询合并并按entry去重 [conversation-query-facet-fusion]", async () => {
+    const current = session("query-fusion-session")
+    fixture.metadata = [current]
+    const first = messageEntry("first-entry", 1, "user", 100, "first-event")
+    const second = messageEntry("second-entry", 2, "user", 110, "second-event")
+    fixture.transcripts.set(current.id, {
+      entries: [first, second],
+      messages: [
+        { id: first.id, eventId: "first-event", role: "user", text: "alpha project detail", timestamp: 100, isUserInput: true },
+        { id: second.id, eventId: "second-event", role: "user", text: "beta project detail", timestamp: 110, isUserInput: true },
+      ],
+    })
+    fixture.searchEntries = [
+      { sessionId: current.id, entryId: "first-entry", eventId: "first-event", seq: 1, chunk: 0, role: "user", text: "alpha project detail", timestamp: 100, score: 1 },
+      { sessionId: current.id, entryId: "second-entry", eventId: "second-event", seq: 2, chunk: 0, role: "user", text: "beta project detail", timestamp: 110, score: 1 },
+    ]
+    installBridge()
+
+    const result = await searchConversationCandidates({
+      sessionId: current.id,
+      queries: ["alpha project", "beta detail"],
+      signal: new AbortController().signal,
+      limit: 50,
+    })
+
+    const searches = fixture.calls.filter(call => call.method === "conversation_search")
+    expect(searches.map(call => call.args.query)).toEqual(["alpha project", "beta detail"])
+    expect(result.entries.map(entry => entry.entryId)).toEqual(["first-entry", "second-entry"])
+    expect(result.entries.every(entry => entry.text === entry.matchedText)).toBe(true)
+  })
+
+  it("不同记忆修订代的query结果不会混合 [conversation-query-snapshot-fence]", async () => {
+    const current = session("query-snapshot-session")
+    fixture.metadata = [current]
+    fixture.searchSnapshots.set("first facet", {
+      revision: 3, memoryRevision: 7, forgetEpoch: 0,
+      entries: [{ sessionId: current.id, entryId: "first", eventId: "first", seq: 1, chunk: 0,
+        role: "user", text: "first facet evidence", timestamp: 100, score: 2 }],
+    })
+    fixture.searchSnapshots.set("second facet", {
+      revision: 3, memoryRevision: 8, forgetEpoch: 0,
+      entries: [{ sessionId: current.id, entryId: "second", eventId: "second", seq: 2, chunk: 0,
+        role: "user", text: "second facet evidence", timestamp: 110, score: 9 }],
+    })
+    const first = messageEntry("first", 1, "user", 100, "first")
+    fixture.transcripts.set(current.id, {
+      entries: [first],
+      messages: [{ id: first.id, eventId: "first", role: "user", text: "first facet evidence", timestamp: 100, isUserInput: true }],
+    })
+    installBridge()
+
+    const result = await searchConversationCandidates({
+      sessionId: current.id,
+      queries: ["first facet", "second facet"],
+      signal: new AbortController().signal,
+      limit: 50,
+    })
+
+    expect(result.revisionChanged).toBe(true)
+    expect(result.entries.map(entry => entry.entryId)).toEqual(["first"])
+  })
+
   it("已删原会话的片段不会从缓存命中返回给调用方 [conversation-revalidate-deleted-source]", async () => {
     fixture.searchEntries = [{ sessionId: "deleted", entryId: "answer", eventId: "answer", seq: 2, chunk: 0,
       role: "assistant", text: "已删会话的原话", timestamp: 100, score: 1 }]
     installBridge()
     const result = await recallConversation({ sessionId: "current", query: "原话", tokenBudget: 500, signal: new AbortController().signal })
+    expect(result).toEqual([])
+  })
+
+  it("SQLite命中后从同一JSONL条目扩展完整正文并保留原出处 [conversation-expand-hit-to-full-entry]", async () => {
+    const current = session("full-entry-session")
+    fixture.metadata = [current]
+    const fullText = "A".repeat(2_600)
+    const entry = messageEntry("long-user", 1, "user", 100, "long-event")
+    fixture.transcripts.set(current.id, {
+      entries: [entry],
+      messages: [{ id: entry.id, eventId: "long-event", role: "user", text: fullText, timestamp: 100, isUserInput: true }],
+    })
+    fixture.searchEntries = [{ sessionId: current.id, entryId: "long-user", eventId: "long-event", seq: 1, chunk: 0,
+      role: "user", text: "A".repeat(1_600), timestamp: 100, score: 1 }]
+    installBridge()
+
+    const result = await recallConversation({ sessionId: current.id, query: "A", tokenBudget: 3_000, signal: new AbortController().signal })
+
+    expect(result).toHaveLength(1)
+    expect(result[0]?.text).toBe(fullText)
+    expect(result[0]?.sourceId).toBe("conversation:full-entry-session:long-user:0")
+    expect(result[0]?.conversation?.role).toBe("user")
+    expect(result[0]?.taint).toBe("derived")
+  })
+
+  it("JSONL当前正文不再包含SQLite命中分块时丢弃陈旧证据 [conversation-drop-stale-hit-chunk]", async () => {
+    const current = session("stale-chunk-session")
+    fixture.metadata = [current]
+    const entry = messageEntry("edited-user", 1, "user", 100, "edited-event")
+    fixture.transcripts.set(current.id, {
+      entries: [entry],
+      messages: [{ id: entry.id, eventId: "edited-event", role: "user", text: "当前已经修正的原文", timestamp: 100, isUserInput: true }],
+    })
+    fixture.searchEntries = [{ sessionId: current.id, entryId: "edited-user", eventId: "edited-event", seq: 1, chunk: 0,
+      role: "user", text: "旧版不正确内容", timestamp: 100, score: 1 }]
+    installBridge()
+
+    const result = await recallConversation({ sessionId: current.id, query: "旧版内容", tokenBudget: 500, signal: new AbortController().signal })
+
     expect(result).toEqual([])
   })
 
@@ -311,7 +437,7 @@ describe("会话原文索引", () => {
           return 1
         }
         if (method === "conversation_search") return { revision: 1, memoryRevision: 7, forgetEpoch: 0, entries: [...fixture.searchEntries] }
-        throw new Error(`unexpected host command: ${method}`)
+        expect.unreachable(`unexpected host command: ${method}`)
       },
       subscribe: () => () => undefined,
       readBlob: async () => new Uint8Array(),

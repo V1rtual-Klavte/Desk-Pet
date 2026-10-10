@@ -71,7 +71,7 @@ describe("记忆投影形态", () => {
       expect(injectedRecall.length, "极小预算没有整条淘汰超预算事实（不得截断正文）").toBe(0)
 
       // 预算内原样通过：受注入控制的是正文，不是被统一改写过的副本；声明预算按实际全文口径。
-      const inBudget = await recallMemory({ requestId: "injected-in-budget", sessionId: "profile-test", query: "test", tokenBudget: PROJECTION_BUDGET })
+      const inBudget = await recallMemory({ requestId: "injected-in-budget", sessionId: "profile-test", query: "test", tokenBudget: 256 })
       expect(inBudget.length, "注入的提供者在预算内没有返回投影").toBe(1)
       expect(inBudget[0]!.text, `预算内的召回文本被改写: ${inBudget[0]?.text ?? "（没有返回）"}`).toBe(INJECTED_TEXT)
       expect(

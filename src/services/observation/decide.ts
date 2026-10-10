@@ -11,8 +11,8 @@ const MAX_TARGET_WHY_CHARS = 120
 export const DECISION_OUTPUT_TOKENS = 240
 
 /**
- * 决策输入之一「长期记忆（核心画像）」的 token 上限：与主回合的 ai.memory.coreTokenBudget
- * （默认 320）同量级；由召回端口按 token 数硬执行，超出的条目被端口丢弃，不靠字符猜测。
+ * 辅助决策输入中的长期记忆摘录上限，独立于主聊天请求的自动预算；
+ * 由召回端口按 token 数硬执行，超出的条目被端口丢弃，不靠字符猜测。
  */
 export const DECISION_MEMORY_TOKEN_BUDGET = 256
 

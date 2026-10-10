@@ -32,7 +32,9 @@ vi.mock("@/services/agent/memory/conversation", () => ({
       eventId: entry.eventId,
       role: entry.role,
       timestamp: entry.timestamp,
+      seq: entry.seq,
       chunk: entry.chunk,
+      extent: "matchedText" in entry ? "entry" : "chunk",
     },
   }),
   shouldUseRecentConversationFallback: (query: string) => /之前|记得|what did i/i.test(query),
@@ -48,8 +50,10 @@ vi.mock("@/services/session", () => ({
 
 import type { MemoryItem, MemoryRecallCandidateSnapshot } from "@/services/agent/memory/ipc"
 import { sqliteMemoryProvider } from "@/services/agent/memory/provider"
+import { memoryRecallTokens } from "@/services/agent/memory/projection"
 import type { ConversationSearchResult } from "@/services/agent/memory/protocol"
 import { planMemoryQueries } from "@/services/agent/memory/query"
+import { memoryConfig } from "@/services/config"
 
 function memoryItem(id: string, options: { origin?: "user" | "derived_behavior"; pinned?: boolean; text?: string } = {}): MemoryItem {
   const content = options.text ?? `事实 ${id}`
@@ -154,6 +158,9 @@ describe("联合记忆召回", () => {
     const plan = await planMemoryQueries(request)
 
     expect(plan.queries).toEqual([request.query, "备用钥匙位置"])
+    expect(fake.complete.mock.calls[0]?.[0].maxTokens).toBeGreaterThanOrEqual(1_000)
+    expect(fake.complete.mock.calls[0]?.[0].thinkingEffort).toBe("low")
+    expect(fake.complete.mock.calls[0]?.[0].timeoutMs).toBe(memoryConfig.recallTimeoutMs)
     const rewrite = JSON.parse(String(fake.complete.mock.calls[0]?.[0].userText)) as {
       originalQuery: string
       recentMessages: Array<{ role: string; text: string }>
@@ -276,6 +283,77 @@ describe("联合记忆召回", () => {
     expect(result.find(item => item.sourceId === "conversation:session-a:entry-0:0")?.memoryRevision).toBe(7)
   })
 
+  it("动态召回先覆盖不同会话，超预算的首条不会阻断同会话较短候选 [memory-recall-session-coverage]", async () => {
+    fake.factSnapshot = factSnapshot(Array.from({ length: 8 }, (_, index) => memoryItem(`fact-${index}`, { text: `small fact ${index}` })))
+    const entries = [
+      ...Array.from({ length: 7 }, (_, index) => ({
+        sessionId: "session-a", entryId: `over-budget-${index}`, eventId: null, seq: index + 1,
+        chunk: 0, role: "user" as const, text: "z".repeat(5_000), timestamp: index + 1, score: 1 - index / 100,
+      })),
+      { sessionId: "session-a", entryId: "late-fitting-hit", eventId: null, seq: 8, chunk: 0, role: "user" as const, text: "small fitting session hit", timestamp: 8, score: 0.5 },
+    ]
+    fake.conversationSnapshot = { ...conversationSnapshot(0), entries }
+
+    const result = await sqliteMemoryProvider.recall(request({
+      queryRewriteMode: "off",
+      rerankMode: "off",
+      tokenBudget: 1_000,
+      budget: { core: 0, recall: 1_000, total: 1_000 },
+    }))
+    const ids = result.map(item => item.sourceId)
+
+    expect(ids).toContain("conversation:session-a:late-fitting-hit:0")
+    expect(ids).not.toContain("conversation:session-a:over-budget-0:0")
+    expect(ids.filter(id => id.startsWith("fact-")).length).toBeGreaterThan(0)
+    expect(ids.filter(id => id.startsWith("conversation:")).length).toBeGreaterThan(0)
+  })
+
+  it("预算允许时把SQLite关联的user/assistant完整回合成组保留 [memory-recall-complete-turn-bundle]", async () => {
+    fake.conversationSnapshot = {
+      ...conversationSnapshot(0),
+      entries: [
+        {
+          sessionId: "session-a", entryId: "turn-user", eventId: "user-event", seq: 2, chunk: 0,
+          role: "user", text: "我在项目A里负责了数据迁移", timestamp: 20, score: 0.9,
+        },
+        {
+          sessionId: "session-a", entryId: "turn-assistant", eventId: "assistant-event", seq: 3, chunk: 0,
+          role: "assistant", text: "你提到负责数据迁移", timestamp: 21, anchorEntryId: "turn-user",
+          anchorEventId: "user-event", score: 0.91,
+        },
+      ],
+    }
+
+    const result = await sqliteMemoryProvider.recall(request({ queryRewriteMode: "off", rerankMode: "off" }))
+
+    expect(result.map(item => item.sourceId)).toEqual([
+      "conversation:session-a:turn-user:0",
+      "conversation:session-a:turn-assistant:0",
+    ])
+    expect(new Set(result.map(item => item.conversation?.role))).toEqual(new Set(["assistant", "user"]))
+  })
+
+  it("首会话完整正文能单独装下时仍给后续会话预留命中证据 [memory-recall-session-reservation]", async () => {
+    const snapshot = {
+      ...conversationSnapshot(0),
+      entries: [
+        { sessionId: "session-a", entryId: "large", eventId: null, seq: 1, chunk: 0, role: "user" as const, text: "大".repeat(600), matchedText: "第一阶段迁移了三个服务", timestamp: 1, score: 1 },
+        { sessionId: "session-b", entryId: "second", eventId: null, seq: 1, chunk: 0, role: "user" as const, text: "第二阶段迁移了两个服务", matchedText: "第二阶段迁移了两个服务", timestamp: 2, score: .9 },
+      ],
+    }
+    fake.conversationSnapshot = { ...snapshot, entries: snapshot.entries.slice(0, 1) }
+    const full = await sqliteMemoryProvider.recall(request({ queryRewriteMode: "off", rerankMode: "off" }))
+    expect(full[0]?.text).toBe(snapshot.entries[0]!.text)
+    const tokenBudget = memoryRecallTokens(full) + 1
+    fake.conversationSnapshot = snapshot
+    const result = await sqliteMemoryProvider.recall(request({
+      queryRewriteMode: "off", rerankMode: "off", tokenBudget,
+      budget: { core: 0, recall: tokenBudget, total: tokenBudget },
+    }))
+    expect(new Set(result.map(item => item.conversation?.sessionId))).toEqual(new Set(["session-a", "session-b"]))
+    expect(result.find(item => item.conversation?.sessionId === "session-a")?.conversation?.extent).toBe("chunk")
+  })
+
   it("默认不为自足查询改写；坏重排响应回退到同一份本地候选 [memory-recall-joint-fallback]", async () => {
     const facts = Array.from({ length: 7 }, (_, index) => memoryItem(`fact-${index}`))
     fake.factSnapshot = factSnapshot(facts)
@@ -292,14 +370,47 @@ describe("联合记忆召回", () => {
     expect(fake.complete).toHaveBeenCalledTimes(1)
     expect(req.optionalFailures).toContainEqual({ channel: "rerank", reason: "invalid_output" })
     expect(req.queryPlan?.rewriteStatus).toBe("not_needed")
-    expect(result.filter(item => item.tier === "recall").map(item => item.sourceId)).toEqual([
-      "fact-0@2",
-      "conversation:session-a:entry-0:0",
-      "fact-1@2",
-      "conversation:session-a:entry-1:0",
-      "fact-2@2",
-      "conversation:session-a:entry-2:0",
-    ])
+    expect(result.filter(item => item.tier === "recall").length).toBeGreaterThan(6)
+    expect(result.map(item => item.sourceId)).toContain("conversation:session-a:entry-0:0")
+    expect(result.map(item => item.sourceId)).toContain("fact-0@2")
+  })
+
+  it("少量事实候选不会挡住个人历史问题的补充检索 [memory-query-rewrite-existing-facts-history]", async () => {
+    fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
+    const query = "How many projects have I led?"
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["projects I led","leadership project count"]}' })
+
+    const plan = await planMemoryQueries({
+      requestId: "history-query-existing-facts",
+      sessionId: "session-a",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive",
+      localCandidateCount: 2,
+    })
+
+    expect(plan.rewriteStatus).toBe("rewritten")
+    expect(plan.queries[0]).toBe(query)
+    expect(plan.queries.length).toBeGreaterThan(1)
+  })
+
+  it("少量事实候选不会挡住个人推荐问题的补充检索 [memory-query-rewrite-existing-facts-advice]", async () => {
+    fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
+    const query = "Can you recommend a book for me?"
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["book recommendations","books suited to my interests"]}' })
+
+    const plan = await planMemoryQueries({
+      requestId: "advice-query-existing-facts",
+      sessionId: "session-a",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive",
+      localCandidateCount: 2,
+    })
+
+    expect(plan.rewriteStatus).toBe("rewritten")
+    expect(plan.queries[0]).toBe(query)
+    expect(plan.queries.length).toBeGreaterThan(1)
   })
 
   it("主动请求和精确targets不扩展到普通历史或query rewrite [memory-recall-targeted-isolation]", async () => {

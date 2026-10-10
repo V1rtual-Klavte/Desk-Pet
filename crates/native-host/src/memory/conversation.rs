@@ -1248,6 +1248,45 @@ mod tests {
     }
 
     #[test]
+    fn conversation_search_returns_up_to_fifty_candidates_and_clamps_larger_requests() {
+        let fixture = Fixture::new();
+        fixture.replace(
+            "s1",
+            "fp1",
+            None,
+            (0..55)
+                .map(|seq| {
+                    entry(
+                        &format!("a{seq}"),
+                        None,
+                        seq,
+                        "assistant",
+                        "专属召回限制探针内容",
+                        None,
+                    )
+                })
+                .collect(),
+            0,
+        );
+
+        let result = fixture
+            .1
+            .conversation_search("专属召回限制探针", "s1", Some(100), None, false)
+            .expect("search clamps to the protocol candidate ceiling");
+        let rows = result["entries"].as_array().expect("entries array");
+        assert_eq!(rows.len(), 50);
+        let unique_entries = rows
+            .iter()
+            .map(|row| row["entryId"].as_str().expect("entry id"))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            unique_entries.len(),
+            50,
+            "each returned candidate is distinct"
+        );
+    }
+
+    #[test]
     fn forget_suppresses_source_and_same_turn_assistant_across_rebuild() {
         let fixture = Fixture::new();
         let source = json!({

@@ -259,7 +259,7 @@ import type { ModuleContract } from "../host/types"
 // `setOverride + flushConfig` 组合（抽屉/设置/主动斜杠等）的写盘次数由 2 降为 1（内容不变），
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "5fbe90ae0d10794d6ef8a54650ecf1d245237c0df1b919e6db6c7a512f5f5fd4",
+  module:"proactive",sourceHash: "23cc98b31f661a7a3cbfbbbca21f8aa19133b1087c93d4faf0a4f8bd973d945d",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

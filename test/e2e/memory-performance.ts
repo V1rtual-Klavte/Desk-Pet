@@ -1,7 +1,7 @@
 import { getHostBridge } from "@/services/host"
-import { queryMemory, getMemoryItems, installMemoryProvider, sqliteMemoryProvider, recallMemory } from "@/services/agent/memory"
+import { queryMemory, getMemoryItems, installMemoryProvider, sqliteMemoryProvider, recallMemory, deriveMemoryRecallBudget } from "@/services/agent/memory"
 import { initChat, sendMessage } from "@/services/agent/runner"
-import { memoryConfig, setOverrides, flushConfig } from "@/services/config"
+import { aiConfig, setOverrides, flushConfig } from "@/services/config"
 import { getActiveSessionId } from "@/services/session"
 import { createRuntimeTraceContext } from "@/services/engine/runtime"
 import { standardSetup } from "../host/standard-setup"
@@ -93,7 +93,7 @@ export async function runMemoryPerformanceEvaluation(traceMode: string, bindOper
           const traceContext = traceMode === "off" ? undefined : createRuntimeTraceContext(getActiveSessionId(), requestId)
           if (traceContext) bindOperation(traceContext.runId, requestId)
           const projections = await recallMemory({requestId,sessionId:getActiveSessionId(),query,
-            tokenBudget:memoryConfig.coreTokenBudget + memoryConfig.recallTokenBudget,traceContext})
+            contextWindow:aiConfig.contextMaxTokens,tokenBudget:deriveMemoryRecallBudget(aiConfig.contextMaxTokens).total,traceContext})
           hits = projections.length
           samples.push(performance.now() - start)
         }

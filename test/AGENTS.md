@@ -20,7 +20,7 @@
 | 契约 | 模块行为覆盖门禁（sourceHash + caseId 三层记账） | README「Contract 与 sourceHash」；`test/contracts/` | 预检 attestation；caseids-*.json |
 | trace 证据 | 运行线路完整落盘、完整性核对、理想稿审阅 | README「Trace、记忆质量与性能门禁」；`test:trace-review` | `test/reports/traces/trace-bundle-*`（bench / quality 在各自子目录的 `traces/`） |
 | 理想稿 | 用户手写的"期望线路"，审阅对照基准（只由用户写） | [ideal-traces/README.md](ideal-traces/README.md) | 审阅 JSON（与报告配对、连带淘汰） |
-| 外部记忆基准（权威对照） | 质量主口径：LongMemEval / MemoryBank cn / LoCoMo（基于官方判分移植；按消耗分层跑，不进 CI／发布门禁） | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
+| 外部记忆基准（权威对照） | 质量主口径：LongMemEval / MemoryBank cn / LoCoMo（基于官方判分移植；按消耗分层跑，不进 CI／发布门禁）；LongMemEval oracle 另有 privileged eval-only direct/CoN reader upper-bound control，报告不得当产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
 | 记忆质量（自建兜底） | 兜底冒烟与治理语义回归：外部集未覆盖的来源/scope 反例、纠正、遗忘、称呼/偏好（真实 Provider，烧 token） | README 记忆质量段；`test:memory-quality` | 报告 + review/scored 包（组保留） |
 | 记忆性能 | release 存储 + debug IPC 的资源账（1k/10k 库、P95） | README 性能段；`test:memory-performance` | `test/reports/performance/`（3 份滚动） |
 | 缺陷注入 | 快层的区分力观测（植入缺陷看抓不抓得到） | README「缺陷注入」；`test:mutation` | 控制台（不设阈值） |
@@ -34,7 +34,7 @@
 | judge 模型与异构纪律 | `--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > 两层模型配置文件（[eval-models.json](eval-models.json) 与本地 `eval-models.local.json`）的 `judge.model`（当前 deepseek-reasoner）；judge 继承测试侧网关的 endpoint/apiKey；**必须不同于被测模型**，同模型在开跑前报错 |
 | 上游评测数据怎么装、装到哪 | [memory-bench/README.md](memory-bench/README.md)：prepare 命令、`--data-dir` / `DESKPET_BENCH_DATA_DIR`、revision + SHA-256 锁定清单（`upstream-lock.json`） |
 | 报告与证据在哪、怎么淘汰 | README「报告在哪、怎么看」（组保留：最近 3 场 + 200 MiB；bench / quality 分目录各自淘汰） |
-| 评分口径与门槛 | README「Trace、记忆质量与性能门禁」+ [memory-bench/README.md](memory-bench/README.md)（judge 模板、F1 口径）；记忆质量门槛见[未完成总表 §3.2](../docs/plans/active/未完成工作与已知缺口.md#32-尚未完成的验收口径) |
+| 评分口径与门槛 | README「Trace、记忆质量与性能门禁」+ [memory-bench/README.md](memory-bench/README.md)（judge 模板、F1 口径）；剩余质量问题的完成条件见[未完成总表 §3.2](../docs/plans/active/未完成工作与已知缺口.md#32-剩余质量问题的完成条件) |
 | sourceHash 怎么算、什么时候要刷 | README「Contract 与 sourceHash」+ [SKILL.md](SKILL.md)（analyze → generate，不能只刷 hash） |
 | 环境前提（睡眠、挂起与 L4 宿主形态） | README「环境注意」与「隔离、超时与失败」 |
 | 产物保留/清理机制 | README「报告在哪」+ [scripts/report-retention.mjs](../scripts/report-retention.mjs)（组淘汰核心） |

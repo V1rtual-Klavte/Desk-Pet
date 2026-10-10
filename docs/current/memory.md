@@ -16,19 +16,27 @@
 
 **准入判据是「谁说的」，分两条互不混淆的通道**：用户事实只收 `origin=user` + `taint=trusted_user` + `eligibleForMemory=true` 的已提交条目——助手台词、工具结果、压缩摘要、主动搭话与缺来源标记的历史条目一律出局（它们都可能又长又具体，但没有一条能证明是用户本人说的）；系统观察只收 `origin=derived_behavior` + `taint=derived` + `eligibleForMemory=true` 的画像结论（reliable 档才有）或带稳定 artifact 与实际输入版本证据的了解摘要（见[行为画像](behavior.md)）。**两类分区存放、分区召回，不混池**：混用来源的候选整条拒绝；系统观察永不进核心画像、不做 working 事项、不能被改写成用户事实（反向亦然）——模型写入（`memory_change`）与用户区整理在结构上引用不到派生来源，不存在「顺手合并」的路径；错误配对的来源（如 `derived_behavior` + `trusted_user`）登记即拒收。投递时刻冻结的 `cardId` 随来源落盘，事后不从「当前正在显示的 Card」反推。
 
-**检索链路**：同一库版本下先过滤 scope、状态、有效期与遗忘 → 本地合并 FTS5 trigram、主题/别名与**短词 LIKE 回退**（FTS 命中集合只计算一次，按条目 id 与版本精确关联），本地顺序按相关度优先、importance／时间／id 依次兜底 → 可选重排 → 按预算取全文。FTS5 trigram 的 `MATCH` 不匹配少于三个 Unicode 字符的查询（「咖啡」这类两字词在它下面恒零命中），所以两字中文查询靠短词回退兜住。一次召回从同一 SQLite 读快照取 user／当前 Card／当前 session 候选、置顶核心与精确目标，并带回该快照的 revision；核心画像（pinned）无关键词也独立读取，不参与重排、不因查询词缺席而消失。adaptive 只在动态候选超过 6 条时调用，最多发送 12 条且受输入预算约束，白名单只含真正发送的 id，合法空数组表示不使用动态记忆；未知 id、坏 JSON、散文一律判无效并回退本地顺序。
+**检索链路**：同一库版本下先过滤 scope、状态、有效期与遗忘 → 本地合并 FTS5 trigram、主题/别名与**短词 LIKE 回退**（FTS 命中集合只计算一次，按条目 id 与版本精确关联），本地顺序按相关度优先、importance／时间／id 依次兜底 → 可选重排 → 按预算取全文。FTS5 trigram 的 `MATCH` 不匹配少于三个 Unicode 字符的查询（「咖啡」这类两字词在它下面恒零命中），所以两字中文查询靠短词回退兜住。一次召回从同一 SQLite 读快照取 user／当前 Card／当前 session 候选、置顶核心与精确目标，并带回该快照的 revision；核心画像（pinned）无关键词也独立读取，不参与重排、不因查询词缺席而消失。会话检索最多返回 50 个候选片段供上层按证据与 token 预算组装；这是候选上限，不是最终注入条数。adaptive 只在动态候选超过 6 条时调用，最多发送 12 条且受 2048-token 输入预算约束，白名单只含真正发送的 id，合法空数组表示不使用动态记忆；未知 id、坏 JSON、散文一律判无效并回退本地顺序。
 
-**请求落位**：核心画像、动态事实与会话片段合成一个参考块，作为**尾随 custom 消息**贴在请求视图末尾（不是 system prompt）：记忆每回合都可能变，留在 system prompt 里会把前缀缓存断在会话正文上游。记忆块带 `eligibleForMemory=false`，因此召回内容不会被下一轮整理当成用户新事实重新提取。**呈现按 origin 可区分**：记忆块按「[标签 | provenance] 正文」逐行渲染，`derived_behavior` 条目的 provenance 位固定为「系统观察·可撤销的推断（非用户原话）」（`DERIVED_PROVENANCE_MARK`，provider 投影时写入；占用行预算、逐行可辨）——模型不得把观察说成「你告诉过我」。额度先按「当前视图已用量」算出真实可用量，再逐条按预算追加；空间不足只丢可选记忆并记录 `budgetDrops`，不截断块内文字；两区共用召回预算与重排，不设独立配额。
+**请求落位**：核心画像、动态事实与会话片段合成一个参考块，作为**尾随 custom 消息**贴在请求视图末尾（不是 system prompt）：记忆每回合都可能变，留在 system prompt 里会把前缀缓存断在会话正文上游。记忆块带 `eligibleForMemory=false`，因此召回内容不会被下一轮整理当成用户新事实重新提取。**呈现按 origin 可区分**：参考块以 JSON evidence 数组保留正文、来源和类别；原话另带 session/entry、role、timestamp、seq、chunk 和 extent（完整 entry 或索引 chunk）。`derived_behavior` 的 kind 为 observation，provenance 仍使用「系统观察·可撤销的推断（非用户原话）」（`DERIVED_PROVENANCE_MARK`），不能冒充用户事实。宿主元数据与 JSON 编码的正文分开，正文里的角色文字不能伪造角色字段。固定阅读规则在 system 静态块要求先归集相关细节、保留条件/否定、按各自日期解析相对时间、区分更新与独立事件并去重计数；请求内阅读笔记置于完整 evidence 之后，不输出、不落长期记忆。额度先按「当前视图已用量」算出真实可用量，再逐条按预算追加；空间不足只丢可选记忆并记录 `budgetDrops`，不截断块内文字；两区共用召回预算与重排，不设独立配额。
 
 ## 统一查询改写与候选重排
 
-默认 SQLite MemoryProvider 是事实、核心画像、派生观察与会话原话的统一检索入口。原问题先获取本地候选，`ai.memory.queryRewrite=adaptive` 将指代/记忆/画像词作为线索；原查询零非置顶动态事实命中时，个人/历史问句还有无当前前文的中性扩词后备，短跟进则必须有已提交可见前文，社交确认句不额外调用模型。每次最多补充两条短查询；原问题始终保留，改写只生成检索词，不回答或写入事实。时间参照沿用当前时间注记（评测的题目时间锚也在该入口），当前输入和未来消息不冒充历史上下文。JSON、长度、数量与取消均校验，失败沿用原查询。
+默认 SQLite MemoryProvider 是事实、核心画像、派生观察与会话原话的统一检索入口。原问题先获取本地候选，`ai.memory.queryRewrite=adaptive` 将指代/记忆/画像词作为线索；个人历史、跨事件统计与个性化建议即使已有少量动态事实命中，也可以补充检索不同事件、相关偏好与约束，避免“有一条命中就停止查找”；无当前前文时只做中性扩词，短指代跟进仍须有已提交可见前文，社交确认句不额外调用模型。英文指代按单词边界匹配，普通单词内的 it 不触发跟进。每次最多补充两条互补的短关键词查询；原问题始终保留，改写只生成检索词，不回答或写入事实。时间参照沿用当前时间注记（评测的题目时间锚也在该入口），当前输入和未来消息不冒充历史上下文。JSON、长度、数量与取消均校验，失败沿用原查询。至多三个会话查询分别搜索并按排名轮询融合，按 session/entry/chunk 去重后限制候选总数，原查询不因改写被覆盖。
 
 用户事实、派生画像与原话候选仍先过各自来源、scope、状态、有效期、遗忘与删除规则，再进入同一候选并集。`ai.memory.rerank=adaptive` 只对足够多的动态候选调用一次有界重排，描述中明确事实/系统观察/原话角色及出处；置顶核心画像保留优先级，不参加重排。模型只能选择实际发送的候选ID，不能创造或修改内容；合法空数组不补回候选，未知ID、坏JSON、超时或不可用回退本地次序。
 
-两种增强共用现有召回总时限，不把改写、事实重排和原话重排叠成三套独立模型流程。回合内冻结查询计划和配置；写后资格刷新沿用计划并跳过第二次模型重排。主动精确目标及反馈引用保持精确解引用，不扩展到全部历史。失败只记录受控 channel/reason，原话和查询正文不进普通trace；预算最终仍由 `recallMemory` 裁决。
+改写与重排的输出预算按各自允许的 JSON 规模加思考空间派生，至少 1024 token，并指定 low 思考强度；避免 96/128-token 硬顶让合法查询或候选 ID 列表被截断。额度是停止上限，不要求生成到上限。查询规划直接服从召回总时限及取消信号，不再错误套用重排专用的短时限；重排仍保留自身 timeout。两种增强共用现有召回总时限，不把改写、事实重排和原话重排叠成三套独立模型流程。回合内冻结查询计划和配置；写后资格刷新沿用计划并跳过第二次模型重排。主动精确目标及反馈引用保持精确解引用，不扩展到全部历史。失败只记录受控 channel/reason，原话和查询正文不进普通trace；预算最终仍由 `recallMemory` 裁决。
 
-两个技术开关只经运行时 YAML 修改，默认改写 `adaptive`、重排 `off`；路径和生效说明见[运行时数据](runtime-data.md#配置变更同步清单)。真实 CONFIG-DEV.yaml 未改，本轮没有质量或费用收益实测。
+两个技术开关只经运行时 YAML 修改，默认改写 `adaptive`、重排 `off`；路径和生效说明见[运行时数据](runtime-data.md#配置变更同步清单)。质量与费用收益以外部基准报告为准。
+
+## 请求内证据阅读
+
+[reader.ts](../../src/services/agent/memory/reader.ts) 在普通聊天的个人历史或个人建议问句、且召回至少四个不同原话条目时，先调用同一模型网关阅读已选证据，再交给主回答。普通社交/一般问答、主动消息和精确记忆目标不走这一步。阅读器只能读本次已准入投影，不能追加检索、使用金标或写入记忆；sources 保留角色、会话和时间，时间锚复用当前时间注记并在本回合请求内冻结。
+
+输出为 sourceId、逐字连续引文与简短关联说明。宿主逐条校验来源白名单、引文确实存在、ID 不重复及说明长度；任一伪造或坏 JSON 使整组笔记无效。关联说明属于模型暂定解读，不因带有「可能」等词就成为合法事实。保留原始正文、来源、版本及 taint；主回答末尾参考块的 `readingNotes` 数组通过 sourceId 指向前面的 evidence，不替换原文。加入笔记后按完整 JSON 重新计量，空间不足只省略笔记。
+
+阅读请求使用主回合取消信号与时限、共享输出预留和输入预算预检；超时、非正常停止、校验失败或网关故障回到原始证据。缓存以当前回合 AbortSignal 为弱引用键，只保留该回合最新一组来源，requestId、查询、时间锚及来源正文/版本/角色变化使结果失效，取消清理；预算变化时重新核算笔记是否可容纳。库 revision 变更及遗忘继续走现有运行取消和请求前资格复核。`memory_reading_end` 仅记录状态、来源数、实际注入笔记数与耗时，原文不进普通 trace；额外模型调用的 usage 经统一网关计账。收益与额外成本留同集评测判断。
 
 ## 当前会话与跨会话原文检索
 
@@ -36,13 +44,15 @@
 
 `session/readVisibleSessionTranscript` 复用聊天投影和主动送达回执核验；只索引已提交且用户可见的 user/assistant 正文，剥离 RUNTIME_DATA，排除 thinking、工具结果、控制条目与未确认主动输出。可信用户事件作为普通助手回应的锚点；外部输入和主动触发打断该锚点。原始 JSONL 为真相源，索引保存 entry/event ID、seq、角色、时间与 Unicode 片段坐标。
 
-首次查询按需建索引，后续只重读指纹变化的会话。长正文按 360 个 Unicode 字符、64 字符重叠分块；刷新分批暂存，完整快照提交前旧索引保持可读，指纹和遗忘代 CAS 拦住过期写回。FTS5 trigram 与参数化短词 LIKE 共用事实检索的分词口径；命中用户问题时可带回有界同轮助手窗口。明确短指代在关键词无命中时才取近期历史，普通无命中不补无关片段。索引刷新与删除共用会话锁，查询后和每次 Provider 请求前复核原会话仍存在。
+首次查询按需建索引，后续只重读指纹变化的会话。长正文按约 400 个估算 token、最多 1600 个 Unicode 字符分块，相邻片段重叠不超过 48 token；中英文共用上下文估算器，边界不拆 Unicode 字符。分块规则版本纳入会话指纹，下次检索自动重建旧派生索引，JSONL 不改；刷新分批暂存，完整快照提交前旧索引保持可读，指纹和遗忘代 CAS 拦住过期写回。FTS5 trigram 与参数化短词 LIKE 共用事实检索的分词口径；命中用户问题时可带回有界同轮助手窗口。明确短指代在关键词无命中时才取近期历史，普通无命中不补无关片段。索引刷新与删除共用会话锁，查询后和每次 Provider 请求前复核原会话仍存在。
 
-默认 SQLite 召回策略统一启用事实、派生画像与原话通道；显式替换 MemoryProvider 的策略由其自身提供证据。它们共用既有 core + recall 总预算：核心事实优先，会话片段最多使用 recall 额度的 60%，其余动态证据按统一候选次序填入。片段带角色、时间及原会话/条目/分块出处，最终渲染 trace 只登记真正进入请求的引用，不写原话、thinking 或路径。引用属于参考数据，不是指令；空间不足丢整个片段，不把片段冒充完整事实。主动表达仍只解引用调度器选定的事实，不扫描全部历史。
+默认 SQLite 召回策略统一启用事实、派生画像与原话通道；显式替换 MemoryProvider 的策略由其自身提供证据。core 与 recall 共享同一请求的剩余额度：核心事实及精确目标优先；本地会话候选面最多 50 条，与可选重排输入条数分开。命中的原文条目按稳定 session/entry 身份回读可见 JSONL，校验时间、角色与片段坐标后补全正文；不扫描未命中的轮次、不绕过 SQLite 的遗忘与范围裁决。同一用户轮及已返回的锚定助手组成证据组，完整组优先；超预算时退回已检索的原片段，不能截取完整事实或伪装成全文。动态装配先覆盖命中会话再按原排名补位，取消固定 6 条最终上限，以完整参考块的实际 token 额度停止。来源缺失或内容不匹配不回退陈旧片段。重排后的白名单、空选择及来源资格仍生效。最终渲染 trace 只登记真正进入请求的引用，不写原话、thinking 或路径；主动表达只解引用调度器选定的事实。
 
 会话索引使用同一 Rust MemoryStore 连接，自己的 revision 不推进事实 revision。遗忘同事务抑制来源用户条目及锚定它的助手原话，重建不复活；清空还保存原会话 seq 边界，旧时间戳和时钟变化不能绕过。删除正文后清理其索引，关闭标签保留正文与检索资格。原始聊天或已经发出的模型请求并不会因记忆治理被追回。
 
 召回受现有 recallTimeoutMs 与运行取消控制。超时停止等待，晚到索引不能发布，故障走统一日志与会话审计；首次建索引的冷成本及长会话性能尚未实测。源码入口是 [conversation.ts](../../src/services/agent/memory/conversation.ts) 与 [Rust conversation.rs](../../crates/native-host/src/memory/conversation.rs)。这借鉴了 OpenViking 的原文保留与按需读取思路，没有引入其服务、向量库或模型摘要调用。
+
+与 [OpenViking 当前检索设计](https://docs.openviking.ai/en/concepts/07-retrieval) 对照：它在可选会话意图分析后生成 TypedQueries，每条 query 做全局向量检索并可选重排；当前文档明确不递归遍历目录，类名 HierarchicalRetriever 不代表仍有父子分数传播。本项目保留 SQLite FTS/LIKE，采用原问题与互补扩词独立召回、排名融合、命中原文回读，尚无向量语义召回。OpenViking 的 L0/L1 是目录摘要/概览，L2 是按需读取的正文；其摘要生成、向量索引和服务有独立运行成本，不能把层级字符预算当作每次聊天的记忆 token 配额。这里吸收渐进读取与查询分面机制，事实准入、来源校验与遗忘仍由现有 Rust 治理入口裁决。
 
 ## 记忆库的治理不变量
 
@@ -103,7 +113,9 @@ dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Re
 
 预算由 [context/budget.ts](../../src/services/context/budget.ts) 统一，估算会计入标准化消息和完整工具 schema，不把估算值当成 Provider usage；主请求与一次性文本请求共享输出预留。正常目标在硬输入上限下留 `min(20,000, 16% 窗口)` 余量（极小窗口另有限制）；保留原文尾部和摘要输出各有独立上限。设置中的窗口还受已知模型上限约束。
 
-请求层顺序为 static → dynamic → profile → memory → transcript → ephemeral，稳定静态前缀先放。分配账目按层记录实际 `requested / used`（有淘汰才写 `dropped`），不再有名义比例或 `assigned`；profile 计入 dynamic，schema/Skill 清单计入 tools。记忆额度由配置的 core／recall token 上限分别约束，追加时还检查真实剩余空间；设置窗调整总窗口，不按百分比强行截字。
+请求层顺序为 static → dynamic → profile → memory → transcript → ephemeral，稳定静态前缀先放。分配账目按层记录实际 `requested / used`（有淘汰才写 `dropped`），不再有名义比例或 `assigned`；profile 计入 dynamic，schema/Skill 清单计入 tools。记忆额度由 [memory/budget.ts](../../src/services/agent/memory/budget.ts) 统一自动计算，不提供手动分层额度配置：在每次 `transform_context` 完成正文/工具投影和理解块装配后，计算 `normalInputTarget - 当前实际输入占用 - 新增记忆消息结构开销`，再开始召回。core 与 recall 均可使用这份剩余空间，由共享 total 限制总量；没有固定百分比、历史倍率、最低填充量或额外绝对封顶。候选数量与正文大小决定实际消耗，空间充裕不要求填满。预算签名不变时复用本轮结果；正文增长使可用量变化时重新装配，复用查询计划并跳过再次模型重排；数据库 revision/遗忘校验仍在每次请求前执行。主动精确目标不加核心画像。分层的作用是区分常驻事实、检索索引与请求内证据，参考 [Anthropic context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents) 的按需加载和 [OpenViking context layers](https://docs.openviking.ai/en/concepts/03-context-layers) 的逐层展开；这些实践没有通用的记忆百分比。
+
+总预算受真实剩余空间和 `contextBudget().normalInputTarget` 双重限制，无需修改 CONFIG 来启用；装配把块头、JSON 字段、正文编码及出处一起计量，超限保留可容纳的索引命中片段，不裁事实。会话覆盖先为后续可容纳会话预留一条命中证据，再决定前面会话能否展开完整轮次，防止首条正文独占空间。读取顺序按会话分组并恢复 timestamp/seq 次序，避免助手答复先于用户条件。宿主固定阅读规则进入 system 静态块，引用数据仍在尾随 custom 消息；个人历史的独立阅读阶段见[请求内证据阅读](#请求内证据阅读)。静默了解及主动规划使用正文摘录格式，由自身 JSON 输入装配计量，不扣不存在的聊天表头。设置窗调整总窗口，不按比例截字。
 
 - L0：请求内缩短大工具结果（保留头尾和 eventId），阈值由 `contextBudget().normalInputTarget × L0_TOOL_RESULT_CAP`（10%）推导，判定与裁剪都用 token 口径（中文 ≈1 token/字符，头尾各半按 token 切），随窗口单调。**无条件带地址**：不论是否超阈值，每条工具结果在请求视图里都带回读地址（未缩短的正文也附地址尾行；`preserve` 只挡升档处理、不挡地址标注）；无地址的在缩短/清空时用 `L0_NO_ADDRESS_NOTICE` 变体（正文未被改动时不加提示，不写假 eventId），且同一内容只留痕一次（键是「长度:首 32 字符」的内容指纹，有界集合上限 64、FIFO 淘汰最旧）。**阶梯**：级 0 不动 / 级 1 缩短 / 级 2 清空；级 2 的硬前提是有地址（无地址永停级 1）；保护区 `LADDER_PROTECTION_TURNS = 3` 按用户意图轮计（user/`bashExecution` 开轮，toolResult/assistant/custom/compactionSummary 不开轮；不足 3 轮全保护，`turns <= 0` 才关保护区），只挡级 2/级 3、不挡级 1。**回读分页改 token 口径**：`read_session_event` 的页大小与 L0 同源推导（`toolResultTokenBudget(window)`）、随窗口单调，不再是固定 8000 字符常数。级 3（摘要）前的闸门只在 `reason === "threshold"` 且级 1/2 压完装得下时 decline（不花摘要调用）；生产路径上目前由前置守卫（摘要范围为空）先拦截，闸门自身的 decline 分支不可达、不构成用户可见行为。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
 - L1：整段摘要。切分范围不由本仓决定：「最旧的连续完整用户意图轮、工具批次不拆、保留窗口」都是上游 `findCutPoint` 的执行结果（`@earendil-works/pi-agent-core` 的 `harness/compaction/compaction.js`）；宿主只提供摘要内核（`before_compaction`，[compactor.ts](../../src/services/engine/compactor.ts)）与提交后的可解释结果。切分回合时上游把当前未完成回合的前半段单列（`turnPrefixMessages`），宿主用 `SPLIT_TURN_INSTRUCTION` 另段摘要。素材超硬上限时切成 K 片，逐片串行调摘要、以 `previousSummary` 迭代合并，最终一次提交一份摘要（提交仍只有一次）；片数上限 `MAX_COMPACTION_SLICES = 8`，超上限或存在不可再分且自身超硬上限的片段则 `CompactionOverflowError`（`code = "COMPACTION_MATERIAL_OVER_CAP"`）明确失败——零请求、零提交，不存在静默丢弃。
@@ -123,4 +135,4 @@ dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Re
 
 记忆质量以外部权威基准为**主口径**（memory-bench：LongMemEval／MemoryBank cn／LoCoMo，按分层节奏运行，报告是质量证据）；自建 80 题是**兜底冒烟与治理语义回归**，目前仍是待人工审计的合成标注草案。跑批、独立审阅门禁与 release 存储/debug IPC 性能脚本已接入[测试入口](../../test/README.md#trace记忆质量与性能门禁)。实际注入证据取请求预算裁剪后的 rendered IDs，提取与回答分开评分，无记忆/本地/always/adaptive/gold evidence 逐 cell 重建库并配对。采集完成不等于质量通过，缺审阅与缓存计数不能补成成功或零成本。
 
-完整性/治理零失败、语义质量、重排收益与资源门槛分别判定，结果和未验证边界只在[未完成工作总表](../plans/active/未完成工作与已知缺口.md#3-长期记忆-b-方案主路径已实施仍有验收缺口)维护。当前尚不能宣称 adaptive 已带来收益；真实设置窗口、Windows 和 release UI/IPC 证据也不能由 Node 单测替代。
+完整性/治理零失败、语义质量、重排收益与资源门槛分别判定；尚需修复的问题与完成条件见[未完成工作总表](../plans/active/未完成工作与已知缺口.md#3-长期记忆剩余)，测试结果由 `test/reports/` 报告与交付检查点承担，不在待办重复记录。当前尚不能宣称 adaptive 已带来收益；真实设置窗口、Windows 和 release UI/IPC 证据也不能由 Node 单测替代。

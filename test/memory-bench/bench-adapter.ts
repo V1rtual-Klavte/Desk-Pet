@@ -17,7 +17,7 @@ import {
 } from "@/services/agent/memory"
 import type { MemoryDraft, MemoryItem, MemorySource } from "@/services/agent/memory"
 import { aiConfig, flushConfig, memoryConfig, setOverrides } from "@/services/config"
-import { setCurrentTimeNoteAnchor } from "@/services/context"
+import { contextBudget, estimateRequestTokens, setCurrentTimeNoteAnchor } from "@/services/context"
 import { completePiText, getPiModel } from "@/services/engine/harness"
 import type { PiModel } from "@/services/engine/harness"
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
@@ -33,6 +33,7 @@ import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBud
 import { questionTimeAnchor } from "./datasets/longmemeval/importer.mjs"
 import { planScopeNormalization } from "./scope-normalize.mjs"
 import { summarizeMemoryQualityUsage } from "../memory-quality/index.mjs"
+import { buildReaderControlPrompts, requireCompleteReaderOutput } from "./reader-control.mjs"
 
 /** 与 src/services/agent/memory/sources.ts 的 EVIDENCE_CHARS 对齐：登记证据只保留引文长度。 */
 const EVIDENCE_CHARS = 2_000
@@ -49,6 +50,52 @@ const JUDGE_TIMEOUT_MS = 120_000
  */
 const BENCH_RECALL_TIMEOUT_MS = 120_000
 const log = createLogger("MemoryBench")
+
+type ReaderControlMode = "direct" | "con"
+
+function assertReaderPromptFits(model: PiModel, systemPrompt: string, userText: string, maxOutputTokens: number): void {
+  const inputTokens = estimateRequestTokens(systemPrompt, [{ role: "user", content: userText }])
+  const inputLimit = contextBudget(model.contextWindow, maxOutputTokens).normalInputTarget
+  if (inputTokens > inputLimit)
+    throw new Error(`reader-control 输入超预算：估算 ${inputTokens} tokens，normalInputTarget ${inputLimit}；完整 oracle history 保留，未截断`)
+}
+
+async function askWithFullOracleEvidence(caseDef: BenchCase, mode: ReaderControlMode, signal?: AbortSignal) {
+  if (signal?.aborted) throw new Error("reader-control cancelled before inference")
+  const model = getPiModel(aiConfig.model)
+  const prompts = buildReaderControlPrompts(caseDef, mode)
+  // Deliberately construct the prompt from only question/date and oracle evidence sessions.
+  // answer, has_answer, and answerSessionIds are never serialized into generation input.
+  const systemPrompt = prompts.systemPrompt
+  const noteSystemPrompt = prompts.noteSystemPrompt
+  const outputBudget = model.maxTokens
+  const usage = { inputTokens: 0, outputTokens: 0, calls: 0 }
+  const notes: Array<{ sessionId: string; sessionDate: string; note: string }> = []
+  if (mode === "con") {
+    for (let index = 0; index < prompts.sessions.length; index++) {
+      if (signal?.aborted) throw new Error("reader-control cancelled during CoN extraction")
+      const session = prompts.sessions[index]
+      const notePrompt = prompts.notePrompts[index]
+      assertReaderPromptFits(model, noteSystemPrompt, notePrompt, outputBudget)
+      const result = await completePiText({ purpose: "memory", model, systemPrompt: noteSystemPrompt, userText: notePrompt,
+        maxTokens: outputBudget, timeoutMs: JUDGE_TIMEOUT_MS, signal })
+      const note = requireCompleteReaderOutput(result, `CoN note extraction session=${session.sessionId}`)
+      usage.inputTokens += result.usage.input
+      usage.outputTokens += result.usage.output
+      usage.calls += 1
+      notes.push({ sessionId: session.sessionId, sessionDate: session.sessionDate, note })
+    }
+  }
+  const userText = prompts.finalPrompt(mode === "direct" ? undefined : JSON.stringify(notes))
+  assertReaderPromptFits(model, systemPrompt, userText, outputBudget)
+  const result = await completePiText({ purpose: "memory", model, systemPrompt, userText,
+    maxTokens: outputBudget, timeoutMs: JUDGE_TIMEOUT_MS, signal })
+  const answer = requireCompleteReaderOutput(result, `${mode} answer`)
+  usage.inputTokens += result.usage.input
+  usage.outputTokens += result.usage.output
+  usage.calls += 1
+  return { answer, usage }
+}
 
 export interface BenchEvidenceRef {
   sourceId: string
@@ -78,6 +125,7 @@ export interface BenchCellOutcome {
     scopeNormalized: number; sweeps: number }
   metrics?: { firstDeliveredTextDeltaMs?: number }
   usage?: ReturnType<typeof summarizeMemoryQualityUsage>["usage"]
+  readerUsage?: { inputTokens: number; outputTokens: number; calls: number }
   cache?: { status: "hit" | "unknown" }
   error?: string
 }
@@ -422,9 +470,10 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
   }
 }
 
-export function createLiveMemoryBenchAdapter(): {
+export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderControlMode } = {}): {
   init(input: { dataset: string; split: string; file: unknown; evalRunId: string }): Promise<void> | void
   manifest(): Promise<Record<string, unknown>>
+  reportNamespace(): string | undefined
   runCell(input: { caseId: string; groupKey: string; sequence: number; total: number; dataset: string;
     caseDef: BenchCase; seed: string; signal?: AbortSignal }): Promise<BenchCellOutcome>
   judgeCase(input: { caseDef: BenchCase; outcome: BenchCellOutcome; input: unknown; judgeModel: string;
@@ -471,8 +520,19 @@ export function createLiveMemoryBenchAdapter(): {
 
     async manifest() {
       const cfg = { provider: aiConfig.provider, model: aiConfig.model,
-        coreTokenBudget: memoryConfig.coreTokenBudget, recallTokenBudget: memoryConfig.recallTokenBudget,
+        budgetPolicy: "request-headroom",
         queryRewrite: memoryConfig.queryRewrite, rerank: memoryConfig.rerank, dreamingTier: memoryConfig.dreamingTier }
+      if (options.readerControl) return { provider: aiConfig.provider, model: aiConfig.model,
+        entry: "eval-only-reader-control", providerMode: "real", privileged: true,
+        productScore: false, readerControl: options.readerControl,
+        evidenceSource: "LongMemEval oracle case sessions; all supplied sessions are gold evidence sessions",
+        inputPolicy: "all sessions and turns in chronological file order; original session id, timestamp, role and turn index retained; answer/has_answer/answer_session_ids excluded",
+        readingMethod: options.readerControl === "con"
+          ? "official LongMemEval CoN shape: per-session relevant-note extraction, then answer from extracted notes"
+          : "direct full-history answer",
+        outputPolicy: "each note and final answer use the resolved production model maxTokens cap to preserve reasoning headroom; unlike the official reference's 500-token CoN extraction cap",
+        fitPolicy: "fail when estimated prompt exceeds context normalInputTarget; never truncate",
+        fixtureStorage: "isolated-e2e-root; no product memory registration or recall" }
       return { provider: aiConfig.provider, model: aiConfig.model, entry: "production", providerMode: "real",
         storageMode: "rust-ipc", configHash: await sha256(JSON.stringify(cfg)),
         toolIsolation: "all model tools disabled; host fixture/governance IPC remains real",
@@ -482,15 +542,23 @@ export function createLiveMemoryBenchAdapter(): {
         questionTimeAnchoring: dataset === "longmemeval"
           ? "LongMemEval: question_date 作为提问回合的 [当前时间]（本地墙钟）；其余数据集用真实时钟"
           : "真实时钟（该数据集没有题目基准日）",
-        memoryConfig: { queryRewrite: memoryConfig.queryRewrite, rerank: memoryConfig.rerank, coreTokenBudget: memoryConfig.coreTokenBudget,
-          recallTokenBudget: memoryConfig.recallTokenBudget, recallTimeoutMs: memoryConfig.recallTimeoutMs,
+        memoryConfig: { budgetPolicy: "request-headroom", contextMaxTokens: aiConfig.contextMaxTokens, queryRewrite: memoryConfig.queryRewrite, rerank: memoryConfig.rerank,
+          recallTimeoutMs: memoryConfig.recallTimeoutMs,
           rerankTimeoutMs: memoryConfig.rerankTimeoutMs },
         evidenceCapChars: EVIDENCE_CHARS, oversizedSourceChars: OVERSIZED_SOURCE_CHARS,
         fixtureStorage: "isolated-e2e-root" }
     },
 
+    reportNamespace() { return options.readerControl ? `lme-oracle-reader-${options.readerControl}` : undefined },
+
     async runCell({ caseDef, groupKey, sequence, total, signal }): Promise<BenchCellOutcome> {
       if (signal?.aborted) throw new Error("cancelled before bench cell")
+      if (options.readerControl) {
+        const measured = await askWithFullOracleEvidence(caseDef, options.readerControl, signal)
+        return { caseId: String(caseDef.caseId), questionId: typeof caseDef.questionId === "string" ? caseDef.questionId : null,
+          status: "complete", answer: measured.answer, evidence: [], candidateSessionIds: [], groupReused: false,
+          storeGeneration: "reader-control-no-product-store", readerUsage: measured.usage, cache: { status: "unknown" } }
+      }
       // trace 订阅覆盖灌库 + 提问整段：dreaming 的失败分类（长度上限 vs 基础设施）也依赖事件。
       const traces: unknown[] = []
       const unsubscribe = subscribeRuntimeTrace(event => { traces.push(event) })

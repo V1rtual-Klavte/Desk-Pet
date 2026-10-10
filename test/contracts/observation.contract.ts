@@ -299,7 +299,7 @@ export const observationContract: ModuleContract = {
     "test/unit/observation/证据身份稳定.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "9487eb1a39f73c160cc5fb987887e5fe41c0c8396b13430143da3ab0975fc9cc",
+  sourceHash: "65dbb8b2dc7d502f2c62b1d3d7799ce1e9da90f013cb81b52fd6647515fa8ea5",
   coverage: [
     {
       id: "ob-01",

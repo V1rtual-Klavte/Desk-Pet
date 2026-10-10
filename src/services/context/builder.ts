@@ -18,6 +18,7 @@ import { buildPromptBlocks } from "./kernel"
 import type { ContextBudgetAdjustment } from "./kernel"
 import { contextBudget, toolBudgetSchema, type ContextBudget } from "./budget"
 import { HUMANIZER_PROMPT } from "@/services/humanizer"
+import { MEMORY_READING_POLICY } from "@/services/agent/memory/projection"
 
 export interface BuildContextInput {
   unansweredCount?: number
@@ -197,6 +198,7 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
     { blockId: "static:v1rtual", layer: "static", source: "V1RTUAL.md", text: v1rtual, priority: 99, origin: "system", taint: "system" },
     ...(input.humanizerEnabled ? [{ blockId: "static:humanizer", layer: "static" as const, source: "humanizer", text: HUMANIZER_PROMPT, priority: 98, origin: "system" as const, taint: "system" as const }] : []),
     { blockId: "static:tool-protocol", layer: "static", source: "tool-protocol", text: toolProtocol, priority: 98, origin: "system", taint: "system" },
+    { blockId: "static:memory-reading", layer: "static", source: "memory-reading-policy", text: MEMORY_READING_POLICY, priority: 98, origin: "system", taint: "system" },
     // Provider sends declarations independently. This complete block only records their frozen budget/snapshot and stays out of systemPrompt.
     { blockId: "static:tool-schema", layer: "static", source: "tool-schema", text: toolSchemaSnapshot, priority: 97, origin: "system", taint: "system" },
     { blockId: "static:skill-catalog", layer: "static", source: "skill-catalog", text: skillCatalog, priority: 96, origin: "system", taint: "system" },

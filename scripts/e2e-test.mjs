@@ -31,7 +31,7 @@ const args = process.argv.slice(2).filter(arg => arg !== "--")
 // 两边各有一行互指注释；不做机制化共享（cli.ts 经 esbuild 进 Node bundle，
 // 本文件顶层有副作用、不能被 import，重复清单是现状里代价最低的同步点）。
 const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report", "--contracts", "--quality-seed", "--trace",
-  "--bench-dataset", "--bench-split", "--bench-limit", "--bench-case", "--bench-seed", "--bench-judge", "--bench-judge-model"])
+  "--bench-dataset", "--bench-split", "--bench-limit", "--bench-case", "--bench-seed", "--bench-judge", "--bench-judge-model", "--bench-reader-control"])
 const flagOptions = new Set(["--strict", "--quality", "--performance", "--bench"])
 // 启动器自用的选项表（分池 / 门禁 / 超时的判据；子进程环境另见 childEnv）。
 const env = { ...process.env }
@@ -46,6 +46,7 @@ const channelOptionKeys = {
   "--bench-dataset": "benchDataset", "--bench-split": "benchSplit", "--bench-limit": "benchLimit",
   "--bench-case": "benchCase", "--bench-seed": "benchSeed", "--bench-judge": "benchJudge",
   "--bench-judge-model": "benchJudgeModel",
+  "--bench-reader-control": "benchReaderControl",
   "--strict": "strict", "--quality": "quality", "--performance": "performance", "--bench": "bench",
 }
 /** 通道选项值表（键写全、缺省 null；与 RuntimeOptions 的投影同形）。 */

@@ -44,8 +44,6 @@ ai:
     maxParallelTools: 4
   memory:
     enabled: true
-    coreTokenBudget: 320
-    recallTokenBudget: 1000
     # 统一事实/画像/原话查询改写：off | adaptive；技术参数，YAML修改后重启生效
     queryRewrite: adaptive
     rerank: off

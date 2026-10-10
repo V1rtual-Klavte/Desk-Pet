@@ -87,8 +87,9 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | `ai.loop.maxRetry` | 生成级重试次数（0 = 关闭重试） | [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts) 的 RetryPolicy 下发 |
 | `ai.loop.subAgentRounds` | agent 子代理工具轮上限（无人值守子运行；主聊天回合已无计数上限，走循环病理检测） | [sub-agent.ts](../../src/services/agent/sub-agent.ts) |
 | `ai.loop.maxParallelTools` | 只读并行上限 | 见上一节（宿主许可所有者） |
-| `ai.memory.coreTokenBudget` / `ai.memory.recallTokenBudget` | 核心画像 / 召回预算（tokens） | [memory/provider.ts](../../src/services/agent/memory/provider.ts)、[harness/runtime.ts](../../src/services/engine/harness/runtime.ts) |
 | `ai.memory.maxSessions` | 会话标签保留上限 | [session/store.ts](../../src/services/session/store.ts) |
+
+记忆请求预算由运行期按实际剩余输入空间自动派生，不提供手动 core/recall 额度或切换开关，见[记忆预算](memory.md#预算与工具大结果)。
 
 另有从不提供控件、也不在本表撤下语义内的技术参数：`ai.loop.turnTimeoutMs`（主回合/恢复墙钟，默认 600s）与 `ai.plan.stepTimeoutMs`（计划步骤墙钟，默认 300s）——用途、与 bash 档位的约束关系（回合墙钟必须 ≥ 工具档位 + 一次模型往返）与修改入口见[工具系统](tool-system.md#文件命令与取消)的档位说明，不重复默认值。
 

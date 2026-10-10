@@ -624,6 +624,6 @@ export const PROACTIVE_LIMITS = Object.freeze({
 export const MEMORY_LIMITS = Object.freeze({
   "conversation": {
     "batchChunks": 512,
-    "maxSearchResults": 20
+    "maxSearchResults": 50
   }
 } as const)

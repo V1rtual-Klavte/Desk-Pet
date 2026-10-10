@@ -11,7 +11,9 @@ import { initPaths } from "@/services/paths"
 import { readPiSessionEntries } from "@/services/session/repo"
 import { installMemoryProvider } from "@/services/agent/memory"
 import type { MemoryProjection } from "@/services/agent/memory"
-import { flushConfig, memoryConfig, planConfig, setOverrides } from "@/services/config"
+import { estimateContextTokens, estimateMessageTokens } from "@/services/context"
+import { createMemoryRecallMessage } from "@/services/engine/runtime"
+import { aiConfig, flushConfig, memoryConfig, planConfig, setOverrides } from "@/services/config"
 
 let root = ""
 
@@ -68,24 +70,25 @@ describe("Runtime trace 持久化锚点", () => {
   it("trace 只列出真正进入请求视图的记忆 ID [trace-memory-rendered]", async () => {
     const oldConfig = {
       enabled: memoryConfig.enabled,
-      core: memoryConfig.coreTokenBudget,
-      recall: memoryConfig.recallTokenBudget,
       rerank: memoryConfig.rerank,
       planEnabled: planConfig.enabled,
     }
-    const provider = installFakeProvider([fakeText("我会记住这个称呼。")])
-    const longText = "家庭事实".repeat(100)
+    const provider = installFakeProvider([fakeText("我会记住这个称呼。")], {
+      id: "memory-render-budget-model", name: "Memory Render Budget Model",
+      contextWindow: 128_000, maxTokens: 4_096,
+    })
+    const longText = "家庭事实".repeat(50_000)
     const restoreMemory = installMemoryProvider({
       async recall(): Promise<MemoryProjection[]> {
         return [
           { sourceId: "mq-kept@1", memoryVersion: "mq-kept:1", provenance: "fixture:kept",
             taint: "derived", text: "请称呼用户为小星。", tokenBudget: 12, tier: "recall" },
           { sourceId: "mq-dropped@1", memoryVersion: "mq-dropped:1", provenance: "fixture:dropped",
-            taint: "derived", text: longText, tokenBudget: 350, tier: "recall" },
+            taint: "derived", text: longText, tokenBudget: estimateContextTokens(longText), tier: "recall" },
         ]
       },
     })
-    setOverrides({ "ai.memory.enabled": true, "ai.memory.coreTokenBudget": 0, "ai.memory.recallTokenBudget": 360,
+    setOverrides({ "ai.memory.enabled": true,
       "ai.memory.rerank": "off", "ai.plan.enabled": false })
     await flushConfig()
     const sessionId = await ensureSession()
@@ -109,9 +112,92 @@ describe("Runtime trace 持久化锚点", () => {
       trace.unsubscribe()
       restoreMemory()
       provider.restore()
-      setOverrides({ "ai.memory.enabled": oldConfig.enabled, "ai.memory.coreTokenBudget": oldConfig.core,
-        "ai.memory.recallTokenBudget": oldConfig.recall, "ai.memory.rerank": oldConfig.rerank,
+      setOverrides({ "ai.memory.enabled": oldConfig.enabled, "ai.memory.rerank": oldConfig.rerank,
         "ai.plan.enabled": oldConfig.planEnabled })
+      await flushConfig()
+    }
+  })
+
+  it("按模型实际窗口派生预算并把超旧限额的完整事实送入请求 [memory-recall-layered-runtime]", async () => {
+    const oldConfig = {
+      contextMaxTokens: aiConfig.contextMaxTokens,
+      enabled: memoryConfig.enabled,
+      rerank: memoryConfig.rerank,
+      planEnabled: planConfig.enabled,
+    }
+    const modelWindow = 128_000
+    const fact = `家庭安排事实：${"甲乙丙丁".repeat(450)}最终限制：周三之后且得到用户确认才执行。`
+    const factTokens = estimateContextTokens(fact)
+    const receivedBudgets: number[] = []
+    const provider = installFakeProvider([fakeText("我已读取完整事实。"), fakeText("我已结合当前消息读取完整事实。")], {
+      id: "layered-budget-window-model",
+      name: "Layered Budget Window Model",
+      contextWindow: modelWindow,
+      maxTokens: 4_096,
+    })
+    const restoreMemory = installMemoryProvider({
+      async recall(request): Promise<MemoryProjection[]> {
+        receivedBudgets.push(request.tokenBudget)
+        return [{
+          sourceId: "layered-budget-fact@1",
+          memoryVersion: "layered-budget-fact:1",
+          provenance: "fixture:layered-budget",
+          taint: "derived",
+          text: fact,
+          tokenBudget: factTokens,
+          tier: "recall",
+        }]
+      },
+    })
+    setOverrides({
+      "ai.contextMaxTokens": 262_144,
+      "ai.memory.enabled": true,
+      "ai.memory.rerank": "off",
+      "ai.plan.enabled": false,
+    })
+    await flushConfig()
+    await ensureSession()
+    const trace = captureRuntimeTrace()
+    try {
+      await runRuntimeTurn("请概括家庭安排。")
+      const shortHeadroom = receivedBudgets[receivedBudgets.length - 1] ?? 0
+      await runRuntimeTurn(`请结合下面这段当前消息概括家庭安排：${"当前背景信息。".repeat(600)}`)
+      const longHeadroom = receivedBudgets[receivedBudgets.length - 1] ?? 0
+
+      const recallStart = trace.events.find(event => event.kind === "memory_recall_start")
+      const rendered = trace.events.find(event => event.kind === "memory_recall_rendered")
+      const requestTexts = provider.payloads.flatMap(payload => payload.messages.map(message => typeof message.content === "string"
+        ? message.content
+        : message.content.map(part => part.type === "text" ? part.text : "").join("")))
+      const memoryText = requestTexts.find(text => text.includes("[记忆与会话参考]"))
+
+      expect(factTokens, "回归事实没有超过旧单层召回上限").toBeGreaterThan(1_000)
+      expect(shortHeadroom, "MemoryProvider 未获得超过旧1000上限的真实可用预算").toBeGreaterThan(1_000)
+      expect(longHeadroom, "更长的当前正文没有消耗记忆可用预算").toBeLessThan(shortHeadroom)
+      expect(longHeadroom, "当前正文占用后没有留下足以读取完整回归事实的预算").toBeGreaterThan(factTokens)
+      expect(recallStart?.payload.budget, "trace 总预算应等于真实可用量并扣除记忆消息结构开销")
+        .toBe(shortHeadroom)
+      expect(shortHeadroom, "预算没有预留空记忆消息的同口径结构开销").toBeLessThan(
+        128_000 - estimateMessageTokens(createMemoryRecallMessage("")),
+      )
+      expect(rendered?.payload.sourceIds, "完整事实没有进入最终渲染名单").toContain("layered-budget-fact@1")
+      expect(memoryText, "fake model 请求缺少实际渲染的记忆块").toContain(fact)
+      expect(memoryText, "事实尾部条件被截断").toContain("最终限制：周三之后且得到用户确认才执行。")
+      expect(memoryText, "引用数据里不应混入宿主阅读指令").not.toContain("[记忆证据阅读规则]")
+      for (const payload of provider.payloads) {
+        expect(payload.systemPrompt, "宿主阅读规则未进入系统指引").toContain("[记忆证据阅读规则]")
+        expect(payload.systemPrompt, "引用事实不能被升级成系统指令").not.toContain(fact)
+      }
+    } finally {
+      trace.unsubscribe()
+      restoreMemory()
+      provider.restore()
+      setOverrides({
+        "ai.contextMaxTokens": oldConfig.contextMaxTokens,
+        "ai.memory.enabled": oldConfig.enabled,
+        "ai.memory.rerank": oldConfig.rerank,
+        "ai.plan.enabled": oldConfig.planEnabled,
+      })
       await flushConfig()
     }
   })

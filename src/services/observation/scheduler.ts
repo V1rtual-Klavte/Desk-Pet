@@ -81,7 +81,7 @@ async function decisionMemoryBrief(sessionId: string, cardId: string | undefined
     const projections = await recallMemory({
       requestId: "observation-decision-" + crypto.randomUUID(),
       sessionId, cardId, query: "", tokenBudget: DECISION_MEMORY_TOKEN_BUDGET,
-      skipRerank: true, signal,
+      skipRerank: true, projectionFormat: "content", signal,
     })
     return projections.slice(0, DECISION_MEMORY_ITEM_LIMIT)
       .map(projection => projection.text.replace(/\s+/g, " ").trim().slice(0, DECISION_MEMORY_ITEM_CHARS))

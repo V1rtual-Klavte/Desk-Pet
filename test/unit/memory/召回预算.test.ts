@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory } from "@/services/agent/memory"
+import { memoryRecallTokens } from "@/services/agent/memory/projection"
 import { estimateContextTokens } from "@/services/context"
 import { createRuntimeTraceContext, subscribeRuntimeTrace } from "@/services/engine/runtime"
 
@@ -42,6 +43,22 @@ afterEach(() => {
 })
 
 describe("召回预算", () => {
+  it("总预算包含标签和出处，超限整条丢弃 [memory-recall-render-cost]", async () => {
+    const restore = installMemoryProvider({ recall: async () => [projectionOf("甲".repeat(100), 100)] })
+    try {
+      const result = await recallMemory({ ...request(100), budget: { core: 0, recall: 100, total: 100 } })
+      expect(result).toEqual([])
+    } finally { restore() }
+  })
+
+  it("纯正文摘录消费不扣不存在的聊天表头 [memory-recall-content-cost]", async () => {
+    const restore = installMemoryProvider({ recall: async () => [projectionOf("甲".repeat(100), 100)] })
+    try {
+      const result = await recallMemory({ ...request(100), budget: { core: 0, recall: 100, total: 100 }, projectionFormat: "content" })
+      expect(result.map(item => item.text)).toEqual(["甲".repeat(100)])
+    } finally { restore() }
+  })
+
   it("预算不足时淘汰完整条目并按全文token计量 [memory-recall-token-budget]", async () => {
     expect(CJK_TEXT.length, `场景素材不足 5000 字: ${CJK_TEXT.length}`).toBeGreaterThanOrEqual(5_000)
 
@@ -57,16 +74,17 @@ describe("召回预算", () => {
     const SHORT = "用户偏好简短回复"
     const passthrough = installMemoryProvider({ recall: async req => [projectionOf(SHORT, req.tokenBudget)] })
     let short: Awaited<ReturnType<typeof recallMemory>>
-    try { short = await recallMemory(request(BUDGET)) } finally { passthrough() }
+    try { short = await recallMemory(request(memoryRecallTokens([projectionOf(SHORT, estimateContextTokens(SHORT))]))) } finally { passthrough() }
     expect(short[0]?.text, `预算内的召回文本被改动: ${short[0]?.text ?? "（没有返回）"}`).toBe(SHORT)
     expect(short[0]?.tokenBudget).toBe(estimateContextTokens(SHORT))
 
-    // 3. 跨投影的预算会计不变：第一条吃满预算后，第二条被 remaining 拦下，正文总量不越界。
+    // 3. 跨投影的预算会计不变：第一条吃掉大半 tier 预算后，第二条被 remaining 拦下（总预算另含表头/出处），正文总量不越界。
     const first = "甲".repeat(16)
     const second = "乙".repeat(16)
-    const many = installMemoryProvider({ recall: async req => [projectionOf(first, req.tokenBudget), projectionOf(second, req.tokenBudget)] })
+    const many = installMemoryProvider({ recall: async req => [projectionOf(first, 24), projectionOf(second, 24)] })
     let filled: Awaited<ReturnType<typeof recallMemory>>
-    try { filled = await recallMemory(request(24)) } finally { many() }
+    const renderBudget = memoryRecallTokens([projectionOf(first, 24)])
+    try { filled = await recallMemory({ ...request(renderBudget), budget: { core: 0, recall: 24, total: renderBudget } }) } finally { many() }
     expect(filled, `剩余预算不足时没有整条淘汰第二项: ${filled.length}`).toHaveLength(1)
     expect(filled[0]?.text).toBe(first)
     expect(filled[0]?.tokenBudget).toBe(estimateContextTokens(first))

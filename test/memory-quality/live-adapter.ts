@@ -1,3 +1,4 @@
+import { deriveMemoryRecallBudget } from "@/services/agent/memory"
 // Real Live quality adapter. The scorer is provider agnostic; this module deliberately
 // crosses sendMessage and Rust MemoryStore IPC, while all storage remains in E2E roots.
 import { sendMessage } from "@/services/agent/runner"
@@ -165,8 +166,9 @@ function asFactId(item: MemoryItem, map: Map<string, string>): string {
 }
 
 function memoryItemsToProjections(items: MemoryItem[], map: Map<string, string>): MemoryProjection[] {
-  let core = Math.max(0, memoryConfig.coreTokenBudget)
-  let recall = Math.max(0, memoryConfig.recallTokenBudget)
+  const budget = deriveMemoryRecallBudget(aiConfig.contextMaxTokens)
+  let core = budget.core
+  let recall = budget.recall
   return items.flatMap(item => {
     const tier = item.draft.pinned ? "core" : "recall"
     const remaining = tier === "core" ? core : recall
@@ -322,8 +324,8 @@ async function actualPromptEvidence(traceEvents: unknown[], factIds: Map<string,
 async function currentManifest(): Promise<Record<string, unknown>> {
   return { provider: aiConfig.provider, model: aiConfig.model, entry: "production", providerMode: "real", storageMode: "rust-ipc",
     toolIsolation: "all model tools disabled equally across extraction and all five retrieval strategies; host fixture/governance IPC remains real",
-    memoryConfig: { rerank: memoryConfig.rerank, coreTokenBudget: memoryConfig.coreTokenBudget,
-      recallTokenBudget: memoryConfig.recallTokenBudget, recallTimeoutMs: memoryConfig.recallTimeoutMs,
+    memoryConfig: { budgetPolicy: "request-headroom", contextMaxTokens: aiConfig.contextMaxTokens, rerank: memoryConfig.rerank,
+      recallTimeoutMs: memoryConfig.recallTimeoutMs,
       rerankTimeoutMs: memoryConfig.rerankTimeoutMs }, fixtureStorage: "isolated-e2e-root" }
 }
 

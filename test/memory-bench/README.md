@@ -12,6 +12,8 @@
   `qualityThresholds: null`。宿主对本次运行的 `PASS` 只表示「完整跑完」，不表示质量达标。
 - **不冒充官方榜单成绩**：判分是「基于官方脚本/模板的自适配结果」，口径差异逐项列在下面。
 
+预算对比读取 manifest 的 `memoryConfig.budgetPolicy=request-headroom` 与逐题 `memory_recall_start`（总预算、core/recall 额度、实际窗口），并以 `memory_recall_rendered` 核对真正进入请求的证据。记忆额度统一按请求剩余输入空间自动派生，不提供手动分层配置；额度提升本身不代表质量或费用收益，须保持题集、模型与判分口径一致对比。
+
 ## 1. 数据集与许可
 
 | 数据集 | 来源 | 许可 | 论文 |
@@ -72,6 +74,12 @@ node test/memory-bench/prepare.mjs --verify [--data-dir …] [--offline]
 ```bash
 pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
   --bench-limit 10 --bench-judge-model deepseek-reasoner --report json
+
+# privileged same-model upper-bound controls; run separately from the production reader score
+pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
+  --bench-reader-control direct --report json
+pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
+  --bench-reader-control con --report json
 ```
 
 | 参数 | 说明 |
@@ -84,7 +92,10 @@ pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
 | `--bench-seed` | 组内洗牌种子，默认 `memory-bench-2026-10-03` |
 | `--bench-judge on/off` | 默认 `on`；`off` 只出确定性检索指标 |
 | `--bench-judge-model` | 默认取 [test/eval-models.json](../eval-models.json)（或本地 `eval-models.local.json`）的 `judge.model`（当前 `deepseek-reasoner`）；**必须不同于被测模型** |
+| `--bench-reader-control direct|con` | **仅 LongMemEval oracle** 的 eval-only 上限控制；省略时运行正常产品 reader。`direct` 把 oracle case 中所有证据会话（完整角色/时间）直接交给被测模型；`con` 按官方 LongMemEval 方式逐会话提取 notes，再由同一被测模型回答。控制模式绕过产品记忆登记/召回，使用同一 scorer/judge，报告 manifest 标注 `privileged`、`productScore: false` 并使用独立 namespace；不得与正常产品分数混读。输入超出模型上下文预算会失败，不截断。note 与最终回答均使用已解析被测模型的完整 `maxTokens` 输出预算，为 reasoning 留空间；官方 CoN reference 的每条 note 固定上限是 500 tokens，所以这里是同方法结构、不同输出预算的 reader 上限对照。若模型返回非 stop `stopReason` 或空文本，该题记为失败，不当作普通答错。 |
 | `--report json` | 报告落 `test/reports/bench/<stamp>.json`（建议始终带；同名 `.html` 由启动器自动生成质量摘要页） |
+
+LongMemEval 官方 generation baseline 推荐在 full-history 下提高候选上限以纳入全部会话、保留 assistant 消息、使用 JSON 历史格式，并建议 `con` reading method。此控制模式复用其核心阅读对照：direct 全历史阅读 vs 每会话抽取 reading notes 后再回答；它是 privileged reader 上限实验，不代表产品检索能力或官方榜单分数。输出预算刻意采用被测模型生产配置的有效上限，而非 reference script 的固定 500-token CoN note 上限，避免 reasoning 输出被评测夹具截断。来源：[LongMemEval 官方仓库](https://github.com/xiaowu0162/LongMemEval) 的 Long-Context Generation 说明与 `src/generation/run_generation.py`。
 
 报告与逐题 JSONL（`memory-bench-outcomes.jsonl`）随现有保留组机制留存：
 主报告 `<stamp>.json` 与同名 `.html` 在 `test/reports/bench/`，按「最近 3 场」淘汰；

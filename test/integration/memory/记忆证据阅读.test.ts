@@ -1,0 +1,171 @@
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+const mocks = vi.hoisted(() => ({
+  completePiText: vi.fn(),
+  publishRuntimeTrace: vi.fn(),
+  currentTimeNote: vi.fn(() => "[当前时间] 2026-10-10 12:00 周六"),
+  warn: vi.fn(),
+}))
+
+vi.mock("@/services/engine/harness", () => ({ completePiText: mocks.completePiText }))
+vi.mock("@/services/engine/runtime", () => ({ publishRuntimeTrace: mocks.publishRuntimeTrace }))
+vi.mock("@/services/context", () => ({ currentTimeNote: mocks.currentTimeNote }))
+vi.mock("@/services/logger", () => ({ createLogger: () => ({ warn: mocks.warn }) }))
+vi.mock("@/services/error", () => ({ formatError: (error: unknown) => String(error) }))
+
+import { focusMemoryEvidence } from "@/services/agent/memory/reader"
+import { memoryRecallTokens } from "@/services/agent/memory/projection"
+import type { MemoryProjection } from "@/services/agent/memory/provider"
+
+const QUERY = "What would you recommend for me based on my preferences?"
+
+function evidence(): MemoryProjection[] {
+  return Array.from({ length: 4 }, (_, index) => ({
+    sourceId: `conversation:session-${index}:entry-${index}:0`,
+    memoryVersion: `conversation:session-${index}:entry-${index}:0:index-7`,
+    provenance: `会话原文:session-${index}/entry-${index}#0`,
+    taint: "derived" as const,
+    text: index === 0 ? "I own a ThinkPad and prefer its keyboard." : `Past preference evidence ${index}.`,
+    tokenBudget: 32,
+    tier: "recall" as const,
+    memoryRevision: 7,
+    conversation: {
+      sessionId: `session-${index}`,
+      entryId: `entry-${index}`,
+      eventId: `event-${index}`,
+      role: "user" as const,
+      timestamp: 1_800_000_000_000 + index,
+      seq: index,
+      chunk: 0,
+      extent: "entry" as const,
+    },
+  }))
+}
+
+function input(projections: readonly MemoryProjection[], overrides: Partial<Parameters<typeof focusMemoryEvidence>[0]> = {}) {
+  return {
+    query: QUERY,
+    projections,
+    contextWindow: 32_768,
+    tokenBudget: 12_000,
+    signal: new AbortController().signal,
+    requestId: "reader-turn-1",
+    sessionId: "reader-session",
+    timeoutMs: 30_000,
+    ...overrides,
+  }
+}
+
+function readingResponse(sourceId = evidence()[0]!.sourceId, quote = "I own a ThinkPad") {
+  return {
+    text: JSON.stringify({ notes: [{ id: sourceId, quote, relevance: "可能与用户当前偏好有关" }] }),
+    stopReason: "stop",
+  }
+}
+
+beforeEach(() => {
+  mocks.completePiText.mockReset()
+  mocks.publishRuntimeTrace.mockReset()
+  mocks.warn.mockReset()
+  mocks.currentTimeNote.mockReset().mockReturnValue("[当前时间] 2026-10-10 12:00 周六")
+})
+
+describe("记忆证据阅读接线", () => {
+  it("附加来源可核对笔记且原文身份和信任字段不变 [memory-reading-notes-trust-preservation]", async () => {
+    const raw = evidence()
+    const signal = new AbortController().signal
+    mocks.completePiText.mockResolvedValueOnce(readingResponse())
+
+    const focused = await focusMemoryEvidence(input(raw, { signal }))
+
+    expect(focused[0]?.readingNote).toEqual({ quote: "I own a ThinkPad", relevance: "可能与用户当前偏好有关" })
+    expect(focused.map(item => [item.sourceId, item.memoryVersion, item.text, item.taint, item.origin]))
+      .toEqual(raw.map(item => [item.sourceId, item.memoryVersion, item.text, item.taint, item.origin]))
+    expect(raw.every(item => item.readingNote === undefined), "阅读阶段不能回写原始召回对象").toBe(true)
+    expect(mocks.completePiText).toHaveBeenCalledTimes(1)
+    expect(mocks.completePiText.mock.calls[0]?.[0]).toMatchObject({
+      purpose: "memory", signal, timeoutMs: 30_000,
+      audit: { requestId: "reader-turn-1", sessionId: "reader-session" },
+    })
+  })
+
+  it("同一信号同证据复用阅读结果，预算缩小时只舍笔记并保留原话 [memory-reading-signal-cache-budget-shrink]", async () => {
+    const raw = evidence()
+    const signal = new AbortController().signal
+    mocks.completePiText.mockResolvedValueOnce(readingResponse())
+
+    const first = await focusMemoryEvidence(input(raw, { signal }))
+    const shrunk = await focusMemoryEvidence(input(raw, {
+      signal,
+      tokenBudget: memoryRecallTokens(raw),
+    }))
+
+    expect(first[0]?.readingNote, "初次阅读结果未附注").toBeDefined()
+    expect(shrunk.every(item => item.readingNote === undefined), "预算不足时应整体舍弃超出的阅读注释").toBe(true)
+    expect(shrunk.map(item => [item.sourceId, item.text, item.taint]))
+      .toEqual(raw.map(item => [item.sourceId, item.text, item.taint]))
+    expect(mocks.completePiText).toHaveBeenCalledTimes(1)
+  })
+
+  it("按request、来源正文和角色失效缓存，且同请求时间锚变化不重复阅读 [memory-reading-cache-invalidation]", async () => {
+    const raw = evidence()
+    const signal = new AbortController().signal
+    let clock = "[当前时间] 首次锚点"
+    mocks.currentTimeNote.mockImplementation(() => clock)
+    mocks.completePiText
+      .mockResolvedValueOnce(readingResponse())
+      .mockResolvedValueOnce(readingResponse())
+      .mockResolvedValueOnce(readingResponse())
+      .mockResolvedValueOnce(readingResponse())
+      .mockResolvedValueOnce(readingResponse())
+
+    await focusMemoryEvidence(input(raw, { signal }))
+    clock = "[当前时间] 下一分钟"
+    await focusMemoryEvidence(input(raw, { signal }))
+    expect(mocks.completePiText).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(mocks.completePiText.mock.calls[0]![0].userText).currentTimeNote).toBe("[当前时间] 首次锚点")
+
+    await focusMemoryEvidence(input(raw, { signal, requestId: "reader-turn-2" }))
+    const changedText = raw.map((item, index) => index === 0 ? { ...item, text: `${item.text} Another detail.` } : item)
+    await focusMemoryEvidence(input(changedText, { signal, requestId: "reader-turn-2" }))
+    const changedRole = changedText.map((item, index) => index === 0
+      ? { ...item, conversation: { ...item.conversation!, role: "assistant" as const } }
+      : item)
+    await focusMemoryEvidence(input(changedRole, { signal, requestId: "reader-turn-2" }))
+
+    expect(mocks.completePiText).toHaveBeenCalledTimes(4)
+    const roleChangedInput = JSON.parse(mocks.completePiText.mock.calls[3]![0].userText) as {
+      sources: Array<{ sourceId: string; role: string }>
+    }
+    expect(roleChangedInput.sources[0]).toMatchObject({ sourceId: raw[0]!.sourceId, role: "assistant" })
+
+    await focusMemoryEvidence(input(raw, { signal: new AbortController().signal, requestId: "reader-turn-2" }))
+    expect(mocks.completePiText).toHaveBeenCalledTimes(5)
+  })
+
+  it("取消期间的晚到结果、非stop结果、网关失败和伪造来源都回退原证据 [memory-reading-cancel-invalid-source-fallback]", async () => {
+    const raw = evidence()
+    const cancelled = new AbortController()
+    let resolveLate!: (value: unknown) => void
+    mocks.completePiText.mockImplementationOnce(() => new Promise(resolve => { resolveLate = resolve }))
+    const pending = focusMemoryEvidence(input(raw, { signal: cancelled.signal }))
+    cancelled.abort()
+    resolveLate(readingResponse())
+    const afterCancel = await pending
+    expect(afterCancel.every(item => item.readingNote === undefined), "取消后的迟到笔记不应注入").toBe(true)
+
+    mocks.completePiText
+      .mockResolvedValueOnce({ ...readingResponse(), stopReason: "length" })
+      .mockRejectedValueOnce(new Error("gateway unavailable"))
+      .mockResolvedValueOnce(readingResponse("not-a-source", "invented quote"))
+    const nonStop = await focusMemoryEvidence(input(raw, { signal: new AbortController().signal, requestId: "non-stop" }))
+    const failed = await focusMemoryEvidence(input(raw, { signal: new AbortController().signal, requestId: "failed" }))
+    const invalidSource = await focusMemoryEvidence(input(raw, { signal: new AbortController().signal, requestId: "invalid-source" }))
+
+    for (const result of [afterCancel, nonStop, failed, invalidSource]) {
+      expect(result.map(item => [item.sourceId, item.memoryVersion, item.text, item.taint]))
+        .toEqual(raw.map(item => [item.sourceId, item.memoryVersion, item.text, item.taint]))
+      expect(result.every(item => item.readingNote === undefined)).toBe(true)
+    }
+  })
+})

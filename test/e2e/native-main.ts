@@ -453,16 +453,21 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     const caseFilter = raw.benchCase ? raw.benchCase.split(",").map(value => value.trim()).filter(Boolean) : undefined
     const judgeMode = raw.benchJudge === "off" ? "off" : "on"
     const judgeModel = raw.benchJudgeModel ?? resolvedModels.judgeModel ?? "deepseek-reasoner"
+    const readerControlValue = raw.benchReaderControl ?? undefined
+    if (readerControlValue && (dataset !== "longmemeval" || info.split !== "oracle" || !["direct", "con"].includes(readerControlValue))) {
+      throw new Error("--bench-reader-control 仅支持 longmemeval oracle 的 direct|con")
+    }
+    const readerControl = readerControlValue as "direct" | "con" | undefined
     const planned = planBenchCells(dataset, file, { limit, caseFilter, seed })
     manifest.bench = {
       dataset, split: info.split, namespace: info.namespace, plannedCells: planned.length,
-      seed, judge: judgeMode === "off" ? null : judgeModel,
+      seed, judge: judgeMode === "off" ? null : judgeModel, readerControl: readerControl ?? null,
     }
     manifest.expectedTrials = planned.map(cell => ({ caseId: cell.caseId, sceneId: cell.caseId, trialId: "1" }))
     await writeManifest(false)
     const view = createConsoleSpecialView({ mode: `外部记忆基准 · ${dataset}/${info.split}`, total: planned.length, reportPath: resultFilePath() })
     const report: BenchReport = await runMemoryBenchEvaluation({
-      adapter: createLiveMemoryBenchAdapter(),
+      adapter: createLiveMemoryBenchAdapter({ readerControl }),
       dataset, split: info.split, file, seed, limit, caseFilter, judge: judgeMode, judgeModel,
       onCellStart: async (cell: BenchCellContext) => {
         await traceRecorder!.beginTrial(cell.caseId, "1")

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { estimateContextTokens } from "@/services/context/budget"
 
 const mocks = vi.hoisted(() => ({
-  memoryConfig: { rerank: "adaptive" as "off" | "adaptive", coreTokenBudget: 500, recallTokenBudget: 1_000, rerankTimeoutMs: 500, recallTimeoutMs: 1_000 },
+  memoryConfig: { rerank: "adaptive" as "off" | "adaptive", rerankTimeoutMs: 500, recallTimeoutMs: 1_000 },
   recallCandidates: vi.fn(),
   completePiText: vi.fn(),
 }))
@@ -66,7 +66,7 @@ describe("本地与adaptive召回选择", () => {
     mocks.completePiText.mockReset().mockResolvedValue({ text: "[]" })
   })
 
-  it("最终上限6条内不调用重排，且返回原子读取revision [memory-recall-selection]", async () => {
+  it("动态候选6条内不调用重排，且返回原子读取revision [memory-recall-selection]", async () => {
     configure(Array.from({ length: 6 }, (_, index) => item(`small-${index}`)))
     const input = request()
     const rows = await sqliteMemoryProvider.recall(input)
@@ -92,11 +92,11 @@ describe("本地与adaptive召回选择", () => {
     expect(sent.candidates.length).toBeLessThanOrEqual(12)
     expect(sent.candidates.some(candidate => candidate.id === "dynamic-12")).toBe(false)
     expect(rows.map(row => row.sourceId)).toEqual(["dynamic-3@1", "dynamic-0@1"])
-    expect(estimateContextTokens(`${mocks.completePiText.mock.calls[0]![0].systemPrompt}\n${mocks.completePiText.mock.calls[0]![0].userText}`)).toBeLessThanOrEqual(512)
+    expect(estimateContextTokens(`${mocks.completePiText.mock.calls[0]![0].systemPrompt}\n${mocks.completePiText.mock.calls[0]![0].userText}`)).toBeLessThanOrEqual(2_048)
     // 白名单外 id 让整份输出判无效并回退本地同一顺序（mm-02：未知 id 不裁掉放行）。
     mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-0","dynamic-12"]' })
     const fallback = await sqliteMemoryProvider.recall(request())
-    expect(fallback.map(row => row.sourceId)).toEqual(Array.from({ length: 6 }, (_, index) => `dynamic-${index}@1`))
+    expect(fallback.map(row => row.sourceId)).toEqual(Array.from({ length: 13 }, (_, index) => `dynamic-${index}@1`))
   })
 
   it("格式无效才回退到本地排序，写后刷新可显式跳过重排", async () => {
@@ -104,7 +104,7 @@ describe("本地与adaptive召回选择", () => {
     configure(dynamic)
     mocks.completePiText.mockResolvedValueOnce({ text: "not-json" })
     const fallback = await sqliteMemoryProvider.recall(request())
-    expect(fallback.map(row => row.sourceId)).toEqual(dynamic.slice(0, 6).map(row => `${row.id}@1`))
+    expect(fallback.map(row => row.sourceId)).toEqual(dynamic.map(row => `${row.id}@1`))
     mocks.completePiText.mockClear()
     const refresh = { ...request(), skipRerank: true }
     await sqliteMemoryProvider.recall(refresh)

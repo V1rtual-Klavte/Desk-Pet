@@ -20,8 +20,10 @@ const log = createLogger("ConversationMemory")
 
 const CONVERSATION_SEARCH_LIMIT = MEMORY_LIMITS.conversation.maxSearchResults
 const MAX_INDEX_RETRIES = 2
-const CHUNK_CODEPOINTS = 360
-const CHUNK_OVERLAP_CODEPOINTS = 64
+const CHUNK_SCHEMA_VERSION = 2
+const CHUNK_MAX_CODEPOINTS = 1_600
+const CHUNK_MAX_TOKENS = 400
+const CHUNK_OVERLAP_TOKENS = 48
 const CONVERSATION_INDEX_BATCH_SIZE = MEMORY_LIMITS.conversation.batchChunks
 
 export interface ConversationRecallRequest {
@@ -44,6 +46,13 @@ export interface ConversationCandidateRequest {
 }
 
 export type ConversationSourceRef = NonNullable<MemoryProjection["conversation"]>
+
+/** Search-gated JSONL expansion. matchedText is retained for budget fallback to the indexed hit. */
+export type ConversationEvidenceEntry = ConversationSearchEntry & { matchedText: string }
+export type ConversationEvidenceResult = Omit<ConversationSearchResult, "entries"> & {
+  entries: ConversationEvidenceEntry[]
+  revisionChanged?: boolean
+}
 
 class SessionChangedDuringIndexError extends Error {}
 
@@ -82,7 +91,7 @@ export async function recallConversation(request: ConversationRecallRequest): Pr
 }
 
 /** Local FTS candidate surface consumed only by sqliteMemoryProvider's joint candidate pool. */
-export async function searchConversationCandidates(request: ConversationCandidateRequest): Promise<ConversationSearchResult> {
+export async function searchConversationCandidates(request: ConversationCandidateRequest): Promise<ConversationEvidenceResult> {
   if (request.signal.aborted || !request.sessionId) {
     return { revision: 0, memoryRevision: 0, forgetEpoch: 0, entries: [] }
   }
@@ -112,21 +121,139 @@ export async function searchConversationCandidates(request: ConversationCandidat
   if (request.signal.aborted) return { revision: currentStatus.revision, memoryRevision: 0, forgetEpoch: currentStatus.forgetEpoch, entries: [] }
 
   const uniqueQueries = [...new Set(request.queries.map(query => query.trim()).filter(Boolean))].slice(0, 3)
-  const query = uniqueQueries.join(" ")
-  const searchArgs = {
+  const limit = Math.max(1, Math.min(CONVERSATION_SEARCH_LIMIT, Math.floor(request.limit ?? CONVERSATION_SEARCH_LIMIT)))
+  let searchResults = await Promise.all(uniqueQueries.map(query => host.request("conversation_search", {
     query,
     sessionId: request.sessionId,
-    limit: Math.max(1, Math.min(CONVERSATION_SEARCH_LIMIT, Math.floor(request.limit ?? CONVERSATION_SEARCH_LIMIT))),
+    limit,
     ...(request.before === undefined ? {} : { before: request.before }),
-  }
-  let result = await host.request("conversation_search", searchArgs, { signal: request.signal })
-  if (!result.entries.length && request.recentFallback && !request.signal.aborted) {
+  }, { signal: request.signal })))
+  let result = searchResults[0]
+  if ((!result || searchResults.every(item => item.entries.length === 0)) && request.recentFallback && !request.signal.aborted) {
     result = await host.request("conversation_search", {
-      ...searchArgs, query: "", recentFallback: true,
+      query: "",
+      sessionId: request.sessionId,
+      limit,
+      recentFallback: true,
+      ...(request.before === undefined ? {} : { before: request.before }),
     }, { signal: request.signal })
+    searchResults = [result]
+  }
+  if (!result) return {
+    revision: currentStatus.revision,
+    memoryRevision: 0,
+    forgetEpoch: currentStatus.forgetEpoch,
+    entries: [],
   }
   if (request.signal.aborted) return { ...result, entries: [] }
-  return { ...result, entries: result.entries.filter(entry => currentIds.has(entry.sessionId)) }
+
+  let revisionChanged = false
+  const compatibleResults = searchResults.filter(candidate => {
+    const compatible = candidate.revision === result.revision
+      && candidate.memoryRevision === result.memoryRevision
+      && candidate.forgetEpoch === result.forgetEpoch
+    if (!compatible) revisionChanged = true
+    return compatible
+  })
+
+  const fused = new Map<string, ConversationSearchEntry>()
+  const fusedOrder: ConversationSearchEntry[] = []
+  const maxRank = Math.max(0, ...compatibleResults.map(item => item.entries.length))
+  for (let rank = 0; rank < maxRank; rank += 1) {
+    for (const queryResult of compatibleResults) {
+      const entry = queryResult.entries[rank]
+      if (!entry) continue
+      const key = `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`
+      const previous = fused.get(key)
+      if (!previous) {
+        fused.set(key, entry)
+        fusedOrder.push(entry)
+      } else if (entry.score > previous.score) {
+        fused.set(key, entry)
+        const index = fusedOrder.findIndex(item => `conversation:${item.sessionId}:${item.entryId}:${item.chunk}` === key)
+        if (index >= 0) fusedOrder[index] = entry
+      }
+    }
+  }
+  const eligible = fusedOrder
+    .map(entry => fused.get(`conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`) ?? entry)
+    .filter(entry => currentIds.has(entry.sessionId)
+      && (request.recentFallback || entry.score > 0))
+    .slice(0, limit)
+  const entries = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before)
+  if (request.signal.aborted) return { ...result, entries: [] }
+  return { ...result, entries, ...(revisionChanged ? { revisionChanged: true } : {}) }
+}
+
+async function expandSearchEntriesFromJsonl(
+  entries: readonly ConversationSearchEntry[],
+  signal: AbortSignal,
+  before?: number,
+): Promise<ConversationEvidenceEntry[]> {
+  const rankByEntry = new Map<string, number>()
+  entries.forEach((entry, rank) => {
+    const key = `${entry.sessionId}\0${entry.entryId}`
+    if (!rankByEntry.has(key)) rankByEntry.set(key, rank)
+  })
+  const bySession = new Map<string, ConversationSearchEntry[]>()
+  for (const entry of entries) {
+    const group = bySession.get(entry.sessionId) ?? []
+    group.push(entry)
+    bySession.set(entry.sessionId, group)
+  }
+
+  const expanded: ConversationEvidenceEntry[] = []
+  for (const [sessionId, candidates] of bySession) {
+    if (signal.aborted) return []
+    const transcript = await readVisibleSessionTranscript(sessionId, { releaseIfIdle: true })
+    if (signal.aborted) return []
+    if (transcript.error) throw new Error(`读取已命中会话原文失败: ${sessionId}`)
+    const visible = new Map(transcript.messages.map(message => [message.id, message]))
+    const sourceEntries = new Map(transcript.entries
+      .filter(entry => entry.type === "message")
+      .map(entry => [entry.id, entry]))
+    const bestByEntry = new Map<string, ConversationEvidenceEntry>()
+
+    for (const candidate of candidates) {
+      if (signal.aborted) return []
+      const source = sourceEntries.get(candidate.entryId)
+      const message = visible.get(candidate.entryId)
+      if (!source || source.type !== "message" || source.message.role !== candidate.role
+        || source.seq !== candidate.seq || !message || message.role !== candidate.role
+        || message.timestamp !== candidate.timestamp || (candidate.role === "user" && !message.isUserInput)
+        || (before !== undefined && message.timestamp >= before)) continue
+
+      let indexedChunkMatches = false
+      for (const chunk of chunksForEntry({
+        entryId: candidate.entryId,
+        eventId: candidate.eventId,
+        seq: candidate.seq,
+        role: candidate.role,
+        text: message.text,
+        timestamp: candidate.timestamp,
+        ...(candidate.anchorEntryId ? { anchorEntryId: candidate.anchorEntryId } : {}),
+        ...(candidate.anchorEventId ? { anchorEventId: candidate.anchorEventId } : {}),
+      }, signal)) {
+        if (chunk.chunk === candidate.chunk) {
+          indexedChunkMatches = chunk.text === candidate.text
+          break
+        }
+        if (chunk.chunk > candidate.chunk) break
+      }
+      if (!indexedChunkMatches) continue
+
+      const key = `${candidate.sessionId}\0${candidate.entryId}`
+      const previous = bestByEntry.get(key)
+      if (!previous || candidate.score > previous.score
+        || (candidate.score === previous.score && candidate.chunk < previous.chunk)) {
+        bestByEntry.set(key, { ...candidate, text: message.text, matchedText: candidate.text })
+      }
+    }
+    expanded.push(...bestByEntry.values())
+  }
+  return expanded.sort((left, right) =>
+    (rankByEntry.get(`${left.sessionId}\0${left.entryId}`) ?? Number.MAX_SAFE_INTEGER)
+    - (rankByEntry.get(`${right.sessionId}\0${right.entryId}`) ?? Number.MAX_SAFE_INTEGER))
 }
 
 /**
@@ -198,7 +325,7 @@ async function listCurrentRootSessions(signal: AbortSignal): Promise<SessionStat
 }
 
 function fingerprint(metadata: JsonlSessionMetadata, relativePath: string, modifiedAt = metadata.modifiedAt): string {
-  return createHash("sha256").update(JSON.stringify([relativePath, metadata.createdAt, modifiedAt])).digest("hex")
+  return createHash("sha256").update(JSON.stringify([CHUNK_SCHEMA_VERSION, relativePath, metadata.createdAt, modifiedAt])).digest("hex")
 }
 
 async function ensureSessionIndex(
@@ -392,13 +519,47 @@ function* chunksForEntry(source: Omit<ConversationIndexEntry, "chunk">, signal: 
   let start = 0
   let chunk = 0
   while (start < source.text.length && !signal.aborted) {
-    const end = advanceCodePoints(source.text, start, CHUNK_CODEPOINTS)
+    const end = advanceChunkEnd(source.text, start)
     const text = source.text.slice(start, end)
     if (text.trim()) yield { ...source, chunk, text }
     if (end === source.text.length) break
-    start = Math.max(start + 1, retreatCodePoints(source.text, end, CHUNK_OVERLAP_CODEPOINTS))
+    start = Math.max(start + 1, retreatChunkStart(source.text, end))
     chunk += 1
   }
+}
+
+function advanceChunkEnd(text: string, start: number): number {
+  let low = 1
+  let high = CHUNK_MAX_CODEPOINTS
+  let best = advanceCodePoints(text, start, 1)
+  while (low <= high) {
+    const count = Math.floor((low + high) / 2)
+    const end = advanceCodePoints(text, start, count)
+    if (estimateContextTokens(text.slice(start, end)) <= CHUNK_MAX_TOKENS) {
+      best = end
+      low = count + 1
+    } else {
+      high = count - 1
+    }
+  }
+  return best
+}
+
+function retreatChunkStart(text: string, end: number): number {
+  let low = 1
+  let high = CHUNK_MAX_CODEPOINTS
+  let best = end
+  while (low <= high) {
+    const count = Math.floor((low + high) / 2)
+    const start = retreatCodePoints(text, end, count)
+    if (estimateContextTokens(text.slice(start, end)) <= CHUNK_OVERLAP_TOKENS) {
+      best = start
+      low = count + 1
+    } else {
+      high = count - 1
+    }
+  }
+  return best
 }
 
 function advanceCodePoints(text: string, start: number, count: number): number {
@@ -476,7 +637,7 @@ async function replaceIndexBatches(request: ReplaceIndexBatchesRequest): Promise
 }
 
 function projectSearchResults(
-  entries: ConversationSearchEntry[],
+  entries: ConversationEvidenceEntry[],
   indexRevision: number,
   memoryRevision: number,
   tokenBudget: number,
@@ -485,9 +646,18 @@ function projectSearchResults(
   let remaining = Math.max(0, Math.floor(tokenBudget))
   for (const entry of entries) {
     const projection = conversationProjection(entry, indexRevision, memoryRevision)
-    const text = projection.text
+    let text = projection.text
     const tokens = estimateContextTokens(text)
-    if (tokens <= 0 || tokens > remaining) continue
+    if (tokens <= 0 || tokens > remaining) {
+      if (!entry.matchedText) continue
+      const matchedProjection = conversationProjection({ ...entry, text: entry.matchedText }, indexRevision, memoryRevision)
+      text = matchedProjection.text
+      const matchedTokens = estimateContextTokens(text)
+      if (matchedTokens <= 0 || matchedTokens > remaining) continue
+      result.push({ ...matchedProjection, tokenBudget: matchedTokens })
+      remaining -= matchedTokens
+      continue
+    }
     result.push({ ...projection, tokenBudget: tokens })
     remaining -= tokens
   }
@@ -499,14 +669,13 @@ export function conversationProjection(
   indexRevision: number,
   memoryRevision: number,
 ): MemoryProjection {
-  const label = `[会话原文 | ${entry.role} | ${formatTimestamp(entry.timestamp)} | session=${entry.sessionId} entry=${entry.entryId} chunk=${entry.chunk}]`
   return {
     sourceId: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`,
     memoryVersion: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}:index-${indexRevision}`,
     provenance: `会话原文:${entry.sessionId}/${entry.entryId}#${entry.chunk}`,
     taint: "derived",
-    text: `${label}\n${entry.text}`,
-    tokenBudget: estimateContextTokens(`${label}\n${entry.text}`),
+    text: entry.text,
+    tokenBudget: estimateContextTokens(entry.text),
     tier: "recall",
     memoryRevision,
     conversation: {
@@ -515,14 +684,11 @@ export function conversationProjection(
       eventId: entry.eventId,
       role: entry.role,
       timestamp: entry.timestamp,
+      seq: entry.seq,
       chunk: entry.chunk,
+      ...("matchedText" in entry ? { extent: "entry" as const } : { extent: "chunk" as const }),
     },
   }
-}
-
-function formatTimestamp(timestamp: number): string {
-  const date = new Date(timestamp)
-  return Number.isNaN(date.getTime()) ? String(timestamp) : date.toISOString()
 }
 
 /** Only short, explicit references to prior conversation can ask search for recent fallback. */

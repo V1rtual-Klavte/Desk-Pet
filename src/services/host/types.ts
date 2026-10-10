@@ -1355,6 +1355,7 @@ export type HostCommandMap = {
       benchSeed: string | null
       benchJudge: string | null
       benchJudgeModel: string | null
+      benchReaderControl: string | null
       evalProvider: string | null
       evalModel: string | null
       evalJudgeModel: string | null

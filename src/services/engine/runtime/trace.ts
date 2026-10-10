@@ -43,6 +43,7 @@ export type RuntimeTraceKind =
   | "memory_recall_projected"
   | "memory_recall_rendered"
   | "memory_recall_end"
+  | "memory_reading_end"
   | "memory_extraction_start"
   | "memory_extraction_end"
   | "input_accepted"
@@ -164,8 +165,9 @@ const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
   compaction_start: ["reason"], compaction_end: ["reason", "status"], compaction_requested: ["reason"],
   provider_request_start: ["purpose", "step", "attempt", "model", "api"], provider_request_end: ["purpose", "step", "attempt", "model", "api", "status", "durationMs", "inputTokens", "outputTokens", "cacheRead", "cacheWrite"],
   provider_payload: ["model", "api", "payloadHash", "redactions"], provider_response: ["model", "api", "status", "headerNames"], humanizer_transform: ["flow", "status", "split", "silent", "partCount"], provider_usage: ["inputTokens", "outputTokens", "cacheRead", "cacheWrite", "driftRatio"], prompt_snapshot: ["captureStage", "contentHash", "snapshotId", "requestId", "turnId"],
-  memory_recall_start: ["queryHash", "budget"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "status"], memory_recall_end: ["status", "fallback", "durationMs"],
+  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount"],
   memory_extraction_start: ["jobId", "revision", "phase"], memory_extraction_end: ["jobId", "revision", "status", "candidateCount", "sourceIds", "sourceCount", "durationMs", "reason"],
+  memory_reading_end: ["status", "noteCount", "sourceCount", "durationMs"],
   input_accepted: ["requestId", "status", "source", "priority"], input_consumed: ["requestId"], input_cancelled: ["requestId", "reason"],
   plan_created: ["planId", "stepCount"], plan_confirmed: ["planId", "stepId", "decision"], plan_settled: ["planId", "status"], plan_step_end: ["planId", "stepId", "status"],
   permission_asked: ["toolName", "decision", "source"], permission_decided: ["toolName", "decision", "source"], active_message_delivered: ["requestId", "status"],

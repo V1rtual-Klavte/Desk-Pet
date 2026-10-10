@@ -136,7 +136,8 @@ export async function runMemoryBenchEvaluation({
   if (judgeEnabled && (typeof judgeModel !== "string" || !judgeModel.trim()))
     throw new TypeError("judge 开启时必须提供 judgeModel")
   const cells = planBenchCells(dataset, file, { limit, caseFilter, seed })
-  const evalRunId = `bench-${info.namespace}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`
+  const reportNamespace = adapter.reportNamespace?.() ?? info.namespace
+  const evalRunId = `bench-${reportNamespace}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`
   const startedAt = new Date().toISOString()
   await adapter.init?.({ dataset, split: info.split, file, evalRunId })
   const outcomes = []
@@ -197,7 +198,7 @@ export async function runMemoryBenchEvaluation({
     dataset,
     split: info.split,
     splitLabel: info.label,
-    namespace: info.namespace,
+    namespace: reportNamespace,
     evalRunId, seed: String(seed), startedAt, finishedAt: new Date().toISOString(),
     upstream: file.upstream ?? null,
     license: file.license ?? null,

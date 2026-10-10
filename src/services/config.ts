@@ -260,8 +260,6 @@ interface Config {
     }
     memory: {
       enabled: boolean
-      coreTokenBudget: number
-      recallTokenBudget: number
       rerank: "off" | "adaptive"
       /** 缺省走出厂adaptive；与rerank一样只通过运行时YAML配置。 */
       queryRewrite?: "off" | "adaptive"
@@ -831,8 +829,6 @@ export const silentAccessConfig = {
 
 export const memoryConfig = {
   get enabled() { return overrideOr("ai.memory.enabled", cfg.ai?.memory?.enabled ?? true); },
-  get coreTokenBudget() { return overrideOr("ai.memory.coreTokenBudget", cfg.ai?.memory?.coreTokenBudget ?? 320); },
-  get recallTokenBudget() { return overrideOr("ai.memory.recallTokenBudget", cfg.ai?.memory?.recallTokenBudget ?? 1000); },
   get queryRewrite(): "off" | "adaptive" {
     const value = overrideOr("ai.memory.queryRewrite", cfg.ai?.memory?.queryRewrite ?? "adaptive")
     if (value === "off" || value === "adaptive") return value
