@@ -5,12 +5,16 @@ import {
 } from "../../memory-bench/judge.mjs"
 
 describe("judge 输出预算", () => {
-  it("reasoning judge 拿得到思考空间，但不超过模型自身上限 [bench-judge-budget]", () => {
-    // 512 曾把一次 deepseek-reasoner 判分截断成未裁决（2026-10-03 LME oracle 852ce960）。
-    expect(judgeOutputBudget(512)).toBe(512)
-    expect(judgeOutputBudget(2048)).toBe(2048)
-    expect(judgeOutputBudget(32768)).toBe(4096)
-    expect(judgeOutputBudget(undefined)).toBe(4096)
+  it("取模型真实输出上限与扣除输入后的窗口剩余量较小者 [bench-judge-budget]", () => {
+    expect(judgeOutputBudget(32_768, 24_000)).toBe(24_000)
+    expect(judgeOutputBudget(32_768, 18_000)).toBe(18_000)
+    expect(judgeOutputBudget(8_192, 24_000)).toBe(8_192)
+  })
+
+  it("不为模型预算设置4096硬顶，且输入耗尽或模型上限无效时拒绝判分", () => {
+    expect(judgeOutputBudget(16_384)).toBe(16_384)
+    expect(() => judgeOutputBudget(16_384, 0)).toThrow(/耗尽上下文/)
+    expect(() => judgeOutputBudget(Number.NaN)).toThrow(/有效的 maxTokens/)
   })
 })
 

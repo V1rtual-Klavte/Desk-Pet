@@ -146,7 +146,7 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
   [test/eval-models.json](../eval-models.json) 提供——当前 `deepseek-reasoner`，可用
   `--bench-judge-model` 或 `DESKPET_EVAL_JUDGE_MODEL` 覆盖；被测模型以本机配置为准，也可在
   同一文件或 `DESKPET_EVAL_MODEL` 覆盖）。judge 模型经网关按 id 解析（不借用被测模型的预算），
-  单次输出预算 `judgeOutputBudget`：下限 1024、上限 4096 token，绝不越过模型自身上限 ——
+  单次输出预算 `judgeOutputBudget` 取已解析模型输出上限与扣除本次输入/协议开销后的窗口剩余量中的较小值，不另设 4096-token 硬顶；模型上限无效或没有输出空间按判分失败处理 ——
   reasoning judge 的 thinking 也计入 `maxTokens`，固定 512 曾把一次判分截断成「未裁决」
   （2026-10-03 LME oracle `852ce960`），实际计费仍按真实输出。**唯一纪律：judge 模型必须不同于
   被测模型**（配置相同会在开跑前报错），报告顶层记录 `judgeModel`。judge 失败（超时/空响应）只记

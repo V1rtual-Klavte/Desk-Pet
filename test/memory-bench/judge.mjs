@@ -63,14 +63,13 @@ export function parseJudgeVerdict(text) {
 }
 
 /**
- * judge 单次输出的 token 预算：reasoning judge 的 thinking 也计入 `maxTokens`，
- * 固定 512 曾把一次 deepseek-reasoner 判分截断成「未裁决」（2026-10-03 LME oracle
- * `852ce960`）。judge 只回一个词，实际计费按真实输出，抬高上限不产生额外成本，
- * 但要给足思考空间，同时不超过模型自身声明的上限。
+ * Judge 输出上限受两项约束：解析后的模型输出上限，以及扣除本次输入后实际剩余的窗口。
+ * reasoning 也计入 `maxTokens`；不能再用固定 4096 cap 截掉模型自身可用的思考预算。
  */
-export function judgeOutputBudget(modelMaxTokens) {
-  const budgetCap = 4096
-  const budgetFloor = 1024
-  const max = Number.isFinite(modelMaxTokens) && modelMaxTokens > 0 ? modelMaxTokens : budgetCap
-  return Math.min(Math.max(budgetFloor, Math.min(budgetCap, max)), max)
+export function judgeOutputBudget(modelMaxTokens, availableContextTokens = modelMaxTokens) {
+  if (!Number.isSafeInteger(modelMaxTokens) || modelMaxTokens < 1)
+    throw new Error("judge 模型缺少有效的 maxTokens 上限")
+  if (!Number.isFinite(availableContextTokens) || availableContextTokens < 1)
+    throw new Error("judge 输入已耗尽上下文，无法保留完整判分输出空间")
+  return Math.min(modelMaxTokens, Math.floor(availableContextTokens))
 }

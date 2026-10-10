@@ -603,9 +603,13 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
         built = buildMemoryBankJudgePrompt({ question: request.question,
           history: formatMemoryBankHistory(request.persona), response: request.response })
       else throw new Error(`未知 judge 输入: ${(request as { kind?: string }).kind}`)
+      const systemPrompt = "You are an evaluation judge that follows the user's instruction exactly. Reply with a single word: yes or no."
+      const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: built.prompt }])
+      const modelBudget = contextBudget(model.contextWindow, model.maxTokens)
+      const availableOutput = model.contextWindow - estimatedInput - modelBudget.protocolOverhead
+      const maxTokens = judgeOutputBudget(model.maxTokens, availableOutput)
       const result = await completePiText({ purpose: "memory", model,
-        systemPrompt: "You are an evaluation judge that follows the user's instruction exactly. Reply with a single word: yes or no.",
-        userText: built.prompt, maxTokens: judgeOutputBudget(model.maxTokens), timeoutMs: JUDGE_TIMEOUT_MS })
+        systemPrompt, userText: built.prompt, maxTokens, timeoutMs: JUDGE_TIMEOUT_MS })
       const text = result.text.trim()
       if (!text) return { adjudicated: false, error: "judge returned an empty response", templateId: built.templateId, model: judgeModel }
       return { adjudicated: true, correct: parseJudgeVerdict(text), raw: text, templateId: built.templateId,
