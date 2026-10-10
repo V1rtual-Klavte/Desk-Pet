@@ -1,7 +1,7 @@
 {
     "name": "v1rtual-desk-pet",
     "private": true,
-    "version": "0.20.7",
+    "version": "0.21.0",
     "packageManager": "pnpm@11.5.2",
     "type": "module",
     "scripts": {
