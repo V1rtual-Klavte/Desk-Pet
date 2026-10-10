@@ -11,8 +11,9 @@
 //
 // 运行期附加面（`HostBridgeRuntime`）只多生命周期与事件发布入口，不动冻结的 HostBridge。
 
-import type { HostBlobRef, HostCommandMap, HostEventMap, RunScope } from "./types"
+import type { HostBlobRef, HostCommandMap, HostEventMap } from "./types"
 import { HostConnection, readLaunchInfo, type FlushReport, type LaunchInfo } from "./connection"
+import type { RunScope } from "./types"
 import { HOST_BLOB_MARKER_KEY, HostProtocolError, parseHostBlobMarker } from "./wire"
 import { installNodeHostPorts } from "./node-ports"
 import { createLogger } from "@/services/logger"
@@ -84,7 +85,7 @@ export class HostBridgeImpl implements HostBridgeRuntime {
       const collectionFailures: unknown[] = []
       this.collectBlobRefs(raw, blobs, collectionFailures)
       if (collectionFailures.length > 0) throw collectionFailures[0]
-      result = await this.materializeResult(raw, options?.signal)
+      result = await this.materializeResult(raw, options?.signal, blobs)
     } catch (error) {
       operationFailed = true
       operationFailure = error
@@ -167,6 +168,7 @@ export class HostBridgeImpl implements HostBridgeRuntime {
   /**
    * 把结果里的 blob 标记还原成完整原值：
    * - `$blobEncoding === "utf8"` → 字符串；
+   * - `$blobEncoding === "json"` → 解析 JSON 后继续递归物化其中的宿主 blob；
    * - 否则 → `Uint8Array`（字节语义，不退回 number[]）。
    * 形状无效的标记是协议错误（不静默放行给业务层）。
    */
@@ -188,6 +190,17 @@ export class HostBridgeImpl implements HostBridgeRuntime {
       marker = parseHostBlobMarker(value)
     } catch (error) {
       failures.push(error)
+      // Even when its encoding is invalid, the host-signed reference still has
+      // to be returned during cleanup.
+      const raw = (value as Record<string, unknown>)[HOST_BLOB_MARKER_KEY]
+      if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+        const ref = raw as Partial<HostBlobRef>
+        if (
+          typeof ref.id === "string" && ref.id.length > 0 &&
+          Number.isSafeInteger(ref.bytes) && (ref.bytes as number) >= 0 &&
+          typeof ref.scope === "object" && ref.scope !== null
+        ) refs.set(ref.id, ref as HostBlobRef)
+      }
     }
     if (marker) {
       if (!refs.has(marker.ref.id)) refs.set(marker.ref.id, marker.ref)
@@ -210,17 +223,34 @@ export class HostBridgeImpl implements HostBridgeRuntime {
     }
   }
 
-  private async materializeResult(value: unknown, signal?: AbortSignal): Promise<unknown> {
+  private async materializeResult(
+    value: unknown,
+    signal: AbortSignal | undefined,
+    refs: Map<string, HostBlobRef>,
+  ): Promise<unknown> {
     if (Array.isArray(value)) {
       const out: unknown[] = []
-      for (const item of value) out.push(await this.materializeResult(item, signal))
+      for (const item of value) out.push(await this.materializeResult(item, signal, refs))
       return out
     }
     if (typeof value === "object" && value !== null) {
       const marker = parseHostBlobMarker(value)
       if (marker) {
         const bytes = await this.connection.readBlob(marker.ref, { signal })
-        return marker.encoding === "utf8" ? Buffer.from(bytes).toString("utf8") : bytes
+        if (marker.encoding === "utf8") return Buffer.from(bytes).toString("utf8")
+        if (marker.encoding === "json") {
+          let parsed: unknown
+          try {
+            parsed = JSON.parse(Buffer.from(bytes).toString("utf8")) as unknown
+          } catch (error) {
+            throw new HostProtocolError("BLOB_JSON_MALFORMED", `JSON blob 解析失败: ${String(error)}`)
+          }
+          const failures: unknown[] = []
+          this.collectBlobRefs(parsed, refs, failures)
+          if (failures.length > 0) throw failures[0]
+          return this.materializeResult(parsed, signal, refs)
+        }
+        return bytes
       }
       if (HOST_BLOB_MARKER_KEY in (value as Record<string, unknown>)) {
         throw new HostProtocolError(
@@ -230,7 +260,7 @@ export class HostBridgeImpl implements HostBridgeRuntime {
       }
       const out: Record<string, unknown> = {}
       for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-        out[key] = await this.materializeResult(item, signal)
+        out[key] = await this.materializeResult(item, signal, refs)
       }
       return out
     }

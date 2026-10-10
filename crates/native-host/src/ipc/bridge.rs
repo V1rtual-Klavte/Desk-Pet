@@ -966,7 +966,7 @@ impl BridgeInner {
                 return;
             }
             match joined {
-                Ok(Ok(value)) => match inner.encode_result_for_wire(&scope, value) {
+                Ok(Ok(value)) => match inner.encode_result_for_wire(request_id, &scope, value) {
                     Ok(encoded) => inner.respond_ok(request_id, encoded).await,
                     Err(err) => inner.respond_app_err(request_id, &err).await,
                 },
@@ -984,7 +984,7 @@ impl BridgeInner {
         });
     }
 
-    /// 参数物化：把 `$wireBlob` 标记还原成完整原值（文本→字符串，字节→数字数组）。
+    /// 参数物化：把 `$wireBlob` 标记还原成完整原值（文本→字符串，字节→数字数组，JSON→JSON 值）。
     /// 上传句柄一次性取走。
     fn materialize_args(&self, scope: &RunScope, value: Value) -> AppResult<Value> {
         if let Some(marker) = blob::parse_upload_marker(&value) {
@@ -996,6 +996,11 @@ impl BridgeInner {
                 WireBlobKind::Bytes => Ok(Value::Array(
                     bytes.iter().map(|b| Value::from(*b)).collect(),
                 )),
+                WireBlobKind::Json => {
+                    let parsed: Value = serde_json::from_slice(&bytes)
+                        .map_err(|e| AppError::Other(format!("JSON 上传无效: {e}")))?;
+                    self.materialize_args(scope, parsed)
+                }
             };
         }
         match value {
@@ -1017,26 +1022,117 @@ impl BridgeInner {
         }
     }
 
-    /// 结果编码：超长字符串登记为 blob，Node 侧物化回原值（result 类型不缩水）。
-    fn encode_result_for_wire(&self, scope: &RunScope, value: Value) -> AppResult<Value> {
+    /// 结果编码：先按实际完整 response frame 判断；聚合结果超限时整包 JSON 经 blob 传输。
+    /// 仅在原响应可装入控制帧时才尝试逐字段编码，避免聚合失败留下无用句柄。
+    fn encode_result_for_wire(
+        &self,
+        request_id: u64,
+        scope: &RunScope,
+        value: Value,
+    ) -> AppResult<Value> {
+        let original_fits = transport::encode_control_frame(
+            &ControlFrame::ok(request_id, value.clone()),
+            self.config.control_frame_max_bytes,
+        )
+        .is_ok();
+        if !original_fits {
+            return self.issue_json_result(request_id, scope, value);
+        }
+
+        let (encoded, issued) =
+            self.encode_inline_fields_transactional(scope, value.clone(), |blob_scope, text| {
+                self.blobs
+                    .issue_host_blob(blob_scope.clone(), text.into_bytes(), None)
+            })?;
+        if transport::encode_control_frame(
+            &ControlFrame::ok(request_id, encoded.clone()),
+            self.config.control_frame_max_bytes,
+        )
+        .is_ok()
+        {
+            return Ok(encoded);
+        }
+        for id in issued {
+            self.blobs.release(&id);
+        }
+        self.issue_json_result(request_id, scope, value)
+    }
+
+    fn issue_json_result(
+        &self,
+        request_id: u64,
+        scope: &RunScope,
+        value: Value,
+    ) -> AppResult<Value> {
+        let bytes = serde_json::to_vec(&value)
+            .map_err(|e| AppError::Other(format!("结果 JSON 序列化失败: {e}")))?;
+        let blob = self.blobs.issue_host_blob(scope.clone(), bytes, None)?;
+        let marker = blob::host_json_blob_marker(&blob);
+        if transport::encode_control_frame(
+            &ControlFrame::ok(request_id, marker.clone()),
+            self.config.control_frame_max_bytes,
+        )
+        .is_ok()
+        {
+            return Ok(marker);
+        }
+        self.blobs.release(&blob.id);
+        Err(AppError::Other(
+            "JSON blob 引用无法装入完整 response frame".into(),
+        ))
+    }
+
+    fn encode_inline_fields_transactional<F>(
+        &self,
+        scope: &RunScope,
+        value: Value,
+        mut issue_text_blob: F,
+    ) -> AppResult<(Value, Vec<String>)>
+    where
+        F: FnMut(&RunScope, String) -> AppResult<super::protocol::HostBlobRef>,
+    {
+        let mut issued = Vec::new();
+        match self.encode_inline_fields(scope, value, &mut issued, &mut issue_text_blob) {
+            Ok(value) => Ok((value, issued)),
+            Err(error) => {
+                for id in issued {
+                    self.blobs.release(&id);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn encode_inline_fields<F>(
+        &self,
+        scope: &RunScope,
+        value: Value,
+        issued: &mut Vec<String>,
+        issue_text_blob: &mut F,
+    ) -> AppResult<Value>
+    where
+        F: FnMut(&RunScope, String) -> AppResult<super::protocol::HostBlobRef>,
+    {
         match value {
             Value::String(text) if text.len() > self.config.inline_text_max_bytes => {
-                let blob = self
-                    .blobs
-                    .issue_host_blob(scope.clone(), text.into_bytes(), None)?;
+                let blob = issue_text_blob(scope, text)?;
+                issued.push(blob.id.clone());
                 Ok(blob::host_text_blob_marker(&blob))
             }
             Value::Array(items) => {
                 let mut out = Vec::with_capacity(items.len());
                 for item in items {
-                    out.push(self.encode_result_for_wire(scope, item)?);
+                    out.push(self.encode_inline_fields(scope, item, issued, issue_text_blob)?);
                 }
                 Ok(Value::Array(out))
             }
             Value::Object(map) => {
                 let mut out = serde_json::Map::with_capacity(map.len());
                 for (key, item) in map {
-                    out.insert(key, self.encode_result_for_wire(scope, item)?);
+                    out.insert(
+                        key,
+                        self.encode_inline_fields(scope, item, issued, issue_text_blob)?,
+                    );
                 }
                 Ok(Value::Object(out))
             }
@@ -1259,6 +1355,7 @@ impl BridgeInner {
             kind: match kind {
                 super::transport::BlobKind::Text => WireBlobKind::Text,
                 super::transport::BlobKind::Bytes => WireBlobKind::Bytes,
+                super::transport::BlobKind::Json => WireBlobKind::Json,
             },
             scope,
             buf: Vec::with_capacity(bytes.min(4 * 1024 * 1024) as usize),
@@ -1979,8 +2076,9 @@ mod tests {
         let response = read_response(&mut h.control).await;
         assert!(response.ok, "{response:?}");
         let result = response.result.unwrap();
-        let marker = result.get("content").expect("content 字段");
-        let blob_ref: HostBlobRef = blob::parse_host_blob_marker(marker).expect("自动 blob 标记");
+        let blob_ref: HostBlobRef =
+            blob::parse_host_blob_marker(&result).expect("整包 JSON blob 标记");
+        assert_eq!(result[blob::BLOB_ENCODING_KEY], "json");
         assert!(blob_ref.bytes > 64 * 1024, "超长字符串必须被编码为 blob");
 
         // Node 侧物化：blob_read → ok(bytes) → 二进制块（account credit 归还）
@@ -2010,8 +2108,11 @@ mod tests {
             }
         }
         assert_eq!(collected.len() as u64, blob_ref.bytes);
-        let text = String::from_utf8(collected).unwrap();
-        assert!(text.starts_with('长'));
+        let decoded: Value = serde_json::from_slice(&collected).unwrap();
+        assert_eq!(
+            decoded,
+            json!({ "content": "长".repeat(200 * 1024 / 3 + 10) })
+        );
 
         // release 后句柄不可再读
         request(
@@ -2033,6 +2134,161 @@ mod tests {
         .await;
         let response = read_response(&mut h.control).await;
         assert!(!response.ok, "已归还的句柄不得再读");
+    }
+
+    #[tokio::test]
+    async fn 聚合超限结果整包JSON_blob保留ASCII中文转义与数组() {
+        let h = setup("boot-1", 0, Arc::new(UnavailableDispatcher)).await;
+        let inner = &h.bridge.inner;
+        let scope = RunScope {
+            app_epoch: "boot-1".into(),
+            node_epoch: 0,
+            ..Default::default()
+        };
+        let original = json!({
+            "ascii": "ordinary text",
+            "cjk": "记忆检索结果",
+            "escaped": "quote: \\\" slash: \\\\ newline: \\n",
+            "matches": (0..5000).map(|n| json!({"id": n, "text": "小段"})).collect::<Vec<_>>(),
+        });
+        assert!(
+            serde_json::to_vec(&ControlFrame::ok(77, original.clone()))
+                .unwrap()
+                .len()
+                > inner.config.control_frame_max_bytes
+        );
+        let encoded = inner
+            .encode_result_for_wire(77, &scope, original.clone())
+            .unwrap();
+        let blob_ref = blob::parse_host_blob_marker(&encoded).expect("整包结果应转为 blob");
+        assert_eq!(encoded[blob::BLOB_ENCODING_KEY], "json");
+        let bytes = inner.blobs.open_read(&blob_ref.id, &scope).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), original);
+        assert!(transport::encode_control_frame(
+            &ControlFrame::ok(77, encoded),
+            inner.config.control_frame_max_bytes,
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn 内联递归签发中途失败会归还本次已签发句柄() {
+        let h = setup("boot-1", 0, Arc::new(UnavailableDispatcher)).await;
+        let inner = &h.bridge.inner;
+        let scope = RunScope {
+            app_epoch: "boot-1".into(),
+            node_epoch: 0,
+            ..Default::default()
+        };
+        let calls = std::cell::Cell::new(0);
+        let result = inner.encode_inline_fields_transactional(
+            &scope,
+            json!(["首个长字段".repeat(4000), "第二个长字段".repeat(4000)]),
+            |blob_scope, text| {
+                let next = calls.get() + 1;
+                calls.set(next);
+                if next == 2 {
+                    return Err(AppError::Other("注入的第二次签发失败".into()));
+                }
+                inner
+                    .blobs
+                    .issue_host_blob(blob_scope.clone(), text.into_bytes(), None)
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 2, "失败应发生在首个句柄已签发之后");
+        assert_eq!(inner.blobs.len(), 0, "失败事务必须归还之前签发的句柄");
+    }
+
+    #[tokio::test]
+    async fn JSON上传递归物化嵌套标记且保留scope和一次性消费() {
+        let h = setup("boot-1", 0, Arc::new(UnavailableDispatcher)).await;
+        let inner = &h.bridge.inner;
+        let scope = RunScope {
+            app_epoch: "boot-1".into(),
+            node_epoch: 0,
+            ..Default::default()
+        };
+        inner
+            .blobs
+            .register_upload(
+                "nested-text",
+                scope.clone(),
+                b"inside".to_vec(),
+                WireBlobKind::Text,
+            )
+            .unwrap();
+        let nested = blob::upload_marker("nested-text", WireBlobKind::Text);
+        inner
+            .blobs
+            .register_upload(
+                "outer-json",
+                scope.clone(),
+                serde_json::to_vec(&json!({"nested": nested})).unwrap(),
+                WireBlobKind::Json,
+            )
+            .unwrap();
+        let result = inner
+            .materialize_args(
+                &scope,
+                blob::upload_marker("outer-json", WireBlobKind::Json),
+            )
+            .unwrap();
+        assert_eq!(result, json!({"nested": "inside"}));
+
+        inner
+            .blobs
+            .register_upload(
+                "invalid-json",
+                scope.clone(),
+                b"{".to_vec(),
+                WireBlobKind::Json,
+            )
+            .unwrap();
+        assert!(inner
+            .materialize_args(
+                &scope,
+                blob::upload_marker("invalid-json", WireBlobKind::Json),
+            )
+            .is_err());
+        assert!(
+            inner
+                .materialize_args(
+                    &scope,
+                    blob::upload_marker("invalid-json", WireBlobKind::Json),
+                )
+                .is_err(),
+            "无效 JSON 上传也必须一次性消费"
+        );
+
+        inner
+            .blobs
+            .register_upload(
+                "wrong-scope",
+                scope.clone(),
+                b"[]".to_vec(),
+                WireBlobKind::Json,
+            )
+            .unwrap();
+        let other_scope = RunScope {
+            node_epoch: 1,
+            ..scope.clone()
+        };
+        assert!(inner
+            .materialize_args(
+                &other_scope,
+                blob::upload_marker("wrong-scope", WireBlobKind::Json),
+            )
+            .is_err());
+        assert!(
+            inner
+                .materialize_args(
+                    &scope,
+                    blob::upload_marker("wrong-scope", WireBlobKind::Json),
+                )
+                .is_err(),
+            "scope 拒绝后上传句柄不得复活"
+        );
     }
 
     impl Harness {

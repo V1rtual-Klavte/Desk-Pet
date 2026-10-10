@@ -8,7 +8,7 @@
 //
 // 权威来源：
 // - 命令清单与参数名：Rust `crates/native-host/src/host/dispatch.rs` 的 `NativeDispatcher`
-//   分派表（140 条，逐条对应本文件的 `HostCommandMap`），实现落在 `crates/native-host/src/`
+//   分派表（141 条，逐条对应本文件的 `HostCommandMap`），实现落在 `crates/native-host/src/`
 //   各域。参数是 camelCase 线格式（Rust `max_bytes` → `maxBytes`）。TS 调用点
 //   （138 处 / 35 文件）只用于核对「谁在用、返回类型被当成什么」，不作为签名依据。
 // - `RunScope` / `HostBlobRef`：`crates/native-host/src/ipc/protocol.rs` 逐字段对齐。
@@ -39,8 +39,8 @@
 // （`appearance.theme` 的 Node → 宿主下发，见「原生 UI 状态推送」分组）。设置页 Card
 // 管理批次再有意扩展 1 条：`personality_file_delete`（人格文件域删除，只删普通文件、
 // 拒绝链接叶子，见「人格文件」分组）。
-// 都不是旧命令的重名兼容，登记后矩阵为 140 条。
-// 对账以「W0 冻结件的现存 107 条逐条对应 + 29 条有意扩展」为准：冻结件已删
+// 都不是旧命令的重名兼容，登记后矩阵为 141 条。
+// 对账以「W0 冻结件的现存 107 条逐条对应 + 34 条有意扩展」为准：冻结件已删
 // `profile_clone`（「新建 Profile」改造）与 `mcp_send`（MCP 桥裸行收发改
 // `mcp_write` / `mcp_read` 两条，本批有意扩展 +2；两者均非旧命令的重名兼容）。
 //
@@ -1209,6 +1209,11 @@ export type HostCommandMap = {
   /** Search transcript chunks; recent fallback is only for explicit referential queries. */
   conversation_search: {
     args: { query: string; sessionId: string; limit?: number; before?: number; recentFallback?: boolean }
+    result: ConversationSearchResult
+  }
+  /** Expand an already-selected conversation hit into a paged, privacy-filtered chunk-0 transcript. */
+  conversation_context: {
+    args: { sessionId: string; anchorEntryId: string; afterSeq?: number; limit?: number; before?: number }
     result: ConversationSearchResult
   }
   memory_get_items: { args: { ids: string[] }; result: MemoryItem[] }

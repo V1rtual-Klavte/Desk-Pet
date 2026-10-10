@@ -109,11 +109,11 @@
 //!
 //! - 结果侧：宿主把超过 `inline_text_max_bytes` 的字符串自动编码为 blob，在 JSON 里
 //!   以 `{"$hostBlobRef": {id, bytes, mimeType?, scope}, "$blobEncoding": "utf8"}` 占位
-//!   （无 `$blobEncoding` 即字节语义）；Node 侧自动 `readBlob` 并还原成完整原值
-//!   （应用层 `result` 类型不变）。
-//! - 参数侧：Node 把超长字符串/字节参数先上传（blobOpen 流程），JSON 里以
-//!   `{"$wireBlob": {"id": "…", "kind": "text"|"bytes"}}` 占位；宿主在分派前物化回
-//!   完整原值（text → 字符串；bytes → 数字数组）。
+//!   （无 `$blobEncoding` 即字节语义）；聚合结果超出完整 response frame 时，整份结果
+//!   以 JSON blob 返回（`$blobEncoding: "json"`）。Node 侧自动读取并恢复原值。
+//! - 参数侧：Node 把大字符串/字节/JSON 参数先上传（blobOpen 流程），JSON 里以
+//!   `{"$wireBlob": {"id": "…", "kind": "text"|"bytes"|"json"}}` 占位；宿主在分派前物化回
+//!   完整原值（text → 字符串；bytes → 数字数组；json → 解析后递归物化）。
 //!
 //! ── 受控启动信息（唯一真相源）──
 //!

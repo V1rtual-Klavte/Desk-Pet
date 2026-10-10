@@ -3,7 +3,7 @@
 // ==========================================
 //
 // 大内容不经控制帧 JSON 传输：宿主把字节登记为短期句柄（[`HostBlobRef`]），
-// Node 用句柄经二进制通道读取；Node 上传的参数大字段（字符串/字节）也登记在这里，
+// Node 用句柄经二进制通道读取；Node 上传的参数大字段（字符串/字节/完整 JSON）也登记在这里，
 // 由请求引用并一次性取走（take）。
 //
 // 安全边界（执行契约 §4.2）：
@@ -52,6 +52,7 @@ pub enum BlobOrigin {
 pub enum WireBlobKind {
     Text,
     Bytes,
+    Json,
 }
 
 #[derive(Debug, Clone)]
@@ -313,10 +314,15 @@ pub fn host_blob_marker(blob: &HostBlobRef) -> Value {
     json!({ HOST_BLOB_MARKER_KEY: blob })
 }
 
-/// 文本语义的标记：Node 物化回完整字符串（自动 blob 编码只用于字符串，
-/// 所以要显式标 utf8；缺省/其它值一律按字节处理）。
+/// 文本语义的标记：Node 物化回完整字符串。显式 utf8 与 JSON 编码区分，
+/// 缺省编码按字节处理，未知编码由 Node 拒绝。
 pub fn host_text_blob_marker(blob: &HostBlobRef) -> Value {
     json!({ HOST_BLOB_MARKER_KEY: blob, BLOB_ENCODING_KEY: "utf8" })
+}
+
+/// JSON semantic marker: Node parses the fetched UTF-8 payload back into its original JSON value.
+pub fn host_json_blob_marker(blob: &HostBlobRef) -> Value {
+    json!({ HOST_BLOB_MARKER_KEY: blob, BLOB_ENCODING_KEY: "json" })
 }
 
 /// 标记里标注文本/字节语义的键。
@@ -330,7 +336,7 @@ pub fn parse_host_blob_marker(value: &Value) -> Option<HostBlobRef> {
 
 /// 编码一次上传的引用标记（Node 侧编码，宿主侧解析）。
 pub fn upload_marker(id: &str, kind: WireBlobKind) -> Value {
-    json!({ UPLOAD_MARKER_KEY: { "id": id, "kind": match kind { WireBlobKind::Text => "text", WireBlobKind::Bytes => "bytes" } } })
+    json!({ UPLOAD_MARKER_KEY: { "id": id, "kind": match kind { WireBlobKind::Text => "text", WireBlobKind::Bytes => "bytes", WireBlobKind::Json => "json" } } })
 }
 
 /// 解析上传标记。
@@ -343,6 +349,7 @@ pub fn parse_upload_marker(value: &Value) -> Option<UploadMarker> {
     let kind = match inner.get("kind")?.as_str()? {
         "text" => WireBlobKind::Text,
         "bytes" => WireBlobKind::Bytes,
+        "json" => WireBlobKind::Json,
         _ => return None,
     };
     Some(UploadMarker { id, kind })
@@ -516,6 +523,11 @@ mod tests {
         let parsed = parse_upload_marker(&upload).unwrap();
         assert_eq!(parsed.id, "abc");
         assert_eq!(parsed.kind, WireBlobKind::Text);
+        let json_upload = upload_marker("json-upload", WireBlobKind::Json);
+        assert_eq!(
+            parse_upload_marker(&json_upload).unwrap().kind,
+            WireBlobKind::Json
+        );
         // 多字段的仿冒标记不接受
         assert!(parse_upload_marker(
             &json!({ UPLOAD_MARKER_KEY: {"id": "a", "kind": "text", "x": 1} })

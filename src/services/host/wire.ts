@@ -306,8 +306,8 @@ export const UPLOAD_MARKER_KEY = "$wireBlob"
 
 export interface ParsedHostBlobMarker {
   ref: HostBlobRef
-  /** 缺省即字节语义；"utf8" 表示物化回字符串。 */
-  encoding: "utf8" | "bytes"
+  /** 缺省即字节语义；utf8/json 分别还原字符串与完整 JSON 值。 */
+  encoding: "utf8" | "bytes" | "json"
 }
 
 /** 识别结果里的宿主 blob 标记（严格形状：标记键的值必须是合法 HostBlobRef）。 */
@@ -319,17 +319,20 @@ export function parseHostBlobMarker(value: unknown): ParsedHostBlobMarker | null
   const ref = raw as HostBlobRef
   if (typeof ref.id !== "string" || typeof ref.bytes !== "number" || typeof ref.scope !== "object") return null
   const encodingRaw = record[BLOB_ENCODING_KEY]
-  const encoding = encodingRaw === "utf8" ? "utf8" : "bytes"
+  if (encodingRaw !== undefined && encodingRaw !== "utf8" && encodingRaw !== "bytes" && encodingRaw !== "json") {
+    throw new HostProtocolError("BLOB_ENCODING_INVALID", `不支持的 blob 编码: ${String(encodingRaw)}`)
+  }
+  const encoding = encodingRaw ?? "bytes"
   return { ref, encoding }
 }
 
-export function uploadMarker(blobId: string, kind: "text" | "bytes"): Record<string, unknown> {
+export function uploadMarker(blobId: string, kind: "text" | "bytes" | "json"): Record<string, unknown> {
   return { [UPLOAD_MARKER_KEY]: { id: blobId, kind } }
 }
 
 export interface ParsedUploadMarker {
   id: string
-  kind: "text" | "bytes"
+  kind: "text" | "bytes" | "json"
 }
 
 /** 参数里的上传标记（严格形状，多字段即不识别，避免同名误伤）。 */
@@ -340,6 +343,6 @@ export function parseUploadMarker(value: unknown): ParsedUploadMarker | null {
   const record = inner as Record<string, unknown>
   if (Object.keys(record).length !== 2) return null
   if (typeof record.id !== "string") return null
-  if (record.kind !== "text" && record.kind !== "bytes") return null
+  if (record.kind !== "text" && record.kind !== "bytes" && record.kind !== "json") return null
   return { id: record.id, kind: record.kind }
 }

@@ -219,6 +219,10 @@ describe("blob 标记的严格形状", () => {
     const ref = { id: "b-1", bytes: 3, scope: { appEpoch: "e", nodeEpoch: 2 } }
     expect(parseHostBlobMarker({ $hostBlobRef: ref })).toEqual({ ref, encoding: "bytes" })
     expect(parseHostBlobMarker({ $hostBlobRef: ref, $blobEncoding: "utf8" })).toEqual({ ref, encoding: "utf8" })
+    expect(parseHostBlobMarker({ $hostBlobRef: ref, $blobEncoding: "json" })).toEqual({ ref, encoding: "json" })
+    expect(() => parseHostBlobMarker({ $hostBlobRef: ref, $blobEncoding: "yaml" })).toThrowError(
+      expect.objectContaining({ name: "HostProtocolError", code: "BLOB_ENCODING_INVALID" }),
+    )
     expect(parseHostBlobMarker({ $hostBlobRef: { id: 7, bytes: 3, scope: {} } })).toBeNull()
     expect(parseHostBlobMarker({ $hostBlobRef: "not-an-object" })).toBeNull()
     expect(parseHostBlobMarker([ref])).toBeNull()
@@ -230,6 +234,7 @@ describe("blob 标记的严格形状", () => {
     expect(parseUploadMarker({ $wireBlob: { id: "blob-9", kind: "file" } })).toBeNull()
     expect(parseUploadMarker({ $wireBlob: { kind: "text" } })).toBeNull()
     expect(parseUploadMarker({ $wireBlob: { id: "blob-9", kind: "bytes" } })).toEqual({ id: "blob-9", kind: "bytes" })
+    expect(parseUploadMarker(uploadMarker("blob-json", "json"))).toEqual({ id: "blob-json", kind: "json" })
   })
 })
 

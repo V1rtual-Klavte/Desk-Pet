@@ -6,6 +6,7 @@
  * 需要「阻断」语义的门禁不要挂在这里 —— 那属于 Pi 原生 hook（`beforeToolCall` / `afterToolCall`）。
  */
 
+import { MEMORY_READING_ERROR_CATEGORIES } from "@/services/agent/memory/reading-errors"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
@@ -165,9 +166,9 @@ const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
   compaction_start: ["reason"], compaction_end: ["reason", "status"], compaction_requested: ["reason"],
   provider_request_start: ["purpose", "step", "attempt", "model", "api"], provider_request_end: ["purpose", "step", "attempt", "model", "api", "status", "durationMs", "inputTokens", "outputTokens", "cacheRead", "cacheWrite"],
   provider_payload: ["model", "api", "payloadHash", "redactions"], provider_response: ["model", "api", "status", "headerNames"], humanizer_transform: ["flow", "status", "split", "silent", "partCount"], provider_usage: ["inputTokens", "outputTokens", "cacheRead", "cacheWrite", "driftRatio"], prompt_snapshot: ["captureStage", "contentHash", "snapshotId", "requestId", "turnId"],
-  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount"],
+  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "readingNoteSourceIds", "readingNoteSourceIdsOmitted", "questionCheckCount", "guideStatus", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount"],
   memory_extraction_start: ["jobId", "revision", "phase"], memory_extraction_end: ["jobId", "revision", "status", "candidateCount", "sourceIds", "sourceCount", "durationMs", "reason"],
-  memory_reading_end: ["status", "noteCount", "sourceCount", "durationMs"],
+  memory_reading_end: ["status", "noteCount", "sourceCount", "durationMs", "noteSourceIds", "noteSourceIdsOmitted", "noteStatus", "guideStatus", "errorCounts", "checkCounts"],
   input_accepted: ["requestId", "status", "source", "priority"], input_consumed: ["requestId"], input_cancelled: ["requestId", "reason"],
   plan_created: ["planId", "stepCount"], plan_confirmed: ["planId", "stepId", "decision"], plan_settled: ["planId", "status"], plan_step_end: ["planId", "stepId", "status"],
   permission_asked: ["toolName", "decision", "source"], permission_decided: ["toolName", "decision", "source"], active_message_delivered: ["requestId", "status"],
@@ -217,6 +218,15 @@ function safePayload(kind: RuntimeTraceKind, payload: Record<string, unknown>): 
         if (Array.isArray(ids)) byScope[scope] = Object.freeze(ids.slice(0, 50).filter((id): id is string => typeof id === "string"))
       }
       safe[field] = Object.freeze(byScope)
+    }
+    else if ((field === "errorCounts" || field === "checkCounts") && value && typeof value === "object" && !Array.isArray(value)) {
+      // Only fixed diagnostic keys and nonnegative integer counts may cross this boundary.
+      const counts = value as Record<string, unknown>
+      const keys = field === "errorCounts" ? MEMORY_READING_ERROR_CATEGORIES : ["supported", "missing", "conflicting"]
+      safe[field] = Object.freeze(Object.fromEntries(keys.flatMap(key => {
+        const count = counts[key]
+        return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? [[key, count]] : []
+      })))
     }
     else if (field === "conversationRefs" && Array.isArray(value)) {
       // Identifiers only: conversation text, thinking and paths never enter trace payloads.

@@ -20,6 +20,7 @@
 import net from "node:net"
 import { randomBytes } from "node:crypto"
 
+import { createLogger } from "@/services/logger"
 import type { HostBlobRef, RunScope } from "./types"
 import {
   BOOTSTRAP_FRAME_GUARD_BYTES,
@@ -122,8 +123,14 @@ interface ActiveRead {
 
 interface UploadJob {
   bytes: Buffer
-  kind: "text" | "bytes"
+  kind: "bytes" | "json"
 }
+
+interface PlannedUpload extends UploadJob {
+  marker: { id: string; kind: "bytes" | "json" }
+}
+
+const UPLOAD_ID_BYTES = 16
 
 export interface RequestOptions {
   signal?: AbortSignal
@@ -131,6 +138,7 @@ export interface RequestOptions {
 }
 
 export class HostConnection {
+  private readonly log = createLogger("HostConnection")
   private readonly controlSocket: net.Socket
   private readonly binarySocket: net.Socket
   private readonly controlReader = new ControlFrameReader()
@@ -290,6 +298,16 @@ export class HostConnection {
 
   // ── 请求 ──
 
+  private requestFrame(method: string, args: unknown, scope: RunScope, requestId: number): WireFrame {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      kind: "request",
+      requestId,
+      scope,
+      payload: { payloadKind: "request", method, args },
+    }
+  }
+
   async request(method: string, args: unknown, options: RequestOptions = {}): Promise<unknown> {
     this.assertOpen()
     const signal = options.signal
@@ -298,24 +316,7 @@ export class HostConnection {
     }
     const scope = options.scope ?? this.defaultScope()
 
-    // 参数侧大字段：先串行上传，再用标记引用（上传在请求之前完成）。
-    const prepared = await this.prepareArgs(args, signal)
     const requestId = this.nextRequestId++
-    const frame: WireFrame = {
-      protocolVersion: PROTOCOL_VERSION,
-      kind: "request",
-      requestId,
-      scope,
-      payload: { payloadKind: "request", method, args: prepared },
-    }
-    const encoded = encodeFrame(frame, this.limits.controlFrameMaxBytes)
-
-    if (signal?.aborted) {
-      throw new HostCommandError("CANCELLED", `请求在发送前已被取消: ${method}`)
-    }
-    const settled = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(requestId, { method, resolve, reject })
-    })
     const onAbort = () => {
       // 取消经控制优先队列先出；结果以宿主响应为准（若已完成则返回成功）。
       this.sendControlFrame({
@@ -324,15 +325,67 @@ export class HostConnection {
         payload: { payloadKind: "control", op: "cancel", requestId },
       })
     }
-    signal?.addEventListener("abort", onAbort, { once: true })
+    const uploadedBlobIds: string[] = []
+    let enqueued = false
+    let pendingRegistered = false
     try {
+      // 先检查真实完整信封。若超出协商帧长，把整份参数 JSON 上传一次，
+      // 避免先拆出若干字段 blob、再因合并帧依然超限而白白消耗 I/O。
+      const plan = this.planJsonArgs(args)
+      let frame = this.requestFrame(method, plan.prepared, scope, requestId)
+      const directEnvelope = JSON.stringify(frame)
+      if (directEnvelope === undefined) throw new HostProtocolError("REQUEST_ARGS_NOT_JSON", "请求信封无法编码为 JSON")
+      const requiresJsonBlob = Buffer.byteLength(directEnvelope, "utf8") > this.limits.controlFrameMaxBytes
+      if (requiresJsonBlob) {
+        const marker: Record<string, unknown> = {
+          [UPLOAD_MARKER_KEY]: { id: "0".repeat(UPLOAD_ID_BYTES * 2), kind: "json" },
+        }
+        // 预先验证 marker 信封本身可发送，避免上传后才发现 method/scope 等固定部分超限。
+        frame = this.requestFrame(method, marker, scope, requestId)
+        const markerEnvelope = JSON.stringify(frame)
+        if (markerEnvelope === undefined) throw new HostProtocolError("REQUEST_ARGS_NOT_JSON", "请求信封无法编码为 JSON")
+        const bodyBytes = Buffer.byteLength(markerEnvelope, "utf8")
+        if (bodyBytes > this.limits.controlFrameMaxBytes) {
+          throw new HostProtocolError("FRAME_TOO_LARGE", `参数已改为 JSON blob，但请求信封仍有 ${bodyBytes} 字节，超过协商上限 ${this.limits.controlFrameMaxBytes}`)
+        }
+      }
+
+      // 大二进制值继续走原始 bytes blob，避免 Array.from 把图片等扩成数倍数字文本。
+      // 若整份参数仍需 JSON blob，这些 bytes marker 会一并嵌在 JSON 中供 Rust 递归物化。
+      for (const upload of plan.uploads) {
+        const blobId = await this.uploadBlob(upload, signal, scope)
+        uploadedBlobIds.push(blobId)
+        upload.marker.id = blobId
+      }
+      if (requiresJsonBlob) {
+        const serializedArgs = JSON.stringify(plan.prepared)
+        if (serializedArgs === undefined) throw new HostProtocolError("REQUEST_ARGS_NOT_JSON", "请求参数无法编码为 JSON")
+        const jsonUpload: UploadJob = {
+          bytes: Buffer.from(serializedArgs, "utf8"),
+          kind: "json",
+        }
+        const blobId = await this.uploadBlob(jsonUpload, signal, scope)
+        uploadedBlobIds.push(blobId)
+        const marker = (frame.payload as { args: Record<string, unknown> }).args
+        marker[UPLOAD_MARKER_KEY] = { id: blobId, kind: "json" }
+      }
+      const encoded = encodeFrame(frame, this.limits.controlFrameMaxBytes)
+      if (signal?.aborted) throw this.cancelledRequest(method)
+
+      const settled = new Promise<unknown>((resolve, reject) => {
+        this.pending.set(requestId, { method, resolve, reject })
+        pendingRegistered = true
+      })
+      signal?.addEventListener("abort", onAbort, { once: true })
+      // AbortSignal may have fired between upload completion and listener setup.
+      if (signal?.aborted) throw this.cancelledRequest(method)
       this.controlQueue.enqueue(encoded, "normal")
-    } catch (error) {
-      this.pending.delete(requestId)
-      throw error
-    }
-    try {
+      enqueued = true
       return await settled
+    } catch (error) {
+      if (pendingRegistered && !enqueued) this.pending.delete(requestId)
+      if (uploadedBlobIds.length > 0 && !enqueued) this.cleanupUnsentUploads(uploadedBlobIds, scope, error)
+      throw error
     } finally {
       signal?.removeEventListener("abort", onAbort)
     }
@@ -443,70 +496,96 @@ export class HostConnection {
     await this.request("blob_release", { blobId: ref.id }, { scope: ref.scope })
   }
 
-  // ── 参数大字段上传 ──
+  // ── 参数 JSON 规划 ──
 
-  private async prepareArgs(args: unknown, signal?: AbortSignal): Promise<unknown> {
+  private planJsonArgs(args: unknown): { prepared: unknown; uploads: PlannedUpload[] } {
     const threshold = Math.max(1024, Math.floor(this.limits.controlFrameMaxBytes / 2))
-    const jobs: Array<{ job: UploadJob; mark: (blobId: string) => void }> = []
-    const walk = (value: unknown): unknown => {
-      if (typeof value === "string") {
-        if (Buffer.byteLength(value, "utf8") > threshold) {
-          return this.placeUploadMarker(jobs, { bytes: Buffer.from(value, "utf8"), kind: "text" })
-        }
-        return value
-      }
+    const uploads: PlannedUpload[] = []
+    const walk = (value: unknown, key: string, applyToJSON = true): unknown => {
       if (value instanceof Uint8Array) {
         if (value.byteLength > threshold) {
-          return this.placeUploadMarker(jobs, {
+          const marker = { id: "0".repeat(UPLOAD_ID_BYTES * 2), kind: "bytes" as const }
+          uploads.push({
             bytes: Buffer.from(value.buffer, value.byteOffset, value.byteLength),
             kind: "bytes",
+            marker,
           })
+          return { [UPLOAD_MARKER_KEY]: marker }
         }
         return Array.from(value)
       }
-      if (Array.isArray(value)) return value.map(walk)
+      if (typeof value !== "object" || value === null) return value
+      if (applyToJSON) {
+        const toJSON = (value as { toJSON?: unknown }).toJSON
+        if (typeof toJSON === "function") {
+          const serialized = toJSON.call(value, key) as unknown
+          if (serialized !== value) return walk(serialized, key, false)
+        }
+      }
+      if (Array.isArray(value)) return value.map((item, index) => walk(item, String(index)))
       if (typeof value === "object" && value !== null) {
         const out: Record<string, unknown> = {}
         for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-          out[key] = walk(item)
+          out[key] = walk(item, key)
         }
         return out
       }
       return value
     }
-    const walked = walk(args)
-    for (const { job, mark } of jobs) {
-      mark(await this.uploadBlob(job, signal))
+    return { prepared: walk(args, ""), uploads }
+  }
+
+  private cancelledRequest(method: string): HostCommandError {
+    return new HostCommandError("CANCELLED", `请求在发送前已被取消: ${method}`)
+  }
+
+  private cleanupUnsentUploads(blobIds: readonly string[], scope: RunScope, primaryError: unknown): void {
+    for (const blobId of blobIds) {
+      void this.request("blob_release", { blobId }, { scope }).catch((cleanupError: unknown) => {
+        this.log.warn("未发送请求的上传 blob 清理失败；原请求错误保持不变", { primaryError, cleanupError, blobId })
+      })
     }
-    return walked
   }
 
-  /** 放一个占位上传标记；id 要等上传完成才知道，由 `mark` 回填。 */
-  private placeUploadMarker(
-    jobs: Array<{ job: UploadJob; mark: (blobId: string) => void }>,
-    job: UploadJob,
-  ): Record<string, unknown> {
-    const inner: { id: string; kind: "text" | "bytes" } = { id: "", kind: job.kind }
-    const placeholder = { [UPLOAD_MARKER_KEY]: inner }
-    jobs.push({
-      job,
-      mark: (blobId) => {
-        inner.id = blobId
-      },
-    })
-    return placeholder
-  }
-
-  private async uploadBlob(job: UploadJob, signal?: AbortSignal): Promise<string> {
+  private async uploadBlob(job: UploadJob, signal: AbortSignal | undefined, scope: RunScope): Promise<string> {
     const run = this.uploadTail.then(() => this.performUpload(job, signal))
     this.uploadTail = run.catch(() => undefined)
-    return run
+    if (!signal) return run
+    return new Promise<string>((resolve, reject) => {
+      let settled = false
+      const onAbort = () => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener("abort", onAbort)
+        reject(this.cancelledRequest("JSON blob upload"))
+      }
+      signal.addEventListener("abort", onAbort, { once: true })
+      if (signal.aborted) onAbort()
+      void run.then(
+        blobId => {
+          signal.removeEventListener("abort", onAbort)
+          if (settled) {
+            this.cleanupUnsentUploads([blobId], scope, this.cancelledRequest("JSON blob upload"))
+            return
+          }
+          settled = true
+          resolve(blobId)
+        },
+        error => {
+          signal.removeEventListener("abort", onAbort)
+          if (!settled) {
+            settled = true
+            reject(error)
+          }
+        },
+      )
+    })
   }
 
   private async performUpload(job: UploadJob, signal?: AbortSignal): Promise<string> {
     this.assertOpen()
     if (signal?.aborted) throw new HostCommandError("CANCELLED", "上传在开始前已被取消")
-    const blobId = randomBytes(16).toString("hex")
+    const blobId = randomBytes(UPLOAD_ID_BYTES).toString("hex")
     const ready = this.awaitUploadSettle(blobId, "ready")
     this.sendControlFrame({
       protocolVersion: PROTOCOL_VERSION,

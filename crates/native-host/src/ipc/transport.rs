@@ -255,6 +255,7 @@ pub enum CreditDirection {
 pub enum BlobKind {
     Text,
     Bytes,
+    Json,
 }
 
 impl ControlFrame {
