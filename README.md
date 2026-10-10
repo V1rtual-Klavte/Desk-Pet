@@ -17,6 +17,8 @@
   <img src="docs/images/theme-3.webp" width="270" alt="桌宠演示 · 主题三（暗色）">
 </p>
 
+[English](README.en.md) · **简体中文**
+
 </div>
 
 ## 这是什么
