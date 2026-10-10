@@ -29,9 +29,9 @@ PASS
   "importTransformVersion": "lme-clean/1",
   "judge": {
     "enabled": true,
-    "model": "deepseek-reasoner"
+    "model": "deepseek-v4-pro"
   },
-  "judgeModel": "deepseek-reasoner",
+  "judgeModel": "deepseek-v4-pro",
   "subsetDescription": {
     "policy": "coverage-v1",
     "caseCount": 52,
@@ -14088,5 +14088,15 @@ PASS
       "variable-pool": "9bbead15ed4192960909109c6a5322d58f81323d5a77781b32461f431a0444ec"
     },
     "seedHash": "1d79e76d1f7e4a47980480ab9ead57114e63d875bda3f40da3a04506fe2fb6f5"
+  },
+  "judgeRequestedModel": "deepseek-reasoner",
+  "judgmentRevision": {
+    "appliedAt": "2026-10-10T14:03:11.863Z",
+    "judgeModel": "deepseek-v4-pro",
+    "evidence": "rejudge-deepseek-v4-pro.json",
+    "reason": "运行期请求的 judge 名（deepseek-reasoner）被测试侧网关静默映射为被测同模型 deepseek-flash；verdict 与统计按复判结果修订，逐题原始判分保留在 outcomes[].judgment",
+    "total": 52,
+    "agreed": 52,
+    "flipped": []
   }
 }

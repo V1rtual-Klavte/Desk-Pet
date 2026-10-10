@@ -1,0 +1,581 @@
+{
+  "schemaVersion": 1,
+  "sourceManifest": {
+    "schemaVersion": 1,
+    "runId": "1fe6c2f9-fb86-459c-9950-35c4e162e39b",
+    "trialId": "2026-10-10T12-44-13-150Z-009c2d15",
+    "timestamp": "2026-10-10T12:44:14.266Z",
+    "commit": "2961ee4ed89999404e80a9073f9d91e6cad3e793",
+    "sourceHashes": {
+      "agent-runtime": "110bb3400ab06146f9ccba67ecfe6e5726cf7a34dff4295f3ec5c10c1ed15f92",
+      "audio": "c4f56a4f9c040a9b1ea032e3bd58848fefbea3a17630fa3a3086f291b68966bc",
+      "behavior": "3b55d9bcceb8e06b7dcc763e1ffe4b559c4d5d7dab7c8b7d72cbc243d5d1c805",
+      "chat-images": "a4c232cf5561bfb735fba10f0b8c1696d59aac725ee5a74d0993a23dd6443d59",
+      "env": "3050784fe4ac11969d2ca31d3be46d9ff75d1aff4e7215239f534d5ceea10ef9",
+      "evaluation": "7e238f1629f95f129472b1bfd1f1e41b2b5e75bf7c4835a849d664cf02d0610f",
+      "harness-storage": "a547cca52fa3fe27a3c23e2bbc51f29bd68c5f05d8585dd344ff936027a46a3c",
+      "host": "77503cb81dabbacc96547d5251979d3e41955a5fa03aa62789226c27e1fd09b6",
+      "humanizer": "0b6861a3f653cec66492a5b8926f946d86287f5079a5a86d740db258a32eb779",
+      "memory-bench": "44cbb3d8e1b3a0bad1d95c360d133f125f2a2f00e2c7d53d113918b6f80f7f48",
+      "memory": "6a73982cb9147dd38ba8bed8de9957ab704387c4350d4585a03751724851a800",
+      "native-ui": "d121aee4e7ab5a9f884e093b2e96fe217491b1ae8118d36bf8c05940621f58bc",
+      "observation": "f886858b82a917e8c5e48662ef8b072b8e4494e54f886725cff109a742add1fc",
+      "personality-card": "956c9c8daaaaa2770c0f8459a6a762b69eeebf4c73d50f7387fb8007925362b3",
+      "planner": "46bd16c05594e7bfabab3ecc52a165d2917cd3b835b0ceb951cae7effb338b54",
+      "proactive": "94d65489d8bf07780a4d1a631c4949536aa227ab4d64b63bfab18b18e838aedc",
+      "safety": "8f17c4a45de81ca4b89946c83fabb7288d6d6d8e4debd29d81741eaf8e1aa3be",
+      "tool-execution": "095da7f222a0a50888e3d5f008ea98d67fd83271521d1c737a2ab4936ce74af4",
+      "update": "34c56b61f84c0f160d262966d014d205bb7063a6881e985e44d1f61d4d5311b7",
+      "variable-pool": "9bbead15ed4192960909109c6a5322d58f81323d5a77781b32461f431a0444ec"
+    },
+    "seedHash": "1d79e76d1f7e4a47980480ab9ead57114e63d875bda3f40da3a04506fe2fb6f5",
+    "platform": "darwin",
+    "userAgent": "node v22.22.3",
+    "model": {
+      "provider": "deepseek",
+      "model": "deepseek-flash"
+    },
+    "options": {
+      "report": "json",
+      "repeat": 1,
+      "strictContracts": false,
+      "trace": "full",
+      "quality": false,
+      "qualitySeed": "memory-quality-2026-10-02",
+      "performance": false
+    },
+    "expectedTrials": [
+      {
+        "caseId": "membank-cn-p07-q06",
+        "sceneId": "membank-cn-p07-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p07-q05",
+        "sceneId": "membank-cn-p07-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p07-q02",
+        "sceneId": "membank-cn-p07-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p07-q07",
+        "sceneId": "membank-cn-p07-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p07-q01",
+        "sceneId": "membank-cn-p07-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p07-q03",
+        "sceneId": "membank-cn-p07-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p07-q04",
+        "sceneId": "membank-cn-p07-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p11-q01",
+        "sceneId": "membank-cn-p11-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p11-q03",
+        "sceneId": "membank-cn-p11-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p11-q05",
+        "sceneId": "membank-cn-p11-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p11-q07",
+        "sceneId": "membank-cn-p11-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p11-q06",
+        "sceneId": "membank-cn-p11-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p11-q02",
+        "sceneId": "membank-cn-p11-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p11-q04",
+        "sceneId": "membank-cn-p11-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p09-q03",
+        "sceneId": "membank-cn-p09-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p09-q01",
+        "sceneId": "membank-cn-p09-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p09-q06",
+        "sceneId": "membank-cn-p09-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p09-q05",
+        "sceneId": "membank-cn-p09-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p09-q02",
+        "sceneId": "membank-cn-p09-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p09-q07",
+        "sceneId": "membank-cn-p09-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p09-q04",
+        "sceneId": "membank-cn-p09-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p04-q01",
+        "sceneId": "membank-cn-p04-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p04-q06",
+        "sceneId": "membank-cn-p04-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p04-q05",
+        "sceneId": "membank-cn-p04-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p04-q04",
+        "sceneId": "membank-cn-p04-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p04-q03",
+        "sceneId": "membank-cn-p04-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p04-q02",
+        "sceneId": "membank-cn-p04-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p04-q07",
+        "sceneId": "membank-cn-p04-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p02-q05",
+        "sceneId": "membank-cn-p02-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p02-q04",
+        "sceneId": "membank-cn-p02-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p02-q07",
+        "sceneId": "membank-cn-p02-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p02-q01",
+        "sceneId": "membank-cn-p02-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p02-q02",
+        "sceneId": "membank-cn-p02-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p02-q06",
+        "sceneId": "membank-cn-p02-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p02-q03",
+        "sceneId": "membank-cn-p02-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p01-q02",
+        "sceneId": "membank-cn-p01-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p01-q01",
+        "sceneId": "membank-cn-p01-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p01-q03",
+        "sceneId": "membank-cn-p01-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p01-q04",
+        "sceneId": "membank-cn-p01-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p01-q06",
+        "sceneId": "membank-cn-p01-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p01-q07",
+        "sceneId": "membank-cn-p01-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p01-q05",
+        "sceneId": "membank-cn-p01-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p06-q04",
+        "sceneId": "membank-cn-p06-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p06-q02",
+        "sceneId": "membank-cn-p06-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p06-q03",
+        "sceneId": "membank-cn-p06-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p06-q07",
+        "sceneId": "membank-cn-p06-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p06-q01",
+        "sceneId": "membank-cn-p06-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p06-q05",
+        "sceneId": "membank-cn-p06-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p06-q06",
+        "sceneId": "membank-cn-p06-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p05-q02",
+        "sceneId": "membank-cn-p05-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p05-q07",
+        "sceneId": "membank-cn-p05-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p05-q01",
+        "sceneId": "membank-cn-p05-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p05-q03",
+        "sceneId": "membank-cn-p05-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p05-q05",
+        "sceneId": "membank-cn-p05-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p05-q04",
+        "sceneId": "membank-cn-p05-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p05-q06",
+        "sceneId": "membank-cn-p05-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p13-q06",
+        "sceneId": "membank-cn-p13-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p13-q01",
+        "sceneId": "membank-cn-p13-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p13-q05",
+        "sceneId": "membank-cn-p13-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p13-q07",
+        "sceneId": "membank-cn-p13-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p13-q03",
+        "sceneId": "membank-cn-p13-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p13-q04",
+        "sceneId": "membank-cn-p13-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p13-q02",
+        "sceneId": "membank-cn-p13-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p03-q05",
+        "sceneId": "membank-cn-p03-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p03-q01",
+        "sceneId": "membank-cn-p03-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p03-q07",
+        "sceneId": "membank-cn-p03-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p03-q06",
+        "sceneId": "membank-cn-p03-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p03-q02",
+        "sceneId": "membank-cn-p03-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p03-q03",
+        "sceneId": "membank-cn-p03-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p03-q04",
+        "sceneId": "membank-cn-p03-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p08-q06",
+        "sceneId": "membank-cn-p08-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p08-q07",
+        "sceneId": "membank-cn-p08-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p08-q05",
+        "sceneId": "membank-cn-p08-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p08-q03",
+        "sceneId": "membank-cn-p08-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p08-q04",
+        "sceneId": "membank-cn-p08-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p08-q01",
+        "sceneId": "membank-cn-p08-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p08-q02",
+        "sceneId": "membank-cn-p08-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p15-q02",
+        "sceneId": "membank-cn-p15-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p15-q05",
+        "sceneId": "membank-cn-p15-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p15-q06",
+        "sceneId": "membank-cn-p15-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p15-q03",
+        "sceneId": "membank-cn-p15-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p15-q04",
+        "sceneId": "membank-cn-p15-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p15-q01",
+        "sceneId": "membank-cn-p15-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p12-q01",
+        "sceneId": "membank-cn-p12-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p12-q03",
+        "sceneId": "membank-cn-p12-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p12-q04",
+        "sceneId": "membank-cn-p12-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p12-q02",
+        "sceneId": "membank-cn-p12-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p12-q05",
+        "sceneId": "membank-cn-p12-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p14-q03",
+        "sceneId": "membank-cn-p14-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p14-q02",
+        "sceneId": "membank-cn-p14-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p14-q04",
+        "sceneId": "membank-cn-p14-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p14-q01",
+        "sceneId": "membank-cn-p14-q01",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p14-q05",
+        "sceneId": "membank-cn-p14-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p10-q07",
+        "sceneId": "membank-cn-p10-q07",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p10-q06",
+        "sceneId": "membank-cn-p10-q06",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p10-q02",
+        "sceneId": "membank-cn-p10-q02",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p10-q05",
+        "sceneId": "membank-cn-p10-q05",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p10-q04",
+        "sceneId": "membank-cn-p10-q04",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p10-q03",
+        "sceneId": "membank-cn-p10-q03",
+        "trialId": "1"
+      },
+      {
+        "caseId": "membank-cn-p10-q01",
+        "sceneId": "membank-cn-p10-q01",
+        "trialId": "1"
+      }
+    ],
+    "complete": true,
+    "trace": {
+      "mode": "full",
+      "recorded": 4049,
+      "orphanEvents": 0,
+      "flushFailures": 0,
+      "failed": false
+    },
+    "bench": {
+      "dataset": "memorybank",
+      "split": "cn",
+      "namespace": "membank-cn",
+      "plannedCells": 100,
+      "seed": "memory-bench-2026-10-03",
+      "judge": "deepseek-reasoner",
+      "readerControl": null,
+      "evalRunId": "bench-membank-cn-mv2dytdq-7c31c205",
+      "judgeModel": "deepseek-reasoner",
+      "upstream": {
+        "source": "https://raw.githubusercontent.com/zhongwanjun/MemoryBank-SiliconFriend",
+        "url": "https://raw.githubusercontent.com/zhongwanjun/MemoryBank-SiliconFriend/cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9/eval_data/cn/memory_bank_cn.json",
+        "revision": "cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9",
+        "file": "memory_bank_cn.json",
+        "fileSha256": "6098382314c7e5cf1d4564a3b587e9863b1e083f2ba56ce3fbbea68a1c91d287",
+        "bytes": 193686
+      },
+      "importTransformVersion": "membank-cn/1"
+    }
+  },
+  "artifactHashes": {
+    "traceSha256": "9022e9c56ad4299b9bf64cfbf26fc0da42deedcf576e1033354d2501fec5ff07"
+  }
+}

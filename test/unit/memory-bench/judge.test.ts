@@ -1,7 +1,7 @@
 // 外部评测 judge 模板 L2 单测：模板选取、官方措辞关键句、判定解析语义。
 import { describe, it, expect } from "vitest"
 import {
-  buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, judgeTemplateId, parseJudgeVerdict,
+  buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, judgeTemplateId, parseJudgeVerdict, parseMemoryBankJudgeVerdict,
 } from "../../memory-bench/judge.mjs"
 
 describe("judge 输出预算", () => {
@@ -88,6 +88,15 @@ describe("MemoryBank judge 提示（仓内自适配）", () => {
     expect(prompt).toContain("问题：我去过哪？")
     expect(prompt).toContain("回答：你去了公园")
     expect(prompt).toContain("只回答 yes 或 no")
+  })
+
+  it("只接受明确单词判定，拒绝相互矛盾或非判定输出 [bench-memorybank-judge-parse]", () => {
+    expect(parseMemoryBankJudgeVerdict(" YES\n")).toBe(true)
+    expect(parseMemoryBankJudgeVerdict("No")).toBe(false)
+    expect(parseMemoryBankJudgeVerdict("no, the answer is not yes")).toBeNull()
+    expect(parseMemoryBankJudgeVerdict("yesterday")).toBeNull()
+    expect(parseMemoryBankJudgeVerdict("yes/no")).toBeNull()
+    expect(parseMemoryBankJudgeVerdict("")).toBeNull()
   })
 })
 

@@ -10,6 +10,7 @@
 [![License](https://img.shields.io/github/license/V1rtual-Klavte/Desk-Pet)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](#下载安装)
 [![Bundled Node](https://img.shields.io/badge/node-22.22.3_bundled-3c873a)](packaging/node-runtime.json)
+<a href="https://github.com/DasterProkio/awesome-ai-companion/blob/main/README.zh-CN.md"><img src="https://raw.githubusercontent.com/DasterProkio/awesome-ai-companion/main/assets/featured-in-awesome-ai-companion-zh-CN.png" alt="已收录于人机恋开源项目大全" height="24"></a>
 
 <p align="center">
   <img src="docs/images/theme-1.webp" width="270" alt="桌宠演示 · 主题一（浅色）">
@@ -220,7 +221,9 @@ macOS 的窗口观察需要在「系统设置 → 隐私与安全性 → 辅助�
 | LongMemEval | oracle（52 题） | **50/52（96.2%）** · 2026-10-10 · regular 95.2% · 弃权 10/10 · 未裁决 0 |
 | LongMemEval | S | 未测 |
 | LoCoMo | locomo10 | 未测 |
-| MemoryBank | cn | 未测 |
+| MemoryBank | cn | **97/100（97.0%）** · 2026-10-10 · 未裁决 0 |
+
+上表引用的是**认定后的终态结果**：逐份报告、逐题 hypothesis 与完整运行线路归档在 [`test/reports/bench/final/`](test/reports/bench/final/README.md)，长期留存、不被滚动报告淘汰。
 
 评测框架对 trace 的正式追踪尚未接线 —— trace 现在只作运行证据留存与理想线路审阅的输入，还没进入自动评测闭环。
 

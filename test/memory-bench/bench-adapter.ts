@@ -29,7 +29,7 @@ import { userInputMessage } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { standardSetup } from "../host/standard-setup"
-import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, parseJudgeVerdict } from "./judge.mjs"
+import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, parseJudgeVerdict, parseMemoryBankJudgeVerdict } from "./judge.mjs"
 import { questionTimeAnchor } from "./datasets/longmemeval/importer.mjs"
 import { planScopeNormalization } from "./scope-normalize.mjs"
 import { summarizeMemoryQualityUsage } from "../memory-quality/index.mjs"
@@ -245,22 +245,54 @@ function locomoSources(conversation: { sampleId: string;
   return { sources, meta }
 }
 
-function memoryBankSources(persona: { name: string;
-  days: Array<{ date: string; observedAt: number; turns: Array<{ query: string; turnIndex: number }> }> }): { sources: MemorySource[]; meta: Map<string, SourceMeta> } {
+/**
+ * MemoryBank：角色完整对话（query + response）写成隔离 JSONL 会话夹具，user 轮另登记为用户事实来源。
+ *
+ * 与 LongMemEval 同口径：助手台词进对话、可被会话原话检索命中，但**不**登记为 MemorySource
+ * （准入只收用户本人陈述，助手台词永不沉淀为用户记忆）。事实来源指向已提交的真实用户条目；
+ * 对话检索另保留助手台词，避免只登记 query 时丢失回答侧证据。
+ */
+async function memoryBankSources(persona: { name: string;
+  days: Array<{ date: string; observedAt: number; turns: Array<{ query: string; response: string; turnIndex: number }> }> }): Promise<{ sources: MemorySource[]; meta: Map<string, SourceMeta> }> {
   const sources: MemorySource[] = []
   const meta = new Map<string, SourceMeta>()
   let seq = 0
+  // 上游按天组织 history，保留每天一个会话的边界，避免扩展某次命中时顺带读入其他日期。
   for (const day of persona.days) {
-    for (const turn of day.turns) {
-      seq += 1
-      const sourceId = `${day.date}#${turn.turnIndex}`
-      sources.push({ sourceId, sessionId: persona.name, entryId: `${day.date}#${turn.turnIndex}`,
-        eventId: `bench-membank-${seq}`, seq, contentHash: "",
-        evidence: turn.query.slice(0, EVIDENCE_CHARS), sourceLength: turn.query.length,
-        eligibleForMemory: true, taint: "trusted_user", origin: "user",
-        observedAt: day.observedAt + turn.turnIndex * 1_000 })
-      meta.set(sourceId, { observedAt: day.observedAt + turn.turnIndex * 1_000 })
-    }
+    const fixture = await createPiSession(`bench-history-membank-${persona.name}-${day.date}`)
+    const daySources: MemorySource[] = []
+    try {
+      const handle = await acquirePiSession(fixture.id)
+      const branch = await handle.createBranch(PI_LANE, null, BACKGROUND_CONTEXT)
+      for (const turn of day.turns) {
+        seq += 1
+        const observedAt = day.observedAt + turn.turnIndex * 1_000
+        const eventId = `bench-membank-${seq}`
+        const userEntryId = await branch.appendMessage({ ...userInputMessage(turn.query, eventId, {
+          origin: "user", querySource: "chat", priority: "now", taint: "trusted_user", eligibleForMemory: true,
+        }), timestamp: observedAt }, BACKGROUND_CONTEXT)
+        const sourceId = `${day.date}#${turn.turnIndex}`
+        const sourceMeta: SourceMeta = { observedAt, sessionId: fixture.id, turnIndex: turn.turnIndex, role: "user" }
+        meta.set(`conversation:${fixture.id}:${userEntryId}`, sourceMeta)
+        meta.set(sourceId, sourceMeta)
+        daySources.push({ sourceId, sessionId: fixture.id, entryId: userEntryId, eventId, seq, contentHash: "",
+          evidence: turn.query.slice(0, EVIDENCE_CHARS), sourceLength: turn.query.length,
+          eligibleForMemory: true, taint: "trusted_user", origin: "user", observedAt })
+        // 助手轮只进对话（可检索），不登记 MemorySource：准入只收用户本人陈述。
+        const assistantEntryId = await branch.appendMessage(fauxAssistantMessage(turn.response, { timestamp: observedAt + 500 }), BACKGROUND_CONTEXT)
+        meta.set(`conversation:${fixture.id}:${assistantEntryId}`, {
+          observedAt: observedAt + 500, sessionId: fixture.id, turnIndex: turn.turnIndex, role: "assistant",
+        })
+      }
+      const entries = await handle.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)
+      const seqById = new Map(entries.map(entry => [entry.id, entry.seq]))
+      for (const source of daySources) {
+        const entrySeq = seqById.get(source.entryId)
+        if (entrySeq === undefined) throw new Error("MemoryBank 会话来源未提交")
+        source.seq = entrySeq
+        sources.push(source)
+      }
+    } finally { await releasePiSession(fixture.id) }
   }
   return { sources, meta }
 }
@@ -501,16 +533,16 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
     } else if (dataset === "memorybank") {
       const persona = (file.personas ?? []).find(item => (item as { name?: string }).name === groupKey)
       if (!persona) throw new Error(`找不到角色 ${groupKey}`)
-      built = memoryBankSources(persona as Parameters<typeof memoryBankSources>[0])
+      built = await memoryBankSources(persona as Parameters<typeof memoryBankSources>[0])
     } else throw new Error(`未登记的数据集: ${dataset}`)
     await registerAll(built.sources)
     const drained = await drainDreaming(signal, traces)
     const ingest = { registeredSources: built.sources.length, processedSources: drained.processed,
       oversizedSources: drained.oversized, scopeNormalized: 0, sweeps: drained.sweeps }
     if (drained.incompleteOutput) return { ok: false, error: drained.incompleteOutput, ingest }
-    // Full-dialogue LongMemEval uses production scope rules. add+forget fixture
-    // normalization would tombstone real conversation sources and distort recall.
-    const scopeNormalized = dataset === "longmemeval" ? 0 : await normalizeSessionScope()
+    // Only LoCoMo's direct-source fixture changes scope. JSONL-backed datasets keep
+    // production scope rules: add+forget would tombstone real conversation anchors.
+    const scopeNormalized = dataset === "locomo" ? await normalizeSessionScope() : 0
     ingest.scopeNormalized = scopeNormalized
     return { ok: true, group: { groupKey, storeGeneration: String(storeReset.generation), sourceMeta: built.meta, ingest } }
   }
@@ -536,9 +568,9 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
       return { provider: aiConfig.provider, model: aiConfig.model, entry: "production", providerMode: "real",
         storageMode: "rust-ipc", configHash: await sha256(JSON.stringify(cfg)),
         toolIsolation: "all model tools disabled; host fixture/governance IPC remains real",
-        ingestion: dataset === "longmemeval"
-          ? "full user/assistant JSONL fixture; user-only fact registration; dreaming manual sweep; production scope rules"
-          : "direct MemorySource registration; dreaming manual sweep; session scope normalized to user",
+        ingestion: dataset === "locomo"
+          ? "direct MemorySource registration; dreaming manual sweep; session scope normalized to user"
+          : `${dataset === "memorybank" ? "daily" : "per-session"} user/assistant JSONL fixture; user-only fact registration; dreaming manual sweep; production scope rules`,
         questionTimeAnchoring: dataset === "longmemeval"
           ? "LongMemEval: question_date 作为提问回合的 [当前时间]（本地墙钟）；其余数据集用真实时钟"
           : "真实时钟（该数据集没有题目基准日）",
@@ -612,7 +644,10 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
         systemPrompt, userText: built.prompt, maxTokens, timeoutMs: JUDGE_TIMEOUT_MS })
       const text = result.text.trim()
       if (!text) return { adjudicated: false, error: "judge returned an empty response", templateId: built.templateId, model: judgeModel }
-      return { adjudicated: true, correct: parseJudgeVerdict(text), raw: text, templateId: built.templateId,
+      const correct = request.kind === "memorybank" ? parseMemoryBankJudgeVerdict(text) : parseJudgeVerdict(text)
+      if (correct === null) return { adjudicated: false, error: "MemoryBank judge must return a single yes or no", raw: text,
+        templateId: built.templateId, model: judgeModel }
+      return { adjudicated: true, correct, raw: text, templateId: built.templateId,
         model: judgeModel, usage: { inputTokens: result.usage.input, outputTokens: result.usage.output } }
     },
   }

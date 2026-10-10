@@ -181,23 +181,28 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
   `evidencePresentRate`（至少渲染一条记忆的题占比）、`dateHintHitRate`（题面点名「N月N日/号」时，
   该日期出现在渲染证据 `observedAt` 的比例）、`renderedEvidenceP50`。
 - 正确率由同一 judge 适配器给出：以整段角色历史为参照判「回答是否与历史一致且答到问题」
-  （**本仓自适配模板**，不代表官方指标）。
+  （**本仓自适配模板**，不代表官方指标）。按历史的角色与日期判分；有答案却拒答、遗漏关键答案或编造记为错，
+  历史确实缺失信息或前提错误时允许准确指出缺失或纠正前提。只接受 judge 单词 `yes/no`，其他输出记为未裁决。
+- [原论文 §4.2](https://arxiv.org/html/2305.10250v3#S4.SS2) 使用人工评分，答案正确性为 `0/0.5/1`，另评检索、连贯性与排序；
+  论文描述中英各 97 题，[公开仓库](https://github.com/zhongwanjun/MemoryBank-SiliconFriend#evaluation-data) 发布的中文版为 100 题。
+  本仓跑公开中文版全量 100 题、每题一次二元 judge，结果不能与论文人工评分直接横比。
 
 ## 6. 采集管线（与自建集的差异）
 
-- LongMemEval 每个原始会话建立隔离 JSONL 夹具，按顺序保留 user/assistant 角色与题目时间；不逐轮调用
+- LongMemEval 每个原始会话、MemoryBank 每个历史日期建立隔离 JSONL 夹具，按顺序保留 user/assistant 角色与原始时间；不逐轮调用
   `sendMessage` 重放。所有角色消息进入对话检索，只有 user 轮另登记为用户事实 `MemorySource`，assistant
-  轮不会伪装成用户记忆。LoCoMo 仍为两个说话人的全部轮次直登记来源，MemoryBank 为 `query` 轮登记来源；
-  其来源坐标分别是 LME `会话id:轮下标`、LoCoMo `样本id:dia_id`、MemoryBank `日期#轮下标`。
+  轮不会伪装成用户记忆；MemoryBank 的 `query/response` 对应 user/assistant，只有 `query` 登记事实来源。
+  这两集的 `sessionId/entryId/seq` 均指向已提交的真实夹具条目；MemoryBank 的 `日期#轮下标` 仅作来源标签。
+  LoCoMo 仍为两个说话人的全部轮次直登记来源，标签为 `样本id:dia_id`。
   `evidence` 截 2000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留原文长度（产品 dreaming
   对 >4800 字符的整条来源丢弃，次数如实计入报告）。
 - 提取走**真实 dreaming**（`manual` 模式，绕开每日预算；循环 sweep 直至无待处理来源）。
-- LoCoMo 与 MemoryBank 的 **session-scope 候选归一为 user scope**：Rust 禁止跨范围改归属，用 `add`（同内容/来源）+ `forget`
+- 仅 LoCoMo 的直接事实夹具将 **session-scope 候选归一为 user scope**：Rust 禁止跨范围改归属，用 `add`（同内容/来源）+ `forget`
   原条目实现；否则提问发生在新建会话会漏召回。次数记入 `ingest.scopeNormalized`。
   **必须两段式**（先全部 `add`、再全部 `forget`，规划在 `scope-normalize.mjs`）：Rust 的遗忘
   按来源事件写 `block_extraction` 墓碑，之后任何引用该来源的 `add` 都会判「来源未登记」；
   逐条 `add→forget` 在共享来源的候选上会把整题打成基础设施失败（2026-10-03 LME oracle
-  `lme-oracle-e01b8e2f` 的故障），而不是被测能力问题。LongMemEval 保持生产 scope 规则，不做 add+forget
+  `lme-oracle-e01b8e2f` 的故障），而不是被测能力问题。LongMemEval 与 MemoryBank 保持生产 scope 规则，不做 add+forget
   归一；完整对话由会话检索读取，user-origin 事实仍按产品的来源与 scope 语义治理。
 - 提问：每题新建会话；cell = 题 × 1 trial（外部集是观测证据，不套自建集的 ≥3 trial 配对纪律）。
 - 组复用：LoCoMo 一段对话灌一次库、组内多题提问；MemoryBank 一个角色同理；LongMemEval 每题一组。

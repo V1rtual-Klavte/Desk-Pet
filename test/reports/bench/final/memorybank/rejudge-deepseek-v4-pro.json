@@ -1,0 +1,1923 @@
+{
+  "judgeModel": "deepseek-v4-pro",
+  "sourceReport": "test/reports/bench/2026-10-10T13-35-49-589Z.json",
+  "sourceReportSha256": "28a4b08455263e39c703310fdcb6fcc43568db6e0f33f3f46034b0f380674a6d",
+  "generatedAt": "2026-10-10T13:49:19.502Z",
+  "total": 100,
+  "agreed": 99,
+  "flipped": [
+    {
+      "caseId": "membank-cn-p02-q05",
+      "stored": true,
+      "rejudged": false,
+      "raw": "no"
+    }
+  ],
+  "unadjudicated": [],
+  "usage": {
+    "in": 283951,
+    "out": 15236
+  },
+  "results": [
+    {
+      "caseId": "membank-cn-p07-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3132,
+        "completion_tokens": 140,
+        "total_tokens": 3272,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 138
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 3132
+      }
+    },
+    {
+      "caseId": "membank-cn-p07-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3107,
+        "completion_tokens": 77,
+        "total_tokens": 3184,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 75
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 3107
+      }
+    },
+    {
+      "caseId": "membank-cn-p07-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3143,
+        "completion_tokens": 82,
+        "total_tokens": 3225,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 80
+        },
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 3143
+      }
+    },
+    {
+      "caseId": "membank-cn-p07-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3118,
+        "completion_tokens": 35,
+        "total_tokens": 3153,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 33
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2862
+      }
+    },
+    {
+      "caseId": "membank-cn-p07-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3099,
+        "completion_tokens": 85,
+        "total_tokens": 3184,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 83
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2843
+      }
+    },
+    {
+      "caseId": "membank-cn-p07-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3136,
+        "completion_tokens": 95,
+        "total_tokens": 3231,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 93
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2880
+      }
+    },
+    {
+      "caseId": "membank-cn-p11-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3848,
+        "completion_tokens": 64,
+        "total_tokens": 3912,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 62
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3592
+      }
+    },
+    {
+      "caseId": "membank-cn-p07-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3111,
+        "completion_tokens": 98,
+        "total_tokens": 3209,
+        "prompt_tokens_details": {
+          "cached_tokens": 2944
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 96
+        },
+        "prompt_cache_hit_tokens": 2944,
+        "prompt_cache_miss_tokens": 167
+      }
+    },
+    {
+      "caseId": "membank-cn-p11-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3895,
+        "completion_tokens": 95,
+        "total_tokens": 3990,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 93
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3639
+      }
+    },
+    {
+      "caseId": "membank-cn-p11-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3848,
+        "completion_tokens": 72,
+        "total_tokens": 3920,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 70
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3592
+      }
+    },
+    {
+      "caseId": "membank-cn-p11-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3896,
+        "completion_tokens": 112,
+        "total_tokens": 4008,
+        "prompt_tokens_details": {
+          "cached_tokens": 3712
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 110
+        },
+        "prompt_cache_hit_tokens": 3712,
+        "prompt_cache_miss_tokens": 184
+      }
+    },
+    {
+      "caseId": "membank-cn-p11-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3861,
+        "completion_tokens": 243,
+        "total_tokens": 4104,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 241
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3605
+      }
+    },
+    {
+      "caseId": "membank-cn-p11-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3868,
+        "completion_tokens": 185,
+        "total_tokens": 4053,
+        "prompt_tokens_details": {
+          "cached_tokens": 3712
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 183
+        },
+        "prompt_cache_hit_tokens": 3712,
+        "prompt_cache_miss_tokens": 156
+      }
+    },
+    {
+      "caseId": "membank-cn-p11-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3857,
+        "completion_tokens": 139,
+        "total_tokens": 3996,
+        "prompt_tokens_details": {
+          "cached_tokens": 3712
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 137
+        },
+        "prompt_cache_hit_tokens": 3712,
+        "prompt_cache_miss_tokens": 145
+      }
+    },
+    {
+      "caseId": "membank-cn-p09-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2504,
+        "completion_tokens": 70,
+        "total_tokens": 2574,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 68
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2248
+      }
+    },
+    {
+      "caseId": "membank-cn-p09-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2518,
+        "completion_tokens": 56,
+        "total_tokens": 2574,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 54
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 86
+      }
+    },
+    {
+      "caseId": "membank-cn-p09-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2515,
+        "completion_tokens": 164,
+        "total_tokens": 2679,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 162
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 83
+      }
+    },
+    {
+      "caseId": "membank-cn-p09-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2511,
+        "completion_tokens": 77,
+        "total_tokens": 2588,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 75
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 79
+      }
+    },
+    {
+      "caseId": "membank-cn-p09-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2487,
+        "completion_tokens": 71,
+        "total_tokens": 2558,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 69
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 55
+      }
+    },
+    {
+      "caseId": "membank-cn-p09-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2484,
+        "completion_tokens": 77,
+        "total_tokens": 2561,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 75
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 52
+      }
+    },
+    {
+      "caseId": "membank-cn-p09-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2567,
+        "completion_tokens": 199,
+        "total_tokens": 2766,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 197
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 135
+      }
+    },
+    {
+      "caseId": "membank-cn-p04-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2561,
+        "completion_tokens": 65,
+        "total_tokens": 2626,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 63
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2305
+      }
+    },
+    {
+      "caseId": "membank-cn-p04-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2576,
+        "completion_tokens": 98,
+        "total_tokens": 2674,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 96
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2320
+      }
+    },
+    {
+      "caseId": "membank-cn-p04-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2566,
+        "completion_tokens": 105,
+        "total_tokens": 2671,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 103
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2310
+      }
+    },
+    {
+      "caseId": "membank-cn-p04-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2557,
+        "completion_tokens": 102,
+        "total_tokens": 2659,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 100
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2301
+      }
+    },
+    {
+      "caseId": "membank-cn-p04-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2557,
+        "completion_tokens": 71,
+        "total_tokens": 2628,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 69
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 125
+      }
+    },
+    {
+      "caseId": "membank-cn-p04-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2568,
+        "completion_tokens": 147,
+        "total_tokens": 2715,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 145
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 136
+      }
+    },
+    {
+      "caseId": "membank-cn-p04-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2592,
+        "completion_tokens": 99,
+        "total_tokens": 2691,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 97
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 160
+      }
+    },
+    {
+      "caseId": "membank-cn-p02-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2601,
+        "completion_tokens": 63,
+        "total_tokens": 2664,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 61
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 169
+      }
+    },
+    {
+      "caseId": "membank-cn-p02-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2647,
+        "completion_tokens": 287,
+        "total_tokens": 2934,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 285
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 215
+      }
+    },
+    {
+      "caseId": "membank-cn-p02-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2586,
+        "completion_tokens": 90,
+        "total_tokens": 2676,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 88
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 154
+      }
+    },
+    {
+      "caseId": "membank-cn-p02-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2585,
+        "completion_tokens": 71,
+        "total_tokens": 2656,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 69
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 153
+      }
+    },
+    {
+      "caseId": "membank-cn-p02-q05",
+      "stored": true,
+      "rejudged": false,
+      "raw": "no",
+      "usage": {
+        "prompt_tokens": 2624,
+        "completion_tokens": 628,
+        "total_tokens": 3252,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 626
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2368
+      }
+    },
+    {
+      "caseId": "membank-cn-p02-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2604,
+        "completion_tokens": 128,
+        "total_tokens": 2732,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 126
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 172
+      }
+    },
+    {
+      "caseId": "membank-cn-p01-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3369,
+        "completion_tokens": 108,
+        "total_tokens": 3477,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 106
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3113
+      }
+    },
+    {
+      "caseId": "membank-cn-p01-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3410,
+        "completion_tokens": 93,
+        "total_tokens": 3503,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 91
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3154
+      }
+    },
+    {
+      "caseId": "membank-cn-p02-q06",
+      "stored": false,
+      "rejudged": false,
+      "raw": "no",
+      "usage": {
+        "prompt_tokens": 2609,
+        "completion_tokens": 593,
+        "total_tokens": 3202,
+        "prompt_tokens_details": {
+          "cached_tokens": 2560
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 591
+        },
+        "prompt_cache_hit_tokens": 2560,
+        "prompt_cache_miss_tokens": 49
+      }
+    },
+    {
+      "caseId": "membank-cn-p01-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3321,
+        "completion_tokens": 57,
+        "total_tokens": 3378,
+        "prompt_tokens_details": {
+          "cached_tokens": 3200
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 55
+        },
+        "prompt_cache_hit_tokens": 3200,
+        "prompt_cache_miss_tokens": 121
+      }
+    },
+    {
+      "caseId": "membank-cn-p01-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3342,
+        "completion_tokens": 25,
+        "total_tokens": 3367,
+        "prompt_tokens_details": {
+          "cached_tokens": 3200
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 23
+        },
+        "prompt_cache_hit_tokens": 3200,
+        "prompt_cache_miss_tokens": 142
+      }
+    },
+    {
+      "caseId": "membank-cn-p01-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3365,
+        "completion_tokens": 199,
+        "total_tokens": 3564,
+        "prompt_tokens_details": {
+          "cached_tokens": 3200
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 197
+        },
+        "prompt_cache_hit_tokens": 3200,
+        "prompt_cache_miss_tokens": 165
+      }
+    },
+    {
+      "caseId": "membank-cn-p01-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3339,
+        "completion_tokens": 63,
+        "total_tokens": 3402,
+        "prompt_tokens_details": {
+          "cached_tokens": 3200
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 61
+        },
+        "prompt_cache_hit_tokens": 3200,
+        "prompt_cache_miss_tokens": 139
+      }
+    },
+    {
+      "caseId": "membank-cn-p01-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3331,
+        "completion_tokens": 70,
+        "total_tokens": 3401,
+        "prompt_tokens_details": {
+          "cached_tokens": 3200
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 68
+        },
+        "prompt_cache_hit_tokens": 3200,
+        "prompt_cache_miss_tokens": 131
+      }
+    },
+    {
+      "caseId": "membank-cn-p06-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 1803,
+        "completion_tokens": 41,
+        "total_tokens": 1844,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 39
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 1547
+      }
+    },
+    {
+      "caseId": "membank-cn-p06-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 1811,
+        "completion_tokens": 102,
+        "total_tokens": 1913,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 100
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 1555
+      }
+    },
+    {
+      "caseId": "membank-cn-p06-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 1881,
+        "completion_tokens": 172,
+        "total_tokens": 2053,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 170
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 1625
+      }
+    },
+    {
+      "caseId": "membank-cn-p06-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 1863,
+        "completion_tokens": 129,
+        "total_tokens": 1992,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 127
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 1607
+      }
+    },
+    {
+      "caseId": "membank-cn-p06-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 1818,
+        "completion_tokens": 99,
+        "total_tokens": 1917,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 97
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 154
+      }
+    },
+    {
+      "caseId": "membank-cn-p06-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 1802,
+        "completion_tokens": 31,
+        "total_tokens": 1833,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 29
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 138
+      }
+    },
+    {
+      "caseId": "membank-cn-p06-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 1803,
+        "completion_tokens": 86,
+        "total_tokens": 1889,
+        "prompt_tokens_details": {
+          "cached_tokens": 1664
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 84
+        },
+        "prompt_cache_hit_tokens": 1664,
+        "prompt_cache_miss_tokens": 139
+      }
+    },
+    {
+      "caseId": "membank-cn-p05-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2551,
+        "completion_tokens": 121,
+        "total_tokens": 2672,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 119
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2295
+      }
+    },
+    {
+      "caseId": "membank-cn-p05-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2563,
+        "completion_tokens": 159,
+        "total_tokens": 2722,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 157
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2307
+      }
+    },
+    {
+      "caseId": "membank-cn-p05-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2563,
+        "completion_tokens": 213,
+        "total_tokens": 2776,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 211
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 131
+      }
+    },
+    {
+      "caseId": "membank-cn-p05-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2518,
+        "completion_tokens": 116,
+        "total_tokens": 2634,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 114
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 86
+      }
+    },
+    {
+      "caseId": "membank-cn-p05-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2507,
+        "completion_tokens": 118,
+        "total_tokens": 2625,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 116
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 75
+      }
+    },
+    {
+      "caseId": "membank-cn-p05-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2574,
+        "completion_tokens": 144,
+        "total_tokens": 2718,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 142
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 142
+      }
+    },
+    {
+      "caseId": "membank-cn-p05-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2570,
+        "completion_tokens": 154,
+        "total_tokens": 2724,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 152
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 138
+      }
+    },
+    {
+      "caseId": "membank-cn-p13-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3008,
+        "completion_tokens": 136,
+        "total_tokens": 3144,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 134
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2752
+      }
+    },
+    {
+      "caseId": "membank-cn-p13-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2975,
+        "completion_tokens": 132,
+        "total_tokens": 3107,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 130
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2719
+      }
+    },
+    {
+      "caseId": "membank-cn-p13-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2988,
+        "completion_tokens": 133,
+        "total_tokens": 3121,
+        "prompt_tokens_details": {
+          "cached_tokens": 2816
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 131
+        },
+        "prompt_cache_hit_tokens": 2816,
+        "prompt_cache_miss_tokens": 172
+      }
+    },
+    {
+      "caseId": "membank-cn-p13-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3008,
+        "completion_tokens": 187,
+        "total_tokens": 3195,
+        "prompt_tokens_details": {
+          "cached_tokens": 2816
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 185
+        },
+        "prompt_cache_hit_tokens": 2816,
+        "prompt_cache_miss_tokens": 192
+      }
+    },
+    {
+      "caseId": "membank-cn-p13-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2976,
+        "completion_tokens": 425,
+        "total_tokens": 3401,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 423
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2720
+      }
+    },
+    {
+      "caseId": "membank-cn-p13-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2984,
+        "completion_tokens": 161,
+        "total_tokens": 3145,
+        "prompt_tokens_details": {
+          "cached_tokens": 2816
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 159
+        },
+        "prompt_cache_hit_tokens": 2816,
+        "prompt_cache_miss_tokens": 168
+      }
+    },
+    {
+      "caseId": "membank-cn-p13-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3004,
+        "completion_tokens": 258,
+        "total_tokens": 3262,
+        "prompt_tokens_details": {
+          "cached_tokens": 2816
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 256
+        },
+        "prompt_cache_hit_tokens": 2816,
+        "prompt_cache_miss_tokens": 188
+      }
+    },
+    {
+      "caseId": "membank-cn-p03-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2498,
+        "completion_tokens": 74,
+        "total_tokens": 2572,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 72
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2242
+      }
+    },
+    {
+      "caseId": "membank-cn-p03-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2493,
+        "completion_tokens": 130,
+        "total_tokens": 2623,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 128
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2237
+      }
+    },
+    {
+      "caseId": "membank-cn-p03-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2495,
+        "completion_tokens": 355,
+        "total_tokens": 2850,
+        "prompt_tokens_details": {
+          "cached_tokens": 2304
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 353
+        },
+        "prompt_cache_hit_tokens": 2304,
+        "prompt_cache_miss_tokens": 191
+      }
+    },
+    {
+      "caseId": "membank-cn-p03-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2498,
+        "completion_tokens": 482,
+        "total_tokens": 2980,
+        "prompt_tokens_details": {
+          "cached_tokens": 2304
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 480
+        },
+        "prompt_cache_hit_tokens": 2304,
+        "prompt_cache_miss_tokens": 194
+      }
+    },
+    {
+      "caseId": "membank-cn-p03-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2488,
+        "completion_tokens": 177,
+        "total_tokens": 2665,
+        "prompt_tokens_details": {
+          "cached_tokens": 2304
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 175
+        },
+        "prompt_cache_hit_tokens": 2304,
+        "prompt_cache_miss_tokens": 184
+      }
+    },
+    {
+      "caseId": "membank-cn-p08-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3438,
+        "completion_tokens": 97,
+        "total_tokens": 3535,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 95
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3182
+      }
+    },
+    {
+      "caseId": "membank-cn-p08-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3423,
+        "completion_tokens": 84,
+        "total_tokens": 3507,
+        "prompt_tokens_details": {
+          "cached_tokens": 3328
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 82
+        },
+        "prompt_cache_hit_tokens": 3328,
+        "prompt_cache_miss_tokens": 95
+      }
+    },
+    {
+      "caseId": "membank-cn-p03-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2558,
+        "completion_tokens": 748,
+        "total_tokens": 3306,
+        "prompt_tokens_details": {
+          "cached_tokens": 2304
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 746
+        },
+        "prompt_cache_hit_tokens": 2304,
+        "prompt_cache_miss_tokens": 254
+      }
+    },
+    {
+      "caseId": "membank-cn-p08-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3407,
+        "completion_tokens": 87,
+        "total_tokens": 3494,
+        "prompt_tokens_details": {
+          "cached_tokens": 3328
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 85
+        },
+        "prompt_cache_hit_tokens": 3328,
+        "prompt_cache_miss_tokens": 79
+      }
+    },
+    {
+      "caseId": "membank-cn-p08-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3411,
+        "completion_tokens": 42,
+        "total_tokens": 3453,
+        "prompt_tokens_details": {
+          "cached_tokens": 3328
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 40
+        },
+        "prompt_cache_hit_tokens": 3328,
+        "prompt_cache_miss_tokens": 83
+      }
+    },
+    {
+      "caseId": "membank-cn-p08-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3405,
+        "completion_tokens": 86,
+        "total_tokens": 3491,
+        "prompt_tokens_details": {
+          "cached_tokens": 3328
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 84
+        },
+        "prompt_cache_hit_tokens": 3328,
+        "prompt_cache_miss_tokens": 77
+      }
+    },
+    {
+      "caseId": "membank-cn-p08-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3436,
+        "completion_tokens": 162,
+        "total_tokens": 3598,
+        "prompt_tokens_details": {
+          "cached_tokens": 3328
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 160
+        },
+        "prompt_cache_hit_tokens": 3328,
+        "prompt_cache_miss_tokens": 108
+      }
+    },
+    {
+      "caseId": "membank-cn-p08-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3438,
+        "completion_tokens": 108,
+        "total_tokens": 3546,
+        "prompt_tokens_details": {
+          "cached_tokens": 3328
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 106
+        },
+        "prompt_cache_hit_tokens": 3328,
+        "prompt_cache_miss_tokens": 110
+      }
+    },
+    {
+      "caseId": "membank-cn-p03-q04",
+      "stored": false,
+      "rejudged": false,
+      "raw": "no",
+      "usage": {
+        "prompt_tokens": 2541,
+        "completion_tokens": 873,
+        "total_tokens": 3414,
+        "prompt_tokens_details": {
+          "cached_tokens": 2304
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 871
+        },
+        "prompt_cache_hit_tokens": 2304,
+        "prompt_cache_miss_tokens": 237
+      }
+    },
+    {
+      "caseId": "membank-cn-p15-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2761,
+        "completion_tokens": 136,
+        "total_tokens": 2897,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 134
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2505
+      }
+    },
+    {
+      "caseId": "membank-cn-p15-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2721,
+        "completion_tokens": 114,
+        "total_tokens": 2835,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 112
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2465
+      }
+    },
+    {
+      "caseId": "membank-cn-p15-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2721,
+        "completion_tokens": 257,
+        "total_tokens": 2978,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 255
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2465
+      }
+    },
+    {
+      "caseId": "membank-cn-p15-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2717,
+        "completion_tokens": 42,
+        "total_tokens": 2759,
+        "prompt_tokens_details": {
+          "cached_tokens": 2560
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 40
+        },
+        "prompt_cache_hit_tokens": 2560,
+        "prompt_cache_miss_tokens": 157
+      }
+    },
+    {
+      "caseId": "membank-cn-p15-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2741,
+        "completion_tokens": 78,
+        "total_tokens": 2819,
+        "prompt_tokens_details": {
+          "cached_tokens": 2560
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 76
+        },
+        "prompt_cache_hit_tokens": 2560,
+        "prompt_cache_miss_tokens": 181
+      }
+    },
+    {
+      "caseId": "membank-cn-p15-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2729,
+        "completion_tokens": 141,
+        "total_tokens": 2870,
+        "prompt_tokens_details": {
+          "cached_tokens": 2560
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 139
+        },
+        "prompt_cache_hit_tokens": 2560,
+        "prompt_cache_miss_tokens": 169
+      }
+    },
+    {
+      "caseId": "membank-cn-p12-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2494,
+        "completion_tokens": 135,
+        "total_tokens": 2629,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 133
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2238
+      }
+    },
+    {
+      "caseId": "membank-cn-p12-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2498,
+        "completion_tokens": 121,
+        "total_tokens": 2619,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 119
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2242
+      }
+    },
+    {
+      "caseId": "membank-cn-p12-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2490,
+        "completion_tokens": 138,
+        "total_tokens": 2628,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 136
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 58
+      }
+    },
+    {
+      "caseId": "membank-cn-p12-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2493,
+        "completion_tokens": 75,
+        "total_tokens": 2568,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 73
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 61
+      }
+    },
+    {
+      "caseId": "membank-cn-p12-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2509,
+        "completion_tokens": 212,
+        "total_tokens": 2721,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 210
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 77
+      }
+    },
+    {
+      "caseId": "membank-cn-p14-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3506,
+        "completion_tokens": 156,
+        "total_tokens": 3662,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 154
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3250
+      }
+    },
+    {
+      "caseId": "membank-cn-p14-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3490,
+        "completion_tokens": 188,
+        "total_tokens": 3678,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 186
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3234
+      }
+    },
+    {
+      "caseId": "membank-cn-p14-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3493,
+        "completion_tokens": 66,
+        "total_tokens": 3559,
+        "prompt_tokens_details": {
+          "cached_tokens": 3328
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 64
+        },
+        "prompt_cache_hit_tokens": 3328,
+        "prompt_cache_miss_tokens": 165
+      }
+    },
+    {
+      "caseId": "membank-cn-p14-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3541,
+        "completion_tokens": 147,
+        "total_tokens": 3688,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 145
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 3285
+      }
+    },
+    {
+      "caseId": "membank-cn-p10-q06",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2603,
+        "completion_tokens": 72,
+        "total_tokens": 2675,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 70
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2347
+      }
+    },
+    {
+      "caseId": "membank-cn-p14-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 3592,
+        "completion_tokens": 262,
+        "total_tokens": 3854,
+        "prompt_tokens_details": {
+          "cached_tokens": 3328
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 260
+        },
+        "prompt_cache_hit_tokens": 3328,
+        "prompt_cache_miss_tokens": 264
+      }
+    },
+    {
+      "caseId": "membank-cn-p10-q05",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2581,
+        "completion_tokens": 53,
+        "total_tokens": 2634,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 51
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 149
+      }
+    },
+    {
+      "caseId": "membank-cn-p10-q02",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2567,
+        "completion_tokens": 112,
+        "total_tokens": 2679,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 110
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2311
+      }
+    },
+    {
+      "caseId": "membank-cn-p10-q07",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2628,
+        "completion_tokens": 252,
+        "total_tokens": 2880,
+        "prompt_tokens_details": {
+          "cached_tokens": 256
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 250
+        },
+        "prompt_cache_hit_tokens": 256,
+        "prompt_cache_miss_tokens": 2372
+      }
+    },
+    {
+      "caseId": "membank-cn-p10-q01",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2576,
+        "completion_tokens": 83,
+        "total_tokens": 2659,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 81
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 144
+      }
+    },
+    {
+      "caseId": "membank-cn-p10-q04",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2579,
+        "completion_tokens": 100,
+        "total_tokens": 2679,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 98
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 147
+      }
+    },
+    {
+      "caseId": "membank-cn-p10-q03",
+      "stored": true,
+      "rejudged": true,
+      "raw": "yes",
+      "usage": {
+        "prompt_tokens": 2607,
+        "completion_tokens": 276,
+        "total_tokens": 2883,
+        "prompt_tokens_details": {
+          "cached_tokens": 2432
+        },
+        "completion_tokens_details": {
+          "reasoning_tokens": 274
+        },
+        "prompt_cache_hit_tokens": 2432,
+        "prompt_cache_miss_tokens": 175
+      }
+    }
+  ]
+}

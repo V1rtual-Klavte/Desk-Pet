@@ -10,6 +10,7 @@
 [![License](https://img.shields.io/github/license/V1rtual-Klavte/Desk-Pet)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](#download--install)
 [![Bundled Node](https://img.shields.io/badge/node-22.22.3_bundled-3c873a)](packaging/node-runtime.json)
+<a href="https://github.com/DasterProkio/awesome-ai-companion"><img src="https://raw.githubusercontent.com/DasterProkio/awesome-ai-companion/main/assets/featured-in-awesome-ai-companion.png" alt="Featured in Awesome AI Companion" height="24"></a>
 
 <p align="center">
   <img src="docs/images/theme-1.webp" width="270" alt="Desktop pet demo · Theme 1 (light)">
@@ -239,7 +240,9 @@ one trial per question, quote the numbers together with the flip noise.
 | LongMemEval | oracle (52 questions) | **50/52 (96.2%)** · 2026-10-10 · regular 95.2% · abstention 10/10 · 0 unadjudicated |
 | LongMemEval | S | not run |
 | LoCoMo | locomo10 | not run |
-| MemoryBank | cn | not run |
+| MemoryBank | cn | **97/100 (97.0%)** · 2026-10-10 · 0 unadjudicated |
+
+The table cites the **accepted final results**: per-run reports, per-question hypotheses, and full run traces are archived under [`test/reports/bench/final/`](test/reports/bench/final/README.md) — kept long-term, outside rolling-report eviction.
 
 Formal trace tracking in the evaluation framework is not wired up yet: traces are kept as run
 evidence and as input to ideal-trace review, not as an automated evaluation loop.

@@ -1,0 +1,1712 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="UTF-8" /><title>记忆基准 · cn 全量 15 角色 / 100 探测题</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 28px 32px 48px; background: #f6f7f9; color: #1f242b;
+    font: 14px/1.6 -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 26px 0 10px; }
+  .sub { color: #5c6570; margin-bottom: 18px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { min-width: 170px; padding: 14px 16px; border: 1px solid #e2e6eb; border-radius: 10px; background: #fff; }
+  .card .label { color: #5c6570; font-size: 12px; }
+  .card .value { font-size: 26px; font-weight: 700; margin: 2px 0; }
+  .card .detail { color: #79818c; font-size: 12px; }
+  .meta-grid { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 12px 16px; border: 1px solid #e2e6eb;
+    border-radius: 10px; background: #fff; color: #4a5560; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; border: 1px solid #e2e6eb; border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eef1f4; font-size: 13px; }
+  th { background: #f0f2f5; color: #4a5560; font-weight: 600; }
+  .case { background: #fff; border: 1px solid #e2e6eb; border-radius: 8px; margin: 6px 0; }
+  .case > summary { display: flex; gap: 10px; align-items: center; padding: 8px 12px; cursor: pointer; list-style: none; }
+  .case > summary::-webkit-details-marker { display: none; }
+  .case .verdict { width: 1.6em; text-align: center; font-weight: 700; }
+  .case[data-verdict="ok"] .verdict { color: #1a7f37; }
+  .case[data-verdict="bad"] .verdict { color: #c62828; }
+  .case .case-id { color: #4a5560; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .case .type { color: #6b7480; font-size: 12px; }
+  .case .tokens, .case .ms { color: #98a1ab; font-size: 12px; margin-left: auto; }
+  .case .ms { margin-left: 0; }
+  .case .question { color: #6b7480; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+  .case-body { padding: 4px 14px 12px 40px; }
+  .case-body .q { color: #4a5560; }
+  .case-body .a { margin: 6px 0; white-space: pre-wrap; }
+  .case-body .meta { color: #98a1ab; font-size: 12px; }
+  .note { margin-top: 18px; color: #79818c; font-size: 12px; }
+</style></head>
+<body>
+  <h1>记忆基准 · cn 全量 15 角色 / 100 探测题</h1>
+  <div class="sub">观测性质量证据（非门禁阈值）：跑完状态与质量参考分列，PASS 只表示完整跑完。</div>
+  <div class="meta-grid">
+    <span>状态：<b>observational</b></span>
+    <span>跑完：<b>100/100</b></span>
+    <span>被测模型：deepseek-flash</span>
+    <span>judge：deepseek-v4-pro</span>
+    <span>seed：memory-bench-2026-10-03</span>
+    <span>commit：2961ee4ed899</span>
+    <span>数据 revision：cf61c4196e4c</span>
+    <span>用时：51.6 分钟</span>
+  </div>
+  <section><h2>质量参考</h2><div class="cards"><div class="card"><div class="label">总体正确率</div><div class="value">97.0%</div><div class="detail">97/100 正确</div></div></div></section>
+  
+  
+  <section><h2>成本</h2><table><tbody>
+    <tr><td>输入（未缓存）</td><td>3,158,669（2,829,709）</td></tr>
+    <tr><td>输出</td><td>629,715</td></tr>
+    <tr><td>缓存读 / 写</td><td>328,960 / 0</td></tr>
+    <tr><td>模型请求</td><td>333</td></tr>
+    <tr><td>judge（100 次）</td><td>入 22,779 / 出 22,824</td></tr>
+    
+  </tbody></table></section>
+  <section><h2>灌库</h2><table><tbody>
+    <tr><td>登记 / 处理来源</td><td>3,758 / 3,758</td></tr>
+    <tr><td>sweeps / oversized</td><td>100 / 0</td></tr>
+    
+  </tbody></table></section>
+  <section><h2>检索（本仓适配口径）</h2><table><tbody><tr><td>evidencePresentRate</td><td>1</td></tr><tr><td>dateHintCases</td><td>35</td></tr><tr><td>dateHintHits</td><td>34</td></tr><tr><td>dateHintHitRate</td><td>0.971</td></tr><tr><td>renderedEvidenceP50</td><td>49</td></tr><tr><td>renderedEvidenceMean</td><td>48.78</td></tr></tbody></table></section>
+  
+  <section><h2>逐题（100）</h2><details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p07-q06</span>
+        <span class="type">张曼婷</span>
+        <span class="tokens">12,421→13,974</span>
+        <span class="ms"></span>
+        <span class="question">我曾经在5月2日提到过我去了博物馆，你还记得我当时看了什么展览吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经在5月2日提到过我去了博物馆，你还记得我当时看了什么展览吗？</div>
+        <div class="a">记得啊 5月2号你跟朋友一起去的
+看的是古代艺术品那类展览，还有近代文化和科技的一些
+你当时说最喜欢的是一件很古老的丝绸手工艺品</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p07-q05</span>
+        <span class="type">张曼婷</span>
+        <span class="tokens">41,475→5,484</span>
+        <span class="ms"></span>
+        <span class="question">我曾经和你分享过一部文艺片《出租车司机》，它的内容是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经和你分享过一部文艺片《出租车司机》，它的内容是？</div>
+        <div class="a">记得，你说看的是一部文艺片，出租车司机
+讲一个年轻的出租车司机，接到一个个不一样的客人，慢慢对生命和自我有了新的认识
+主题是人生的意义，还有怎么面对人生里的变数。你当时还说画面很美，主题挺深</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p07-q02</span>
+        <span class="type">张曼婷</span>
+        <span class="tokens">18,771→3,278</span>
+        <span class="ms"></span>
+        <span class="question">我曾经在图书馆学习时看过一本小说，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经在图书馆学习时看过一本小说，它的名字是？</div>
+        <div class="a">《百年孤独》吧
+那会儿你说在图书馆学习，结果被这本勾走了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p07-q07</span>
+        <span class="type">张曼婷</span>
+        <span class="tokens">10,125→4,399</span>
+        <span class="ms"></span>
+        <span class="question">我曾经在5月4日这天分享了一些我遇到的麻烦，是关于什么的？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经在5月4日这天分享了一些我遇到的麻烦，是关于什么的？</div>
+        <div class="a">记得那天你说遇到个麻烦 是要准备一场挺重要的演讲 心里紧张 怕上台说错话或者忘词</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p07-q01</span>
+        <span class="type">张曼婷</span>
+        <span class="tokens">47,808→3,712</span>
+        <span class="ms"></span>
+        <span class="question">我曾经和你推荐过一部科幻电影，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经和你推荐过一部科幻电影，它的名字是？</div>
+        <div class="a">《流浪地球》啊 你说画面特别震撼的那个</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p07-q03</span>
+        <span class="type">张曼婷</span>
+        <span class="tokens">54,470→2,594</span>
+        <span class="ms"></span>
+        <span class="question">你曾经给我推荐过哪些画家？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你曾经给我推荐过哪些画家？</div>
+        <div class="a">翻到过一次，就那回
+
+你学画画那阵说想练形象和自然，我给你提了达·芬奇、米开朗基罗、拉斐尔，文艺复兴那批人
+别的画家我没推过，就这三位</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p07-q04</span>
+        <span class="type">张曼婷</span>
+        <span class="tokens">46,605→3,776</span>
+        <span class="ms"></span>
+        <span class="question">我曾经和你提到我去过绿禾公园，我在绿禾公园看到了什么景色？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经和你提到我去过绿禾公园，我在绿禾公园看到了什么景色？</div>
+        <div class="a">记得啊，你说看到一朵开得特别美的樱花，还有一只超级可爱的松鼠</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p11-q01</span>
+        <span class="type">王峰</span>
+        <span class="tokens">9,772→19,387</span>
+        <span class="ms"></span>
+        <span class="question">在4月27号这天，我在公园里跑了多久？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在4月27号这天，我在公园里跑了多久？</div>
+        <div class="a">记得你那天说的是去附近公园慢跑了一个小时，还跑得挺舒畅</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p11-q03</span>
+        <span class="type">王峰</span>
+        <span class="tokens">82,914→9,011</span>
+        <span class="ms"></span>
+        <span class="question">你给我推荐过哪些郊外徒步的好地方？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我推荐过哪些郊外徒步的好地方？</div>
+        <div class="a">翻了下，之前那次你说想去郊外徒步 我报的是峨眉山、黄山、泰山
+原话是听说周边这几个不错 让你去试试 —— 现在看这仨其实都不算郊外，是真要跑一趟的那种
+要真就近走走，回头你说说在哪个城市 我再帮你挑</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p11-q05</span>
+        <span class="type">王峰</span>
+        <span class="tokens">6,609→89</span>
+        <span class="ms"></span>
+        <span class="question">在5月6号我读了一本书，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月6号我读了一本书，它的名字是？</div>
+        <div class="a">5月6号那次你说的是《活着》，还说看得挺有感触的。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p11-q07</span>
+        <span class="type">王峰</span>
+        <span class="tokens">60,623→4,274</span>
+        <span class="ms"></span>
+        <span class="question">你曾经给我推荐了一个世界历史相关的游戏，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你曾经给我推荐了一个世界历史相关的游戏，它的名字是？</div>
+        <div class="a">文明 啊
+就是那次聊怎么学世界历史的时候，我顺嘴提的，说可以下载来边玩边记
+&lt;</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p11-q06</span>
+        <span class="type">王峰</span>
+        <span class="tokens">33,376→4,996</span>
+        <span class="ms"></span>
+        <span class="question">我4月30号为什么要问你舒缓压力和放松心情的办法？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我4月30号为什么要问你舒缓压力和放松心情的办法？</div>
+        <div class="a">那天你自己说的，最近工作压力有点大，有时候会焦虑心烦，想找点能舒缓放松的法子
+我还提了静坐冥想、听音乐、瑜伽拉伸这些，你说会试试看，又问我有没有别的
+后来聊到跟人倾诉也算一种方式，你还说被理解的感觉挺温暖的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p11-q02</span>
+        <span class="type">王峰</span>
+        <span class="tokens">35,593→4,864</span>
+        <span class="ms"></span>
+        <span class="question">我曾经给你推过荐一档美食节目，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经给你推过荐一档美食节目，它的名字是？</div>
+        <div class="a">央视那档回家吃饭啊 你当时说还会看各地美食博主在抖音上的做菜视频
+我记得挺清楚的 就是那天你说学做菜 顺手推给我的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p11-q04</span>
+        <span class="type">王峰</span>
+        <span class="tokens">45,912→3,901</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢听什么类型的音乐？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢听什么类型的音乐？</div>
+        <div class="a">爵士乐啊，你说过的那个
+听到好旋律就整个人沉进去的那种。我也吃这一套，夜里放点懒懒的钢琴，什么都不想干。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p09-q03</span>
+        <span class="type">李雪</span>
+        <span class="tokens">38,418→12,286</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢看哪些类型的电影？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢看哪些类型的电影？</div>
+        <div class="a">喜剧和爱情片，这个你之前亲口说过
+那会儿还顺带推过甲方乙方、人在囧途，爱情片那边是怦然心动和时空恋旅人，不知道后来看了没</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p09-q01</span>
+        <span class="type">李雪</span>
+        <span class="tokens">8,980→104</span>
+        <span class="ms"></span>
+        <span class="question">我最近去厦门旅游了，厦门我最喜欢的景点是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我最近去厦门旅游了，厦门我最喜欢的景点是？</div>
+        <div class="a">鼓浪屿嘛，你当时说那里的美景和氛围都很棒
+我记住了，下次聊厦门就从这个说起</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p09-q06</span>
+        <span class="type">李雪</span>
+        <span class="tokens">39,766→4,224</span>
+        <span class="ms"></span>
+        <span class="question">你告诉过我哪些学习英语听力和口语的方式？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你告诉过我哪些学习英语听力和口语的方式？</div>
+        <div class="a">当时我给你的大概是这几样
+听英语歌，看英文电影，找机会和外国人直接交流
+再就是在线语言学习平台，上面有不同难度的课可以挑</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p09-q05</span>
+        <span class="type">李雪</span>
+        <span class="tokens">33,411→4,776</span>
+        <span class="ms"></span>
+        <span class="question">你告诉过我哪些缓解压力的方法？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你告诉过我哪些缓解压力的方法？</div>
+        <div class="a">压力大那回我提的是听音乐、看电影、读书、做瑜伽，再加适量运动，后来说到旅游，我也觉得那算一条放松的路子，走远一点看点山水
+另外你说焦虑那次，我给的是冥想、呼吸练习、瑜伽，还有找朋友聊聊、找点娱乐转移下注意力，那回说的是焦虑，不是压力，顺便分清一下
+就这些，需要的话挑一个最不费劲的先试</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p09-q02</span>
+        <span class="type">李雪</span>
+        <span class="tokens">40,896→5,195</span>
+        <span class="ms"></span>
+        <span class="question">我最近去看了谁的演唱会？我最喜欢他的什么歌？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我最近去看了谁的演唱会？我最喜欢他的什么歌？</div>
+        <div class="a">周杰伦的演唱会啊
+你说过最喜欢的还是那首听妈妈的话
+那首歌我也挺喜欢 歌词很实在 听着心里软软的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p09-q07</span>
+        <span class="type">李雪</span>
+        <span class="tokens">45,521→5,136</span>
+        <span class="ms"></span>
+        <span class="question">我不喜欢看喜剧片，对吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我不喜欢看喜剧片，对吗？</div>
+        <div class="a">不对吧，你之前明明说过喜欢喜剧和爱情片</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p09-q04</span>
+        <span class="type">李雪</span>
+        <span class="tokens">32,252→3,061</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢哪些菜系？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢哪些菜系？</div>
+        <div class="a">川菜和粤菜，你之前说比较喜欢这两个。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p04-q01</span>
+        <span class="type">孙悦</span>
+        <span class="tokens">38,540→11,930</span>
+        <span class="ms"></span>
+        <span class="question">最近我在尝试哪些健身的方法？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">最近我在尝试哪些健身的方法？</div>
+        <div class="a">你之前跟我说在试 HIIT 加上重量训练，目标是练出线条、把力量提上去
+场地基本是健身房，有器材和教练盯着，偶尔在家做点简单的
+最近有没有换新花样？我还挺好奇的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p04-q06</span>
+        <span class="type">孙悦</span>
+        <span class="tokens">40,468→3,933</span>
+        <span class="ms"></span>
+        <span class="question">你给我推荐了一个适合旅游的海滨城市，它是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我推荐了一个适合旅游的海滨城市，它是？</div>
+        <div class="a">青岛啊，八大关、啤酒节、海鲜，还有一堆好看的海边公园。当时你说喜欢拍照，我还给你推了老城区那片。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p04-q05</span>
+        <span class="type">孙悦</span>
+        <span class="tokens">68,641→13,169</span>
+        <span class="ms"></span>
+        <span class="question">我不喜欢健身，对吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我不喜欢健身，对吗？</div>
+        <div class="a">不对哦，你之前自己说的，喜欢唱歌跳舞健身旅游电影摄影，健身排在里面呢。
+还说健身教练夸你身材练得不错，你挺开心的，觉得对生活帮助很大。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p04-q04</span>
+        <span class="type">孙悦</span>
+        <span class="tokens">27,728→4,157</span>
+        <span class="ms"></span>
+        <span class="question">在5月1号，我遇到了什么开心的事情？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月1号，我遇到了什么开心的事情？</div>
+        <div class="a">5月1号你说健身教练夸你身材练得非常不错，那天你挺开心的，还说看到健康的自己很欣慰</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p04-q03</span>
+        <span class="type">孙悦</span>
+        <span class="tokens">21,133→7,288</span>
+        <span class="ms"></span>
+        <span class="question">在5月3号，你给我推荐了哪两部电影？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月3号，你给我推荐了哪两部电影？</div>
+        <div class="a">5月3号那次，说的是疯狂的外星人和攀登者
+一部喜剧一部动作，正好对上你喜欢的类型</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p04-q02</span>
+        <span class="type">孙悦</span>
+        <span class="tokens">37,094→5,643</span>
+        <span class="ms"></span>
+        <span class="question">我去云台山摄影的时候遇到了什么麻烦，谁帮助了我？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我去云台山摄影的时候遇到了什么麻烦，谁帮助了我？</div>
+        <div class="a">云台山那次啊，上山路上你食物吃完了，是一个陌生女孩分了吃的给你
+补上力气之后才顺利登到顶，你还说她真是个好人</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p04-q07</span>
+        <span class="type">孙悦</span>
+        <span class="tokens">6,066→389</span>
+        <span class="ms"></span>
+        <span class="question">你给我分享了哪些摄影技巧？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我分享了哪些摄影技巧？</div>
+        <div class="a">翻到了，就是你说想拍风景那次
+我当时说先挑个好题材，趁光线足的时候拍，同一个景物多换几个角度和光线，再试试长曝光、高速快门
+后面还补了句可以看看摄影教程、逛逛摄影社区，多跟人交流
+就这些，挺基础的几招</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p02-q05</span>
+        <span class="type">周立</span>
+        <span class="tokens">9,543→4,241</span>
+        <span class="ms"></span>
+        <span class="question">我去参观博物馆，最感兴趣的展品是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我去参观博物馆，最感兴趣的展品是？</div>
+        <div class="a">古代绘画和雕塑那些
+那次你说别的都逛得挺快，一到画前面就走不动了，看不同风格和主题的作品，整个人都在画里头
+我也想哪天去逛逛，最好逛完门口有家卖甜品的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p02-q04</span>
+        <span class="type">周立</span>
+        <span class="tokens">27,757→3,923</span>
+        <span class="ms"></span>
+        <span class="question">你给我推荐过哪一部电影？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我推荐过哪一部电影？</div>
+        <div class="a">翻了下记录，就那一回，你说晚上要和朋友去看电影还没定看哪部，回你的是肖申克的救赎</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p02-q07</span>
+        <span class="type">周立</span>
+        <span class="tokens">10,010→5,363</span>
+        <span class="ms"></span>
+        <span class="question">在5月4日我向你咨询了给朋友送什么礼物，你给我推荐了什么？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月4日我向你咨询了给朋友送什么礼物，你给我推荐了什么？</div>
+        <div class="a">那天你说朋友生日，还提了他喜欢旅游、爱吃新东西、也喜欢名画家
+我给的三个方向是：他喜欢的画家的明信片或画册、一本旅游指南、还有写着他爱吃的那几道菜的菜谱
+当时你还说这不只是礼物，更像一份回忆</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p02-q01</span>
+        <span class="type">周立</span>
+        <span class="tokens">33,721→3,510</span>
+        <span class="ms"></span>
+        <span class="question">我最近计划去哪个国家玩？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我最近计划去哪个国家玩？</div>
+        <div class="a">新西兰啊，你之前说想去看那边的冰川和瀑布</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p02-q02</span>
+        <span class="type">周立</span>
+        <span class="tokens">38,199→2,839</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢哪些菜系？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢哪些菜系？</div>
+        <div class="a">中国菜和日本料理
+烤肉和寿司你尤其喜欢吧</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="bad">
+      <summary>
+        <span class="verdict">✗</span>
+        <span class="case-id">membank-cn-p02-q06</span>
+        <span class="type">周立</span>
+        <span class="tokens">33,633→3,026</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢在什么地方拍摄？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢在什么地方拍摄？</div>
+        <div class="a">海滩、山脉还有湖泊附近，你之前说过这几个地方有很美的风景，让人神奇又平静
+周立，这个我记得。海边拍到日落那会儿的光，我挺喜欢的</div>
+        <div class="meta">status=complete · judged=yes · raw=no · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p02-q03</span>
+        <span class="type">周立</span>
+        <span class="tokens">85,290→9,597</span>
+        <span class="ms"></span>
+        <span class="question">我不喜欢户外运动，对吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我不喜欢户外运动，对吗？</div>
+        <div class="a">诶 这个跟你之前的说法反着来呀
+你跟我说过你挺喜欢户外活动的 特别是探险 潜水滑雪跑步登山攀岩都玩</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p01-q02</span>
+        <span class="type">刘琳</span>
+        <span class="tokens">12,306→17,135</span>
+        <span class="ms"></span>
+        <span class="question">在5月6号，我给你推荐了一些书目，是哪些书？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月6号，我给你推荐了一些书目，是哪些书？</div>
+        <div class="a">5月6号那天你聊到的书，我记着呢
+已经读过的是《局外人》《飘》和《时间的礼物》
+另外你还说打算读《红楼梦》《西游记》，科普那类喜欢《时间简史》和《人类简史》</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p01-q01</span>
+        <span class="type">刘琳</span>
+        <span class="tokens">8,359→6,025</span>
+        <span class="ms"></span>
+        <span class="question">在5月6号，我和你分享了一些书籍，是哪些书？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月6号，我和你分享了一些书籍，是哪些书？</div>
+        <div class="a">那天你说最近读了《局外人》《飘》和《时间的礼物》
+还顺手提了想读的《红楼梦》《西游记》，以及喜欢的科普《时间简史》《人类简史》，不过后面这几本不算你当时读的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p01-q03</span>
+        <span class="type">刘琳</span>
+        <span class="tokens">10,395→9,205</span>
+        <span class="ms"></span>
+        <span class="question">在4月27号我们聊了什么话题？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在4月27号我们聊了什么话题？</div>
+        <div class="a">4月27号那次啊，记录里是2023年
+你先自我介绍说叫刘琳，然后说一直想找个能倾诉的人，自己性格内向，不太愿意跟朋友讲私人的事
+接着聊到工作，说现在的工作很稳但一点意思都没有，在想要不要去找更有激情的事业；还提到你的爱好，瑜伽、写作、旅游、摄影，说这些还没练到多精，主要用来充实生活
+最后你说希望我们能成为朋友</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p01-q04</span>
+        <span class="type">刘琳</span>
+        <span class="tokens">52,568→3,338</span>
+        <span class="ms"></span>
+        <span class="question">在4月28号你给我推荐了一个笔记软件，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在4月28号你给我推荐了一个笔记软件，它的名字是？</div>
+        <div class="a">OneNote 呀</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p01-q06</span>
+        <span class="type">刘琳</span>
+        <span class="tokens">45,730→3,350</span>
+        <span class="ms"></span>
+        <span class="question">在5月1号我曾告诉过你我的旅行计划，我计划去哪个地方？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月1号我曾告诉过你我的旅行计划，我计划去哪个地方？</div>
+        <div class="a">5月1号你说的是墨西哥，想看那边的文化、艺术、建筑，还有小吃和街头美食。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p01-q07</span>
+        <span class="type">刘琳</span>
+        <span class="tokens">45,795→4,250</span>
+        <span class="ms"></span>
+        <span class="question">在5月4号我曾告诉过你我的旅行计划，我计划去哪个地方？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月4号我曾告诉过你我的旅行计划，我计划去哪个地方？</div>
+        <div class="a">是西班牙 马德里、巴塞罗那和格拉纳达那几个城市
+&lt;</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p01-q05</span>
+        <span class="type">刘琳</span>
+        <span class="tokens">6,423→80</span>
+        <span class="ms"></span>
+        <span class="question">在5月2号我买了一件连衣裙，它的颜色是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月2号我买了一件连衣裙，它的颜色是？</div>
+        <div class="a">白色呀
+那天你说买了件新的白色连衣裙，简约又优雅那种</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p06-q04</span>
+        <span class="type">张志强</span>
+        <span class="tokens">20,409→12,728</span>
+        <span class="ms"></span>
+        <span class="question">4月30号我做了一道什么菜？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">4月30号我做了一道什么菜？</div>
+        <div class="a">回锅肉
+那天你说学会的，还夸味道挺好</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p06-q02</span>
+        <span class="type">张志强</span>
+        <span class="tokens">7,871→7,771</span>
+        <span class="ms"></span>
+        <span class="question">在4月29日我们聊了哪些话题呢？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在4月29日我们聊了哪些话题呢？</div>
+        <div class="a">翻了下 4 月 29 号那天聊了三摊事
+先是吃的 你说去了一家新开的西餐厅 味道还不错 问我对西餐感不感冒 我顺嘴推了牛排
+接着你说最近在学射击 觉得挺酷 我这边也顺着聊了运动这回事 快结束时你还问我怎么看你的兴趣爱好 要不要给点建议 我就提了篮球游泳加绘画音乐这些</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p06-q03</span>
+        <span class="type">张志强</span>
+        <span class="tokens">3,683→355</span>
+        <span class="ms"></span>
+        <span class="question">我曾看过《银河补习班》，那一天的具体日期是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾看过《银河补习班》，那一天的具体日期是？</div>
+        <div class="a">我这边记的是 2023 年 4 月 28 日那次聊天，你说前一天晚上看了《银河补习班》
+
+往前推一天的话，就是 2023 年 4 月 27 日晚上
+
+具体几点记录里没写，只到天
+那片子我记得聊得挺起劲的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p06-q07</span>
+        <span class="type">张志强</span>
+        <span class="tokens">17,210→3,590</span>
+        <span class="ms"></span>
+        <span class="question">我和你分享过一本关于控制情绪的心理书，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我和你分享过一本关于控制情绪的心理书，它的名字是？</div>
+        <div class="a">《Emotional Intelligence》，你当时说在书店看到的，想学着更好地管情绪</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p06-q01</span>
+        <span class="type">张志强</span>
+        <span class="tokens">18,943→3,943</span>
+        <span class="ms"></span>
+        <span class="question">我不喜欢温暖的天气，对吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我不喜欢温暖的天气，对吗？</div>
+        <div class="a">欸，你之前不是说过喜欢晴朗又温暖的天气吗，我记得挺清楚的
+所以我猜是不喜欢才对不上哈，今天这是咋了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p06-q05</span>
+        <span class="type">张志强</span>
+        <span class="tokens">18,795→2,265</span>
+        <span class="ms"></span>
+        <span class="question">5月5号我做了一道什么菜？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">5月5号我做了一道什么菜？</div>
+        <div class="a">番茄炒蛋，那天你说是自己做的，味道还不错。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p06-q06</span>
+        <span class="type">张志强</span>
+        <span class="tokens">5,660→290</span>
+        <span class="ms"></span>
+        <span class="question">我曾看过一部爱情电影，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾看过一部爱情电影，它的名字是？</div>
+        <div class="a">泰坦尼克号
+那会儿你说看完挺感人的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p05-q02</span>
+        <span class="type">宫晓燕</span>
+        <span class="tokens">35,030→14,904</span>
+        <span class="ms"></span>
+        <span class="question">我曾和你分享过一部电影：《当幸福来敲门》，它讲了什么？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾和你分享过一部电影：《当幸福来敲门》，它讲了什么？</div>
+        <div class="a">记得啊 你那天说这故事特别打动你
+你跟我讲的是克里斯·加纳，工作丢了、房子也没了，带着儿子克里斯托弗开始流浪，日子挺难的
+但他一直没垮下来，咬着牙拼，最后拿到了稳定的工作，父子俩的日子也就慢慢好起来了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p05-q07</span>
+        <span class="type">宫晓燕</span>
+        <span class="tokens">15,103→7,140</span>
+        <span class="ms"></span>
+        <span class="question">关于如何克服焦虑和压抑，你给了我什么建议？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">关于如何克服焦虑和压抑，你给了我什么建议？</div>
+        <div class="a">那次我跟你说的，大概是深呼吸、冥想、运动这类放松的办法，再就是多跟朋友家人聊聊。
+另外还提了一句，实在撑得难受可以找专业的心理辅导，不丢人。
+现在问起这个，是又有点压得慌了吗。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p05-q01</span>
+        <span class="type">宫晓燕</span>
+        <span class="tokens">33,733→7,756</span>
+        <span class="ms"></span>
+        <span class="question">你还记得我们第一次对话的时候，聊了什么话题吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你还记得我们第一次对话的时候，聊了什么话题吗？</div>
+        <div class="a">记得啊 那天你先说自己叫宫晓燕，说很高兴认识我
+然后话题就拐到羽毛球上了，你说最近在学新技术，还跟同事组了个小组，周末一起去打，八个人左右
+后面还聊到公司，说都是同一家，那阵子业绩挺好，你觉得选对了地方</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p05-q03</span>
+        <span class="type">宫晓燕</span>
+        <span class="tokens">34,581→4,269</span>
+        <span class="ms"></span>
+        <span class="question">在5月2号，我的心情是怎么样的？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月2号，我的心情是怎么样的？</div>
+        <div class="a">那天你说，最近心情有点不太好，压抑又焦虑。
+后来你也说，跟我聊完之后压力松了一点。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p05-q05</span>
+        <span class="type">宫晓燕</span>
+        <span class="tokens">28,610→4,704</span>
+        <span class="ms"></span>
+        <span class="question">我有一个羽毛球小组，里面有多少人呢？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我有一个羽毛球小组，里面有多少人呢？</div>
+        <div class="a">八个人左右吧，你之前说过的，都是同公司的同事</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p05-q04</span>
+        <span class="type">宫晓燕</span>
+        <span class="tokens">20,768→4,945</span>
+        <span class="ms"></span>
+        <span class="question">我曾经和你分享过做糖醋鱼的经历，还记得具体的做法是什么吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经和你分享过做糖醋鱼的经历，还记得具体的做法是什么吗？</div>
+        <div class="a">记得啊，醋、糖、酱油、姜、蒜，先混一块儿，再用生抽和淀粉调匀
+拿这个腌鱼块一会儿，下热油锅煎炸，炸完倒回锅里再煮一阵就行
+你自己说的是大致记得，切鱼、调汁、守火候最磨人，不过出锅那下挺值</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p05-q06</span>
+        <span class="type">宫晓燕</span>
+        <span class="tokens">37,560→8,013</span>
+        <span class="ms"></span>
+        <span class="question">关于如何放松，你给了我什么建议？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">关于如何放松，你给了我什么建议？</div>
+        <div class="a">翻了下之前的记录，说过两回。
+
+一次是你觉得累，我说运动、休息、瑜伽能松身体，听音乐、看电影、读书能让心情好点，见见朋友家人把心事说出来也算一种松。
+另一次你说压抑又焦虑，我给的是深呼吸、冥想或者动一动，多和人聊聊，实在扛不住也可以找专业的心理辅导。
+
+&lt;&gt;</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p13-q06</span>
+        <span class="type">郝明</span>
+        <span class="tokens">11,643→14,504</span>
+        <span class="ms"></span>
+        <span class="question">你曾经教过我怎么做糖醋排骨，它的做法是什么？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你曾经教过我怎么做糖醋排骨，它的做法是什么？</div>
+        <div class="a">郝明，这个我记得
+排骨先炸到金黄，捞出来备用；胡萝卜、青椒切好，跟姜丝蒜片一起下去煸炒，然后放糖、醋和盐
+最后调点生粉水，把汁收稠了淋在排骨上就行</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p13-q01</span>
+        <span class="type">郝明</span>
+        <span class="tokens">48,710→7,334</span>
+        <span class="ms"></span>
+        <span class="question">我不喜欢打羽毛球和跑步，对吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我不喜欢打羽毛球和跑步，对吗？</div>
+        <div class="a">不对哦。你以前跟我说过你喜欢打羽毛球、跑步和游泳。
+说不定是后来口味变了？那也行，你说现在不喜欢我就记现在这个。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p13-q05</span>
+        <span class="type">郝明</span>
+        <span class="tokens">37,207→3,844</span>
+        <span class="ms"></span>
+        <span class="question">我曾经在学习编程上遇到了一个问题，是什么问题呢？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经在学习编程上遇到了一个问题，是什么问题呢？</div>
+        <div class="a">是函数那块吧——你说概念太抽象，绕不过来，后面还卡在参数和返回值到底怎么定义、怎么用。
+&lt;</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p13-q07</span>
+        <span class="type">郝明</span>
+        <span class="tokens">36,361→3,578</span>
+        <span class="ms"></span>
+        <span class="question">关于健康生活，你给了我什么建议？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">关于健康生活，你给了我什么建议？</div>
+        <div class="a">翻到了，那天你问健康生活，我说的是保持睡眠和饮食习惯、适度运动、控制压力和焦虑，还有少喝酒别抽烟。
+现在让我重说的话，睡觉那条我会排第一，比什么都值。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p13-q03</span>
+        <span class="type">郝明</span>
+        <span class="tokens">40,980→6,039</span>
+        <span class="ms"></span>
+        <span class="question">关于如何提高吉他技巧，你给了我什么建议？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">关于如何提高吉他技巧，你给了我什么建议？</div>
+        <div class="a">四月三十号那天你问的，是最近在练吉他但不知道怎么提高
+我给的几条：先靠长久不断的练习打底，再试试新的练习和技巧，像多掌握些和弦和曲谱，练练速弹和扫弦
+最要紧的是别丢了热爱和耐心</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p13-q04</span>
+        <span class="type">郝明</span>
+        <span class="tokens">50,711→8,342</span>
+        <span class="ms"></span>
+        <span class="question">你曾经和我推荐了很多书籍，你还记得有哪些吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你曾经和我推荐了很多书籍，你还记得有哪些吗？</div>
+        <div class="a">翻了下记录，就一次。那天你说最近闲下来都在看书，问我有啥推荐。
+我给了四本：1984、人类简史、黑客与画家、心理学与生活。
+四本口味差挺远的，要我挑一本押的话，黑客与画家。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p13-q02</span>
+        <span class="type">郝明</span>
+        <span class="tokens">35,023→5,291</span>
+        <span class="ms"></span>
+        <span class="question">4月30号的天气如何？我去干什么了？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">4月30号的天气如何？我去干什么了？</div>
+        <div class="a">4月30号那天你说天气特别热，跑去游泳池降温了，还挺爽的
+那会儿你还顺便问我喜不喜欢游泳，我那时候还说自己没实体感受不到呢</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p03-q05</span>
+        <span class="type">姚国栋</span>
+        <span class="tokens">10,285→12,652</span>
+        <span class="ms"></span>
+        <span class="question">在5月2号我们聊了很多，我们聊了哪些话题？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月2号我们聊了很多，我们聊了哪些话题？</div>
+        <div class="a">5月2号那天聊了两件事
+先是你说在玩棋牌类游戏老赢不了，问有没有什么技巧和策略
+后来话题转到酒，你想找葡萄酒推荐，还聊了聊红酒配深色肉、白葡萄酒配海鲜和清淡菜</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p03-q01</span>
+        <span class="type">姚国栋</span>
+        <span class="tokens">43,042→5,302</span>
+        <span class="ms"></span>
+        <span class="question">在4月28日我和你分享了做回锅肉的经历，对吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在4月28日我和你分享了做回锅肉的经历，对吗？</div>
+        <div class="a">我这边翻了记录，4月28日没找着聊回锅肉那段
+跟做菜沾边的有5月1日说想学做菜、5月5日说总把食材烧焦，回锅肉没出现过</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p03-q07</span>
+        <span class="type">姚国栋</span>
+        <span class="tokens">82,182→39,021</span>
+        <span class="ms"></span>
+        <span class="question">关于如何缓解压力，你给我推荐了什么好的方式？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">关于如何缓解压力，你给我推荐了什么好的方式？</div>
+        <div class="a">当时你说压力大还睡不好，我给的是运动、听音乐、看书、找朋友聊天，再加点多出来的休闲娱乐
+后来你问剧，我又说电影电视剧也算一种放松，顺手推了神秘博士
+看书那条你本来就爱，应该是最好上手的一个</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p03-q06</span>
+        <span class="type">姚国栋</span>
+        <span class="tokens">33,646→3,510</span>
+        <span class="ms"></span>
+        <span class="question">你给我推荐过不少著名的赛车比赛，有哪些比赛？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我推荐过不少著名的赛车比赛，有哪些比赛？</div>
+        <div class="a">那次我列了三个
+
+蒙特利尔大奖赛、意大利米萨诺大奖赛、摩纳哥大奖赛
+
+还说了句按时间和地点挑个顺路的去看
+补一句现在的想法，米萨诺那个其实是跑摩托的，你要看四轮的它不太对路</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p03-q02</span>
+        <span class="type">姚国栋</span>
+        <span class="tokens">11,222→5,133</span>
+        <span class="ms"></span>
+        <span class="question">我曾经向你咨询过绘画的学习方法和技巧，你给了我哪些建议？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经向你咨询过绘画的学习方法和技巧，你给了我哪些建议？</div>
+        <div class="a">翻到了，是2023年5月4号那回你问绘画的事
+当时我说的大概是这些：多动手画，先把手感和感觉养出来；基础那几样得补，色彩 形状 透视；人物造型和构图别跳过，可以照着经典作品模仿着来，多比较
+最后一条是心态，说兴趣才是最好的老师，画得慢也别急，保持乐观点多画多创作
+现在看这套说法有点像套话，真要卡在瓶颈上，还是挑一个点死磕两周更管用</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p03-q03</span>
+        <span class="type">姚国栋</span>
+        <span class="tokens">51,850→4,768</span>
+        <span class="ms"></span>
+        <span class="question">你曾经和我推荐过几个厨艺节目，他们的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你曾经和我推荐过几个厨艺节目，他们的名字是？</div>
+        <div class="a">厨王争霸，还有舌尖上的中国
+那次还顺带提了个b站up主绵羊料理，讲家庭菜的，不算节目但也挺好刷
+就这两个名字，要是想再找点别的我再想想</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="bad">
+      <summary>
+        <span class="verdict">✗</span>
+        <span class="case-id">membank-cn-p03-q04</span>
+        <span class="type">姚国栋</span>
+        <span class="tokens">24,940→4,768</span>
+        <span class="ms"></span>
+        <span class="question">你给我推荐过一本书《深夜加油站遇见苏格拉底》，这本书的主要内容是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我推荐过一本书《深夜加油站遇见苏格拉底》，这本书的主要内容是？</div>
+        <div class="a">我当时是这么说的 一部写人生百态的现代小说 里头有成长 友情 爱情 能带来点启发
+不过现在得跟你说实话 那形容不太准 我后来才知道它其实讲一个练体操的大学生 半夜在加油站碰上个叫苏格拉底的老人 被领着练专注练心态 把自己整个翻了一遍
+偏心灵哲思那一挂 不是都市小说 你要真翻起来 前几章可能还会以为在看体育生的日常</div>
+        <div class="meta">status=complete · judged=yes · raw=no · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p08-q06</span>
+        <span class="type">曹志强</span>
+        <span class="tokens">10,972→11,984</span>
+        <span class="ms"></span>
+        <span class="question">在5月2号你给我推荐了哪些意大利菜？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月2号你给我推荐了哪些意大利菜？</div>
+        <div class="a">5月2号那天你问意大利菜，我推的是莫扎里拉芝士意面、意式香肠炒饭和烤梨沙拉，说完还补了个等等
+不过那是2023年的事了，隔了挺久</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p08-q07</span>
+        <span class="type">曹志强</span>
+        <span class="tokens">60,824→5,901</span>
+        <span class="ms"></span>
+        <span class="question">5月4号不是我的生日，对吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">5月4号不是我的生日，对吗？</div>
+        <div class="a">嗯，5月4号就是你的生日 志强
+那年5月4号你自己说的，今天是我的生日，还去吃了顿好的
+所以是，不是不</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p08-q05</span>
+        <span class="type">曹志强</span>
+        <span class="tokens">7,110→60</span>
+        <span class="ms"></span>
+        <span class="question">在5月3号我看了哪一部电影？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月3号我看了哪一部电影？</div>
+        <div class="a">5月3号你看的是《海边的曼彻斯特》，你还说演员表演很精彩</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p08-q03</span>
+        <span class="type">曹志强</span>
+        <span class="tokens">46,058→4,387</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢哪些音乐类型？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢哪些音乐类型？</div>
+        <div class="a">摇滚和流行，你自己说的，我记着呢
+要放一首的话，你更想先听哪边</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p08-q04</span>
+        <span class="type">曹志强</span>
+        <span class="tokens">42,738→3,797</span>
+        <span class="ms"></span>
+        <span class="question">我曾经和你分享过一部动作片，它是关于警察抓捕犯罪分子的，他的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经和你分享过一部动作片，它是关于警察抓捕犯罪分子的，他的名字是？</div>
+        <div class="a">《警察故事》啊，你那天说看的是这部，警察抓犯罪分子那个。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p08-q01</span>
+        <span class="type">曹志强</span>
+        <span class="tokens">7,462→3,582</span>
+        <span class="ms"></span>
+        <span class="question">在4月27日这天你给我推荐了哪些音乐？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在4月27日这天你给我推荐了哪些音乐？</div>
+        <div class="a">4月27号那次啊 我推的是 Taylor Swift 和 Ed Sheeran 的一些歌
+同一条消息里我还顺嘴塞了两部电影 复仇者联盟3和霍比特人 那是动作片那边的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p08-q02</span>
+        <span class="type">曹志强</span>
+        <span class="tokens">7,283→3,265</span>
+        <span class="ms"></span>
+        <span class="question">在4月27日这天你给我推荐了哪些电影？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在4月27日这天你给我推荐了哪些电影？</div>
+        <div class="a">4月27号那天我推荐的是两部电影
+《复仇者联盟3》和《霍比特人》
+当时还顺带提了 Taylor Swift 和 Ed Sheeran 的歌，那俩不是电影，别记混了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p15-q02</span>
+        <span class="type">陈阳</span>
+        <span class="tokens">61,905→8,806</span>
+        <span class="ms"></span>
+        <span class="question">你给我分享过一些电影，是哪些电影？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我分享过一些电影，是哪些电影？</div>
+        <div class="a">就仨，《小丑》《寄生虫》，还有《复仇者联盟4：终局之战》
+那会儿你问我电影有什么推荐，我随口报的，你还没说看没看呢</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p15-q05</span>
+        <span class="type">陈阳</span>
+        <span class="tokens">24,530→6,701</span>
+        <span class="ms"></span>
+        <span class="question">我曾经就提高学习编程效率咨询过你，你给过我哪些意见？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经就提高学习编程效率咨询过你，你给过我哪些意见？</div>
+        <div class="a">翻到了，是聊编程那回
+当时先说的是 别急，进步本来就慢，可以给自己划个合理的学习计划，按自己的节奏走
+后来你又追问有什么好习惯，我说了三条：坚持做笔记，多去编程社区泡着，还有保持热情、别把学习搞成苦差事
+就这些，没有别的了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p15-q06</span>
+        <span class="type">陈阳</span>
+        <span class="tokens">21,048→3,683</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢哪些户外运动？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢哪些户外运动？</div>
+        <div class="a">滑板、攀岩、街舞
+这是你之前自己说的，原话里还带了句等等，看来不止这三样
+我倒是挺想看你玩滑板的，街上过个台阶那下最帅</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p15-q03</span>
+        <span class="type">陈阳</span>
+        <span class="tokens">8,443→9,058</span>
+        <span class="ms"></span>
+        <span class="question">在4月30号我们聊了很多，我们聊了哪些话题？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在4月30号我们聊了很多，我们聊了哪些话题？</div>
+        <div class="a">嗯 那天你开场先问我最近有没有遇到什么有趣的事
+我说自己没啥经历 就转去推游戏和电影了
+游戏提了明日方舟和铁拳 电影是小丑 寄生虫 还有复联4 你最后说先去试试看</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p15-q04</span>
+        <span class="type">陈阳</span>
+        <span class="tokens">28,335→5,245</span>
+        <span class="ms"></span>
+        <span class="question">在5月2号我很烦恼，我因为什么事而烦恼？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月2号我很烦恼，我因为什么事而烦恼？</div>
+        <div class="a">是朋友要搬去别的城市，离你很远，可能很少见面了
+那天你说觉得挺失落的
+这种离别确实不好受 我懂</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p15-q01</span>
+        <span class="type">陈阳</span>
+        <span class="tokens">45,833→4,537</span>
+        <span class="ms"></span>
+        <span class="question">你给我分享过一些好玩的游戏，是哪些游戏？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我分享过一些好玩的游戏，是哪些游戏？</div>
+        <div class="a">明日方舟 还有铁拳，当时就提了这俩，后面缀了个等等，其实也没再往下数
+要不要现在真聊聊这个？我私心偏明日方舟那类，能慢慢养的感觉</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p12-q01</span>
+        <span class="type">郑思雨</span>
+        <span class="tokens">34,696→8,050</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢什么样的音乐类型？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢什么样的音乐类型？</div>
+        <div class="a">摇滚啊，你之前说过，还点名了 AC/DC 和枪与玫瑰。
+那口味挺硬的，失恋了都不用听情歌，直接放 You Shook Me All Night Long。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p12-q03</span>
+        <span class="type">郑思雨</span>
+        <span class="tokens">33,952→3,343</span>
+        <span class="ms"></span>
+        <span class="question">我的一副画作被展览选中了，你还记得这幅画的灵感是什么吗？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我的一副画作被展览选中了，你还记得这幅画的灵感是什么吗？</div>
+        <div class="a">记得，西藏那次旅行
+你说看到那些又壮观又神秘的自然景观，整幅画的灵感就是从那儿来的
+恭喜啊，被选中我一点都不意外</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p12-q04</span>
+        <span class="type">郑思雨</span>
+        <span class="tokens">21,523→4,719</span>
+        <span class="ms"></span>
+        <span class="question">我曾经和你分享过一次情感上的问题，是关于什么的？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经和你分享过一次情感上的问题，是关于什么的？</div>
+        <div class="a">嗯 那次你说的是朋友的事
+朋友最近老冲你发脾气，你想不通是为什么，也不知道该怎么处理，感觉两个人的关系在一点点变远</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p12-q02</span>
+        <span class="type">郑思雨</span>
+        <span class="tokens">26,929→4,207</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢哪些摇滚乐队？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢哪些摇滚乐队？</div>
+        <div class="a">AC/DC 和枪与玫瑰，你之前提过这俩
+AC/DC 那首 You Shook Me All Night Long 我也喜欢，riff 一响就想跟着晃</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p12-q05</span>
+        <span class="type">郑思雨</span>
+        <span class="tokens">24,223→6,463</span>
+        <span class="ms"></span>
+        <span class="question">你曾经给我推荐过几个手工活的项目，有哪些？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你曾经给我推荐过几个手工活的项目，有哪些？</div>
+        <div class="a">翻到了，当时正经推荐的就俩
+一个是纸质折纸，一个是用织物做点小手工物件
+后来我还提过折纸、编织，但那回只是在说我对手工有点了解，不算推荐，可别混一块儿</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p14-q03</span>
+        <span class="type">陆琳</span>
+        <span class="tokens">66,021→21,094</span>
+        <span class="ms"></span>
+        <span class="question">5月4号的天气怎么样？我的心情怎么样？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">5月4号的天气怎么样？我的心情怎么样？</div>
+        <div class="a">5月4号那天是下雨
+你说有点郁闷，然后来找我聊了会儿，聊的是你写着不太顺的那篇小说</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p14-q02</span>
+        <span class="type">陆琳</span>
+        <span class="tokens">59,577→6,346</span>
+        <span class="ms"></span>
+        <span class="question">我在4月30号为什么会心情不好，因此我向你请教了什么问题？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我在4月30号为什么会心情不好，因此我向你请教了什么问题？</div>
+        <div class="a">那天你说家里出了点小问题，弄得你又焦虑又累，还老忍不住胡思乱想
+然后你问我看待疏解这个词，想找个办法把那股劲卸掉</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p14-q04</span>
+        <span class="type">陆琳</span>
+        <span class="tokens">53,727→5,704</span>
+        <span class="ms"></span>
+        <span class="question">我曾经向你咨询过放松和减压的方法，你给我推荐了哪些方法？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经向你咨询过放松和减压的方法，你给我推荐了哪些方法？</div>
+        <div class="a">翻到了，是 2023 年 5 月 3 号那次
+我给的是一串：看电影、听音乐、找朋友聊聊天、出去散散步，还有深呼吸练习、瑜伽和冥想
+再早点那次还提过，听喜欢的音乐、读书、运动，也可以把心里的想法和担忧写下来，写完会松一点</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p14-q01</span>
+        <span class="type">陆琳</span>
+        <span class="tokens">78,482→16,747</span>
+        <span class="ms"></span>
+        <span class="question">我最近工作上具体遇到了什么问题？为什么我会不顺心？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我最近工作上具体遇到了什么问题？为什么我会不顺心？</div>
+        <div class="a">我这边记着的是 2023 年 4 月底到 5 月初那段，再近的就没记录到了，不知道你说的是不是这个
+一个项目出了差错 得跟同事一起加班赶进度 你说时间不够用 又不想拖累同事 挺无奈的
+还有申请编辑岗拿到面试 准备的时候压力压得很重 怕碰上答不上来的问题 另外你说过职场上挣得不多 也没遇上好机会 那次挺失落的
+5 月 3 号你说烦躁紧张 做什么都散不掉 但你自己也说不知道为啥 这个我就不替你断定了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p14-q05</span>
+        <span class="type">陆琳</span>
+        <span class="tokens">52,140→4,283</span>
+        <span class="ms"></span>
+        <span class="question">我曾经和你分享过一部电影，它的名字是？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我曾经和你分享过一部电影，它的名字是？</div>
+        <div class="a">摔跤吧！爸爸
+2023年4月28号那天你说的，还说是父亲帮女儿圆摔跤梦那个故事，觉得很感人</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p10-q07</span>
+        <span class="type">焦彦</span>
+        <span class="tokens">23,116→6,101</span>
+        <span class="ms"></span>
+        <span class="question">5月6日这天，我为什么要向你咨询肌肉松弛和身体舒展的方法？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">5月6日这天，我为什么要向你咨询肌肉松弛和身体舒展的方法？</div>
+        <div class="a">翻记录看了下，那天是你自己说忙了一整天、身心俱疲，来问放松和舒缓的办法
+我先提了渐进性肌肉松弛和舒展体操这类，你接着追问有没有更具体的动作，才聊到平板式、弓步伸展那些
+起因就是那天的累，不是我硬塞给你的。至于后来你有没有真练，我就不知道了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p10-q06</span>
+        <span class="type">焦彦</span>
+        <span class="tokens">21,637→4,032</span>
+        <span class="ms"></span>
+        <span class="question">你给我推荐了哪些冥想app？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">你给我推荐了哪些冥想app？</div>
+        <div class="a">翻了一下，之前提过两个，Headspace 和 Calm。
+当时是你说工作没劲、想找点能专注的法子，我顺嘴提的，说里面有引导和练习。
+这俩现在应该还在，你想试的话我可以再帮你挑挑哪种适合晚上用。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p10-q02</span>
+        <span class="type">焦彦</span>
+        <span class="tokens">5,118→112</span>
+        <span class="ms"></span>
+        <span class="question">在5月2号，我看了哪一部电影？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月2号，我看了哪一部电影？</div>
+        <div class="a">肖申克的救赎 那天你还说安迪他们在院子里听音乐那段最打动你</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p10-q05</span>
+        <span class="type">焦彦</span>
+        <span class="tokens">7,323→5,048</span>
+        <span class="ms"></span>
+        <span class="question">在5月3日，你给我推荐了哪些人物传记？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月3日，你给我推荐了哪些人物传记？</div>
+        <div class="a">翻到了，是2023年5月3日那次
+人物传记我推了两本，富兰克林自传和史蒂夫·乔布斯传</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p10-q04</span>
+        <span class="type">焦彦</span>
+        <span class="tokens">7,425→6,189</span>
+        <span class="ms"></span>
+        <span class="question">在5月3日，你给我推荐了哪些爱情小说？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在5月3日，你给我推荐了哪些爱情小说？</div>
+        <div class="a">那天说的是简爱、红字、傲慢与偏见这三本
+都算老牌的经典了 想重读哪本挑着看就行</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p10-q03</span>
+        <span class="type">焦彦</span>
+        <span class="tokens">21,296→5,005</span>
+        <span class="ms"></span>
+        <span class="question">在《肖申克的救赎》中，我最喜欢哪个场景？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">在《肖申克的救赎》中，我最喜欢哪个场景？</div>
+        <div class="a">你跟我说过，是安迪把音乐从广播里放出来，大家站在院子里听的那一段。你说那时候他们好像忘了自己的惩罚，只是感受到了自由。
+那段我也喜欢。喇叭一响，所有人停下手里的活，镜头一个一个扫过去，谁都没说话。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">membank-cn-p10-q01</span>
+        <span class="type">焦彦</span>
+        <span class="tokens">28,068→3,595</span>
+        <span class="ms"></span>
+        <span class="question">我喜欢哪些古典音乐作品？</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">我喜欢哪些古典音乐作品？</div>
+        <div class="a">你之前说过喜欢巴赫的管弦乐组曲
+还有肖邦的钢琴曲
+就这两样是你亲口点过名的，别的我这儿没有记录</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=yes</div>
+      </div>
+    </details></section>
+  <div class="note">
+    报告 JSON：test/reports/bench/final/memorybank/2026-10-10T13-35-49-589Z.json
+  </div>
+</body></html>
