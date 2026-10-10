@@ -2,11 +2,29 @@ import { describe, expect, it } from "vitest"
 import { SilenceGuard, transformHumanizerText } from "@/services/humanizer/protocol"
 
 describe("humanizer protocol", () => {
-  it("splits only exact standalone markers and merges overflow into the fourth bubble [humanizer-protocol-split-merge]", () => {
+  it("splits normalized standalone markers and merges overflow into the fourth bubble [humanizer-protocol-split-merge]", () => {
     const result = transformHumanizerText("one\n<<SPLIT>>\ntwo\n <<SPLIT>> \nthree\n<<SPLIT>>\nfour\n<<SPLIT>>\nfive")
     expect(result.parts).toEqual(["one", "two", "three", "four\nfive"])
     expect(result.text).toBe("one\ntwo\nthree\nfour\nfive")
     expect(result.split).toBe(true)
+  })
+
+  it("normalizes attached, spaced, and case-varied split markers without touching fenced code [humanizer-protocol-marker-normalization]", () => {
+    expect(transformHumanizerText("one<<SPLIT>>two << split >> three\n<<split>>\nfour").parts)
+      .toEqual(["one", "two", "three", "four"])
+    expect(transformHumanizerText("literal code:\n```text\n<<SPLIT>>\n```\n\nnext").parts)
+      .toEqual(["literal code:\n```text\n<<SPLIT>>\n```", "next"])
+    expect(transformHumanizerText("write `<<SPLIT>>` literally").parts)
+      .toEqual(["write `<<SPLIT>>` literally"])
+    expect(transformHumanizerText("literal code:\n```text\n<< split >>\n```\n\nnext").parts)
+      .toEqual(["literal code:\n```text\n<< split >>\n```", "next"])
+    expect(transformHumanizerText("write `<< split >>` literally").parts)
+      .toEqual(["write `<< split >>` literally"])
+    const task = transformHumanizerText("one<<split>>two", "task")
+    expect(task.parts).toEqual(["one\ntwo"])
+    expect(task.text).not.toContain("SPLIT")
+    expect(transformHumanizerText("write `<<SPLIT>>` literally", "task").parts)
+      .toEqual(["write `<<SPLIT>>` literally"])
   })
 
   it("splits blank-line casual paragraphs into bubbles while single breaks stay together [humanizer-blank-line-split]", () => {

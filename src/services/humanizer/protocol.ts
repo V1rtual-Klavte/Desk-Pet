@@ -1,5 +1,6 @@
 export const HUMANIZER_SPLIT_MARKER = "<<SPLIT>>"
 export const HUMANIZER_SILENT_MARKER = "<<SILENT>>"
+const LITERAL_SPLIT_MARKER = "\u0000deskpet-literal-split\u0000"
 
 /**
  * 全局拟人表达块。**只管形式与说话方式，不管人设**——「我是谁、我喜欢什么、我的口头禅」
@@ -17,6 +18,10 @@ export const HUMANIZER_SILENT_MARKER = "<<SILENT>>"
 export const HUMANIZER_PROMPT = `[拟人表达]
 仅约束可见闲聊正文；不改 RUNTIME_DATA 区块格式/位置。
 
+内容优先（高于以下所有形式与说话规则，任何问题都适用）：
+- 准确回答，并保留答案必需的事实、用户限制、条件、结论与必要步骤；不能为了简短、口语、分泡或避免文档腔删掉这些内容。
+- 先保证回答完整，再尽量自然简洁；形式规则与内容冲突时服从内容。
+
 形式（任何话题都适用）：
 - 短句自然、少句号；不用冒号/破折号/引号/书名号。技术和代码保留所需标点。
 - **不写 markdown 标题与加粗**（行首 #、**粗体**）。步骤清单可保留，但不套标题、不当文档写。
@@ -28,8 +33,8 @@ export const HUMANIZER_PROMPT = `[拟人表达]
 - 以「我」为主：亮自己的观点、喜好、小道理。不点评对方、不分析对方状态、不补充对方没说的事。
 - 不解释自己的话，不加自我注解的尾巴，不追加「懂了吗」这类收尾。
 - **讲知识也像朋友聊天，不像讲课**：不出现「学界叫…」「说白了就是…」「XX 是一种…」「不是 A 那种 B」
-  这类定义句、术语点题与对比句；改用「就像…那样」「我理解是…」这类口语说法。讲清一个问题就够，
-  不追求体系完整、不铺背景、不做总结段。
+ 这类定义句、术语点题与对比句；改用「就像…那样」「我理解是…」这类口语说法。不铺无关背景、不做总结段，
+ 但不能删掉回答所必需的信息。
 - 接得住没头没尾，同频翻回去。
 
 照这样写 / 别那样写（两组负例都取自 2026-10-08 实机翻车）：
@@ -80,12 +85,58 @@ function splitByParagraphs(text: string): string[] {
   return pieces
 }
 
+/** Normalize model-emitted delimiter tokens before flow-specific splitting.
+ * The prompt asks for a standalone line, but models sometimes attach it to prose
+ * or vary whitespace/case. Treat that token as control syntax outside fenced code.
+ */
+function normalizeSplitMarkers(text: string): string {
+  const normalizeLine = (line: string): string => {
+    if (/^\s*<<\s*SPLIT\s*>>\s*$/iu.test(line)) return HUMANIZER_SPLIT_MARKER
+    let output = ""
+    let index = 0
+    while (index < line.length) {
+      if (line[index] === "`") {
+        let tickEnd = index + 1
+        while (line[tickEnd] === "`") tickEnd += 1
+        const delimiter = line.slice(index, tickEnd)
+        const close = line.indexOf(delimiter, tickEnd)
+        if (close >= 0) {
+          output += line.slice(index, close + delimiter.length).replaceAll(HUMANIZER_SPLIT_MARKER, LITERAL_SPLIT_MARKER)
+          index = close + delimiter.length
+          continue
+        }
+        output += delimiter
+        index = tickEnd
+        continue
+      }
+      const marker = line.slice(index).match(/^<<\s*SPLIT\s*>>/iu)?.[0]
+      if (marker) {
+        output = output.replace(/\s+$/u, "")
+        output += `\n${HUMANIZER_SPLIT_MARKER}\n`
+        index += marker.length
+        while (/\s/u.test(line[index] ?? "")) index += 1
+        continue
+      }
+      output += line[index]
+      index += 1
+    }
+    return output
+  }
+  let inFence = false
+  return text.split("\n").map(line => {
+    if (/^\s*```/.test(line)) inFence = !inFence
+    if (inFence) return line.replaceAll(HUMANIZER_SPLIT_MARKER, LITERAL_SPLIT_MARKER)
+    return normalizeLine(line)
+  }).join("\n")
+}
+
 /**
  * Interpret protocol markers after RUNTIME_DATA has already been removed.
  * Markers are recognized only when the caller has frozen the feature as enabled.
  */
 export function transformHumanizerText(input: string, flow: HumanizerFlow = "casual"): HumanizedText {
-  const text = input.replace(/\r\n/g, "\n")
+  const text = normalizeSplitMarkers(input.replace(/\r\n/g, "\n"))
+  const restoreLiteralMarkers = (value: string): string => value.replaceAll(LITERAL_SPLIT_MARKER, HUMANIZER_SPLIT_MARKER)
   if (text.trim() === HUMANIZER_SILENT_MARKER) {
     return flow === "casual"
       ? { parts: [], text: "", silent: true, split: false }
@@ -116,7 +167,8 @@ export function transformHumanizerText(input: string, flow: HumanizerFlow = "cas
       // 但它前后的说话照常分泡 —— 见 `splitByParagraphs` 的注释。
       const paragraphs = splitByParagraphs(text)
       if (paragraphs.length <= 1) {
-        return { parts: [text], text, silent: false, split: false }
+        const restored = restoreLiteralMarkers(text)
+        return { parts: [restored], text: restored, silent: false, split: false }
       }
       split = true
       pieces = paragraphs
@@ -129,7 +181,7 @@ export function transformHumanizerText(input: string, flow: HumanizerFlow = "cas
       : text]
   }
 
-  pieces = pieces.filter(Boolean)
+  pieces = pieces.filter(Boolean).map(restoreLiteralMarkers)
   if (pieces.length === 0) return { parts: [], text: "", silent: false, split }
   if (pieces.length > 4) pieces = [...pieces.slice(0, 3), pieces.slice(3).join("\n")]
   return { parts: pieces, text: pieces.join("\n"), silent: false, split }

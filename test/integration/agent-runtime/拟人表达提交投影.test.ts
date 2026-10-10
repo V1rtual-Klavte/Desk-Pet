@@ -84,7 +84,7 @@ describe("拟人表达原生提交", () => {
       return fakeText("图片请求完成")
     }
     const provider = installFakeProvider([
-      fakeText(`第一泡\n<<SPLIT>>\n第二泡\n<RUNTIME_DATA>\n${VARIABLE}: 已写入\n</RUNTIME_DATA>`),
+      fakeText(`第一泡 <<SPLIT>> 第二泡\n<RUNTIME_DATA>\n${VARIABLE}: 已写入\n</RUNTIME_DATA>`),
       fakeText("<<SILENT>>"), fakeText("<<SILENT>>"), imageReply,
       fakeToolCall("read", { path: taskPath }), fakeText("<<SILENT>>"),
     ])

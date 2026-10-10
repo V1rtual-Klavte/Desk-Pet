@@ -63,6 +63,8 @@
 // ③ **续跑补接线**：`continueInterruptedRun` 的三处装配原本没传 `humanizerEnabled`，导致
 //    「中断后继续」那一轮的可见正文既不注入提示词、也不做分泡/沉默处理，与主回合口径不一致。
 // 覆盖点未修订、无 caseId 迁移。
+// 2026-10-09 提示优先级：对任何问题，准确性与必要事实/用户限制/条件/步骤高于简短口语、分泡和避免文档腔；
+// 「不追求体系完整」收窄为不铺无关背景，不再暗示可以省略答案必需信息。
 import type { ModuleContract } from "../host/types"
 
 export const humanizerContract: ModuleContract = {
@@ -81,16 +83,16 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "21bb62454c0e7ced341f361c7bb8848f2a16dec16a3f826598ec965f0683c3b7",
+  sourceHash: "4bdfdbbdb8f222690c1c58176434450cf89cd50bfdc8898df9e599d62fafa04a",
   coverage: [
     {
       id: "hz-01",
       feature: "表达标记解析",
-      description: "只识别整行 SPLIT 标记并将超过四泡的尾部合并；casual 流在无标记时按空行分段成泡（单个换行与含代码块的消息不分，task 流保持单泡且不能合法沉默）；SILENT 只在 casual 整条可见正文等于哨兵时成立",
+      description: "识别正文中代码围栏和行内代码外的 SPLIT token（含行内、空格或大小写变化）并将超过四泡的尾部合并；casual 流在无标记时按空行分段成泡（单个换行与围栏内空行不分，task 流只剥标记且保持单泡）；SILENT 只在 casual 整条可见正文等于哨兵时成立",
       why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记；模型用空行分段时要分成几条气泡（2026-10-05 用户规则）",
       layer: "unit",
       depth: "shallow",
-      scenarios: ["humanizer-protocol-split-merge", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact"],
+      scenarios: ["humanizer-protocol-split-merge", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact"],
     },
     {
       id: "hz-02",

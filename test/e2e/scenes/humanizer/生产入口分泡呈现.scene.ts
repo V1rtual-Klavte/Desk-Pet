@@ -87,7 +87,7 @@ export const 生产入口分泡呈现: SceneDef = {
         // 给「第二泡仍被挡住」与「停止先于自然揭示」两段观测都留足确定窗口。
         const firstBubble = `第一泡 ${marker} 先出现；这一条刻意写长，让泡间节奏有确定而足够的观测窗口`
         const secondBubble = `第二泡 ${marker} 必须等泡间节奏，停止时立即全显`
-        const provider = installFakeProvider([async () => { started(); await gate; return fakeText(`${firstBubble}\n<<SPLIT>>\n${secondBubble}`) }])
+        const provider = installFakeProvider([async () => { started(); await gate; return fakeText(`${firstBubble} << split >> ${secondBubble}`) }])
 
         try {
           const sending = sendMessage("这是一条没有工具的普通聊天")
