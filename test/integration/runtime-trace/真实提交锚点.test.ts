@@ -118,6 +118,71 @@ describe("Runtime trace 持久化锚点", () => {
     }
   })
 
+  it("reader 的问题核对指南随证据进入实际主 Provider 请求 [trace-memory-reading-guide-in-request]", async () => {
+    const oldConfig = {
+      enabled: memoryConfig.enabled,
+      rerank: memoryConfig.rerank,
+      planEnabled: planConfig.enabled,
+    }
+    const readerReply = fakeText(JSON.stringify({
+      notes: [],
+      questionChecks: [{ condition: "Specific phone accessory already owned", status: "missing", sourceIds: [] }],
+    }))
+    const provider = installFakeProvider([readerReply, fakeText("先用好已经有的物品，也可以关闭耗电后台功能。")], {
+      id: "memory-reading-guide-runtime-model", name: "Memory Reading Guide Runtime Model",
+      contextWindow: 128_000, maxTokens: 4_096,
+    })
+    const restoreMemory = installMemoryProvider({
+      async recall(): Promise<MemoryProjection[]> {
+        return Array.from({ length: 4 }, (_, index) => ({
+          sourceId: `reading-guide-session-${index}:entry-${index}`,
+          memoryVersion: `reading-guide-v1-${index}`,
+          provenance: `fixture:reading-guide-${index}`,
+          taint: "derived" as const,
+          text: index === 0 ? "I own a portable power bank." : `Earlier user preference ${index}.`,
+          tokenBudget: 32,
+          tier: "recall" as const,
+          conversation: {
+            sessionId: `reading-guide-session-${index}`, entryId: `entry-${index}`,
+            eventId: `event-${index}`, role: "user" as const, timestamp: 1_800_000_000_000 + index,
+            seq: index, chunk: 0, extent: "entry" as const,
+          },
+        }))
+      },
+    })
+    setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.plan.enabled": false })
+    await flushConfig()
+    await ensureSession()
+    const trace = captureRuntimeTrace()
+    try {
+      await runRuntimeTurn("我手机电池最近很困扰，有什么建议？")
+      const payloadText = provider.payloads.flatMap(payload => payload.messages.map(message => typeof message.content === "string"
+        ? message.content
+        : message.content.map(part => part.type === "text" ? part.text : "").join("")))
+      const memoryText = payloadText.find(text => text.includes("[记忆与会话参考]")) ?? ""
+      const packet = JSON.parse(memoryText.slice(memoryText.indexOf("\n{") + 1)) as {
+        evidence: Array<{ id: string; text: string }>
+        questionChecks: Array<{ condition: string; status: string; sourceIds: string[] }>
+      }
+      const rendered = trace.events.find(event => event.kind === "memory_recall_rendered")
+      expect(packet.evidence[0]?.text, "原始证据仍须完整进入主请求").toBe("I own a portable power bank.")
+      expect(packet.questionChecks).toEqual([{
+        condition: "Specific phone accessory already owned", status: "missing", sourceIds: [],
+      }])
+      expect(rendered?.payload.guideStatus).toBe("included")
+      expect(rendered?.payload.questionCheckCount).toBe(1)
+      expect(rendered?.payload.readingNoteSourceIds).toEqual([])
+      expect(provider.payloads[provider.payloads.length - 1]?.messages.length).toBeGreaterThan(0)
+    } finally {
+      trace.unsubscribe()
+      restoreMemory()
+      provider.restore()
+      setOverrides({ "ai.memory.enabled": oldConfig.enabled, "ai.memory.rerank": oldConfig.rerank,
+        "ai.plan.enabled": oldConfig.planEnabled })
+      await flushConfig()
+    }
+  })
+
   it("按模型实际窗口派生预算并把超旧限额的完整事实送入请求 [memory-recall-layered-runtime]", async () => {
     const oldConfig = {
       contextMaxTokens: aiConfig.contextMaxTokens,

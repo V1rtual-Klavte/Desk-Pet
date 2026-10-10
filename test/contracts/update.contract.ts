@@ -1,3 +1,4 @@
+// 2026-10-10 定向复核：getHostBridge/request 取用口和更新命令签名未变；通用 JSON blob 传输由 host 契约覆盖，up-01 的更新命令形状、返回透传与 Node 请求面隔离保持原覆盖。
 // 2026-10-09 最终静态复核：HostCommandMap新增会话索引命令，更新命令名字、参数与Node请求隔离保持原义；未执行测试。
 // 应用内更新契约（Node 侧只有边界：命令形状 + 不承载更新动作）。
 //
@@ -71,6 +72,7 @@
 // 仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
+// 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const updateContract: ModuleContract = {
   module: "update",
   sourceFiles: [
@@ -79,7 +81,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "71c54ead207a6a45e7d841890a4ab051ff1fe1524d65579b488986ff68262ffb",
+  sourceHash: "38e82b24120bd6d9c12e2610e0b332fd04a581d2a10e207809be2e411ae48717",
   coverage: [
     {
       id: "up-01",

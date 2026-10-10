@@ -1,3 +1,4 @@
+// 2026-10-10 聚合 JSON 传输：hz-06覆盖请求的整包上传与取消；hz-05覆盖 JSON 回包递归物化和句柄归还。memory-multi-turn 经真 Rust IPC 验证超帧索引与完整超帧搜索结果，业务层不承担帧容量预检。
 // 宿主传输适配层契约（Node 侧取用面 / 装配 / 错误码保真）。
 //
 // 范围：`test/unit/host/ports.test.ts` 与 `test/unit/host/node-ports.test.ts` 的全部
@@ -41,21 +42,34 @@ export const hostContract: ModuleContract = {
     "src/services/host/index.ts",
     "src/services/host/wire.ts",
     "src/services/host/bridge.ts",
+    // hz-06 owns complete request-envelope sizing and automatic aggregate JSON upload.
+    "src/services/host/connection.ts",
     "crates/native-host/src/ipc/bridge.rs",
     "crates/native-host/src/ipc/blob.rs",
+    "crates/native-host/src/ipc/transport.rs",
+    "crates/native-host/src/ipc/mod.rs",
     "crates/native-host/src/host/supervisor.rs",
     "src/services/error/format.ts",
   ],
-  sourceHash: "0ba79350ef9fffd191f7216df32939370a4ef26ab507eb1696553a8cc4f0c2a0",
+  sourceHash: "77503cb81dabbacc96547d5251979d3e41955a5fa03aa62789226c27e1fd09b6",
   coverage: [
+    {
+      id: "hz-06",
+      feature: "完整请求 JSON 自动传输",
+      description: "实际 request 按完整信封 UTF-8 字节数判定；多小字段聚合超帧时整份参数一次 JSON blob 上传，小 Uint8Array 保持字节数组、大字节走原始 bytes blob，Date/toJSON 保持 JSON 语义；发送前与上传中取消不发送业务请求，晚完成上传或入队失败清理未消费句柄。Rust 递归物化 JSON 上传并校验 scope、一次性消费；双向大 JSON 的真 IPC 由 memory-multi-turn 验证",
+      why: "控制帧大小只用于流控，不能变成索引、搜索或其他请求结果的数据上限",
+      layer: "unit",
+      depth: "deep",
+      scenarios: ["host-request-json-blob-frame", "host-request-json-blob-cancel", "host-request-json-blob-bytes", "host-request-json-blob-json-semantics", "host-request-json-blob-late-cleanup", "host-request-json-blob-enqueue-cleanup"],
+    },
     {
       id: "hz-05",
       feature: "自动物化结果的 Blob 归还与取消",
-      description: "公开 request 还原字节、UTF-8 与嵌套字段；以整份结果为 owner，成功、失败、取消都归还全部有效句柄，包括尚未读取的兄弟与重复引用。读取和清理同时失败保留原读取错误，成功物化但清理失败明确 reject；取消信号传入实际 readBlob。Rust 的关停普通帧屏障、排空期 RPC 准入与退出通知由所属内联单测补充核对，不冒充 L2 传输实测",
+      description: "公开 request 还原字节、UTF-8 与完整 JSON；JSON blob 继续递归物化嵌套句柄。以整份结果为 owner，成功、坏 JSON、未知编码、失败、取消都归还全部已发现有效句柄，包括尚未读取的兄弟与重复引用。读取和清理同时失败保留原读取错误，成功物化但清理失败明确 reject；取消信号传入实际 readBlob。Rust 聚合回包转 JSON blob、关停屏障由所属内联单测补充核对，不冒充 L2 传输实测",
       why: "未归还会让已读数据长期驻留；兄弟字段漏清理、取消未透传或失败被清理覆盖都让请求结果与资源归宿失真",
       layer: "unit",
       depth: "deep",
-      scenarios: ["host-blob-materialize-release", "host-blob-read-failure-release", "host-blob-release-failure", "host-blob-materialize-cancel"],
+      scenarios: ["host-blob-materialize-release", "host-blob-read-failure-release", "host-blob-release-failure", "host-blob-materialize-cancel", "host-json-blob-nested-release", "host-json-blob-failure-cleanup"],
     },
     {
       id: "hz-01",

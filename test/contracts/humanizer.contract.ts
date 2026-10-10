@@ -67,6 +67,7 @@
 // 「不追求体系完整」收窄为不铺无关背景，不再暗示可以省略答案必需信息。
 import type { ModuleContract } from "../host/types"
 
+// 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const humanizerContract: ModuleContract = {
   module: "humanizer",
   sourceFiles: [
@@ -83,7 +84,7 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "4bdfdbbdb8f222690c1c58176434450cf89cd50bfdc8898df9e599d62fafa04a",
+  sourceHash: "41a03054eb23af8d6f2e4102b67a4e9fdac528b74292122fd7005fe2814be8fc",
   coverage: [
     {
       id: "hz-01",

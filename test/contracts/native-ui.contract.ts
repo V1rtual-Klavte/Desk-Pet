@@ -161,6 +161,7 @@
 // 未修订覆盖点，sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
+// 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const nativeUiContract: ModuleContract = {
   module: "native-ui",
   sourceFiles: [
@@ -207,7 +208,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "dd549d5d502d212aff4e7bbd9cc2d93759206a36aeda1795cc78bc130759f1d6",
+  sourceHash: "56553be1b936cb6c438854fe1bbf12a6f28635ede7b843acefc183dc35a33d05",
   coverage: [
     {
       id: "nui-34",

@@ -237,6 +237,7 @@
 // topic enums/deduplication, and the shared memory reconciliation gates. sourceHash was refreshed at acceptance (2026-10-09).
 import type { ModuleContract } from "../host/types"
 
+// 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const observationContract: ModuleContract = {
   module: "observation",
   sourceFiles: [
@@ -299,7 +300,7 @@ export const observationContract: ModuleContract = {
     "test/unit/observation/证据身份稳定.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "65dbb8b2dc7d502f2c62b1d3d7799ce1e9da90f013cb81b52fd6647515fa8ea5",
+  sourceHash: "ddc048600783f36008955914ee484a56a7cc7895ecc5fbf7735a01b79f390dd1",
   coverage: [
     {
       id: "ob-01",

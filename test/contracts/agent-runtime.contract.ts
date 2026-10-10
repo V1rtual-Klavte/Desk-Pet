@@ -184,6 +184,7 @@ import type { ModuleContract } from "../host/types"
 // setSessionSafetyMode（改以 ai.safety.mode 钉位），caseId 全部未变。ar-01..ar-37 其余点
 // 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；
 // rules 不动（无 L4 场景增删）；sourceHash 按当前源码复算。
+// 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -228,7 +229,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "f187fbf8e822b03793308f96ecd3c1594f9e996698699b2c2849bd21abdbce9a",
+  sourceHash: "e00ad88536426787a6678dd766c24d5a639a93e86da0ff22396a746cae2ef6d7",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

@@ -116,3 +116,31 @@ describe("Runtime trace [trace-runtime]", () => {
     expect(runtimeTracePreview("contact me at hello@example.com")).toBe("contact me at [redacted]")
   })
 })
+
+describe("阅读诊断的隐私边界", () => {
+  it("保留合法来源和固定状态计数，拒绝引用正文与任意错误键 [trace-memory-reading-schema]", () => {
+    const context = createRuntimeTraceContext("session-test", "request-test")
+    const observed: RuntimeTraceEvent[] = []
+    unsubscribes.push(subscribeRuntimeTrace(event => { observed.push(event) }))
+    publishRuntimeTrace(context, "memory_reading_end", {
+      status: "partial", noteCount: 1, sourceCount: 4, noteSourceIds: ["conv:1"],
+      noteStatus: "partial", guideStatus: "valid",
+      errorCounts: { invalid_note_id: 1, invalid_quote: -1, invalid_json: "private-query", private_query: 8 },
+      checkCounts: { supported: 1, missing: 2, conflicting: 0, private_query: 8 },
+      query: "private-query", quote: "private-quote", questionChecks: [{ condition: "private-condition" }],
+    })
+    publishRuntimeTrace(context, "memory_recall_rendered", {
+      sourceIds: ["conv:1"], readingNoteSourceIds: ["conv:1"], questionCheckCount: 3, guideStatus: "included",
+      questionChecks: [{ condition: "private-condition" }],
+    })
+    expect(observed[0]?.payload).toEqual({
+      status: "partial", noteCount: 1, sourceCount: 4, noteSourceIds: ["conv:1"],
+      noteStatus: "partial", guideStatus: "valid", errorCounts: { invalid_note_id: 1 },
+      checkCounts: { supported: 1, missing: 2, conflicting: 0 },
+    })
+    expect(observed[1]?.payload).toEqual({
+      sourceIds: ["conv:1"], readingNoteSourceIds: ["conv:1"], questionCheckCount: 3, guideStatus: "included",
+    })
+    expect(JSON.stringify(observed)).not.toContain("private")
+  })
+})
