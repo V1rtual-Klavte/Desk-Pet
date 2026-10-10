@@ -46,7 +46,12 @@ DESIGN_ORIGIN.docx
 data/
 
 # 测试报告与 trace：按保留单元（组）淘汰，最近 5 组、累计 ≤200 MiB（口径见 test/README.md）
-test/reports/
+# 例外：终态测评结果 test/reports/bench/final/ 是认定后长期留存、对外引用的结果，随仓库入库；
+# 其余滚动报告与 trace 仍不进 git（git 无法在被忽略目录下再包含文件，故逐级放行）。
+test/reports/*
+!test/reports/bench/
+test/reports/bench/*
+!test/reports/bench/final/
 # 测试临时根（e2e- / memory-perf-）：承载 data_root，启动时按已知前缀回收残留
 test/.tmp/
 # 外部记忆基准的上游大文件缓存（LongMemEval S 等；固定 revision + SHA-256 见 prepare.mjs）

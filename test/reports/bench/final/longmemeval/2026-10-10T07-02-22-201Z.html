@@ -1,0 +1,932 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="UTF-8" /><title>记忆基准 · oracle 子集（52 题，6 类 + 10 弃权）</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 28px 32px 48px; background: #f6f7f9; color: #1f242b;
+    font: 14px/1.6 -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 26px 0 10px; }
+  .sub { color: #5c6570; margin-bottom: 18px; }
+  .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+  .card { min-width: 170px; padding: 14px 16px; border: 1px solid #e2e6eb; border-radius: 10px; background: #fff; }
+  .card .label { color: #5c6570; font-size: 12px; }
+  .card .value { font-size: 26px; font-weight: 700; margin: 2px 0; }
+  .card .detail { color: #79818c; font-size: 12px; }
+  .meta-grid { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 12px 16px; border: 1px solid #e2e6eb;
+    border-radius: 10px; background: #fff; color: #4a5560; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; background: #fff; border: 1px solid #e2e6eb; border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #eef1f4; font-size: 13px; }
+  th { background: #f0f2f5; color: #4a5560; font-weight: 600; }
+  .case { background: #fff; border: 1px solid #e2e6eb; border-radius: 8px; margin: 6px 0; }
+  .case > summary { display: flex; gap: 10px; align-items: center; padding: 8px 12px; cursor: pointer; list-style: none; }
+  .case > summary::-webkit-details-marker { display: none; }
+  .case .verdict { width: 1.6em; text-align: center; font-weight: 700; }
+  .case[data-verdict="ok"] .verdict { color: #1a7f37; }
+  .case[data-verdict="bad"] .verdict { color: #c62828; }
+  .case .case-id { color: #4a5560; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .case .type { color: #6b7480; font-size: 12px; }
+  .case .tokens, .case .ms { color: #98a1ab; font-size: 12px; margin-left: auto; }
+  .case .ms { margin-left: 0; }
+  .case .question { color: #6b7480; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+  .case-body { padding: 4px 14px 12px 40px; }
+  .case-body .q { color: #4a5560; }
+  .case-body .a { margin: 6px 0; white-space: pre-wrap; }
+  .case-body .meta { color: #98a1ab; font-size: 12px; }
+  .note { margin-top: 18px; color: #79818c; font-size: 12px; }
+</style></head>
+<body>
+  <h1>记忆基准 · oracle 子集（52 题，6 类 + 10 弃权）</h1>
+  <div class="sub">观测性质量证据（非门禁阈值）：跑完状态与质量参考分列，PASS 只表示完整跑完。</div>
+  <div class="meta-grid">
+    <span>状态：<b>observational</b></span>
+    <span>跑完：<b>52/52</b></span>
+    <span>被测模型：deepseek-flash</span>
+    <span>judge：deepseek-reasoner</span>
+    <span>seed：memory-bench-2026-10-03</span>
+    <span>commit：41918325aea0</span>
+    <span>数据 revision：98d7416c24c7</span>
+    <span>用时：40.1 分钟</span>
+  </div>
+  <section><h2>质量参考</h2><div class="cards"><div class="card"><div class="label">总体正确率</div><div class="value">96.2%</div><div class="detail">50/52 正确</div></div><div class="card"><div class="label">regular</div><div class="value">95.2%</div><div class="detail">40/42</div></div><div class="card"><div class="label">abstention</div><div class="value">100.0%</div><div class="detail">10/10</div></div><div class="card"><div class="label">助手题型（计入总计）</div><div class="value">100.0%</div><div class="detail">8/8<br />该题型计入全选中题集总计；只从附加的产品用户事实比较子集排除，不据此推断当前产品不可回答</div></div><div class="card"><div class="label">产品用户事实子集（范围见说明）（不计总计）</div><div class="value">95.5%</div><div class="detail">42/44<br />按 LongMemEval 的 single-session-assistant 题型排除；这是用户来源事实的附加比较口径，不代表完整对话检索能力</div></div><div class="card"><div class="label">严格空工具子集（不计总计）</div><div class="value">96.2%</div><div class="detail">50/52 · 严格样本 52 · 污染 0 · 未知 0 · 未完成 0<br />仅 complete 且显式 usedTools=false、protocolViolations=[]、requestedMode=none、observedCalls=0 的题进入严格空工具基线；污染、未知与未完成题分别计数，notCompleted 是全选中题集里的未完成数</div></div></div></section>
+  <section><h2>题型</h2><table><thead><tr><th>名称</th><th>样本</th><th>判分</th><th>正确率</th></tr></thead><tbody><tr><td>knowledge-update</td><td>8</td><td>8</td><td>100.0%</td></tr><tr><td>multi-session</td><td>12</td><td>12</td><td>91.7%</td></tr><tr><td>single-session-assistant</td><td>8</td><td>8</td><td>100.0%</td></tr><tr><td>single-session-preference</td><td>4</td><td>4</td><td>100.0%</td></tr><tr><td>single-session-user</td><td>8</td><td>8</td><td>100.0%</td></tr><tr><td>temporal-reasoning</td><td>12</td><td>12</td><td>91.7%</td></tr></tbody></table></section>
+  
+  <section><h2>成本</h2><table><tbody>
+    <tr><td>输入（未缓存）</td><td>1,145,783（1,001,406）</td></tr>
+    <tr><td>输出</td><td>507,277</td></tr>
+    <tr><td>缓存读 / 写</td><td>144,377 / 0</td></tr>
+    <tr><td>模型请求</td><td>186</td></tr>
+    <tr><td>judge（52 次）</td><td>入 11,187 / 出 10,500</td></tr>
+    
+  </tbody></table></section>
+  <section><h2>灌库</h2><table><tbody>
+    <tr><td>登记 / 处理来源</td><td>525 / 525</td></tr>
+    <tr><td>sweeps / oversized</td><td>52 / 0</td></tr>
+    
+  </tbody></table></section>
+  <section><h2>检索（本仓适配口径）</h2><table><tbody><tr><td>sessionRecallMean</td><td>1</td></tr><tr><td>caseCount</td><td>52</td></tr><tr><td>turnRecallMean</td><td>1</td></tr><tr><td>turnCaseCount</td><td>36</td></tr><tr><td>assistantTurnRecallMean</td><td>1</td></tr><tr><td>assistantTurnCaseCount</td><td>8</td></tr><tr><td>candidateSessionRecallMean</td><td>0.599</td></tr><tr><td>evidenceHitRate</td><td>1</td></tr></tbody></table><p class="note">本仓适配口径，非官方 run_retrieval 的 R@k；turnRecall 只统计 user 事实轮，assistantTurnRecall 统计 assistant 对话轮</p></section>
+  
+  <section><h2>逐题（52）</h2><details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-0977f2af</span>
+        <span class="type">knowledge-update</span>
+        <span class="tokens">25,610→11,143</span>
+        <span class="ms"></span>
+        <span class="question">What new kitchen gadget did I invest in before getting the Air Fryer?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What new kitchen gadget did I invest in before getting the Air Fryer?</div>
+        <div class="a">Instant Pot 啊
+你说要用它炖汤炖菜那台，没多久前才入手的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-0ea62687</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">25,936→14,946</span>
+        <span class="ms"></span>
+        <span class="question">How much more miles per gallon was my car getting a few months ago compared to n</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How much more miles per gallon was my car getting a few months ago compared to now?</div>
+        <div class="a">2 mpg 吧
+都是市区口径的话，几个月前是 30，最近是 28，差 2</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-18dcd5a5</span>
+        <span class="type">single-session-assistant</span>
+        <span class="tokens">4,803→424</span>
+        <span class="ms"></span>
+        <span class="question">I&#39;m going back to our previous chat about the Lost Temple of the Djinn one-shot.</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I&#39;m going back to our previous chat about the Lost Temple of the Djinn one-shot. Can you remind me how many mummies the party will face in the temple?</div>
+        <div class="a">木乃伊是 4 只
+
+那批守卫里还有 6 个骷髅战士和 2 个构造体守卫，木乃伊就这 4 只，别记混了
+话说这个本你准备什么时候开</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-09d032c9</span>
+        <span class="type">single-session-preference</span>
+        <span class="tokens">24,405→6,873</span>
+        <span class="ms"></span>
+        <span class="question">I&#39;ve been having trouble with the battery life on my phone lately. Any tips?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I&#39;ve been having trouble with the battery life on my phone lately. Any tips?</div>
+        <div class="a">Battery drain is such an annoying one, let&#39;s poke at it. First thing I&#39;d do is open Settings then Battery and look at what&#39;s ranked at the top over the last 24 hours. Whatever&#39;s hogging it, that&#39;s your target.
+Then the usual levers. Screen brightness down or on auto, background app refresh off for anything you rarely open, location set to while using for most apps, and low power mode whenever you&#39;re out for a long stretch. Killing push notifications for noisy apps helps more than people expect too.
+If none of that moves it, the battery itself might just be worn down. But you&#39;ve got the power bank and the wireless pad already, so you&#39;re not exactly stranded either.</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-15745da0_abs</span>
+        <span class="type">single-session-user</span>
+        <span class="tokens">17,265→5,672</span>
+        <span class="ms"></span>
+        <span class="question">How long have I been collecting vintage films?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How long have I been collecting vintage films?</div>
+        <div class="a">Hmm, I don&#39;t actually have anything on a vintage film collection — nothing you&#39;ve told me about that one.
+What I do have is your vintage cameras, and you mentioned in May that you&#39;d been collecting those for about three months.
+Films might be a whole different shelf. If you&#39;ve been at it a while, tell me and I&#39;ll remember it this time.</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-2ebe6c90</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">15,330→7,676</span>
+        <span class="ms"></span>
+        <span class="question">How many days did it take me to finish &#39;The Nightingale&#39; by Kristin Hannah?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many days did it take me to finish &#39;The Nightingale&#39; by Kristin Hannah?</div>
+        <div class="a">从1月10号开始读，到1月31号读完，算下来21天。
+挺快的嘛，那本挺厚的。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-0ddfec37_abs</span>
+        <span class="type">knowledge-update</span>
+        <span class="tokens">24,534→10,096</span>
+        <span class="ms"></span>
+        <span class="question">How many autographed football have I added to my collection in the first three m</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many autographed football have I added to my collection in the first three months of collection?</div>
+        <div class="a">签名橄榄球这条我真翻不到，你说过的是签名棒球
+5 月 22 号提的是三个月里 15 个签名棒球，5 月 25 号又说是 20 个。橄榄球的数量我这边没有记录，没法给你数</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-2b8f3739</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">40,584→19,063</span>
+        <span class="ms"></span>
+        <span class="question">What is the total amount of money I earned from selling my products at the marke</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What is the total amount of money I earned from selling my products at the markets?</div>
+        <div class="a">Three markets so far, adding up to $495.
+$225 from the 15 jars of jam at the Homemade and Handmade Market, $120 from the 12 bunches of herbs on May 15th, and $150 from the 20 potted plants at Summer Solstice at $7.50 each.
+The Harvest Festival one isn&#39;t in there yet, that&#39;s still ahead of you.</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-3249768e</span>
+        <span class="type">single-session-assistant</span>
+        <span class="tokens">4,990→823</span>
+        <span class="ms"></span>
+        <span class="question">I&#39;m looking back at our previous conversation about building a cocktail bar. You</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I&#39;m looking back at our previous conversation about building a cocktail bar. You recommended five bottles to make the widest variety of gin-based cocktails. Can you remind me what the fifth bottle was?</div>
+        <div class="a">是苦艾酒，Absinthe
+前四瓶是甜味美思、干味美思、Campari、接骨木花利口酒</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-32260d93</span>
+        <span class="type">single-session-preference</span>
+        <span class="tokens">16,512→10,382</span>
+        <span class="ms"></span>
+        <span class="question">Can you recommend a show or movie for me to watch tonight?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Can you recommend a show or movie for me to watch tonight?</div>
+        <div class="a">要我的话今晚就点 John Mulaney 的 Baby J，Netflix 上现成的
+你既然吃 Kid Gorgeous 那一套，这个也对味，故事顺、节奏狠，还带点他这两年自己的糟心事
+想换个人就 Mike Birbiglia 的 My Girlfriend&#39;s Boyfriend，一个长故事撑满一整场，学叙事特别值</div>
+        <div class="meta">status=complete · judged=yes · raw=Yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-1e043500</span>
+        <span class="type">single-session-user</span>
+        <span class="tokens">9,158→5,250</span>
+        <span class="ms"></span>
+        <span class="question">What is the name of the playlist I created on Spotify?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What is the name of the playlist I created on Spotify?</div>
+        <div class="a">Summer Vibes 吧
+你自己在那次聊天里提过的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-993da5e2</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">25,041→10,757</span>
+        <span class="ms"></span>
+        <span class="question">How long had I been using the new area rug when I rearranged my living room furn</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How long had I been using the new area rug when I rearranged my living room furniture?</div>
+        <div class="a">算下来差不多一周多点
+地毯大概是四月三十号前后到手的，家具是三周前挪的，也就是五月九号左右，中间隔了八九天
+要说的话，地毯铺了大概一周多你就把客厅重新摆了一遍</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-3ba21379</span>
+        <span class="type">knowledge-update</span>
+        <span class="tokens">18,481→9,816</span>
+        <span class="ms"></span>
+        <span class="question">What type of vehicle model am I currently working on?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What type of vehicle model am I currently working on?</div>
+        <div class="a">福特 F-150 皮卡吧 你自己说刚收了一台 转头开工这台了
+之前那台野马 Shelby GT350R 不是已经做完了嘛</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-5025383b</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">15,754→10,052</span>
+        <span class="ms"></span>
+        <span class="question">What are the two hobbies that led me to join online communities?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What are the two hobbies that led me to join online communities?</div>
+        <div class="a">做饭和摄影这两个吧
+一个是烹饪，你那时候已经在几个美食社区里聊菜谱技巧了，另一个是摄影，修图、街拍人像那些也是靠社区里的反馈慢慢学的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-4c36ccef</span>
+        <span class="type">single-session-assistant</span>
+        <span class="tokens">5,726→673</span>
+        <span class="ms"></span>
+        <span class="question">Can you remind me of the name of the romantic Italian restaurant in Rome you rec</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Can you remind me of the name of the romantic Italian restaurant in Rome you recommended for dinner?</div>
+        <div class="a">Roscioli — that&#39;s the one I picked for a romantic dinner.
+It&#39;s near Campo dei Fiori, cozy little spot, soft lighting and a solid wine list. The wine and cheese tasting is the bit worth asking for.</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-75832dbd</span>
+        <span class="type">single-session-preference</span>
+        <span class="tokens">18,186→9,991</span>
+        <span class="ms"></span>
+        <span class="question">Can you recommend some recent publications or conferences that I might find inte</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Can you recommend some recent publications or conferences that I might find interesting?</div>
+        <div class="a">我没法替你翻最新一期，具体某篇2023的新论文就不瞎报了，怕指错
+会议这块给你几个稳的 MICCAI 每年十月 医学图像计算的主战场 你这方向的论文一半在那 MIDL 偏方法 五月前后开 ISBI 和 SPIE Medical Imaging 也常年有图像分析的场子 期刊就盯 Medical Image Analysis 和 IEEE TMI
+你之前翻的那批 Grad-CAM DeepLIFT LIME SHAP 都是2014到2020的 打底子够用 追新还是得去上面几个会的最新 proceedings 里筛
+关键词可以照着 域适应 自监督预训练 多模态融合 还有 transformer 做可解释性 这几个最近在会里出镜挺高</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-4100d0a0</span>
+        <span class="type">single-session-user</span>
+        <span class="tokens">14,616→2,520</span>
+        <span class="ms"></span>
+        <span class="question">What is my ethnicity?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What is my ethnicity?</div>
+        <div class="a">你自己说过嘛，爱尔兰和意大利混的</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-c8090214_abs</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">27,187→13,364</span>
+        <span class="ms"></span>
+        <span class="question">How many days before I bought my iPad did I attend the Holiday Market?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many days before I bought my iPad did I attend the Holiday Market?</div>
+        <div class="a">翻了下，只找到你买 iPhone 13 Pro 的记录，在 Best Buy 黑五那天拿的，iPad 的购买记录我这边真没有
+Holiday Market 那个倒是写着黑五前一周去的，但少了 iPad 的日期，这个差几天就真算不出来</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-6071bd76</span>
+        <span class="type">knowledge-update</span>
+        <span class="tokens">14,174→9,865</span>
+        <span class="ms"></span>
+        <span class="question">For the coffee-to-water ratio in my French press, did I switch to more water per</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">For the coffee-to-water ratio in my French press, did I switch to more water per tablespoon of coffee, or less?</div>
+        <div class="a">少了
+之前是1勺配6盎司水，后来你自己说调成1勺配5盎司了，水少了，等于冲得更浓一些</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-60bf93ed_abs</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">25,915→12,197</span>
+        <span class="ms"></span>
+        <span class="question">How many days did it take for my iPad case to arrive after I bought it?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many days did it take for my iPad case to arrive after I bought it?</div>
+        <div class="a">我翻了翻咱们聊过的，iPad 壳子这事真没印象，你好像没跟我提过买它。
+倒是背包有记录，1/15 在亚马逊下的单，1/20 到的，中间五天。
+是不是把背包记成壳子了？</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-6ae235be</span>
+        <span class="type">single-session-assistant</span>
+        <span class="tokens">6,895→1,390</span>
+        <span class="ms"></span>
+        <span class="question">I remember you told me about the refining processes at CITGO&#39;s three refineries </span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I remember you told me about the refining processes at CITGO&#39;s three refineries earlier. Can you remind me what kind of processes are used at the Lake Charles Refinery?</div>
+        <div class="a">记得，我那次说 Lake Charles 是这么几样
+常压蒸馏 先把原油加热 按沸点切成不同的馏分 这是第一步
+然后是催化裂化 FCC 把重的部分打碎成汽油和柴油 还有烷基化 把小分子拼成大分子 做高辛烷值的汽油组分 最后加氢处理 把汽油柴油里的杂质去掉
+我当时也提了一句 这只是主要的几样 炼的原油不同 市场要的东西不同 具体开哪些工艺也会跟着变</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-caf03d32</span>
+        <span class="type">single-session-preference</span>
+        <span class="tokens">22,442→12,220</span>
+        <span class="ms"></span>
+        <span class="question">I&#39;ve been struggling with my slow cooker recipes. Any advice on getting better r</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I&#39;ve been struggling with my slow cooker recipes. Any advice on getting better results?</div>
+        <div class="a">慢炖锅最容易翻车的其实是水和开盖这两件事
+液体别按菜谱倒满 它几乎不蒸发 一般要比炉灶版少三分之一
+根茎类切大块垫底 绿叶菜和香草最后半小时再丢进去
+干豆子提前泡 别跟番茄这类酸的一起从头炖 不然炖多久都是硬的
+你之前提过想试腰果酸奶 那个更吃温度 中途别老开盖 有温度计就最稳
+再就是洋葱和菌菇先用锅炒一下再进慢炖锅 味道完全是另一档</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-6ade9755</span>
+        <span class="type">single-session-user</span>
+        <span class="tokens">8,527→7,269</span>
+        <span class="ms"></span>
+        <span class="question">Where do I take yoga classes?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Where do I take yoga classes?</div>
+        <div class="a">你平时上课是去 Serenity Yoga，在家就用 Down Dog 顶着练
+我自己是觉得这两边搭着来挺舒服，课上有人盯动作，家里想练就练</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-cc6d1ec1</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">27,800→12,257</span>
+        <span class="ms"></span>
+        <span class="question">How long had I been bird watching when I attended the bird watching workshop?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How long had I been bird watching when I attended the bird watching workshop?</div>
+        <div class="a">大概两个月吧
+五月底那会儿你说观鸟差不多三个月了，工作坊又是大约一个月前去的，这么一减就是两个月左右</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-6aeb4375_abs</span>
+        <span class="type">knowledge-update</span>
+        <span class="tokens">23,555→7,104</span>
+        <span class="ms"></span>
+        <span class="question">How many Italian restaurants have I tried in my city?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many Italian restaurants have I tried in my city?</div>
+        <div class="a">意大利餐厅这个我这边真没底
+翻来翻去只看到你说过韩餐 先是三家 后来变成四家
+还有你家附近那家新开的印度餐厅 说想吃 chicken tikka masala 那个
+意餐一次都没提过 所以数不出来</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="bad">
+      <summary>
+        <span class="verdict">✗</span>
+        <span class="case-id">lme-oracle-6d550036</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">57,039→16,459</span>
+        <span class="ms"></span>
+        <span class="question">How many projects have I led or am currently leading?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many projects have I led or am currently leading?</div>
+        <div class="a">按你跟我讲过的，能明确算你带的就一个
+Marketing Research 课上那个项目，你说你带了数据分析那组
+Data Mining 那个 solo 项目你只说在做，案例竞赛和海报研究也没说是你牵头，所以我不替你算进去</div>
+        <div class="meta">status=complete · judged=yes · raw=no · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-8464fc84</span>
+        <span class="type">single-session-assistant</span>
+        <span class="tokens">7,375→1,151</span>
+        <span class="ms"></span>
+        <span class="question">I&#39;m planning to visit the Vatican again and I was wondering if you could remind </span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I&#39;m planning to visit the Vatican again and I was wondering if you could remind me of the name of that famous deli near the Vatican that serves the best cured meats and cheeses?</div>
+        <div class="a">罗西奥利，Roscioli，就是那家。上次我提过，说是腌肉和奶酪最出名、还做传统罗马菜的那家。
+不过它其实在鲜花广场那边，离梵蒂冈有点距离，走路得二十来分钟。你要是专门奔着它去，得留出这段路程。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-8a137a7f</span>
+        <span class="type">single-session-user</span>
+        <span class="tokens">16,272→7,863</span>
+        <span class="ms"></span>
+        <span class="question">What type of bulb did I replace in my bedside lamp?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What type of bulb did I replace in my bedside lamp?</div>
+        <div class="a">床头灯那个是飞利浦的LED灯泡，暖色调的
+不过你只跟我提过在用，没说换过 要说换，我可就没印象了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-gpt4_1e4a8aeb</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">25,607→9,900</span>
+        <span class="ms"></span>
+        <span class="question">How many days passed between the day I attended the gardening workshop and the d</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many days passed between the day I attended the gardening workshop and the day I planted the tomato saplings?</div>
+        <div class="a">从4月15号的工作坊到4月21号种下番茄苗，中间隔了6天
+&lt;</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-852ce960</span>
+        <span class="type">knowledge-update</span>
+        <span class="tokens">26,459→19,340</span>
+        <span class="ms"></span>
+        <span class="question">What was the amount I was pre-approved for when I got my mortgage from Wells Far</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What was the amount I was pre-approved for when I got my mortgage from Wells Fargo?</div>
+        <div class="a">你是 Wells Fargo 预批的，最近一次提到的是 40 万
+早先八月那会儿说的是 35 万，后来十一月你自己讲成了 40 万，就按后来这个算</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-8e91e7d9</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">27,050→12,795</span>
+        <span class="ms"></span>
+        <span class="question">What is the total number of siblings I have?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What is the total number of siblings I have?</div>
+        <div class="a">四个，一个兄弟加三个姐妹，这个你之前跟我提过</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-ac031881</span>
+        <span class="type">single-session-assistant</span>
+        <span class="tokens">20,640→7,865</span>
+        <span class="ms"></span>
+        <span class="question">I&#39;m trying to recall what the designation on my jumpsuit was that helped me find</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I&#39;m trying to recall what the designation on my jumpsuit was that helped me find the file number in the records room?</div>
+        <div class="a">LIV 啊
+就是罗马数字那个 54 的意思 你顺着这个找的 54 号档案 后来还翻到了前一代的 LIII 也就是 53 号</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-bc8a6e93</span>
+        <span class="type">single-session-user</span>
+        <span class="tokens">17,081→8,528</span>
+        <span class="ms"></span>
+        <span class="question">What did I bake for my niece&#39;s birthday party?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What did I bake for my niece&#39;s birthday party?</div>
+        <div class="a">Lemon blueberry cake — the one you said was a huge hit at her party.
+Tangy lemon with sweet blueberries does sound like a combo worth repeating.</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-gpt4_468eb064</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">16,665→10,399</span>
+        <span class="ms"></span>
+        <span class="question">Who did I meet with during the lunch last Tuesday?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Who did I meet with during the lunch last Tuesday?</div>
+        <div class="a">上次周二午餐是跟 Emma 见的，自由撰稿人那位。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-ba61f0b9</span>
+        <span class="type">knowledge-update</span>
+        <span class="tokens">25,995→8,459</span>
+        <span class="ms"></span>
+        <span class="question">How many women are on the team led by my former manager Rachel?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many women are on the team led by my former manager Rachel?</div>
+        <div class="a">六个
+你一月那会儿说过她们组一半是女性 也就是五个 后来七月又提到是十个人里六个 我按后头这个算</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-a96c20ee_abs</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">25,628→8,258</span>
+        <span class="ms"></span>
+        <span class="question">At which university did I present a poster for my undergrad course research proj</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">At which university did I present a poster for my undergrad course research project?</div>
+        <div class="a">本科课程研究项目这个……你好像没跟我提过
+我这边记着的是你在第一次研究会议上贴了海报，讲的是毕业论文那项研究，那次会议你提过是在哈佛
+所以哈佛能对上，本科课程项目那部分对不上，你是不是把它和论文那回记混了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-d596882b</span>
+        <span class="type">single-session-assistant</span>
+        <span class="tokens">6,342→1,857</span>
+        <span class="ms"></span>
+        <span class="question">I&#39;m planning another trip to New York City and I was wondering if you could remi</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I&#39;m planning another trip to New York City and I was wondering if you could remind me of that vegan eatery you recommended last time, the one with multiple locations throughout the city?</div>
+        <div class="a">By Chloe 就是它，植物基快餐，城里好几家分店，汉堡沙拉意面还有烘焙都做
+当时我还顺带提了 Candle 79 和 Superiority Burger，但那两个都是单店，多店的只有 By Chloe</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-bc8a6e93_abs</span>
+        <span class="type">single-session-user</span>
+        <span class="tokens">16,216→9,636</span>
+        <span class="ms"></span>
+        <span class="question">What did I bake for my uncle&#39;s birthday party?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What did I bake for my uncle&#39;s birthday party?</div>
+        <div class="a">翻了下，咱俩之前聊的都是烘焙，没提过你叔叔的生日派对
+只找到一次生日派对的记录，是你给侄女做的柠檬蓝莓蛋糕
+叔叔那边我这儿是真没有，你告诉我的话我就记着</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-gpt4_68e94287</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">24,687→10,035</span>
+        <span class="ms"></span>
+        <span class="question">Which event happened first, my participation in the #PlankChallenge or my post a</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Which event happened first, my participation in the #PlankChallenge or my post about vegan chili recipe?</div>
+        <div class="a">素食辣酱那个先
+你 3 月 9 号发的辣酱食谱，撸 plank 是 3 月 15 号，晚了差不多一周</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-e61a7584</span>
+        <span class="type">knowledge-update</span>
+        <span class="tokens">25,888→11,785</span>
+        <span class="ms"></span>
+        <span class="question">How long have I had my cat, Luna?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How long have I had my cat, Luna?</div>
+        <div class="a">大概九个月了吧，你自己说的
+八月那会儿还说是六个月，这么一算时间刚好接得上</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-a9f6b44c</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">33,083→9,969</span>
+        <span class="ms"></span>
+        <span class="question">How many bikes did I service or plan to service in March?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many bikes did I service or plan to service in March?</div>
+        <div class="a">两辆。
+一辆是公路车，3月10号在 Pedal Power 做的保养；另一辆是通勤那辆，你打算这个月、四月之前给它换前胎。</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-eaca4986</span>
+        <span class="type">single-session-assistant</span>
+        <span class="tokens">5,550→1,069</span>
+        <span class="ms"></span>
+        <span class="question">I&#39;m looking back at our previous conversation where you created two sad songs fo</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">I&#39;m looking back at our previous conversation where you created two sad songs for me. Can you remind me what was the chord progression for the chorus in the second song?</div>
+        <div class="a">第二首就是那首更柔情一点的，副歌每句都是 C D E F G A B A G F E D C
+一串音顺着爬上去再原路落回来，四句一模一样，所以听着特别绕心
+不过那会儿我给的其实是单音谱，不是和弦走向，你按这个弹也行，就是有点单薄</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-e01b8e2f</span>
+        <span class="type">single-session-user</span>
+        <span class="tokens">16,707→7,474</span>
+        <span class="ms"></span>
+        <span class="question">Where did I go on a week-long trip with my family?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Where did I go on a week-long trip with my family?</div>
+        <div class="a">夏威夷
+
+上个月跟家里人去的 待了一周
+回来还念叨着想再去 这次大概是自己一个人的玩法</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-gpt4_7f6b06db</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">38,509→25,895</span>
+        <span class="ms"></span>
+        <span class="question">What is the order of the three trips I took in the past three months, from earli</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What is the order of the three trips I took in the past three months, from earliest to latest?</div>
+        <div class="a">按时间排是：Muir Woods 那趟（3月10号，跟家里人爬山）最早
+然后是 4月20号的 Big Sur 和 Monterey 公路旅行
+最后是 5月15号的优胜美地独自露营</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-d6062bb9</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">26,985→6,840</span>
+        <span class="ms"></span>
+        <span class="question">What is the total number of views on my most popular videos on YouTube and TikTo</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">What is the total number of views on my most popular videos on YouTube and TikTok?</div>
+        <div class="a">542 加 1456，一共 1998
+YouTube 那个数据分析教程 542，TikTok 是 Luna 追激光笔那条 1456</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-gpt4_93159ced_abs</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">28,040→11,256</span>
+        <span class="ms"></span>
+        <span class="question">How long have I been working before I started my current job at Google?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How long have I been working before I started my current job at Google?</div>
+        <div class="a">记录里没有 Google 这段，我看到的是你现在的雇主是 NovaTech，在那儿大概 4 年 3 个月
+至于进 NovaTech 之前……你提过自己专业工作一共 9 年，所以往前那段大概是 4 年 9 个月左右。但那是按 NovaTech 算的，跟 Google 对不上号
+要是你确实换到 Google 了，跟我说一声，我记下来</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-eeda8a6d_abs</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">27,001→7,753</span>
+        <span class="ms"></span>
+        <span class="question">How many fish are there in my 30-gallon tank?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many fish are there in my 30-gallon tank?</div>
+        <div class="a">30 加仑那个缸我这边没有记录，说不上来有多少鱼
+我只知道那个 20 加仑缸，里面是 10 条霓虹灯、5 条丽丽鱼、1 条小清道夫，一共 16 条</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-gpt4_b0863698</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">15,666→9,360</span>
+        <span class="ms"></span>
+        <span class="question">How many days ago did I participate in the 5K charity run?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many days ago did I participate in the 5K charity run?</div>
+        <div class="a">刚好七天前，3月19号那天
+还顺手记着你跑了27分12秒呢</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-ef9cf60a</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">24,745→12,453</span>
+        <span class="ms"></span>
+        <span class="question">How much did I spend on gifts for my sister?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How much did I spend on gifts for my sister?</div>
+        <div class="a">我记得的是两笔
+一张给她常去那家店的 spa 礼品卡 100
+后来那条 Tiffany 银项链 200 左右
+加起来差不多 300
+别的要是还买过什么没跟我提过，那就不在这数里了</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="bad">
+      <summary>
+        <span class="verdict">✗</span>
+        <span class="case-id">lme-oracle-gpt4_e414231f</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">27,432→15,778</span>
+        <span class="ms"></span>
+        <span class="question">Which bike did I fixed or serviced the past weekend?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Which bike did I fixed or serviced the past weekend?</div>
+        <div class="a">上个周末其实没有你真的动手修车或保养的记录
+翻到的只有两件事 周三也就是 15 号 你给山地车补了内胎 顺手清了链条 骑起来一直挺顺
+周日那天聊的是公路车 还没送去店里 只是说想约个保养 顺便定了换 Shimano Ultegra 锁踏 都是计划 还没落地</div>
+        <div class="meta">status=complete · judged=yes · raw=no · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-gpt4_7fce9456</span>
+        <span class="type">multi-session</span>
+        <span class="tokens">83,465→33,872</span>
+        <span class="ms"></span>
+        <span class="question">How many properties did I view before making an offer on the townhouse in the Br</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">How many properties did I view before making an offer on the townhouse in the Brookside neighborhood?</div>
+        <div class="a">算上 Brookside 那套本身，出价前你一共看过 5 处
+1 月 22 日 Oakwood 的三居平房、2 月 1 日 Cedar Creek 那套、2 月 10 日的一居室公寓、2 月 15 日的两居室公寓，最后是 2 月 22 日的 Brookside 联排，2 月 25 日出价
+要是不把目标那套算进去，就是 4 处</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details>
+<details class="case" data-verdict="ok">
+      <summary>
+        <span class="verdict">✓</span>
+        <span class="case-id">lme-oracle-gpt4_fe651585_abs</span>
+        <span class="type">temporal-reasoning</span>
+        <span class="tokens">16,230→9,405</span>
+        <span class="ms"></span>
+        <span class="question">Who became a parent first, Tom or Alex?</span>
+      </summary>
+      <div class="case-body">
+        <div class="q">Who became a parent first, Tom or Alex?</div>
+        <div class="a">Tom 这边我一点都没听说过诶
+有记录的就只有 Alex，一月从中国领养了女儿。所以比不了，只能说 Alex 是先当上爸妈的那个</div>
+        <div class="meta">status=complete · judged=yes · raw=yes · reuse=no</div>
+      </div>
+    </details></section>
+  <div class="note">
+    报告 JSON：/Users/v1rtual/WEB/someworks/Desk-Pet/test/reports/bench/2026-10-10T07-02-22-201Z.json<br />逐题 hypotheses（官方脚本可消费）：/Users/v1rtual/WEB/someworks/Desk-Pet/test/reports/bench/traces/trace-bundle-2026-10-10T07-02-22-201Z.memory-bench.jsonl
+  </div>
+</body></html>

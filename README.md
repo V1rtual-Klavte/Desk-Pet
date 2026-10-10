@@ -213,8 +213,16 @@ macOS 的窗口观察需要在「系统设置 → 隐私与安全性 → 辅助�
 
 [CI](.github/workflows/ci.yml) 在 macOS 与 Windows 上执行编译检查、Rust 单测与 L2 / L3 快层（经重试入口，附测试纪律扫描与 FLAKY 棘轮），不执行 L4 端到端。
 
-记忆系统benchmark正在测 忙不赢了
-评测框架还没正式追踪trace评测
+记忆系统的外部基准按分层节奏在本机实测：报告为观测证据（`status: observational`），不进 CI 与发布门禁；每题一次试验存在翻转噪声，引用数字时须一并说明。
+
+| 数据集 | 划分 | 结果 |
+|---|---|---|
+| LongMemEval | oracle（52 题） | **50/52（96.2%）** · 2026-10-10 · regular 95.2% · 弃权 10/10 · 未裁决 0 |
+| LongMemEval | S | 未测 |
+| LoCoMo | locomo10 | 未测 |
+| MemoryBank | cn | 未测 |
+
+评测框架对 trace 的正式追踪尚未接线 —— trace 现在只作运行证据留存与理想线路审阅的输入，还没进入自动评测闭环。
 
 
 ## 数据与配置

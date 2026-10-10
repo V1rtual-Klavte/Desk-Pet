@@ -230,6 +230,20 @@ passed. See the [test README](test/README.md) for command details and scene conv
 layers on macOS and Windows (through a retrying entry point, plus the test-discipline scan and
 the FLAKY ratchet); it does not run L4 end-to-end.
 
+The external memory benchmarks are measured locally on a tiered cadence: their reports are
+observational evidence (`status: observational`) and enter neither CI nor the release gate; with
+one trial per question, quote the numbers together with the flip noise.
+
+| Dataset | Split | Result |
+|---|---|---|
+| LongMemEval | oracle (52 questions) | **50/52 (96.2%)** · 2026-10-10 · regular 95.2% · abstention 10/10 · 0 unadjudicated |
+| LongMemEval | S | not run |
+| LoCoMo | locomo10 | not run |
+| MemoryBank | cn | not run |
+
+Formal trace tracking in the evaluation framework is not wired up yet: traces are kept as run
+evidence and as input to ideal-trace review, not as an automated evaluation loop.
+
 ## Data & configuration
 
 Development data lives in `data/desk-pet/`; production data lives in the app-specific
