@@ -661,7 +661,15 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
       }
       sourcesProcessed += usable.length
       processedSourceIds.push(...usable.map(source => source.sourceId))
-      const checkpoint = await checkpointMemoryJob(jobId, usable[usable.length - 1]!.sourceId, LEASE_OWNER)
+      // 水位按批内每个会话各自推进：来源按 (session_id, seq) 成批取数，一批横跨多个会话，
+      // 只推进游标（批尾）所在会话会把批中段会话整段留在水位之后，下个作业重读同一批
+      // 来源（2026-10-10 LongMemEval S 实测：239 来源跑 10 轮 sweep 仍剩 166 待处理）。
+      const checkpoint = await checkpointMemoryJob(
+        jobId,
+        usable[usable.length - 1]!.sourceId,
+        usable.map(source => source.sourceId),
+        LEASE_OWNER,
+      )
       revision = checkpoint.revision
       if (pool.length <= MAX_SOURCES_PER_BATCH) break
     }

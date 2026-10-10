@@ -964,6 +964,7 @@ impl NativeDispatcher {
                 self.memory()?,
                 arg_str(args, "jobId")?,
                 arg_str(args, "cursor")?,
+                arg_opt_strings(args, "coveredSourceIds")?,
                 arg_str(args, "leaseOwner")?,
                 arg_opt_i64(args, "leaseMs")?,
             ),
@@ -1385,6 +1386,15 @@ fn arg_opt_usize(args: &Value, key: &str) -> AppResult<Option<usize>> {
 fn arg_u8(args: &Value, key: &str) -> AppResult<u8> {
     let value = arg_u64(args, key)?;
     u8::try_from(value).map_err(|_| AppError::Config(format!("参数超出 u8 范围: {key}")))
+}
+
+/// 可选字符串数组：缺省 / null = None；给了就必须是字符串数组（逐项校验复用 `arg_strings`）。
+fn arg_opt_strings(args: &Value, key: &str) -> AppResult<Option<Vec<String>>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(_)) => Ok(Some(arg_strings(args, key)?)),
+        Some(_) => Err(AppError::Config(format!("参数不是字符串数组或 null: {key}"))),
+    }
 }
 
 fn arg_strings(args: &Value, key: &str) -> AppResult<Vec<String>> {

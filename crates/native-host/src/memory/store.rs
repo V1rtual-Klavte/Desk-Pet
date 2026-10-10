@@ -11,7 +11,8 @@ use super::ConversationClearFence;
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
 use rusqlite::{
-    backup, params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+    backup, params, params_from_iter, Connection, OpenFlags, OptionalExtension, Transaction,
+    TransactionBehavior,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -1993,10 +1994,18 @@ impl MemoryStore {
     }
 
     /// 续租并推进游标；租约已过期或不属于本 owner 时拒绝，避免两个窗口同时写同一作业。
+    ///
+    /// 水位推进覆盖**本批实际处理的全部来源**（`covered_source_ids`）：来源按
+    /// (session_id, seq) 成批取数，一批会横跨多个会话，只推进游标（批尾）所在会话会把
+    /// 批中段会话的来源留在水位之后，下一次作业整段重读（2026-10-10 LongMemEval S 实测：
+    /// 239 来源跑 10 轮 sweep 仍剩 166 待处理，头部来源被处理 10/10 次）。
+    /// 批内每个会话推进到它在批内的最大 seq；`covered_source_ids` 为空（老调用）时
+    /// 退回只推进游标来源所在会话。
     pub fn job_checkpoint(
         &self,
         job_id: &str,
         cursor: &str,
+        covered_source_ids: &[String],
         lease_owner: &str,
         lease_ms: i64,
     ) -> AppResult<Value> {
@@ -2011,16 +2020,40 @@ impl MemoryStore {
         if changed == 0 {
             return Err(AppError::MemoryConflict);
         }
-        // cursor 是 source_id；推进对应会话水位，下一批不会重新读同一来源。
-        let source: Option<(String, i64)> = conn
-            .query_row(
-                "SELECT session_id,seq FROM memory_sources WHERE source_id=?1 LIMIT 1",
-                [cursor],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(db_err)?;
-        if let Some((session_id, seq)) = source {
+        // 水位写入口只有这里（唯一实现点）：批内每个会话各自推进，游标来源兜底保证
+        // 老调用（只带 cursor）语义不变。
+        let mut advances: Vec<(String, i64)> = Vec::new();
+        if covered_source_ids.is_empty() {
+            let source: Option<(String, i64)> = conn
+                .query_row(
+                    "SELECT session_id,seq FROM memory_sources WHERE source_id=?1 LIMIT 1",
+                    [cursor],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(db_err)?;
+            advances.extend(source);
+        } else {
+            let placeholders = std::iter::repeat("?")
+                .take(covered_source_ids.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT session_id,MAX(seq) FROM memory_sources WHERE source_id IN ({placeholders}) GROUP BY session_id"
+                ))
+                .map_err(db_err)?;
+            let rows = statement
+                .query_map(
+                    params_from_iter(covered_source_ids.iter().map(String::as_str)),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(db_err)?;
+            for row in rows {
+                advances.push(row.map_err(db_err)?);
+            }
+        }
+        for (session_id, seq) in advances {
             conn.execute(
                     "INSERT INTO memory_watermarks(session_id,seq,rule_version,updated_at) VALUES (?1,?2,?3,?4) \
                      ON CONFLICT(session_id) DO UPDATE SET seq=MAX(memory_watermarks.seq,excluded.seq),updated_at=excluded.updated_at",

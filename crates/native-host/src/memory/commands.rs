@@ -258,16 +258,20 @@ pub fn memory_job_list(
         .job_list(limit.unwrap_or(JOB_LIST_LIMIT_DEFAULT), offset.unwrap_or(0))
 }
 
+/// `covered_source_ids`：本批实际处理的全部来源（批内水位按会话各自推进，见
+/// `MemoryStore::job_checkpoint`）；缺省（None）时只按 cursor 来源推进，老调用语义不变。
 pub fn memory_job_checkpoint(
     state: &MemoryState,
     job_id: String,
     cursor: String,
+    covered_source_ids: Option<Vec<String>>,
     lease_owner: String,
     lease_ms: Option<i64>,
 ) -> AppResult<Value> {
     state.0.job_checkpoint(
         &job_id,
         &cursor,
+        &covered_source_ids.unwrap_or_default(),
         &lease_owner,
         lease_ms.unwrap_or(JOB_LEASE_MS),
     )

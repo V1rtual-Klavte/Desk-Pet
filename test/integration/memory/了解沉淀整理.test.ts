@@ -196,7 +196,12 @@ describe("了解观察的沉淀整理", () => {
 
     const outcome = await dreaming.runDreamingSweep()
     expect(ipc.addMemoryCandidates, "同文本重新沉淀出了候选").not.toHaveBeenCalled()
-    expect(ipc.checkpointMemoryJob, "水位没有推进").toHaveBeenCalledWith("job-derived", "behavior-understanding:9999000011112222", "memory-dreaming")
+    expect(ipc.checkpointMemoryJob, "水位没有推进").toHaveBeenCalledWith(
+      "job-derived",
+      "behavior-understanding:9999000011112222",
+      ["behavior-understanding:9999000011112222"],
+      "memory-dreaming",
+    )
     expect(outcome.candidatesAdded).toBe(0)
     expect(outcome.status).toBe("completed")
   })

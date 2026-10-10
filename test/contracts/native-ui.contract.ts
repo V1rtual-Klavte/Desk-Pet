@@ -1,3 +1,4 @@
+// 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 src/services/host/types.ts 变化 —— memory_job_checkpoint 命令形状新增可选 coveredSourceIds（批内水位按每个覆盖会话推进，见 memory 契约同批记录）；原生 UI 面不受影响，覆盖点与 caseId 语义不变，仅按当前源码刷新 sourceHash。
 // 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：会话投影侦听同长度追加，提示音限定同会话新助手身份，既有图片与意图边界保留；未执行测试。
 // 原生 UI 桥契约（Node ↔ 原生宿主的数据流面）。
@@ -208,7 +209,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "56553be1b936cb6c438854fe1bbf12a6f28635ede7b843acefc183dc35a33d05",
+  sourceHash: "445970721e26265c5b2663ac8bba080f8fa7a7a1a7589366262950443152ea65",
   coverage: [
     {
       id: "nui-34",

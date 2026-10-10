@@ -862,7 +862,7 @@ fn pending_source_count_follows_watermark_and_tombstones() {
     let job = store.job_start("review", "host").unwrap();
     let job_id = job["id"].as_str().unwrap().to_string();
     store
-        .job_checkpoint(&job_id, "src-1", "host", 60_000)
+        .job_checkpoint(&job_id, "src-1", &[], "host", 60_000)
         .expect("推进水位");
     assert_eq!(
         store.pending_source_count(None).unwrap(),
@@ -909,6 +909,53 @@ fn pending_source_count_follows_watermark_and_tombstones() {
         0,
         "被遗忘的来源仍被计入待处理（墓碑过滤失效）"
     );
+}
+
+#[test]
+fn job_checkpoint_advances_watermarks_for_every_covered_session() {
+    // 一批来源横跨多个会话时，水位必须按会话各自推进：只推进游标（批尾）所在会话会把
+    // 批中段会话整段留在水位之后，下个作业重读同一批来源（2026-10-10 LongMemEval S 实测：
+    // 239 来源跑 10 轮 sweep 仍剩 166 待处理，头部来源被处理 10/10 次）。
+    let (_fixture, store) = Fixture::new();
+    let mut sources = Vec::new();
+    for session in ["s1", "s2", "s3"] {
+        for seq in 1..=2 {
+            let mut item = source(
+                &format!("{session}-{seq}"),
+                &format!("{session}-entry-{seq}"),
+                &format!("{session}-hash-{seq}"),
+            );
+            item["sessionId"] = json!(session);
+            item["seq"] = json!(seq);
+            sources.push(item);
+        }
+    }
+    store
+        .register_sources(&sources)
+        .expect("登记跨三个会话的六条来源");
+    assert_eq!(store.pending_source_count(None).unwrap(), 6);
+
+    // 一批覆盖全部六条来源（来源按 session_id + seq 排序，批尾落在 s3）。
+    let job = store.job_start("review", "host").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+    let covered: Vec<String> = ["s1", "s2", "s3"]
+        .iter()
+        .flat_map(|session| (1..=2).map(move |seq| format!("{session}-{seq}")))
+        .collect();
+    store
+        .job_checkpoint(&job_id, "s3-2", &covered, "host", 60_000)
+        .expect("推进批内全部会话水位");
+    assert_eq!(
+        store.pending_source_count(None).unwrap(),
+        0,
+        "批内每个会话都应推进水位（只推游标会话会漏掉批中段）"
+    );
+
+    // 下一个作业不得再读到同一批来源（修复前 s1/s2 的来源会整段重读）。
+    let next = store.job_start("review", "host").unwrap();
+    let next_id = next["id"].as_str().unwrap().to_string();
+    let pending = store.job_sources(&next_id, None).unwrap();
+    assert!(pending.is_empty(), "已处理来源不得重读: {pending:?}");
 }
 
 #[test]

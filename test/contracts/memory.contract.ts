@@ -1,3 +1,10 @@
+// 2026-10-10 整理水位推进修复（本批刷新，定向复核）：sourceFiles 内容变化 —— memory/store.rs 的
+// job_checkpoint 新增 coveredSourceIds，批内水位按「批内每个会话」各自推进（旧实现只推游标所在
+// 会话，批中段会话的来源留在水位之后、下个作业整段重读；LongMemEval S 实测头部来源被处理 10/10 次）；
+// memory/commands.rs 与 host/dispatch.rs 加同名可选参数，agent/memory/ipc.ts 与 dreaming.ts 按批内
+// 已处理来源传参，host/types.ts 的命令形状同步。行为面不变（水位仍是 per-session MAX(seq) 单调推进，
+// pending 判定与墓碑口径未动）；新增 Rust 单测 job_checkpoint_advances_watermarks_for_every_covered_session
+// 钉住修复（退回复修先见红），两处既有断言随签名机械更新（caseId 保留）。未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-10 阅读口径第三批（全量复核后收口）：52 题全量把总体从 90.4% 抬到 96.2%（abstention 10/10、
 // preference 与 knowledge-update 各 100%），但 multi-session 的「数项目」题由对转错 —— 「计划≠已发生」
 // 被过度应用，把 currently leading 的在办项目也排除掉。据此把该条收口为「已完成**或进行中**的动作算已
@@ -310,7 +317,7 @@ export const memoryContract: ModuleContract = {
   ],
   // 2026-10-10：预算/结构化证据归 mm-54..61，阅读器网关、缓存与取消组合归 mm-62；
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
-  sourceHash: "59d0cf14bd8a17e13e989abc8848cdc5ac1997b51bc1825ca1423be5389d8bf7",
+  sourceHash: "d00512071723c31deb1c473a80cc39d64102e57e99d1ab3c3b53ab64d63714f4",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },

@@ -1,3 +1,4 @@
+// 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 host/dispatch.rs（memory_job_checkpoint 分派臂加可选 coveredSourceIds）与 agent/memory/ipc.ts（按批内已处理来源传参）变化；观察、画像与 presence 路径不受影响，ob-01..07 逐点复核未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 最终静态复核：稳定artifact与输入证据分离、去重和话题立场透传已复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
 // 2026-10-05 设置页 Card 增删改查 + 模版批次：本契约 sourceFiles 中三处变化，均为新增 ——
@@ -300,7 +301,7 @@ export const observationContract: ModuleContract = {
     "test/unit/observation/证据身份稳定.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "ddc048600783f36008955914ee484a56a7cc7895ecc5fbf7735a01b79f390dd1",
+  sourceHash: "8ea431499d09defdb5bb722e7ea7f6d74a4380f8ca853b2560cb36240a06e4ca",
   coverage: [
     {
       id: "ob-01",

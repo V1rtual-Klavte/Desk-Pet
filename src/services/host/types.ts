@@ -1229,7 +1229,17 @@ export type HostCommandMap = {
     result: MemoryJobListItem[]
   }
   memory_job_checkpoint: {
-    args: { jobId: string; cursor: string; leaseOwner: string; leaseMs?: number | null }
+    /**
+     * `coveredSourceIds` = 本批实际处理的全部来源：来源按 (session_id, seq) 成批取数，
+     * 一批横跨多个会话，宿主按会话各自推进水位；缺省（null）只推进 cursor 来源所在会话。
+     */
+    args: {
+      jobId: string
+      cursor: string
+      coveredSourceIds?: string[] | null
+      leaseOwner: string
+      leaseMs?: number | null
+    }
     result: MemoryJob
   }
   memory_job_cancel: { args: { jobId: string; leaseOwner: string }; result: MemoryJob }

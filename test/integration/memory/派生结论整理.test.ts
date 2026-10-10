@@ -147,7 +147,12 @@ describe("派生结论的整理", () => {
     expect(candidate.draft.supersedesId, "首版结论不该覆盖任何条目").toBeUndefined()
     expect(candidate.draft.aliases).toContain("behavior-slot:rhythm")
     expect(candidate.id, "候选指纹不是确定性 id").toMatch(/^cand-[0-9a-f]{24}$/)
-    expect(ipc.checkpointMemoryJob, "水位没有推进到派生来源").toHaveBeenCalledWith("job-derived", "behavior-conclusion:rhythm:aaaa", "memory-dreaming")
+    expect(ipc.checkpointMemoryJob, "水位没有推进到派生来源").toHaveBeenCalledWith(
+      "job-derived",
+      "behavior-conclusion:rhythm:aaaa",
+      ["behavior-conclusion:rhythm:aaaa"],
+      "memory-dreaming",
+    )
     expect(ipc.commitMemoryDreamingJob).toHaveBeenCalledWith("job-derived", 1)
     expect(outcome.status).toBe("completed")
     expect(outcome.candidatesAdded).toBe(1)

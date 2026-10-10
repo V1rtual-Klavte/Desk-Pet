@@ -169,10 +169,11 @@ export async function startMemoryJob(phase: MemoryJob["phase"]): Promise<MemoryJ
 export async function checkpointMemoryJob(
   jobId: string,
   cursor: string,
+  coveredSourceIds: string[],
   leaseOwner: string,
   leaseMs?: number,
 ): Promise<MemoryJob> {
-  return getHostBridge().request("memory_job_checkpoint", { jobId, cursor, leaseOwner, leaseMs })
+  return getHostBridge().request("memory_job_checkpoint", { jobId, cursor, coveredSourceIds, leaseOwner, leaseMs })
 }
 
 export async function cancelMemoryJob(jobId: string, leaseOwner = "memory-dreaming"): Promise<MemoryJob> {

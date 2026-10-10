@@ -30,7 +30,7 @@
 | memory_item_sources | 事实 ↔ 来源关联（随 item 版本级联删除） |
 | memory_candidates | Review 产出的 staging 候选：提交事务前只存在这里，不进 FTS、不进召回 |
 | memory_jobs | dreaming 作业账本：phase/status/revision/forget_epoch、租约、cursor 与当日用量 |
-| memory_watermarks | 来源消费水位（session → 已处理 seq），水位补扫的判定依据 |
+| memory_watermarks | 来源消费水位（session → 已处理 seq，单调 MAX 推进；整理 checkpoint 按**本批实际处理的每个会话**各自推进，不只批尾游标所在会话），水位补扫的判定依据 |
 | memory_tombstones | 遗忘墓碑：稳定事件身份（session+entry+content_hash+effect），拦住索引重建、旧水位补扫与旧批次发布让内容复活 |
 | memory_operations | operation_id 幂等账本：提交结果未知时先查它，不盲重放 |
 | memory_dreaming_budgets | dreaming 每日 token 账（按自然日记录 reserved/used；只记账观测，不参与准入——2026-10-06 起日上限不再是门禁） |
