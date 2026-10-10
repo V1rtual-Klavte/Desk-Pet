@@ -20,10 +20,9 @@ import { getMemoryRecallCandidates } from "./ipc"
 import type { MemoryItem, MemoryOrigin, MemoryRecallCandidateSnapshot } from "./ipc"
 import { DERIVED_BEHAVIOR_ORIGIN } from "./sources"
 import { parseRerankSelection } from "./rerank"
-import { planMemoryQueries, recordOptionalFailure } from "./query"
+import { deriveMemoryQueryPlan, planMemoryQueries, recordOptionalFailure } from "./query"
 import type { MemoryQueryPlan, MemoryRecallFailureChannel, MemoryRecallOptionalFailure, MemoryRerankMode, QueryRewriteMode } from "./query"
-import { conversationProjection, expandConversationSessions, searchConversationCandidates, shouldUseRecentConversationFallback } from "./conversation"
-import { hasExplicitRewriteHint, hasPersonalRecallIntent } from "./query-shape"
+import { conversationProjection, expandConversationSessions, searchConversationCandidates } from "./conversation"
 import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "./conversation"
 import { MEMORY_LIMITS } from "./protocol"
 import { reconcileDerivedMemoryEvidence } from "./evidence"
@@ -45,6 +44,8 @@ export interface MemoryRecallRequest {
   purpose?: "conversation" | "proactive"
   targets?: Array<{ id: string; version: number }>
   before?: number
+  /** Question-relative clock, separate from the transcript eligibility cutoff. */
+  timeAnchor?: number
   allowExpiredTargets?: boolean
   runGeneration?: number
   /** Filled by the provider so a runtime can detect a revision change before later requests. */
@@ -357,14 +358,16 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   const exactTargetMode = proactive || (request.targets?.length ?? 0) > 0
   const targets = request.targets ?? []
   const queryRewriteEnabled = (request.queryRewriteMode ?? memoryConfig.queryRewrite) === "adaptive"
-  const cachedPlan = request.queryPlan
-  const cachedQueries = cachedPlan?.originalQuery === request.query
-    && cachedPlan.queries[0] === request.query
-    ? cachedPlan.queries
+  // Keep the caller's structured intent and grounded follow-up queries together. The
+  // runtime may call recall again for coverage; those searches must retain the original
+  // entities, evidence requirements, and temporal constraint even when rewriting is off.
+  const suppliedPlan = request.queryPlan?.originalQuery === request.query
+    && request.queryPlan.queries[0] === request.query
+    ? request.queryPlan
     : undefined
-  const baseQueries = !exactTargetMode && queryRewriteEnabled && cachedQueries
-    ? cachedQueries
-    : [request.query]
+  const retrievalPlan = suppliedPlan ?? deriveMemoryQueryPlan(request.query, request.timeAnchor ?? request.before)
+  const baseQueries = exactTargetMode ? [request.query]
+    : queryRewriteEnabled || suppliedPlan ? retrievalPlan.queries : [request.query]
   const baseFactQuery = exactTargetMode ? "" : baseQueries.join(" ")
 
   // Start the original-query local reads before query rewriting. They become a safe,
@@ -381,7 +384,7 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   )
   const baseConversationPromise = exactTargetMode || request.signal.aborted
     ? Promise.resolve(undefined)
-    : searchConversationChannel(request, baseQueries, request.query)
+    : searchConversationChannel(request, baseQueries, retrievalPlan)
   request.localFallbackFailureChannel = exactTargetMode ? "rerank" : "conversation"
 
   const factRead = await baseFactsPromise
@@ -440,7 +443,7 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
     const [extraFacts, extraConversation] = await Promise.all([
       getMemoryRecallCandidates(extraFactQuery, request.cardId, request.sessionId, [], false)
         .then(value => ({ value }), error => ({ error })),
-      searchConversationChannel(request, extraQueries, queryPlan.originalQuery)
+      searchConversationChannel(request, extraQueries, queryPlan)
         .then(value => ({ value }), error => ({ error })),
     ])
     if (request.signal.aborted) return []
@@ -479,8 +482,9 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
 
   let selectedDynamic = await selectRecallCandidates(localDynamic, request, rerankMode)
   if (request.signal.aborted) return []
+  const evidencePlan = request.queryPlan ?? retrievalPlan
   if (!proactive && !exactTargetMode && conversationSnapshot
-    && (hasPersonalRecallIntent(request.query) || hasExplicitRewriteHint(request.query))) {
+    && evidencePlan.evidenceNeeds.length > 0) {
     const seeds = selectedDynamic.flatMap(candidate => candidate.channel === "conversation" ? [candidate.entry] : [])
     if (seeds.length) {
       request.localFallbackFailureChannel = "conversation"
@@ -488,6 +492,7 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
         const expanded = await expandConversationSessions({ ...conversationSnapshot, entries: seeds }, {
           signal: request.signal, before: request.before,
           tokenBudget: Math.min(request.tokenBudget, request.budget?.recall ?? request.tokenBudget),
+          ...(evidencePlan.timeConstraint?.basis === "record" ? { recordTime: evidencePlan.timeConstraint } : {}),
         })
         if (request.signal.aborted) return []
         if (expanded.revisionChanged) {
@@ -647,10 +652,12 @@ function projectCandidateSet(
       return true
     }
     if (!unit.sessionId) return false
-    let accepted = false
-    for (const excerpt of fragmentsFor(unit)) if (acceptBundle([excerpt], reserved)) accepted = true
-    if (accepted) acceptedUnits.add(unit.id)
-    return accepted
+    const excerpts = fragmentsFor(unit)
+    if (acceptBundle(excerpts, reserved)) {
+      acceptedUnits.add(unit.id)
+      return true
+    }
+    return false
   }
 
   // Reserve indexed evidence for later sessions before expanding the first session's
@@ -730,18 +737,18 @@ function uniqueMemoryItems(items: readonly MemoryItem[]): MemoryItem[] {
 async function searchConversationChannel(
   request: MemoryRecallRequest,
   queries: readonly string[],
-  originalQuery: string,
+  queryPlan: MemoryQueryPlan,
 ): Promise<ConversationEvidenceResult | undefined> {
   try {
-    const recentFallback = shouldUseRecentConversationFallback(originalQuery)
-    if (!queries.some(query => query.trim()) && !recentFallback) return undefined
+    const hasRecordTime = queryPlan.timeConstraint?.basis === "record"
+    if (!queries.some(query => query.trim()) && !hasRecordTime) return undefined
     const result = await searchConversationCandidates({
       sessionId: request.sessionId,
       queries,
       signal: request.signal,
       before: request.before,
+      queryPlan,
       limit: MEMORY_LIMITS.conversation.maxSearchResults,
-      recentFallback,
     })
     if (result.revisionChanged) recordOptionalFailure(request, "conversation", "revision_changed")
     return result.entries.length > 0 ? result : undefined

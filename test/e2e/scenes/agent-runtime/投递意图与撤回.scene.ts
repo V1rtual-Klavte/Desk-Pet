@@ -12,6 +12,10 @@ const STEER_TEXT = "把方向改成先检查配置。"
 const FOLLOW_TEXT = "这个任务结束后再看日志。"
 const WITHDRAWN_TEXT = "这条应该被撤回，不该进入对话。"
 const TOOL_NAME = "live_p1_delivery_wait"
+const EMPTY_READER_REPLY = JSON.stringify({
+  notes: [],
+  questionChecks: [{ condition: "The historical details requested", status: "missing", sourceIds: [] }],
+})
 
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
 let followReceipt: string | undefined
@@ -50,6 +54,8 @@ export const 投递意图与撤回: SceneDef = {
       fakeToolCall(TOOL_NAME),
       fakeText("已按插话调整"),
       fakeText("后续任务已处理"),
+      // The verification turn makes a reader request even with no prior memory sources.
+      fakeText(EMPTY_READER_REPLY),
       fakeText("验证完成"),
     ])
     await initChat()

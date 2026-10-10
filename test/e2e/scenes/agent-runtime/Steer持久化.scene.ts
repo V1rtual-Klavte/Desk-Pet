@@ -8,6 +8,10 @@ import type { SceneDef } from "../../../e2e/types"
 
 const STEER_TEXT = "工具结束后改成新方向。"
 const TOOL_NAME = "live_p2_steer_wait"
+const EMPTY_READER_REPLY = JSON.stringify({
+  notes: [],
+  questionChecks: [{ condition: "The historical details requested", status: "missing", sourceIds: [] }],
+})
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
 let queuedSteerWhileToolRunning = false
 
@@ -26,6 +30,8 @@ export const Steer持久化: SceneDef = {
     installFakeProvider([
       fakeToolCall(TOOL_NAME),
       fakeText("已根据插话调整"),
+      // The verification turn makes a reader request even with no prior memory sources.
+      fakeText(EMPTY_READER_REPLY),
       fakeText("验证完成"),
     ])
     await initChat()

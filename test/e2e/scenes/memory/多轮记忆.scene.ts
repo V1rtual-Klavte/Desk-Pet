@@ -14,6 +14,10 @@ const RECALL_QUERY = "What did I say in 姓名确认单七一?"
 const RECALL_SEED = `请用这条线索回想刚才我报的名字：${RECALL_QUERY}`
 const LARGE_EVIDENCE = "终端会话索引证据九三一七"
 const LARGE_ASSISTANT_TEXT = "大段会话原文已保存。"
+const EMPTY_READER_REPLY = JSON.stringify({
+  notes: [],
+  questionChecks: [{ condition: "The historical details requested", status: "missing", sourceIds: [] }],
+})
 // 大 JSON 请求和回包都走 HostBridge 的自动 blob；大型会话单独隔离，避免影响早轮负对照。
 const LARGE_SESSION_TEXT = `${"legacy-frame-payload ".repeat(3_400)}${LARGE_EVIDENCE}`
 const CONTROL_FRAME_LIMIT_BYTES = 65_536
@@ -146,7 +150,11 @@ export const 多轮记忆: SceneDef = {
     tags: ["memory", "boundary"],
   },
   setup: async () => {
-    installFakeProvider([fakeText("你好小明，记下啦。"), fakeText("你叫小明，写 TypeScript。")])
+    installFakeProvider([
+      fakeText("你好小明，记下啦。"),
+      fakeText(EMPTY_READER_REPLY),
+      fakeText("你叫小明，写 TypeScript。"),
+    ])
   },
   turns: [
     { index: 1, description: "自我介绍", userText: FIRST_TEXT, checks: [

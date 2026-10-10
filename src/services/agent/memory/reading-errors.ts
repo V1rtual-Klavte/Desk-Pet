@@ -13,6 +13,7 @@ export const MEMORY_READING_ERROR_CATEGORIES = [
   "invalid_check_shape",
   "duplicate_check",
   "invalid_check_source",
+  "invalid_search_query",
 ] as const
 
 export type ReadingErrorCategory = typeof MEMORY_READING_ERROR_CATEGORIES[number]

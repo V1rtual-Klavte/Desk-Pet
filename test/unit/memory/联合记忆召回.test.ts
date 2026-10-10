@@ -54,7 +54,8 @@ import type { MemoryItem, MemoryRecallCandidateSnapshot } from "@/services/agent
 import { sqliteMemoryProvider } from "@/services/agent/memory/provider"
 import { memoryRecallTokens } from "@/services/agent/memory/projection"
 import type { ConversationSearchResult } from "@/services/agent/memory/protocol"
-import { planMemoryQueries } from "@/services/agent/memory/query"
+import type { MemoryQueryPlan } from "@/services/agent/memory/query"
+import { deriveMemoryQueryPlan, planMemoryQueries } from "@/services/agent/memory/query"
 import { memoryConfig } from "@/services/config"
 
 function memoryItem(id: string, options: { origin?: "user" | "derived_behavior"; pinned?: boolean; text?: string } = {}): MemoryItem {
@@ -176,6 +177,49 @@ describe("联合记忆召回", () => {
     ])
   })
 
+  it("rewrite输入按模型上下文窗口预算，不因固定小阈值提前回退 [memory-query-context-headroom]", async () => {
+    fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["苹果产品偏好"]}' })
+    const query = `我之前告诉你苹果${"苹果".repeat(900)}是什么？`
+
+    const plan = await planMemoryQueries({
+      requestId: "query-plan-context-headroom",
+      sessionId: "session-a",
+      query,
+      contextWindow: 32_768,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive",
+    })
+
+    expect(fake.complete).toHaveBeenCalledTimes(1)
+    expect(plan.rewriteStatus).toBe("rewritten")
+  })
+
+  it("时间解析使用冻结的问题时间锚点，不把来源截止时间当作现在 [memory-query-time-anchor]", async () => {
+    const query = "上周我分享了什么？"
+    const timeAnchor = new Date(2023, 9, 10, 12).getTime()
+    const before = new Date(2026, 9, 10, 12).getTime()
+    const queryPlan = { ...deriveMemoryQueryPlan(query, timeAnchor), rewriteStatus: "off" as const }
+
+    const plan = await planMemoryQueries({
+      requestId: "query-plan-time-anchor",
+      sessionId: "session-a",
+      query,
+      before,
+      timeAnchor,
+      queryPlan,
+      signal: new AbortController().signal,
+      queryRewriteMode: "off",
+    })
+
+    expect(plan.timeConstraint).toEqual({
+      basis: "record",
+      start: new Date(2023, 9, 2).getTime(),
+      end: new Date(2023, 9, 9).getTime(),
+    })
+    expect(plan.rewriteStatus).toBe("off")
+  })
+
   it("英文个人历史问句在零事实命中且无当前会话上下文时只改写检索同义词 [memory-query-personal-history-empty-context]", async () => {
     fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
     fake.complete.mockResolvedValueOnce({ text: '{"queries":["book recommendation"]}' })
@@ -249,6 +293,25 @@ describe("联合记忆召回", () => {
 
     expect(plan.queries).toEqual([query])
     expect(plan.rewriteStatus).toBe("off")
+    expect(fake.complete).not.toHaveBeenCalled()
+  })
+
+  it("rewrite关闭时仍复用有效的多条预计算计划 [memory-query-plan-cache]", async () => {
+    const query = "我之前告诉你猫的名字是什么？"
+    const queryPlan = deriveMemoryQueryPlan(query)
+    const followups = Array.from({ length: 12 }, (_, index) => `${"猫名补充检索".repeat(35)}${index}`)
+    queryPlan.queries.push(...followups)
+
+    const plan = await planMemoryQueries({
+      requestId: "reuse-grounded-plan",
+      sessionId: "session-a",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "off",
+      queryPlan,
+    })
+
+    expect(plan.queries).toEqual([query, ...followups])
     expect(fake.complete).not.toHaveBeenCalled()
   })
 
@@ -379,6 +442,26 @@ describe("联合记忆召回", () => {
     expect(result.map(item => item.sourceId)).toContain("fact-0@2")
   })
 
+  it("coverage follow-up 查询复用结构化意图并完整进入会话检索 [memory-recall-plan-followups]", async () => {
+    const queryPlan = {
+      originalQuery: "我之前聊过项目A的迁移吗？",
+      queries: ["我之前聊过项目A的迁移吗？", "项目A 数据迁移", "项目A 上线步骤", "项目A 迁移原因"],
+      rewriteStatus: "rewritten" as const,
+      recallIntent: "overview" as const,
+      sourceRoles: ["user", "assistant"],
+      entities: ["项目A"],
+      evidenceNeeds: ["coverage", "steps", "reason"],
+    } satisfies MemoryQueryPlan
+    const req = request({ query: queryPlan.originalQuery, queryPlan, queryRewriteMode: "off", rerankMode: "off" })
+
+    await sqliteMemoryProvider.recall(req)
+
+    expect(fake.getConversation.mock.calls[0]?.[0].queries).toEqual(queryPlan.queries)
+    expect(fake.getConversation.mock.calls[0]?.[0].queryPlan).toMatchObject({
+      recallIntent: "overview", entities: ["项目A"], evidenceNeeds: ["coverage", "steps", "reason"],
+    })
+  })
+
   it("少量事实候选不会挡住个人历史问题的补充检索 [memory-query-rewrite-existing-facts-history]", async () => {
     fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
     const query = "How many projects have I led?"
@@ -470,7 +553,10 @@ describe("联合记忆召回", () => {
     const req = request({
       queryRewriteMode: "off",
       rerankMode: "off",
-      queryPlan: { originalQuery: "我之前说过的偏好", queries: ["我之前说过的偏好"], rewriteStatus: "off" },
+      queryPlan: {
+        originalQuery: "我之前说过的偏好", queries: ["我之前说过的偏好"], rewriteStatus: "off",
+        recallIntent: "lookup", sourceRoles: ["user", "assistant"], entities: ["偏好"], evidenceNeeds: ["specific_fact"],
+      },
     })
     const result = await sqliteMemoryProvider.recall(req)
 

@@ -10,6 +10,10 @@ const FOLLOW_UP_TEXT = "这是自然结束后的后续任务。"
 const STEER_PROBE_TEXT = "工具执行期的补充输入。"
 const REQUEST_ID = "memory-followup-after-turn"
 const TOOL_NAME = "live_p2_followup_wait"
+const EMPTY_READER_REPLY = JSON.stringify({
+  notes: [],
+  questionChecks: [{ condition: "The historical details requested", status: "missing", sourceIds: [] }],
+})
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
 let queuedFollowUpAfterDelivery = false
 let probeReceipt: string | undefined
@@ -30,6 +34,8 @@ export const FollowUp持久化: SceneDef = {
       fakeToolCall(TOOL_NAME),
       fakeText("首个任务完成"),
       fakeText("后续任务已处理"),
+      // The verification turn now makes an explicit empty-evidence reader request before main.
+      fakeText(EMPTY_READER_REPLY),
       fakeText("验证完成"),
     ])
     await initChat()

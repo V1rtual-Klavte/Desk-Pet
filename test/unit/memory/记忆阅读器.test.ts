@@ -67,6 +67,24 @@ describe("query-focused memory reading", () => {
     ])
   })
 
+  it("keeps grounded follow-up searches and drops invented entities without discarding valid notes [memory-reading-grounded-followup-search]", () => {
+    const query = "What should I do with my power bank?"
+    const parsed = parseMemoryReadingNotes(JSON.stringify({
+      notes: [note],
+      questionChecks: [{ condition: "Use the specifically named owned item", status: "supported", sourceIds: [source.id] }],
+      searchQueries: ["power bank advice", "Hogwarts advice"],
+    }), [source], query)
+
+    expect(parsed.notes).toEqual([note])
+    expect(parsed.noteStatus).toBe("complete")
+    expect(parsed.guide).toEqual({
+      questionChecks: [{ condition: "Use the specifically named owned item", status: "supported", sourceIds: [source.id] }],
+      searchQueries: ["power bank advice"],
+    })
+    expect(parsed.guideStatus).toBe("valid")
+    expect(parsed.errors).toEqual({ invalid_search_query: 1 })
+  })
+
   it("rejects a guide that cites an unvalidated note but keeps valid exact notes [memory-reading-guide-isolation]", () => {
     const parsed = parseMemoryReadingNotes(JSON.stringify({
       notes: [note],

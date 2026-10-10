@@ -19,6 +19,8 @@ export { deriveMemoryRecallBudget } from "./budget"
 export type { MemoryRecallBudget } from "./budget"
 export { renderMemoryRecall } from "./projection"
 export { focusMemoryEvidence } from "./reader"
+export { completeMemoryEvidence } from "./coverage"
+export { deriveMemoryQueryPlan } from "./query"
 export type { FocusedMemoryEvidence } from "./reader"
 
 export { parseRerankIds } from "./rerank"

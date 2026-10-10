@@ -11,7 +11,8 @@ import { formatError } from "@/services/error"
 import type { MemoryProjection } from "./provider"
 import { memoryRecallTokens } from "./projection"
 import type { MemoryQuestionCheck, MemoryQuestionGuide } from "./projection"
-import { hasPersonalRecallIntent } from "./query-shape"
+import { deriveMemoryQueryPlan } from "./query-shape"
+import type { MemoryQueryPlan } from "./query"
 import type { ReadingErrorCategory } from "./reading-errors"
 
 const log = createLogger("MemoryReader")
@@ -27,6 +28,8 @@ const readingCache = new WeakMap<AbortSignal, {
 const SYSTEM_PROMPT = `你是只读证据阅读器。只根据给定 sources，为当前 query 建立短小、可核对的阅读索引。
 输出严格 JSON：{"notes":[{"id":"sourceId","quote":"source.text 中逐字连续出现的最短充分片段","relevance":"简短、暂定的关联解释"}],"questionChecks":[{"condition":"回答必须核对的条件","status":"supported|missing|conflicting","sourceIds":["仅引用本输出中通过校验的note id"]}]}。
 notes只摘录回答所需原文，每个id最多一条；quote必须逐字连续复制，不得拼接、改写或补全。
+queryPlan给出统一的检索意图、实体、发言角色、时间约束和回答义务，逐项核对其evidenceNeeds。sourceRoles指出优先核对谁的发言，配对的另一角色提供语境，不能把助手建议当作用户做过的事。缺少原因、步骤或前后文时不要把缺少检索证据说成历史没有；可在JSON顶层附加searchQueries数组，用空格分隔短检索词，供宿主补查。实体和内容词只能逐字取自query或本次合法notes.quote，可组合原因、步骤、方法、过程、前后文、日期、时间、记录、建议、偏好、经历及对应英文检索词，不能猜测人名、作品或事件。已支持全部条件时searchQueries为空。
+记录只给日期时不推断时段，timestamp只是检索的记录锚，不证明正文里的事件发生在凌晨或其他具体时段；事件相对日期以所在记录为锚，缺年份的日期保留可能的多个年份。日期概览核对当天不同话题，不能用单条末尾总结代替整天。问历史说法时保留当时助手说法的归属，不用一般知识改写历史。
 questionChecks把当前问题拆成不可偷换的回答义务：保留实体/特定事件、时间窗、事件已发生还是仅计划、计数范围，以及个人建议所需的已有物品/选择/限制。每项用supported、missing或conflicting表示现有原文支持状态，并仅引用对应notes的id；没有合格原文时用missing和空sourceIds。不得把相似实体、相邻事件、助手建议或计划替换成问题指定对象后继续作答。问句限定的对象、范围或时间窗在原文里没有对应项时标missing，并在condition写明缺的是哪一项。第一人称已完成或进行中的动作（did/started/decided 配 today/yesterday 一类具体时间，或 currently doing / 正在做 这类持续表述）算已发生；只有 thinking of / about to / 打算 / 计划 才算未发生。
 同一事实或事件有多条记录时不直接标conflicting：先按各条记录的发生时间排序，更晚出现的确认记录更新先前值（用户随后明确纠正的除外）；此时标supported，并在condition中写明本次采用哪条记录、被更新的是哪条。仅当同一时点互斥、或先后无法判定时才标conflicting。
 个人建议类问题先通读所有user来源，寻找与当前建议直接相关的已拥有物品、已尝试办法、已作选择、成功经验和兴趣，即使它们是在另一话题里提到。清楚的第一人称当前陈述（如my/new）可支持拥有；计划、假设、条件句和assistant建议不能转成用户已拥有或已做过的事实。找到直接相关的用户证据时应摘出精确笔记并标supported；只有通读相关user来源仍无证据时，才对该条件标missing。
@@ -35,6 +38,8 @@ relevance与condition只是临时核对指引，不是用户事实；不推断�
 
 export interface FocusMemoryEvidenceInput {
   query: string
+  queryPlan?: MemoryQueryPlan
+  timeAnchor?: number
   projections: readonly MemoryProjection[]
   contextWindow: number
   tokenBudget: number
@@ -126,7 +131,7 @@ function parseQuestionGuide(value: unknown, validNoteIds: ReadonlySet<string>, e
  * while a valid exact quote remains usable. Question checks are validated
  * against the surviving note ids and fail as one separate guide block.
  */
-export function parseMemoryReadingNotes(text: string, sources: readonly { id: string; text: string }[]): ParsedMemoryReading {
+export function parseMemoryReadingNotes(text: string, sources: readonly { id: string; text: string }[], query = ""): ParsedMemoryReading {
   let value: unknown
   const errors: Partial<Record<ReadingErrorCategory, number>> = {}
   try { value = JSON.parse(text) } catch {
@@ -182,10 +187,23 @@ export function parseMemoryReadingNotes(text: string, sources: readonly { id: st
     guide = parseQuestionGuide(checksValue, new Set(notes.map(note => note.id)), errors)
     guideStatus = guide ? "valid" : "invalid"
   }
+  const searches = (value as { searchQueries?: unknown }).searchQueries
+  if (guide && searches !== undefined) {
+    if (!Array.isArray(searches)) increment(errors, "invalid_search_query")
+    else {
+      const groundedText = [query, ...notes.map(note => note.quote)].join("\n").toLocaleLowerCase()
+      const validated = new Set<string>()
+      for (const search of searches) {
+        if (isGroundedMemorySearch(search, groundedText)) validated.add(search.trim())
+        else increment(errors, "invalid_search_query")
+      }
+      if (validated.size) guide.searchQueries = [...validated]
+    }
+  }
 
   const noteErrors = Object.entries(errors).filter(([category]) => !category.startsWith("invalid_question_checks")
     && !category.startsWith("missing_question_checks") && !category.startsWith("invalid_check")
-    && !category.startsWith("duplicate_check"))
+    && !category.startsWith("duplicate_check") && category !== "invalid_search_query")
   const noteStatus: ParsedMemoryReading["noteStatus"] = notes.length === 0
     ? (noteErrors.length ? "invalid" : "empty")
     : noteErrors.length ? "partial" : "complete"
@@ -194,6 +212,23 @@ export function parseMemoryReadingNotes(text: string, sources: readonly { id: st
     return counts
   }, emptyCheckCounts()) ?? emptyCheckCounts()
   return { notes, ...(guide ? { guide } : {}), errors, noteStatus, guideStatus, checkCounts }
+}
+
+const SEARCH_CUES = new Set([
+  "原因", "步骤", "方法", "过程", "前后文", "日期", "时间", "记录", "建议", "偏好", "经历",
+  "reason", "reasons", "cause", "causes", "steps", "method", "methods", "procedure", "context",
+  "date", "time", "history", "advice", "preference", "preferences", "experience",
+])
+
+/** Search terms may rearrange existing wording, but cannot invent an entity to retrieve. */
+export function isGroundedMemorySearch(value: unknown, groundedText: string): value is string {
+  if (typeof value !== "string" || !value.trim() || [...value].length > 240) return false
+  const terms = value.toLocaleLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []
+  const corpus = groundedText.toLocaleLowerCase()
+  return terms.length > 0 && terms.every(term => SEARCH_CUES.has(term) || corpus.includes(term))
+    && terms.some(term => [...term].length >= 2 && !SEARCH_CUES.has(term)
+      && !/^(?:the|and|for|from|what|which|when|where|why|how|my|me|we|我们|什么|为什么|怎么|如何)$/u.test(term)
+      && corpus.includes(term))
 }
 
 /** Applies already-validated notes in order, keeping every original evidence item under the shared ceiling. */
@@ -255,8 +290,8 @@ function fitReading(raw: readonly MemoryProjection[], parsed: ParsedMemoryReadin
   }
 }
 
-function noteCacheKey(requestId: string, query: string, timeAnchor: string, projections: readonly MemoryProjection[]): string {
-  return JSON.stringify([requestId, query.trim(), timeAnchor, projections.map(item => [
+function noteCacheKey(requestId: string, query: string, timeAnchor: string, projections: readonly MemoryProjection[], plan: MemoryQueryPlan): string {
+  return JSON.stringify([requestId, query.trim(), timeAnchor, plan.recallIntent, plan.entities, plan.sourceRoles, plan.evidenceNeeds, plan.timeConstraint, projections.map(item => [
     item.sourceId, item.memoryVersion, item.text, item.provenance, item.taint, item.origin,
     item.conversation?.sessionId, item.conversation?.entryId, item.conversation?.role,
     item.conversation?.timestamp, item.conversation?.seq,
@@ -295,13 +330,13 @@ function emptyResult(projections: readonly MemoryProjection[], noteStatus: Focus
 export async function focusMemoryEvidence(input: FocusMemoryEvidenceInput): Promise<FocusedMemoryEvidence> {
   const startedAt = Date.now()
   const raw = rawProjections(input.projections)
-  const uniqueConversationEntries = new Set(raw.flatMap(item => item.conversation ? [`${item.conversation.sessionId}\0${item.conversation.entryId}`] : []))
+  const queryPlan = input.queryPlan ?? deriveMemoryQueryPlan(input.query, input.timeAnchor)
   if (input.signal.aborted) {
     const result = emptyResult(raw)
     publishEnd(input.traceContext, "cancelled", result, raw.length, startedAt)
     return result
   }
-  if (!hasPersonalRecallIntent(input.query) || uniqueConversationEntries.size < 4) {
+  if (queryPlan.recallIntent === "none") {
     const result = emptyResult(raw)
     publishEnd(input.traceContext, "skipped", result, raw.length, startedAt)
     return result
@@ -310,8 +345,9 @@ export async function focusMemoryEvidence(input: FocusMemoryEvidenceInput): Prom
   const cached = readingCache.get(input.signal)
   // Freeze the reading clock within a request, including a benchmark's supplied
   // question-date anchor. A minute tick alone must not repeat model reading.
-  const timeAnchor = cached?.requestId === input.requestId ? cached.timeAnchor : currentTimeNote()
-  const cacheKey = noteCacheKey(input.requestId, input.query, timeAnchor, raw)
+  const timeAnchor = cached?.requestId === input.requestId ? cached.timeAnchor
+    : currentTimeNote(input.timeAnchor === undefined ? undefined : new Date(input.timeAnchor))
+  const cacheKey = noteCacheKey(input.requestId, input.query, timeAnchor, raw, queryPlan)
   if (cached?.key === cacheKey && cached.parsed) {
     const focused = fitReading(raw, cached.parsed, input.tokenBudget)
     publishEnd(input.traceContext, "cached", focused, raw.length, startedAt)
@@ -335,7 +371,7 @@ export async function focusMemoryEvidence(input: FocusMemoryEvidenceInput): Prom
     ...(item.conversation ? { sessionId: item.conversation.sessionId, seq: item.conversation.seq ?? null } : {}),
     text: item.text,
   }))
-  const userText = JSON.stringify({ query: input.query, currentTimeNote: timeAnchor, sources })
+  const userText = JSON.stringify({ query: input.query, queryPlan, currentTimeNote: timeAnchor, sources })
   if (estimateRequestTokens(SYSTEM_PROMPT, [{ role: "user", content: userText }]) > contextBudget(input.contextWindow).normalInputTarget) {
     const result = emptyResult(raw)
     publishEnd(input.traceContext, "input_over_budget", result, raw.length, startedAt)
@@ -359,7 +395,7 @@ export async function focusMemoryEvidence(input: FocusMemoryEvidenceInput): Prom
       return fallback
     }
 
-    const parsed = parseMemoryReadingNotes(result.text, raw.map(item => ({ id: item.sourceId, text: item.text })))
+    const parsed = parseMemoryReadingNotes(result.text, raw.map(item => ({ id: item.sourceId, text: item.text })), input.query)
     const current = readingCache.get(input.signal)
     if (current?.key === cacheKey) current.parsed = parsed
     const hasInvalidNotes = parsed.noteStatus === "invalid"

@@ -8,13 +8,17 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/services/engine/harness", () => ({ completePiText: mocks.completePiText }))
-vi.mock("@/services/engine/runtime", () => ({ publishRuntimeTrace: mocks.publishRuntimeTrace }))
+vi.mock("@/services/engine/runtime", async importOriginal => ({
+  ...await importOriginal<typeof import("@/services/engine/runtime")>(),
+  publishRuntimeTrace: mocks.publishRuntimeTrace,
+}))
 vi.mock("@/services/context", () => ({ currentTimeNote: mocks.currentTimeNote }))
 vi.mock("@/services/logger", () => ({ createLogger: () => ({ warn: mocks.warn }) }))
 vi.mock("@/services/error", () => ({ formatError: (error: unknown) => String(error) }))
 
 import { focusMemoryEvidence } from "@/services/agent/memory/reader"
 import { MEMORY_READING_POLICY, memoryRecallTokens, renderMemoryRecall } from "@/services/agent/memory/projection"
+import { deriveMemoryQueryPlan } from "@/services/agent/memory/query"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 
@@ -76,6 +80,77 @@ beforeEach(() => {
 })
 
 describe("记忆证据阅读接线", () => {
+  it("one-entry 与 zero-entry 的已知历史仍调用阅读器并复用同一 queryPlan [memory-reading-known-history-small-evidence]", async () => {
+    const query = "What did I say about my ThinkPad earlier?"
+    const queryPlan = deriveMemoryQueryPlan(query)
+    const single = evidence().slice(0, 1)
+    mocks.completePiText
+      .mockResolvedValueOnce(readingResponse(single[0]!.sourceId, "I own a ThinkPad"))
+      .mockResolvedValueOnce({
+        stopReason: "stop",
+        text: JSON.stringify({
+          notes: [],
+          questionChecks: [{ condition: "The specifically named historical detail", status: "missing", sourceIds: [] }],
+        }),
+      })
+
+    const oneEntry = await focusMemoryEvidence(input(single, { query, queryPlan, requestId: "known-history-one" }))
+    const zeroEntry = await focusMemoryEvidence(input([], { query, queryPlan, requestId: "known-history-zero" }))
+
+    expect(mocks.completePiText).toHaveBeenCalledTimes(2)
+    expect(oneEntry.projections[0]?.readingNote?.quote).toBe("I own a ThinkPad")
+    expect(zeroEntry.projections).toEqual([])
+    expect(zeroEntry.guide?.questionChecks).toEqual([{
+      condition: "The specifically named historical detail", status: "missing", sourceIds: [],
+    }])
+    for (const call of mocks.completePiText.mock.calls) {
+      expect(JSON.parse(call[0].userText).queryPlan).toEqual(queryPlan)
+    }
+  })
+
+  it("skips ordinary social acknowledgements using the supplied no-recall plan [memory-reading-social-acknowledgement-skip]", async () => {
+    const raw = evidence()
+    const query = "Thanks!"
+    const queryPlan = deriveMemoryQueryPlan(query)
+
+    const focused = await focusMemoryEvidence(input(raw, { query, queryPlan }))
+
+    expect(mocks.completePiText).not.toHaveBeenCalled()
+    expect(focused.noteStatus).toBe("empty")
+    expect(focused.guide).toBeUndefined()
+    expect(focused.projections.map(item => item.text)).toEqual(raw.map(item => item.text))
+    expect(mocks.publishRuntimeTrace).toHaveBeenCalledWith(expect.anything(), "memory_reading_end", expect.objectContaining({ status: "skipped" }))
+  })
+
+  it("retains grounded follow-up searches, drops unsupported entities, and preserves reader rules [memory-reading-grounded-search-integration]", async () => {
+    const raw = evidence().slice(0, 1)
+    const query = "What did I say about my ThinkPad earlier?"
+    const queryPlan = deriveMemoryQueryPlan(query)
+    mocks.completePiText.mockResolvedValueOnce({
+      stopReason: "stop",
+      text: JSON.stringify({
+        notes: [{ id: raw[0]!.sourceId, quote: "I own a ThinkPad", relevance: "记下的设备偏好可作为后续检索线索" }],
+        questionChecks: [{ condition: "Use the named historical device", status: "supported", sourceIds: [raw[0]!.sourceId] }],
+        searchQueries: ["ThinkPad context", "Hogwarts context"],
+      }),
+    })
+
+    const focused = await focusMemoryEvidence(input(raw, { query, queryPlan }))
+    const call = mocks.completePiText.mock.calls[0]![0]
+    const sent = JSON.parse(call.userText) as { queryPlan: unknown; sources: Array<{ sourceId: string; text: string }> }
+
+    expect(sent.queryPlan).toEqual(queryPlan)
+    expect(sent.sources).toEqual([{ sourceId: raw[0]!.sourceId, role: "user", time: expect.any(String), sessionId: "session-0", seq: 0, text: raw[0]!.text }])
+    expect(call.systemPrompt).toContain("实体和内容词只能逐字取自query或本次合法notes.quote")
+    expect(call.systemPrompt).toContain("不能猜测人名、作品或事件")
+    expect(focused.projections[0]?.readingNote?.quote).toBe("I own a ThinkPad")
+    expect(focused.guide?.questionChecks).toEqual([{
+      condition: "Use the named historical device", status: "supported", sourceIds: [raw[0]!.sourceId],
+    }])
+    expect(focused.guide?.searchQueries).toEqual(["ThinkPad context"])
+    expect(focused.errors).toEqual({ invalid_search_query: 1 })
+  })
+
   it("附加来源可核对笔记且原文身份和信任字段不变 [memory-reading-notes-trust-preservation]", async () => {
     const raw = evidence()
     const signal = new AbortController().signal
@@ -273,6 +348,8 @@ describe("记忆证据阅读接线", () => {
     expect(MEMORY_READING_POLICY).toContain("更晚的确认记录更新先前值")
     expect(MEMORY_READING_POLICY).toContain("不以看不出、不敢确定或没翻到收尾")
     expect(MEMORY_READING_POLICY).toContain("相似事实只能作为附带说明，不得作为答案主体")
+    expect(MEMORY_READING_POLICY).toContain("不得补造历史中未出现的地点、天气、光线、物品、心情、原因、结果、经历与双方当时的反应")
+    expect(MEMORY_READING_POLICY).toContain("不得用自己的偏好、愿望或一般常识补足历史内容")
     expect(sent.sources.find(item => item.sourceId === ownedId)).toMatchObject({ role: "user", text: raw[0]?.text })
     expect(sent.sources.find(item => item.sourceId === plannedId)).toMatchObject({ role: "user", text: raw[1]?.text })
     expect(sent.sources.find(item => item.sourceId === assistantId)).toMatchObject({ role: "assistant", text: raw[2]?.text })

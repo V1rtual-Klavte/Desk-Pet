@@ -10,7 +10,7 @@ import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, CompactionDeclineKind, CompactionDeclineRecord, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory, deriveMemoryRecallBudget, focusMemoryEvidence, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
+import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, completeMemoryEvidence, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
 import type { FocusedMemoryEvidence, MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
 import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
@@ -18,7 +18,7 @@ import { createPlanSettlement } from "@/services/engine/plan/settlement"
 import type { PlanCancelReason, PlanConfirmDeclineReason } from "@/services/engine/plan/settlement"
 import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
-import { buildPrompt, composeDynamicPrompt, currentTimeNote, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
+import { buildPrompt, composeDynamicPrompt, currentTimeNote, currentTimeDate, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
@@ -1920,6 +1920,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 记忆召回延迟到 transform_context：只有那里知道投影后的正文、理解块与工具结果实际占用，
     // 才能按当前请求剩余 headroom 派生预算。命中内容随后按预算签名缓存供同轮请求复用。
     const memoryPurpose = input.activeRequest ? "proactive" as const : "conversation" as const
+    const memoryEvidenceDeadline = Date.now() + loopConfig.turnTimeoutMs
     // recall 走槽级取消信号：回合被停止时这次读取随之结束，旧代际的结果不会写进新投影。
     const memoryRequest: MemoryRecallRequest = {
       requestId, sessionId: turnSessionId, cardId: card?.id, runGeneration: generation,
@@ -1927,6 +1928,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       budget: deriveMemoryRecallBudget(windowTokens, memoryPurpose, 0),
       contextWindow: windowTokens, signal: slot.runSignal, traceContext,
       before: input.ingress?.receivedAt ?? Date.now(),
+      timeAnchor: currentTimeDate().getTime(),
       queryRewriteMode: memoryConfig.queryRewrite, rerankMode: memoryConfig.rerank,
       ...(input.activeRequest ? { purpose: "proactive" as const, targets: [...input.activeRequest.memoryTargets] }
         : input.turnContext?.memoryRefs.length ? { targets: input.turnContext.memoryRefs.map(ref => ({ id: ref.id, version: ref.version })), allowExpiredTargets: true } : {}),
@@ -1956,8 +1958,12 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         return focusedMemory
       }
       try {
-        const focused = await focusMemoryEvidence({
+        const focused = await completeMemoryEvidence({
           query: userText,
+          queryPlan: memoryRequest.queryPlan ?? deriveMemoryQueryPlan(userText, memoryRequest.timeAnchor),
+          timeAnchor: memoryRequest.timeAnchor,
+          readRevision: memoryRequest.readRevision,
+          deadlineAt: memoryEvidenceDeadline,
           projections: rawProjections,
           contextWindow: windowTokens,
           tokenBudget: memoryRequest.tokenBudget,
@@ -1966,6 +1972,25 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           sessionId: turnSessionId,
           traceContext,
           timeoutMs: loopConfig.turnTimeoutMs,
+        }, async (queryPlan, signal) => {
+          const followupRequest: MemoryRecallRequest = { ...memoryRequest, queryPlan, skipRerank: true, signal }
+          const projections = await recallMemory(followupRequest)
+          if (signal.aborted) return { projections: [], readRevision: followupRequest.readRevision }
+          assertCurrent()
+          memoryRequest.optionalFailures = followupRequest.optionalFailures
+          if (followupRequest.readRevision === memoryRequest.readRevision) {
+            const prior = memoryRequest.queryPlan ?? queryPlan
+            memoryRequest.queryPlan = { ...prior, queries: [...new Set([...prior.queries, ...queryPlan.queries])] }
+          }
+          auditOptionalFailures()
+          return { projections, readRevision: followupRequest.readRevision }
+        }, async (projections, signal) => {
+          const validated = await validateConversationProjections(projections, signal)
+          assertCurrent()
+          // The merge also retains facts from the original recall. Check their
+          // governing revision after the asynchronous transcript validation.
+          const readRevision = memoryRequest.readRevision === undefined ? undefined : (await memoryStatus()).revision
+          return { projections: validated, readRevision }
         })
         if (slot.runSignal.aborted) throw new Error("记忆证据整理已取消")
         assertCurrent()
@@ -1975,7 +2000,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       } catch (error) {
         if (!runIsCurrent() || slot.runSignal.aborted) throw error
         log.warn("记忆证据整理失败，保留原始证据继续:", { sessionId: turnSessionId, requestId }, formatError(error))
-        focusedMemory = emptyFocusedEvidence(rawProjections)
+        const validated = await validateConversationProjections(rawProjections, slot.runSignal)
+        const revisionCurrent = memoryRequest.readRevision === undefined || (await memoryStatus()).revision === memoryRequest.readRevision
+        focusedMemory = emptyFocusedEvidence(revisionCurrent ? validated : [])
         memoryProjections = focusedMemory.projections
         return focusedMemory
       }

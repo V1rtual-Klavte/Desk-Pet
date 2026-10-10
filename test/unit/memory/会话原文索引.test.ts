@@ -42,6 +42,7 @@ import { captureConversationClearFences, expandConversationSessions, invalidateC
 import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "@/services/agent/memory/conversation"
 import { estimateContextTokens } from "@/services/context/budget"
 import { applyMemoryChange } from "@/services/agent/memory/ipc"
+import type { MemoryQueryPlan } from "@/services/agent/memory/query"
 import type { Entry } from "@earendil-works/pi-agent-core"
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
 
@@ -274,13 +275,36 @@ describe("会话原文索引", () => {
   })
 
   it("明确短指代在关键词无命中后才开启跨会话近期回退 [conversation-referential-fallback]", async () => {
+    const current = session("new-question")
+    fixture.metadata = [current]
+    const userEntry = messageEntry("fallback-user", 1, "user", 100, "fallback-event")
+    const assistantEntry = messageEntry("fallback-assistant", 2, "assistant", 110)
+    fixture.entries.set(current.id, [userEntry, assistantEntry])
+    fixture.transcripts.set(current.id, {
+      entries: [userEntry, assistantEntry],
+      messages: [
+        { id: userEntry.id, eventId: "fallback-event", role: "user", text: "你刚才问我项目迁移怎么安排", timestamp: 100, isUserInput: true },
+        { id: assistantEntry.id, role: "assistant", text: "我们讨论了分阶段迁移", timestamp: 110, isUserInput: false },
+      ],
+    })
     installBridge()
     const signal = new AbortController().signal
-    await recallConversation({ sessionId: "new-question", query: "你上次说的那个是什么", tokenBudget: 500, signal })
+    const recentEntries = [
+      { sessionId: current.id, entryId: userEntry.id, eventId: "fallback-event", seq: 1, chunk: 0,
+        role: "user" as const, text: "你刚才问我项目迁移怎么安排", timestamp: 100, score: 0 },
+      { sessionId: current.id, entryId: assistantEntry.id, eventId: null, seq: 2, chunk: 0,
+        role: "assistant" as const, text: "我们讨论了分阶段迁移", timestamp: 110, score: 0 },
+    ]
+    fixture.searchSnapshots.set("你上次说的那个是什么", { revision: 1, memoryRevision: 7, forgetEpoch: 0, entries: [] })
+    fixture.searchSnapshots.set("", { revision: 1, memoryRevision: 7, forgetEpoch: 0, entries: recentEntries })
+    const result = await recallConversation({ sessionId: "new-question", query: "你上次说的那个是什么", tokenBudget: 500, signal })
     const firstSearches = fixture.calls.filter(call => call.method === "conversation_search")
     expect(firstSearches.map(call => [call.args.query, call.args.recentFallback])).toEqual([
       ["你上次说的那个是什么", undefined], ["", true],
     ])
+    expect(result.map(entry => entry.text)).toEqual(expect.arrayContaining([
+      "你刚才问我项目迁移怎么安排", "我们讨论了分阶段迁移",
+    ]))
     fixture.calls.length = 0
     await recallConversation({ sessionId: "new-question", query: "天文望远镜价格", tokenBudget: 500, signal })
     expect(fixture.calls.filter(call => call.method === "conversation_search")).toHaveLength(1)
@@ -347,6 +371,85 @@ describe("会话原文索引", () => {
 
     expect(result.revisionChanged).toBe(true)
     expect(result.entries.map(entry => entry.entryId)).toEqual(["first"])
+  })
+
+  it("查询计划的完整查询组和记录时间共同下发到受治理检索 [conversation-query-plan-record-time]", async () => {
+    installBridge()
+    const originalQuery = "2026年10月2日项目A都聊了什么"
+    const queries = [originalQuery, "项目A方案", "项目A步骤", "项目A原因"]
+    const queryPlan = {
+      originalQuery, queries, rewriteStatus: "rewritten" as const,
+      recallIntent: "lookup" as const, sourceRoles: ["user", "assistant"], entities: ["项目A"], evidenceNeeds: ["specific_fact", "steps", "reason"],
+      timeConstraint: { basis: "record" as const, start: 1_790_899_200_000, end: 1_790_985_600_000, calendarDate: { year: 2026, month: 10, day: 2 } },
+    } satisfies MemoryQueryPlan
+
+    await searchConversationCandidates({
+      sessionId: "date-overview", queries, queryPlan, signal: new AbortController().signal,
+    })
+
+    const searches = fixture.calls.filter(call => call.method === "conversation_search")
+    expect(searches.map(call => call.args.query)).toEqual(queries)
+    const recordTime = {
+      start: queryPlan.timeConstraint!.start,
+      end: queryPlan.timeConstraint!.end,
+      calendarDate: queryPlan.timeConstraint!.calendarDate,
+    }
+    expect(searches.map(call => call.args.recordTime)).toEqual(queries.map(() => recordTime))
+  })
+
+  it("纯日期概览以空词查询执行记录时间召回，事件日期不变成记录时间过滤 [conversation-temporal-only-and-event-time]", async () => {
+    installBridge()
+    const signal = new AbortController().signal
+    const datePlan = {
+      originalQuery: "2026年10月2日聊了什么", queries: [], rewriteStatus: "not_needed" as const,
+      recallIntent: "overview" as const, sourceRoles: ["user", "assistant"], entities: [], evidenceNeeds: ["coverage"],
+      timeConstraint: { basis: "record" as const, calendarDate: { year: 2026, month: 10, day: 2 } },
+    } satisfies MemoryQueryPlan
+    await searchConversationCandidates({ sessionId: "date-only", queries: [], queryPlan: datePlan, signal })
+    const dateSearch = fixture.calls.filter(call => call.method === "conversation_search")
+    expect(dateSearch).toHaveLength(1)
+    expect(dateSearch[0]?.args.query).toBe("")
+    const recordDate = { calendarDate: datePlan.timeConstraint!.calendarDate }
+    expect(dateSearch[0]?.args.recordTime).toEqual(recordDate)
+
+    fixture.calls.length = 0
+    const eventPlan = {
+      ...datePlan, queries: [datePlan.originalQuery],
+      timeConstraint: { basis: "event" as const, calendarDate: { year: 2026, month: 10, day: 2 } },
+    }
+    await searchConversationCandidates({ sessionId: "event-date", queries: eventPlan.queries, queryPlan: eventPlan, signal })
+    const eventSearch = fixture.calls.filter(call => call.method === "conversation_search")
+    expect(eventSearch).toHaveLength(1)
+    expect(eventSearch[0]?.args.recordTime).toBeUndefined()
+  })
+
+  it("日期概览保留空词日期广召回并执行实体补查 [conversation-dated-overview-followup]", async () => {
+    installBridge()
+    const originalQuery = "2026年10月2日我们聊了什么？"
+    const queryPlan = {
+      originalQuery,
+      queries: [originalQuery, "项目A迁移步骤"],
+      rewriteStatus: "rewritten" as const,
+      recallIntent: "overview" as const,
+      sourceRoles: ["user", "assistant"],
+      entities: ["项目A"],
+      evidenceNeeds: ["coverage", "steps"],
+      timeConstraint: { basis: "record" as const, calendarDate: { year: 2026, month: 10, day: 2 } },
+    } satisfies MemoryQueryPlan
+
+    await searchConversationCandidates({
+      sessionId: "dated-followup",
+      queries: queryPlan.queries,
+      queryPlan,
+      signal: new AbortController().signal,
+    })
+
+    const searches = fixture.calls.filter(call => call.method === "conversation_search")
+    expect(searches.map(call => call.args.query)).toEqual(["", "项目A迁移步骤"])
+    expect(searches.map(call => call.args.recordTime)).toEqual([
+      { calendarDate: { year: 2026, month: 10, day: 2 } },
+      { calendarDate: { year: 2026, month: 10, day: 2 } },
+    ])
   })
 
   it("已删原会话的片段不会从缓存命中返回给调用方 [conversation-revalidate-deleted-source]", async () => {
@@ -488,17 +591,57 @@ describe("命中会话的治理上下文展开", () => {
     expect(result.entries.map(row => row.entryId)).toContain("view-0")
     expect(new Set(result.entries.map(row => row.entryId)).size).toBe(64)
     const calls = fixture.calls.filter(call => call.method === "conversation_context")
-    expect(calls.map(call => call.args.afterSeq)).toEqual([-1, 49])
+    expect(calls.map(call => call.args.afterSeq)).toEqual([38, -1, 49])
     expect(calls.every(call => call.args.sessionId === "matched-history" && call.args.anchorEntryId === "view-63" && call.args.before === 200)).toBe(true)
     expect(fixture.transcriptReads).toEqual(["matched-history"])
   })
 
-  it("按实际剩余空间停止展开，不为补全会话越过预算 [conversation-context-headroom]", async () => {
+  it("预算紧张时先纳入命中附近轮次，不越过预算回填会话开头 [conversation-context-nearby-headroom]", async () => {
     const { snapshot, rows } = contextFixture()
     const tokenBudget = estimateContextTokens(snapshot.entries[0]!.text) + estimateContextTokens(rows[0]!.text) + estimateContextTokens(rows[1]!.text)
     const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget })
-    expect(result.entries.map(row => row.entryId)).toEqual(["view-63", "view-0", "view-1"])
+    expect(result.entries.map(row => row.entryId)).toEqual(["view-63", "view-62", "view-61"])
     expect(fixture.calls.filter(call => call.method === "conversation_context")).toHaveLength(1)
+  })
+
+  it("长会话的紧预算优先保留命中前的原因回合并成对保留 user/assistant [conversation-context-nearest-prior-turn-bundle]", async () => {
+    const sessionId = "late-cause-session"
+    const rows: ConversationEvidenceEntry[] = Array.from({ length: 61 }, (_, seq) => ({
+      sessionId, entryId: `old-${seq}`, eventId: `old-event-${seq}`, seq, chunk: 0, role: "user",
+      text: `旧话题 ${seq}`, matchedText: `旧话题 ${seq}`, timestamp: 100 + seq, score: 0.2,
+    }))
+    const causeUser: ConversationEvidenceEntry = {
+      sessionId, entryId: "cause-user", eventId: "cause-event", seq: 61, chunk: 0, role: "user",
+      text: "The limited rollout window was the reason.", matchedText: "The limited rollout window was the reason.", timestamp: 161, score: 0.5,
+    }
+    const causeAssistant: ConversationEvidenceEntry = {
+      sessionId, entryId: "cause-assistant", eventId: "cause-assistant", seq: 62, chunk: 0, role: "assistant",
+      text: "We chose the smaller migration because the rollout window was tight.",
+      matchedText: "We chose the smaller migration because the rollout window was tight.",
+      timestamp: 162, anchorEntryId: causeUser.entryId, anchorEventId: causeUser.eventId, score: 0.5,
+    }
+    const hit: ConversationEvidenceEntry = {
+      sessionId, entryId: "late-hit", eventId: "late-hit-event", seq: 63, chunk: 0, role: "user",
+      text: "Which migration approach did we settle on?", matchedText: "Which migration approach did we settle on?", timestamp: 163, score: 1,
+    }
+    const answer: ConversationEvidenceEntry = {
+      sessionId, entryId: "late-answer", eventId: "late-answer", seq: 64, chunk: 0, role: "assistant",
+      text: "We settled on the smaller migration.", matchedText: "We settled on the smaller migration.",
+      timestamp: 164, anchorEntryId: hit.entryId, anchorEventId: hit.eventId, score: 0.5,
+    }
+    rows.push(causeUser, causeAssistant, hit, answer)
+    fixture.transcripts.set(sessionId, {
+      entries: rows.map(row => messageEntry(row.entryId, row.seq, row.role, row.timestamp, row.role === "user" ? row.eventId ?? undefined : undefined)),
+      messages: rows.map(row => ({ id: row.entryId, eventId: row.eventId, role: row.role, text: row.text, timestamp: row.timestamp, ...(row.role === "user" ? { isUserInput: true } : {}) })),
+    })
+    const snapshot: ConversationEvidenceResult = { revision: 3, memoryRevision: 7, forgetEpoch: 1, entries: [hit] }
+    fixture.onContext = args => ({ ...snapshot, entries: rows.filter(row => row.seq > Number(args.afterSeq)).slice(0, Number(args.limit)) })
+    installBridge()
+    const tokenBudget = estimateContextTokens(hit.text) + estimateContextTokens(causeUser.text) + estimateContextTokens(causeAssistant.text)
+
+    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget })
+
+    expect(result.entries.map(row => row.entryId)).toEqual(["late-hit", "cause-user", "cause-assistant"])
   })
 
   it("展开期间遗忘代变化时整组会话证据失效 [conversation-context-revision-fence]", async () => {

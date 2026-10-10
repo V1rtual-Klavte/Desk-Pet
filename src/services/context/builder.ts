@@ -118,6 +118,11 @@ export function setCurrentTimeNoteAnchor(anchor: Date | null): void {
   noteTimeAnchor = anchor && Number.isFinite(anchor.getTime()) ? anchor : null
 }
 
+/** Same clock as the time note, copied so callers cannot mutate its benchmark anchor. */
+export function currentTimeDate(): Date {
+  return new Date(noteTimeAnchor?.getTime() ?? Date.now())
+}
+
 /**
  * 当前日期与时间的唯一取用点。**定长**：`[当前时间] YYYY-MM-DD HH:mm 周X`，恒为 26 字符
  * （约 11 tokens：非 ASCII 1 token/字符、ASCII 1/4 token），不随输入或窗口变化。
@@ -128,7 +133,7 @@ export function setCurrentTimeNoteAnchor(anchor: Date | null): void {
  * 块里。放那里的原因见 `composeDynamicPrompt` 的注释：它每回合都变，进 system prompt
  * 就会把前缀缓存断在会话正文之前。
  */
-export function currentTimeNote(now: Date = noteTimeAnchor ?? new Date()): string {
+export function currentTimeNote(now: Date = currentTimeDate()): string {
   const pad = (value: number) => String(value).padStart(2, "0")
   return `[当前时间] ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} `
     + `${pad(now.getHours())}:${pad(now.getMinutes())} ${WEEKDAY_LABELS[now.getDay()]}`

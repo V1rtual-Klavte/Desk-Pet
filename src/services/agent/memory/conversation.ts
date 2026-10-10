@@ -15,6 +15,8 @@ import { errorCode } from "@/services/error"
 import { messageEventId } from "@/services/engine/runtime"
 import { getPiSessionRepo, listPiSessionMetadata, readPiSessionEntriesOnce, readVisibleSessionTranscript, withPiSessionFileLock } from "@/services/session"
 import type { MemoryProjection } from "./provider"
+import { deriveMemoryQueryPlan } from "./query"
+import type { MemoryQueryPlan } from "./query"
 
 const log = createLogger("ConversationMemory")
 
@@ -43,6 +45,7 @@ export interface ConversationCandidateRequest {
   limit?: number
   before?: number
   recentFallback?: boolean
+  queryPlan?: MemoryQueryPlan
 }
 
 export type ConversationSourceRef = NonNullable<MemoryProjection["conversation"]>
@@ -57,23 +60,32 @@ export type ConversationEvidenceResult = Omit<ConversationSearchResult, "entries
 /** Expand only selected, governed session hits; pagination is an I/O batch, not a recall quota. */
 export async function expandConversationSessions(
   snapshot: ConversationEvidenceResult,
-  request: { signal: AbortSignal; tokenBudget: number; before?: number },
+  request: { signal: AbortSignal; tokenBudget: number; before?: number; recordTime?: NonNullable<MemoryQueryPlan["timeConstraint"]> },
 ): Promise<ConversationEvidenceResult> {
   const entries = [...snapshot.entries]
-  let remaining = Math.max(0, request.tokenBudget - entries.reduce((sum, entry) => sum + estimateContextTokens(entry.text), 0))
+  const uniqueSeeds = [...new Map(entries.map(entry => [`${entry.sessionId}\0${entry.entryId}`, entry])).values()]
+  const usedBySeeds = uniqueSeeds.reduce((sum, entry) => {
+    const fullCost = estimateContextTokens(entry.text)
+    return sum + (fullCost <= request.tokenBudget ? fullCost : estimateContextTokens(entry.matchedText))
+  }, 0)
+  let remaining = Math.max(0, request.tokenBudget - usedBySeeds)
   if (request.signal.aborted || remaining <= 0 || !entries.length) return { ...snapshot, entries }
-  const seen = new Set(entries.map(entry => `${entry.sessionId}\0${entry.entryId}`))
-  const sessions = new Map<string, { anchor: ConversationEvidenceEntry; afterSeq: number }>()
-  for (const entry of entries) {
-    if (!sessions.has(entry.sessionId)) sessions.set(entry.sessionId, { anchor: entry, afterSeq: -1 })
+  const seen = new Set(uniqueSeeds.map(entry => `${entry.sessionId}\0${entry.entryId}`))
+  const cursors = new Map<string, { sessionId: string; anchor: ConversationEvidenceEntry; afterSeq: number; prefixPending: boolean }>()
+  for (const entry of uniqueSeeds) {
+    const cursorId = `${entry.sessionId}\0${entry.entryId}`
+    if (!cursors.has(cursorId)) {
+      const nearbyStart = Math.max(-1, entry.seq - Math.floor(CONVERSATION_SEARCH_LIMIT / 2))
+      cursors.set(cursorId, { sessionId: entry.sessionId, anchor: entry, afterSeq: nearbyStart, prefixPending: nearbyStart > -1 })
+    }
   }
   const transcripts = new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>()
-  while (sessions.size && remaining > 0 && !request.signal.aborted) {
-    // One page per session per round keeps a long session from consuming all remaining space.
-    for (const [sessionId, cursor] of sessions) {
+  while (cursors.size && remaining > 0 && !request.signal.aborted) {
+    // One page per matched evidence turn per round keeps a large session from masking other hits.
+    for (const [cursorId, cursor] of cursors) {
       if (request.signal.aborted || remaining <= 0) break
       const page = await getHostBridge().request("conversation_context", {
-        sessionId, anchorEntryId: cursor.anchor.entryId, afterSeq: cursor.afterSeq,
+        sessionId: cursor.sessionId, anchorEntryId: cursor.anchor.entryId, afterSeq: cursor.afterSeq,
         limit: CONVERSATION_SEARCH_LIMIT, ...(request.before !== undefined ? { before: request.before } : {}),
       }, { signal: request.signal })
       if (request.signal.aborted) return { ...snapshot, entries: [] }
@@ -82,25 +94,94 @@ export async function expandConversationSessions(
         return { ...snapshot, entries: [], revisionChanged: true }
       }
       const nextSeq = Math.max(cursor.afterSeq, ...page.entries.map(entry => entry.seq))
-      if (page.entries.length < CONVERSATION_SEARCH_LIMIT || nextSeq <= cursor.afterSeq) sessions.delete(sessionId)
-      cursor.afterSeq = nextSeq
-      const eligible = page.entries.filter(entry => entry.sessionId === sessionId && entry.chunk === 0
+      if (page.entries.length < CONVERSATION_SEARCH_LIMIT || nextSeq <= cursor.afterSeq) {
+        if (cursor.prefixPending) {
+          cursor.afterSeq = -1
+          cursor.prefixPending = false
+        } else {
+          cursors.delete(cursorId)
+        }
+      } else {
+        cursor.afterSeq = nextSeq
+      }
+      const eligible = page.entries.filter(entry => entry.sessionId === cursor.sessionId && entry.chunk === 0
+        && (!request.recordTime || timestampMatchesRecordTime(entry.timestamp, request.recordTime))
         && !seen.has(`${entry.sessionId}\0${entry.entryId}`))
         .map(entry => ({ ...entry, score: cursor.anchor.score / 2 }))
       const expanded = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before, transcripts)
-      for (const entry of expanded) {
-        const key = `${entry.sessionId}\0${entry.entryId}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        const fullCost = estimateContextTokens(entry.text)
-        const cost = fullCost <= remaining ? fullCost : estimateContextTokens(entry.matchedText)
+      const anchors = uniqueSeeds.filter(entry => entry.sessionId === cursor.sessionId)
+      for (const turn of orderEvidenceTurns(expanded, anchors)) {
+        const fullCost = turn.reduce((sum, entry) => sum + estimateContextTokens(entry.text), 0)
+        const excerptCost = turn.reduce((sum, entry) => sum + estimateContextTokens(entry.matchedText), 0)
+        const cost = fullCost <= remaining ? fullCost : excerptCost
         if (cost <= 0 || cost > remaining) continue
-        entries.push(entry)
+        for (const entry of turn) {
+          const key = `${entry.sessionId}\0${entry.entryId}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          entries.push(entry)
+        }
         remaining -= cost
       }
     }
   }
   return { ...snapshot, entries: request.signal.aborted ? [] : entries }
+}
+
+function orderEvidenceTurns(
+  entries: readonly ConversationEvidenceEntry[],
+  anchors: readonly ConversationEvidenceEntry[],
+): ConversationEvidenceEntry[][] {
+  const aliases = new Map<string, string>()
+  for (const entry of [...anchors, ...entries]) {
+    if (entry.role !== "user") continue
+    aliases.set(`${entry.sessionId}:entry:${entry.entryId}`, entry.entryId)
+    if (entry.eventId) aliases.set(`${entry.sessionId}:event:${entry.eventId}`, entry.entryId)
+  }
+  const turnKey = (entry: ConversationEvidenceEntry): string => {
+    if (entry.role === "user") return `${entry.sessionId}:turn:${entry.entryId}`
+    const anchor = entry.anchorEntryId
+      ? aliases.get(`${entry.sessionId}:entry:${entry.anchorEntryId}`) ?? entry.anchorEntryId
+      : entry.anchorEventId
+        ? aliases.get(`${entry.sessionId}:event:${entry.anchorEventId}`) ?? entry.anchorEventId
+        : entry.entryId
+    return `${entry.sessionId}:turn:${anchor}`
+  }
+  const turns = new Map<string, ConversationEvidenceEntry[]>()
+  for (const entry of entries) {
+    const key = turnKey(entry)
+    const turn = turns.get(key) ?? []
+    turn.push(entry)
+    turns.set(key, turn)
+  }
+  return [...turns.values()]
+    .map(turn => turn.sort((left, right) => left.seq - right.seq))
+    .sort((left, right) => {
+      const distance = (turn: ConversationEvidenceEntry[]) => Math.min(...turn.flatMap(entry => anchors.map(anchor => Math.abs(entry.seq - anchor.seq))))
+      const leftDistance = distance(left)
+      const rightDistance = distance(right)
+      if (leftDistance !== rightDistance) return leftDistance - rightDistance
+      const side = (turn: ConversationEvidenceEntry[]) => {
+        const nearest = turn.flatMap(entry => anchors.map(anchor => ({ delta: entry.seq - anchor.seq, distance: Math.abs(entry.seq - anchor.seq) })))
+          .sort((a, b) => a.distance - b.distance || a.delta - b.delta)[0]
+        return nearest?.delta ?? 0
+      }
+      return side(left) - side(right) || left[0]!.seq - right[0]!.seq
+    })
+}
+
+function timestampMatchesRecordTime(
+  timestamp: number,
+  constraint: NonNullable<MemoryQueryPlan["timeConstraint"]>,
+): boolean {
+  if (constraint.start !== undefined && timestamp < constraint.start) return false
+  if (constraint.end !== undefined && timestamp >= constraint.end) return false
+  if (constraint.calendarDate) {
+    const date = new Date(timestamp)
+    if (date.getMonth() + 1 !== constraint.calendarDate.month || date.getDate() !== constraint.calendarDate.day) return false
+    if (constraint.calendarDate.year !== undefined && date.getFullYear() !== constraint.calendarDate.year) return false
+  }
+  return true
 }
 
 class SessionChangedDuringIndexError extends Error {}
@@ -120,14 +201,14 @@ const inFlightIndexes = new Map<string, Promise<number>>()
 export async function recallConversation(request: ConversationRecallRequest): Promise<MemoryProjection[]> {
   if (request.signal.aborted || !request.sessionId || request.tokenBudget <= 0) return []
   const queries = request.queries?.length ? request.queries : [request.query]
-  const recentFallback = shouldUseRecentConversationFallback(request.query)
-  if (!queries.some(query => query.trim()) && !recentFallback) return []
+  const queryPlan = deriveMemoryQueryPlan(request.query, request.before)
+  if (!queries.some(query => query.trim()) && queryPlan.timeConstraint?.basis !== "record") return []
   const candidateSnapshot = await searchConversationCandidates({
     sessionId: request.sessionId,
     queries,
     signal: request.signal,
     before: request.before,
-    recentFallback,
+    queryPlan,
   })
   if (request.signal.aborted) return []
   const projections = projectSearchResults(
@@ -169,25 +250,48 @@ export async function searchConversationCandidates(request: ConversationCandidat
   }
   if (request.signal.aborted) return { revision: currentStatus.revision, memoryRevision: 0, forgetEpoch: currentStatus.forgetEpoch, entries: [] }
 
-  const uniqueQueries = [...new Set(request.queries.map(query => query.trim()).filter(Boolean))].slice(0, 3)
+  const queryPlan = request.queryPlan
+  const recordTime = queryPlan?.timeConstraint?.basis === "record"
+    ? {
+      ...(queryPlan.timeConstraint.start === undefined ? {} : { start: queryPlan.timeConstraint.start }),
+      ...(queryPlan.timeConstraint.end === undefined ? {} : { end: queryPlan.timeConstraint.end }),
+      ...(queryPlan.timeConstraint.calendarDate === undefined ? {} : { calendarDate: queryPlan.timeConstraint.calendarDate }),
+    }
+    : undefined
+  const uniqueQueries = [...new Set(request.queries.map(query => query.trim()).filter(Boolean))]
+  if (recordTime && queryPlan?.recallIntent === "overview") {
+    const followupQueries = uniqueQueries.filter(query => query !== queryPlan.originalQuery)
+    uniqueQueries.splice(0, uniqueQueries.length, "", ...followupQueries)
+  }
+  if (uniqueQueries.length === 0 && recordTime) uniqueQueries.push("")
+  if (uniqueQueries.length === 0) return {
+    revision: currentStatus.revision,
+    memoryRevision: 0,
+    forgetEpoch: currentStatus.forgetEpoch,
+    entries: [],
+  }
   const limit = Math.max(1, Math.min(CONVERSATION_SEARCH_LIMIT, Math.floor(request.limit ?? CONVERSATION_SEARCH_LIMIT)))
   let searchResults = await Promise.all(uniqueQueries.map(query => host.request("conversation_search", {
     query,
     sessionId: request.sessionId,
     limit,
     ...(request.before === undefined ? {} : { before: request.before }),
+    ...(recordTime ? { recordTime } : {}),
   }, { signal: request.signal })))
-  let result = searchResults[0]
-  if ((!result || searchResults.every(item => item.entries.length === 0)) && request.recentFallback && !request.signal.aborted) {
-    result = await host.request("conversation_search", {
+  // A short, explicit reference may be grounded in nearby prior turns even when its
+  // literal terms have no indexed match. Run this only after every normal query misses.
+  const allowRecentFallback = !recordTime && shouldUseRecentConversationFallback(request.queries[0] ?? "")
+  const usedRecentFallback = allowRecentFallback && searchResults.every(search => search.entries.length === 0)
+  if (usedRecentFallback) {
+    searchResults = [...searchResults, await host.request("conversation_search", {
       query: "",
       sessionId: request.sessionId,
       limit,
-      recentFallback: true,
       ...(request.before === undefined ? {} : { before: request.before }),
-    }, { signal: request.signal })
-    searchResults = [result]
+      recentFallback: true,
+    }, { signal: request.signal })]
   }
+  let result = searchResults[0]
   if (!result) return {
     revision: currentStatus.revision,
     memoryRevision: 0,
@@ -227,7 +331,7 @@ export async function searchConversationCandidates(request: ConversationCandidat
   const eligible = fusedOrder
     .map(entry => fused.get(`conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`) ?? entry)
     .filter(entry => currentIds.has(entry.sessionId)
-      && (request.recentFallback || entry.score > 0))
+      && (request.recentFallback || usedRecentFallback || Boolean(recordTime) || entry.score > 0))
     .slice(0, limit)
   const entries = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before)
   if (request.signal.aborted) return { ...result, entries: [] }

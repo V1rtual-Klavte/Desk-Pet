@@ -363,6 +363,26 @@
         },
         "recentFallback": {
           "type": "boolean"
+        },
+        "recordTime": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "start": { "type": "integer", "minimum": 0, "description": "Unix 毫秒，包含此边界" },
+            "end": { "type": "integer", "minimum": 0, "description": "Unix 毫秒，不包含此边界" },
+            "calendarDate": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["month", "day"],
+              "properties": {
+                "year": { "type": "integer", "minimum": 1 },
+                "month": { "type": "integer", "minimum": 1, "maximum": 12 },
+                "day": { "type": "integer", "minimum": 1, "maximum": 31 }
+              },
+              "description": "按宿主本地日历匹配；省略 year 时匹配所有年份"
+            }
+          },
+          "description": "只按记录时间检索，不改变词法检索语义；范围为 [start,end)"
         }
       },
       "response": {

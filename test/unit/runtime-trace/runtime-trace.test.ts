@@ -118,6 +118,17 @@ describe("Runtime trace [trace-runtime]", () => {
 })
 
 describe("阅读诊断的隐私边界", () => {
+  it("补查结束仅记录停止原因与次数，不泄露检索词或缺口正文 [trace-memory-coverage-schema]", () => {
+    const observed: RuntimeTraceEvent[] = []
+    unsubscribes.push(subscribeRuntimeTrace(event => { observed.push(event) }))
+    publishRuntimeTrace(createRuntimeTraceContext("session-test", "request-test"), "memory_coverage_end", {
+      status: "no_progress", retrievalCount: 2, sourceCount: 3,
+      queries: ["private-search"], condition: "private-condition", quote: "private-quote",
+    })
+    expect(observed).toHaveLength(1)
+    expect(observed[0]?.payload).toEqual({ status: "no_progress", retrievalCount: 2, sourceCount: 3 })
+  })
+
   it("保留合法来源和固定状态计数，拒绝引用正文与任意错误键 [trace-memory-reading-schema]", () => {
     const context = createRuntimeTraceContext("session-test", "request-test")
     const observed: RuntimeTraceEvent[] = []

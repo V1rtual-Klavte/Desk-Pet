@@ -4,7 +4,7 @@
 //! 业务规则一律留在 `store.rs`，命令层不复制第二份判定。
 //! IPC 层只做参数提取后转发，不含业务判定。
 
-use super::conversation::ConversationIndexEntry;
+use super::conversation::{ConversationIndexEntry, ConversationRecordTime};
 use super::store::{
     JOB_LEASE_MS, JOB_LIST_LIMIT_DEFAULT, LIST_LIMIT_DEFAULT, QUERY_LIMIT_DEFAULT,
     RECALL_LIMIT_DEFAULT,
@@ -146,6 +146,7 @@ pub(crate) fn conversation_search(
     limit: Option<i64>,
     before: Option<i64>,
     recent_fallback: Option<bool>,
+    record_time: Option<ConversationRecordTime>,
 ) -> AppResult<Value> {
     state.0.conversation_search(
         &query,
@@ -153,6 +154,7 @@ pub(crate) fn conversation_search(
         limit,
         before,
         recent_fallback.unwrap_or(false),
+        record_time.as_ref(),
     )
 }
 

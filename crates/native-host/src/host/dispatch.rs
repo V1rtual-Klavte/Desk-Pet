@@ -860,6 +860,13 @@ impl NativeDispatcher {
                 arg_opt_i64(args, "limit")?,
                 arg_opt_i64(args, "before")?,
                 arg_opt_bool(args, "recentFallback")?,
+                args.get("recordTime")
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(|error| {
+                            AppError::Config(format!("命令参数解析失败: {error}"))
+                        })
+                    })
+                    .transpose()?,
             ),
             "conversation_context" => memory_commands::conversation_context(
                 self.memory()?,

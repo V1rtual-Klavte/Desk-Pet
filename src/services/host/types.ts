@@ -1208,7 +1208,18 @@ export type HostCommandMap = {
   conversation_index_prune: { args: { sessionIds: string[] }; result: number }
   /** Search transcript chunks; recent fallback is only for explicit referential queries. */
   conversation_search: {
-    args: { query: string; sessionId: string; limit?: number; before?: number; recentFallback?: boolean }
+    args: {
+      query: string
+      sessionId: string
+      limit?: number
+      before?: number
+      recentFallback?: boolean
+      recordTime?: {
+        start?: number
+        end?: number
+        calendarDate?: { year?: number; month: number; day: number }
+      }
+    }
     result: ConversationSearchResult
   }
   /** Expand an already-selected conversation hit into a paged, privacy-filtered chunk-0 transcript. */

@@ -2746,12 +2746,12 @@ fn database_repair_recovers_clear_cutoff_before_conversation_cache_existed() {
         .expect("index future committed entry");
     let old_result = fixture
         .store
-        .conversation_search("旧内容", "future-session", Some(5), None, false)
+        .conversation_search("旧内容", "future-session", Some(5), None, false, None)
         .expect("search pre-clear history after cache rebuild");
     assert_eq!(old_result["entries"].as_array().unwrap().len(), 0);
     let result = fixture
         .store
-        .conversation_search("新提交", "future-session", Some(5), None, false)
+        .conversation_search("新提交", "future-session", Some(5), None, false, None)
         .expect("search future committed entry");
     assert_eq!(result["entries"].as_array().unwrap().len(), 1);
     assert_eq!(result["entries"][0]["entryId"], "future-user-entry");
@@ -2857,7 +2857,7 @@ fn database_repair_does_not_infer_complete_clear_inventory_from_a_leftover_fence
         .expect("index a new session after clear");
     let result = fixture
         .store
-        .conversation_search("新会话", "new-session-after-clear", Some(5), None, false)
+        .conversation_search("新会话", "new-session-after-clear", Some(5), None, false, None)
         .expect("search newly indexed session");
     assert_eq!(result["entries"].as_array().unwrap().len(), 1);
 }

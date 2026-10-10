@@ -209,7 +209,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "445970721e26265c5b2663ac8bba080f8fa7a7a1a7589366262950443152ea65",
+  sourceHash: "d121aee4e7ab5a9f884e093b2e96fe217491b1ae8118d36bf8c05940621f58bc",
   coverage: [
     {
       id: "nui-34",

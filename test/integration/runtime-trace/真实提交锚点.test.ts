@@ -135,18 +135,14 @@ describe("Runtime trace 持久化锚点", () => {
     const restoreMemory = installMemoryProvider({
       async recall(): Promise<MemoryProjection[]> {
         return Array.from({ length: 4 }, (_, index) => ({
-          sourceId: `reading-guide-session-${index}:entry-${index}`,
+          sourceId: `fact:reading-guide-${index}@1`,
           memoryVersion: `reading-guide-v1-${index}`,
           provenance: `fixture:reading-guide-${index}`,
-          taint: "derived" as const,
+          taint: "trusted_user" as const,
           text: index === 0 ? "I own a portable power bank." : `Earlier user preference ${index}.`,
           tokenBudget: 32,
           tier: "recall" as const,
-          conversation: {
-            sessionId: `reading-guide-session-${index}`, entryId: `entry-${index}`,
-            eventId: `event-${index}`, role: "user" as const, timestamp: 1_800_000_000_000 + index,
-            seq: index, chunk: 0, extent: "entry" as const,
-          },
+          origin: "user" as const,
         }))
       },
     })

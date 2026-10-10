@@ -3,6 +3,7 @@
 use super::store::{db_err, memory_query_terms};
 use super::MemoryStore;
 use crate::error::{AppError, AppResult};
+use chrono::{Datelike, Local, NaiveDate, TimeZone, Utc};
 use rusqlite::{
     params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
 };
@@ -65,6 +66,66 @@ pub(crate) struct ConversationIndexBatch {
     pub id: String,
     pub offset: i64,
     pub complete: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConversationRecordTime {
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+    pub calendar_date: Option<ConversationCalendarDate>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConversationCalendarDate {
+    pub year: Option<i32>,
+    pub month: u32,
+    pub day: u32,
+}
+
+impl ConversationRecordTime {
+    fn validate(&self) -> AppResult<()> {
+        if self.start.is_none() && self.end.is_none() && self.calendar_date.is_none() {
+            return Err(AppError::Memory("recordTime 至少需要一个时间条件".into()));
+        }
+        if self.start.is_some_and(|value| value < 0)
+            || self.end.is_some_and(|value| value < 0)
+            || matches!((self.start, self.end), (Some(start), Some(end)) if start >= end)
+        {
+            return Err(AppError::Memory("recordTime 范围无效".into()));
+        }
+        if let Some(date) = &self.calendar_date {
+            if let Some(year) = date.year.filter(|year| *year <= 0) {
+                return Err(AppError::Memory(format!("recordTime 年份无效: {year}")));
+            }
+            if NaiveDate::from_ymd_opt(date.year.unwrap_or(2000), date.month, date.day).is_none() {
+                return Err(AppError::Memory("recordTime 日历日期无效".into()));
+            }
+        }
+        Ok(())
+    }
+
+    fn matches(&self, timestamp_ms: i64) -> bool {
+        if self.start.is_some_and(|start| timestamp_ms < start)
+            || self.end.is_some_and(|end| timestamp_ms >= end)
+        {
+            return false;
+        }
+        let Some(date) = &self.calendar_date else {
+            return true;
+        };
+        let Some(local_date) = Utc
+            .timestamp_millis_opt(timestamp_ms)
+            .single()
+            .map(|instant| instant.with_timezone(&Local).date_naive())
+        else {
+            return false;
+        };
+        local_date.month() == date.month
+            && local_date.day() == date.day
+            && date.year.map_or(true, |year| local_date.year() == year)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -728,13 +789,14 @@ impl MemoryStore {
         Ok(revision)
     }
 
-    pub fn conversation_search(
+    pub(crate) fn conversation_search(
         &self,
         query: &str,
         session_id: &str,
         limit: Option<i64>,
         before: Option<i64>,
         recent_fallback: bool,
+        record_time: Option<&ConversationRecordTime>,
     ) -> AppResult<Value> {
         valid_id(session_id, "sessionId", SESSION_ID_MAX)?;
         let limit = limit
@@ -742,6 +804,9 @@ impl MemoryStore {
             .clamp(1, SEARCH_LIMIT_MAX) as usize;
         if before.is_some_and(|value| value < 0) {
             return Err(AppError::Memory("会话检索 before 不能为负数".into()));
+        }
+        if let Some(record_time) = record_time {
+            record_time.validate()?;
         }
         let terms = memory_query_terms(query);
         let conn = self.lock()?;
@@ -757,7 +822,7 @@ impl MemoryStore {
         let mut rows = Vec::new();
 
         if terms.is_empty() {
-            if recent_fallback && query.trim().is_empty() {
+            if query.trim().is_empty() && (recent_fallback || record_time.is_some()) {
                 let mut sql = format!(
                     "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
                      FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}
@@ -768,15 +833,28 @@ impl MemoryStore {
                     sql.push_str(" AND e.timestamp<?2");
                     values.push(rusqlite::types::Value::Integer(before));
                 }
-                sql.push_str(&format!(
-                    " ORDER BY e.timestamp DESC,e.seq DESC,CASE WHEN e.role='assistant' THEN 0 ELSE 1 END,e.chunk DESC LIMIT {}",
-                    limit.min(RECENT_FALLBACK_MAX as usize)
-                ));
+                sql.push_str(" ORDER BY e.timestamp DESC,e.seq DESC,CASE WHEN e.role='assistant' THEN 0 ELSE 1 END,e.chunk DESC");
+                if record_time.is_none() {
+                    sql.push_str(&format!(" LIMIT {}", limit.min(RECENT_FALLBACK_MAX as usize)));
+                }
                 let mut statement = conn.prepare(&sql).map_err(db_err)?;
                 let found = statement
                     .query_map(params_from_iter(values), Self::read_conversation_row)
                     .map_err(db_err)?;
-                rows = found.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+                let result_limit = if record_time.is_some() {
+                    limit
+                } else {
+                    limit.min(RECENT_FALLBACK_MAX as usize)
+                };
+                for candidate in found {
+                    let row = candidate.map_err(db_err)?;
+                    if record_time.map_or(true, |filter| filter.matches(row.timestamp)) {
+                        rows.push(row);
+                        if rows.len() >= result_limit {
+                            break;
+                        }
+                    }
+                }
             }
         } else {
             let mut sql = format!(
@@ -813,6 +891,9 @@ impl MemoryStore {
             // hidden candidate ceiling that excludes older exact matches before scoring.
             for candidate in found {
                 let mut row = candidate.map_err(db_err)?;
+                if record_time.map_or(false, |filter| !filter.matches(row.timestamp)) {
+                    continue;
+                }
                 let text = row.text.to_lowercase();
                 let matched = terms
                     .iter()
@@ -841,6 +922,9 @@ impl MemoryStore {
                 }
             }
             rows = Self::expand_conversation_context(&conn, rows, clear_cutoff, before)?;
+            if let Some(record_time) = record_time {
+                rows.retain(|row| record_time.matches(row.timestamp));
+            }
         }
 
         Ok(json!({
@@ -1348,7 +1432,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("咖啡", "s1", Some(10), None, false)
+            .conversation_search("咖啡", "s1", Some(10), None, false, None)
             .expect("search");
         let rows = result["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 2, "两字中文必须由 LIKE 回退命中两个会话");
@@ -1359,6 +1443,102 @@ mod tests {
             result["memoryRevision"], 0,
             "会话索引写入不能推进事实记忆 revision"
         );
+    }
+
+    #[test]
+    fn record_time_overview_matches_local_calendar_day_across_years() {
+        let fixture = Fixture::new();
+        let at = |year, month, day| {
+            Local
+                .with_ymd_and_hms(year, month, day, 12, 0, 0)
+                .single()
+                .expect("valid local fixture time")
+                .timestamp_millis()
+        };
+        let mut rows = vec![
+            entry("jan-2023", Some("jan-2023:user"), 1, "user", "2023", None),
+            entry("jan-2024", Some("jan-2024:user"), 2, "user", "2024", None),
+            entry("jan-03", Some("jan-03:user"), 3, "user", "next day", None),
+        ];
+        rows[0].timestamp = at(2023, 1, 2);
+        rows[1].timestamp = at(2024, 1, 2);
+        rows[2].timestamp = at(2024, 1, 3);
+        fixture.replace("s1", "fp1", None, rows, 0);
+
+        let record_time = ConversationRecordTime {
+            start: None,
+            end: None,
+            calendar_date: Some(ConversationCalendarDate {
+                year: None,
+                month: 1,
+                day: 2,
+            }),
+        };
+        let result = fixture
+            .1
+            .conversation_search("", "s1", Some(10), None, false, Some(&record_time))
+            .expect("date overview");
+        let entries = result["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 2, "yearless date selects both stored years");
+        assert!(entries.iter().any(|row| row["entryId"] == "jan-2023"));
+        assert!(entries.iter().any(|row| row["entryId"] == "jan-2024"));
+    }
+
+    #[test]
+    fn record_time_rejects_empty_or_impossible_filters() {
+        let empty = ConversationRecordTime {
+            start: None,
+            end: None,
+            calendar_date: None,
+        };
+        assert!(empty.validate().is_err());
+        let impossible = ConversationRecordTime {
+            start: None,
+            end: None,
+            calendar_date: Some(ConversationCalendarDate {
+                year: Some(2025),
+                month: 2,
+                day: 29,
+            }),
+        };
+        assert!(impossible.validate().is_err());
+    }
+
+    #[test]
+    fn record_time_range_is_start_inclusive_end_exclusive_and_before_also_applies() {
+        let fixture = Fixture::new();
+        let mut rows = vec![
+            entry("start", Some("start:user"), 1, "user", "start", None),
+            entry("middle", Some("middle:user"), 2, "user", "middle", None),
+            entry("end", Some("end:user"), 3, "user", "end", None),
+        ];
+        rows[0].timestamp = 1_000;
+        rows[1].timestamp = 2_000;
+        rows[2].timestamp = 3_000;
+        fixture.replace("s1", "fp1", None, rows, 0);
+
+        let record_time = ConversationRecordTime {
+            start: Some(1_000),
+            end: Some(3_000),
+            calendar_date: None,
+        };
+        let result = fixture
+            .1
+            .conversation_search("", "s1", Some(10), None, false, Some(&record_time))
+            .expect("bounded time search");
+        let entries = result["entries"].as_array().expect("entries array");
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|row| row["entryId"] == "start"));
+        assert!(entries.iter().any(|row| row["entryId"] == "middle"));
+        assert!(!entries.iter().any(|row| row["entryId"] == "end"));
+
+        let before = fixture
+            .1
+            .conversation_search("", "s1", Some(10), Some(2_000), false, Some(&record_time))
+            .expect("before intersects record range");
+        let before_entries = before["entries"].as_array().expect("entries array");
+        assert_eq!(before_entries.len(), 1);
+        assert_eq!(before_entries[0]["entryId"], "start");
     }
 
     #[test]
@@ -1385,7 +1565,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("专属召回限制探针", "s1", Some(100), None, false)
+            .conversation_search("专属召回限制探针", "s1", Some(100), None, false, None)
             .expect("search clamps to the protocol candidate ceiling");
         let rows = result["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 50);
@@ -1431,7 +1611,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("alpha beta", "s1", Some(50), None, false)
+            .conversation_search("alpha beta", "s1", Some(50), None, false, None)
             .expect("search every governed hit");
         let entries = result["entries"].as_array().expect("entries array");
         assert!(
@@ -1640,7 +1820,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("咖啡", "s1", Some(10), None, false)
+                .conversation_search("咖啡", "s1", Some(10), None, false, None)
                 .expect("search after forget")["entries"]
                 .as_array()
                 .unwrap()
@@ -1649,7 +1829,7 @@ mod tests {
         );
         let active = fixture
             .1
-            .conversation_search("活动提醒", "s1", Some(10), None, false)
+            .conversation_search("活动提醒", "s1", Some(10), None, false, None)
             .expect("unanchored active assistant survives forget");
         assert_eq!(active["entries"].as_array().unwrap().len(), 1);
         assert_eq!(active["entries"][0]["entryId"], "active-1");
@@ -1661,7 +1841,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("咖啡", "s1", Some(10), None, false)
+                .conversation_search("咖啡", "s1", Some(10), None, false, None)
                 .expect("search after rebuild")["entries"]
                 .as_array()
                 .unwrap()
@@ -1706,7 +1886,7 @@ mod tests {
         fixture.replace("s1", "fp2", None, vec![old], epoch);
         let result = fixture
             .1
-            .conversation_search("旧内容", "s1", Some(10), None, true)
+            .conversation_search("旧内容", "s1", Some(10), None, true, None)
             .expect("search after clear");
         assert!(
             result["entries"].as_array().unwrap().is_empty(),
@@ -1720,7 +1900,7 @@ mod tests {
         fixture.replace("s1", "fp3", Some("fp2"), vec![recent], epoch);
         let result = fixture
             .1
-            .conversation_search("", "s1", Some(10), None, true)
+            .conversation_search("", "s1", Some(10), None, true, None)
             .expect("recent fallback");
         assert_eq!(
             result["entries"].as_array().unwrap().len(),
@@ -1729,14 +1909,14 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("", "s1", Some(10), None, false)
+            .conversation_search("", "s1", Some(10), None, false, None)
             .expect("no fallback")["entries"]
             .as_array()
             .unwrap()
             .is_empty());
         assert!(fixture
             .1
-            .conversation_search("嗯", "s1", Some(10), None, true)
+            .conversation_search("嗯", "s1", Some(10), None, true, None)
             .expect("nonempty query no fallback")["entries"]
             .as_array()
             .unwrap()
@@ -1807,13 +1987,13 @@ mod tests {
 
         let no_history = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), None, false)
+            .conversation_search("", "current-new-session", Some(4), None, false, None)
             .expect("empty query without fallback");
         assert!(no_history["entries"].as_array().unwrap().is_empty());
 
         let recent = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), None, true)
+            .conversation_search("", "current-new-session", Some(4), None, true, None)
             .expect("explicit global fallback");
         let rows = recent["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 3);
@@ -1826,7 +2006,7 @@ mod tests {
 
         let bounded = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), Some(now - 600), true)
+            .conversation_search("", "current-new-session", Some(4), Some(now - 600), true, None)
             .expect("before-bounded fallback");
         let bounded_rows = bounded["entries"].as_array().expect("bounded entries");
         assert_eq!(bounded_rows.len(), 1);
@@ -1879,7 +2059,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("旧索引", "s1", Some(10), None, false)
+                .conversation_search("旧索引", "s1", Some(10), None, false, None)
                 .expect("old snapshot visible")["entries"]
                 .as_array()
                 .unwrap()
@@ -1888,7 +2068,7 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("新批次", "s1", Some(10), None, false)
+            .conversation_search("新批次", "s1", Some(10), None, false, None)
             .expect("staging hidden")["entries"]
             .as_array()
             .unwrap()
@@ -1929,7 +2109,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("新批次", "s1", Some(10), None, false)
+                .conversation_search("新批次", "s1", Some(10), None, false, None)
                 .expect("new snapshot visible")["entries"]
                 .as_array()
                 .unwrap()
@@ -1938,7 +2118,7 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("旧索引", "s1", Some(10), None, false)
+            .conversation_search("旧索引", "s1", Some(10), None, false, None)
             .expect("old snapshot removed after final commit")["entries"]
             .as_array()
             .unwrap()
@@ -2075,19 +2255,19 @@ mod tests {
             .expect("publish new source after a clock rollback");
         let empty = fixture
             .1
-            .conversation_search("专属标记", "current", Some(5), None, false)
+            .conversation_search("专属标记", "current", Some(5), None, false, None)
             .expect("new empty-session entry");
         assert_eq!(empty["entries"].as_array().unwrap().len(), 1);
         assert!(fixture
             .1
-            .conversation_search("旧未来消息", "current", Some(5), None, false)
+            .conversation_search("旧未来消息", "current", Some(5), None, false, None)
             .expect("forgotten future timestamp")["entries"]
             .as_array()
             .unwrap()
             .is_empty());
         let result = fixture
             .1
-            .conversation_search("挂号", "current", Some(1), None, false)
+            .conversation_search("挂号", "current", Some(1), None, false, None)
             .expect("new session and its anchored reply");
         assert_eq!(result["entries"][0]["entryId"], "a-new");
         assert!(result["entries"]
@@ -2127,7 +2307,7 @@ mod tests {
 
         let expanded = fixture
             .1
-            .conversation_search("挂号", "s1", Some(1), None, false)
+            .conversation_search("挂号", "s1", Some(1), None, false, None)
             .expect("user hit includes its answer window");
         let rows = expanded["entries"].as_array().expect("entries array");
         assert_eq!(
@@ -2144,7 +2324,7 @@ mod tests {
 
         let bounded = fixture
             .1
-            .conversation_search("挂号", "s1", Some(1), Some(1_700_000_000_002), false)
+            .conversation_search("挂号", "s1", Some(1), Some(1_700_000_000_002), false, None)
             .expect("before excludes the assistant window at its timestamp");
         let bounded_rows = bounded["entries"].as_array().expect("bounded entries");
         assert_eq!(bounded_rows.len(), 1);

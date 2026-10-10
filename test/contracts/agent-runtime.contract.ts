@@ -229,7 +229,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "e00ad88536426787a6678dd766c24d5a639a93e86da0ff22396a746cae2ef6d7",
+  sourceHash: "110bb3400ab06146f9ccba67ecfe6e5726cf7a34dff4295f3ec5c10c1ed15f92",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

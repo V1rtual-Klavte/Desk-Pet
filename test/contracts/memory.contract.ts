@@ -23,6 +23,11 @@
 // 而标 missing。作答侧补「supported 已覆盖问句所需条件时直接给出结论，不以看不出/不敢确定/没翻到收尾」。
 // mm-61 补冲突消解与相对时间窗的核对义务，mm-62 的提示规程范围随之扩展；oracle 语义质量另行观测
 // （单 trial 翻转率 14–28%，±3 题属噪声，结论见 test/memory-bench 报告）。sourceHash 按当前源码刷新。
+// 2026-10-10 阅读口径补修第三批（本批刷新）：MemoryBank 终态复跑的三道边界题同因 —— 核心事实答对后
+// 补入历史中不存在的细节（光线/反应）或用自己的偏好、愿望与一般常识补足历史内容（「海边日落」「画前
+// 走不动」「门口甜品店」均无来源）。MEMORY_READING_POLICY 无可核对来源的细节清单扩到地点/天气/光线/
+// 物品/双方反应，并明确「不得用自己的偏好、愿望或一般常识补足历史内容」；mm-62 提示规程范围随之扩展，
+// 断言在 test/integration/memory/记忆证据阅读.test.ts 同批补入。sourceHash 同批重算。
 // 2026-10-10 定向分析：Rust原文搜索改为全量合法命中评分、有界保留最佳候选，移除时间优先1000截断；prune不再限制总会话数，治理和事务保留，内联回归负责此存储边界。
 // 2026-10-10 帧容量与阅读使用补修：mm-08补超64KiB真实会话索引与完整检索回包，通用大JSON传输归host契约；mm-61/62补supported与missing并存及跨话题来源角色接线，语义质量仍由oracle衡量。
 // 2026-10-09 分层召回：声明真实headroom预算、完整渲染成本、会话覆盖与 token 分块的回归点；用户要求本轮不做 review，未声明审查完成。
@@ -246,6 +251,9 @@ import type { ModuleContract } from "../host/types"
 // CONFIG」；mm-11 的「冻结的 capabilities.safetyMode」核对仍成立（preflight 冻结一次、值取
 // CONFIG 现值，与权限裁决同一份快照）；其余 mm-* 逐点核对实现点仍在、覆盖描述与当前实现
 // 一致（描述/来源核对，非逐行行为审计）。sourceHash 按当前工作区源码复算。
+// 2026-10-10 统一记忆查询验收：sourceFiles 补入 coverage.ts（补查闭环）、context/index.ts（冻结时间锚 API）
+// 与 host/types.ts（conversation_search 记录时间线型）；mm-64绑定生产记录时间 IPC，mm-65/66/68
+// 分别登记统一查询计划、reader补查闭环与安全轨迹字段。mm-49保留原L2归属，新增L4不混层。
 // 2026-10-10 自动预算收口：删除 CONFIG/getter 的手动分层额度及预算函数的查询/覆盖参数，
 // 直接消费者统一传 purpose/headroom；mm-54 修订自动共用额度，超额原文淘汰仍由真实窗口触发。
 // 2026-10-10 oracle断点修复：mm-58/63归属受控会话分页及选择边界，mm-61/62归属逐条笔记与问题前提清单，mm-55覆盖主请求guide接线；mm-08以真Rust IPC补负对照、before与clear。
@@ -260,6 +268,8 @@ export const memoryContract: ModuleContract = {
     "crates/native-host/src/memory/commands.rs",
     "crates/native-host/src/host/dispatch.rs",
     "src/services/agent/memory/ipc.ts",
+    // conversation_search record-time bounds are defined on the host command boundary.
+    "src/services/host/types.ts",
     // 2026-10-06 契约账本批次 systematic sourceFiles 复查补入：protocol.json 是记忆命令
     // **线协议的权威定义**（protocol.ts 由 scripts/generate-memory-protocol.mjs 从它生成）；
     // proactive 契约对同构文件已把 .json 与 .ts 并列声明，这里此前只列 .ts。
@@ -272,6 +282,7 @@ export const memoryContract: ModuleContract = {
     "src/services/agent/memory/projection.ts",
     "src/services/agent/memory/reader.ts",
     "src/services/agent/memory/reading-errors.ts",
+    "src/services/agent/memory/coverage.ts",
     "src/services/agent/memory/evidence.ts",
     "src/services/agent/memory/conversation.ts",
     "crates/native-host/src/memory/conversation.rs",
@@ -310,6 +321,8 @@ export const memoryContract: ModuleContract = {
     "src/services/tool/local-extra/memory.ts",
     "src/services/tool/policy.ts",
     "src/services/context/builder.ts",
+    // Frozen time-reference API consumed by memory query planning and reading.
+    "src/services/context/index.ts",
     "src/services/context/kernel.ts",
     "src/services/context/budget.ts",
     "src/services/context/tool-output.ts",
@@ -317,28 +330,31 @@ export const memoryContract: ModuleContract = {
   ],
   // 2026-10-10：预算/结构化证据归 mm-54..61，阅读器网关、缓存与取消组合归 mm-62；
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
-  sourceHash: "d00512071723c31deb1c473a80cc39d64102e57e99d1ab3c3b53ab64d63714f4",
+  sourceHash: "44f83d485eae277180779c0e26a9fedf7f6d6855bee4544050685184e6e0eec1",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },
     { id: "mm-56", feature: "动态证据会话覆盖", description: "核心和精确目标优先；动态装配先为后续可容纳会话预留索引命中片段，再在每个候选会话内寻找可容纳完整用户/锚定助手证据组，再按原排名补位；超限退回索引命中片段且不阻断后续证据；最终条数由实际全文与JSON总预算限定，无固定6条上限", why: "单会话高分候选不能在预算与名额竞争中挤掉其余命中会话", layer: "unit", depth: "deep", scenarios: ["memory-recall-session-coverage", "memory-recall-complete-turn-bundle", "memory-recall-session-reservation"] },
     { id: "mm-63", feature: "重排后的会话上下文展开", description: "仅选中会话可继续读取上下文，显式空选择与已拒绝entry不复活；版本变化丢会话保留核心事实，I/O失败保留已验证命中并登记失败", why: "补全会话不能绕过既有重排与资格边界，也不能让可选扩展故障拖垮整次召回", layer: "unit", depth: "deep", scenarios: ["memory-context-after-selection", "memory-context-empty-selection", "memory-context-revision-fallback", "memory-context-io-fallback"] },
-    { id: "mm-58", feature: "检索命中回读完整证据", description: "至多3条query各自检索后排名轮询融合，最多50候选且版本/遗忘代对齐；只对SQLite返回的稳定entry回读可见JSONL，角色/seq/时间/重建chunk逐字匹配才取完整正文，缺失及陈旧命中丢弃；个人意图只在已选中会话内经SQLite治理分页补回其他正文，按真实headroom停止，分页复核revision/遗忘代，不将50候选作为最终条数上限", why: "会话命中不代表答案所在轮或细节完整，原话回读不能绕过可信来源及遗忘裁决", layer: "unit", depth: "deep", scenarios: ["conversation-expand-hit-to-full-entry", "conversation-drop-stale-hit-chunk", "conversation-query-facet-fusion", "conversation-query-snapshot-fence", "conversation-expand-matched-session-pages", "conversation-context-headroom", "conversation-context-revision-fence", "conversation-context-jsonl-and-cancel"] },
+    { id: "mm-58", feature: "检索命中回读完整证据", description: "所有去重词面query各自检索后排名轮询融合，最多50候选且版本/遗忘代对齐；只对SQLite返回的稳定entry回读可见JSONL，角色/seq/时间/重建chunk逐字匹配才取完整正文，缺失及陈旧命中丢弃；仅明确短指代在所有词面查询均无命中时追加近期回退，回退返回的零分entry也作为候选回读，普通miss不扫描近期原文；个人意图只在已选中会话内经SQLite治理分页补回其他正文，按真实headroom停止，分页复核revision/遗忘代，不将50候选作为最终条数上限；记录日期概览按半开记录时间范围检索，事件日期不作记录过滤；日期概览缺少具体主题时由reader给出grounded follow-up并补查；紧预算按命中邻近轮次及完整user/assistant回合组展开", why: "会话命中不代表答案所在轮或细节完整，原话回读不能绕过可信来源及遗忘裁决", layer: "unit", depth: "deep", scenarios: ["conversation-expand-hit-to-full-entry", "conversation-drop-stale-hit-chunk", "conversation-query-facet-fusion", "conversation-query-snapshot-fence", "conversation-expand-matched-session-pages", "conversation-query-plan-record-time", "conversation-temporal-only-and-event-time", "conversation-dated-overview-followup", "conversation-context-nearby-headroom", "conversation-context-nearest-prior-turn-bundle", "conversation-context-revision-fence", "conversation-context-jsonl-and-cancel"] },
     { id: "mm-59", feature: "结构化证据及编码预算", description: "JSON evidence数组分别呈现kind/source/正文以及原话role/time/seq/entry字段，按会话及原始顺序读取，正文不能伪造宿主metadata；readingNotes置于完整证据之后并按sourceId引用原文，完整JSON编码计入最终预算，少1token即整条淘汰", why: "结构化读取保留事件归属与时间，双重来源标签及未计费编码不能继续侵占小预算", layer: "unit", depth: "deep", scenarios: ["memory-recall-structured-evidence", "memory-recall-structured-cost", "memory-recall-reading-order", "memory-recall-reading-notes", "memory-recall-question-guide-budget"] },
-    { id: "mm-61", feature: "请求内阅读笔记来源与预算", description: "只接受实际输入sourceId、连续逐字引文和有界关联说明；坏笔记逐条丢弃并保留合法逐字引文，坏清单独立失效；questionChecks只引用合法笔记，supported与missing可并存；缺失前提可无来源且仅约束自身，禁止替换实体继续计算，说明是否含暂定措辞不决定合法性；笔记保留原始证据及信任字段，超共享预算只舍弃笔记，不写回事实；同一事实/事件的多条记录先按时间序消解（更晚的确认记录更新先前值，用户当前纠正优先），能消解即标supported并在condition写明采用与被更新的记录，仅同一时点互斥或先后无法判定才标conflicting；相对时间问句先按currentTimeNote换算成日期区间再与记录时间比对，不因原文未出现相同表述而标missing", why: "召回到的个人经历仍可能被回答忽略；显式阅读阶段必须可追溯且不能成为事实写入通道", layer: "unit", depth: "deep", scenarios: ["memory-reading-supported-and-missing", "memory-reading-partial-validation", "memory-reading-missing-premise", "memory-reading-guide-isolation", "memory-reading-all-invalid-raw", "memory-reading-source-preservation", "memory-reading-budget-fallback"] },
-    { id: "mm-62", feature: "回合内阅读编排与安全缓存", description: "真实personal-history/advice命中通过fake gateway生成可验证readingNote；提示规程扫描跨话题用户经历、按题面当前时间换算相对时间窗、对同一事实的多条记录按时间序取更新值，并要求主答采用相关supported证据、已覆盖问句所需条件时直接给出结论，计划/假设/assistant建议不可升级，fake只验证接线不证明语义质量；同AbortSignal内证据与request语义未变时复用，并以同回合冻结时间锚防止分钟变化重读；requestId、来源正文/角色变化或新signal隔离缓存；预算收缩整组舍弃guide/notes保留原文，部分/全坏解析结果也按同回合来源缓存，来源验证移除后重新聚焦以防指南残留；取消晚到、非stop、网关失败及伪造来源均回raw，不改变来源身份与trust", why: "阅读注释只在当前回合暂存，跨请求复用或不复核来源会造成注释错绑/信任升级；重复读又会增加无用模型调用", layer: "integration", depth: "deep", scenarios: ["memory-reading-advice-ownership-boundary-guidance", "memory-reading-notes-trust-preservation", "memory-reading-signal-cache-budget-shrink", "memory-reading-cache-invalidation", "memory-reading-cancel-invalid-source-fallback", "memory-reading-partial-notes-guide", "memory-reading-missing-premise-guide"] },
+    { id: "mm-61", feature: "请求内阅读笔记来源与预算", description: "只接受实际输入sourceId、连续逐字引文和有界关联说明；坏笔记逐条丢弃并保留合法逐字引文，坏清单独立失效；questionChecks只引用合法笔记，supported与missing可并存；缺失前提可无来源且仅约束自身，禁止替换实体继续计算，说明是否含暂定措辞不决定合法性；笔记保留原始证据及信任字段，超共享预算只舍弃笔记，不写回事实；同一事实/事件的多条记录先按时间序消解（更晚的确认记录更新先前值，用户当前纠正优先），能消解即标supported并在condition写明采用与被更新的记录，仅同一时点互斥或先后无法判定才标conflicting；相对时间问句先按currentTimeNote换算成日期区间再与记录时间比对，不因原文未出现相同表述而标missing", why: "召回到的个人经历仍可能被回答忽略；显式阅读阶段必须可追溯且不能成为事实写入通道", layer: "unit", depth: "deep", scenarios: ["memory-reading-supported-and-missing", "memory-reading-partial-validation", "memory-reading-missing-premise", "memory-reading-guide-isolation", "memory-reading-all-invalid-raw", "memory-reading-source-preservation", "memory-reading-budget-fallback", "memory-reading-grounded-followup-search"] },
+    { id: "mm-62", feature: "回合内阅读编排与安全缓存", description: "真实personal-history/advice命中（含单条来源与零条来源的已知历史）通过fake gateway生成可验证readingNote；queryPlan声明优先发言角色但保留配对角色上下文，提示规程扫描跨话题用户经历、按题面冻结时间换算相对时间窗、对同一事实的多条记录按时间序取更新值，并要求主答采用相关supported证据、已覆盖问句所需条件时直接给出结论、不补造历史中未出现的地点/天气/光线/物品/心情/原因/结果/经历与双方当时的反应、不用自己的偏好/愿望/一般常识补足历史内容，计划/假设/assistant建议不可升级，fake只验证接线不证明语义质量；同AbortSignal内证据与request语义未变时复用；requestId、来源正文/角色变化或新signal隔离缓存；预算收缩整组舍弃guide/notes保留原文，部分/全坏解析结果也按同回合来源缓存，来源验证移除后重新聚焦以防指南残留；取消晚到、非stop、网关失败及伪造来源均回raw，不改变来源身份与trust", why: "阅读注释只在当前回合暂存，跨请求复用或不复核来源会造成注释错绑/信任升级；重复读又会增加无用模型调用", layer: "integration", depth: "deep", scenarios: ["memory-reading-known-history-small-evidence", "memory-reading-social-acknowledgement-skip", "memory-reading-grounded-search-integration", "memory-reading-advice-ownership-boundary-guidance", "memory-reading-notes-trust-preservation", "memory-reading-signal-cache-budget-shrink", "memory-reading-cache-invalidation", "memory-reading-cancel-invalid-source-fallback", "memory-reading-partial-notes-guide", "memory-reading-missing-premise-guide", "memory-shared-time-anchor"] },
     { id: "mm-60", feature: "个人检索意图与单词边界", description: "个人历史/跨事件问句和个性化建议启用记忆扩词资格；社交及一般问答不触发，英文指代按单词边界匹配", why: "少量关键词命中不能证明个人约束完整，普通单词中的it也不能冒充历史指代", layer: "unit", depth: "deep", scenarios: ["memory-query-personal-intent", "memory-query-word-boundaries"] },
+    { id: "mm-65", feature: "统一本地查询计划与时间锚", description: "从原始query一次确定personal recall intent、entities、evidence needs、偏好source roles和时间约束；明确个人历史、数量、原因、步骤、当前建议及中文第一人称问句分类，剥离委托式宾语（如帮我想想）避免把‘我’误作个人回忆主体，一般知识不误触；推荐回忆不能误判成当前建议；user/assistant角色作为检索偏好而非成对证据硬过滤；记录日期半开区间与事件日期区分，缺年不补当前年，相对日期使用冻结question time而非JSONL before cutoff", why: "多处独立判别会让召回、补查与阅读对同一句话作出不同分类，且把来源截止时间当作现在会错误换算相对日期", layer: "unit", depth: "deep", scenarios: ["memory-query-plan-intent", "memory-query-plan-personal-event", "memory-query-plan-chinese-entities", "memory-query-plan-chinese-personal-question", "memory-query-plan-chinese-object-person", "memory-query-plan-advice-vs-history", "memory-query-plan-source-roles", "memory-query-plan-dated-conversation", "memory-query-plan-english-date-position", "memory-query-plan-time", "memory-query-time-anchor"] },
+    { id: "mm-66", feature: "阅读器驱动的证据缺口补查", description: "同一memory query plan驱动候选及补查，reader识别unsupported premise并给出grounded follow-up entity/search terms；对实体和来源配对做限界复核，只有新增可信证据继续循环，重复无进展停止；共享deadline内不设固定轮数，取消丢弃迟到快照，revision变化清空旧新证据；补查走真实召回headroom，并把合并证据及guide送入主请求", why: "读到一个命中不能证明多条件问题已覆盖；补查也不能将模型臆造实体当成证据或在治理代际变化后沿用旧来源", layer: "integration", depth: "deep", scenarios: ["memory-coverage-followup-satisfies-cause", "memory-coverage-no-progress-stop", "memory-coverage-rejects-invented-entity", "memory-coverage-cancel-rejects-late-snapshot", "memory-coverage-revision-change-clears-snapshot", "memory-coverage-deadline-without-round-quota", "memory-coverage-budget-keeps-turn-pair", "memory-followup-runtime-turn"] },
+    { id: "mm-68", feature: "记忆补查轨迹的安全字段", description: "memory_coverage_end只允许固定结构字段；不记录证据正文、检索词、缺口正文或任意模型错误键", why: "补查轨迹用于回合诊断，不应把用户原文或检索提示复制进诊断留痕", layer: "unit", depth: "deep", scenarios: ["trace-memory-coverage-schema"] },
     { id: "mm-57", feature: "跨语种原话分块", description: "原话按400估算token及1600Unicode字符双上限切块，重叠不超过48token且不拆Unicode字符；分块规则进入索引指纹", why: "固定字符数使英文碎片过短，中文则必须防止单块超token上限", layer: "unit", depth: "deep", scenarios: ["conversation-index-token-bounded-chunks"] },
     { id: "mm-52", feature: "派生证据升级闭环", description: "默认召回与派生登记前处理持久失效待办；行为计量升级撤销全部系统观察，旧了解证据仅撤销 understanding 范围，两者同时发生共用一次全量闭包。事务失败不确认待办且允许重试，无待办不写库。了解来源必须绑定稳定 artifact 与输入版本，缺证据不能登记，用户事实不参与该闭包", why: "只隔离旧缓冲文件会留下已沉淀的旧口径结论继续被召回；确认待办早于事务会导致永久漏清理", layer: "unit", depth: "deep", scenarios: ["derived-evidence-coalesces-all-scopes", "derived-evidence-retry-after-transaction-failure", "derived-evidence-understanding-scope-only", "derived-evidence-no-pending-no-transaction"] },
     { id: "mm-53", feature: "了解沉淀的证据准入", description: "了解摘要来源身份绑定稳定 artifact、实际输入 hash 与摘要；同 artifact 只取最新可验证观察，无 evidenceId 或 evidenceHash 不登记。contentHash 仍校验摘要原文", why: "重复采样不是独立来源，只有摘要文本无法证明实际读过什么", layer: "integration", depth: "deep", scenarios: ["understanding-source-requires-evidence"] },
     {
       id: "mm-51",
       feature: "事实、画像与原话的统一查询改写和重排",
-      description: "默认SQLite策略保留原问题并补有界改写查询；显式指代只是路由线索，个人/历史/个性化建议即使少量动态命中也可在空当前上下文做中性扩词和有界互补检索，短跟进须有before前可见上文，社交确认或关闭模式不另调模型。候选并集标记用户事实/派生观察/原话角色，一次重排只认实际发送ID，未知ID/坏输出回退本地同份结果，合法空选择不补回。主动/精确目标不扩展检索；空query保留核心画像但不暖全库；版本不一致丢旧原话，冷索引/增强超时保留已预算的本地事实，真实取消不返回投影",
+      description: "默认SQLite策略保留原问题并补有界改写查询；模型只在同一计划上补充grounded entities/evidence needs，不重判本地intent/time/sourceRoles；模型输出受总字符预算约束但没有固定查询条数上限，已验证的同轮计划可在rewrite关闭时复用。显式指代只是路由线索，个人/历史/个性化建议即使少量动态命中也可在空当前上下文做中性扩词和有界互补检索，短跟进须有before前可见上文，社交确认或关闭模式不另调模型。候选并集标记用户事实/派生观察/原话角色，一次重排只认实际发送ID，未知ID/坏输出回退本地同份结果，合法空选择不补回。主动/精确目标不扩展检索；空query保留核心画像但不暖全库；版本不一致丢旧原话，冷索引/增强超时保留已预算的本地事实，真实取消不返回投影",
       why: "各通道各自改写或排序会重复付费且丢失可比性；词表一票否决会漏自然措辞，空历史、超时和取消也必须有一致且可审计的退化语义",
       layer: "unit",
       depth: "deep",
-      scenarios: ["memory-query-context-roles", "memory-query-personal-history-empty-context", "memory-query-contextual-followup", "memory-query-social-no-rewrite", "memory-query-rewrite-off", "memory-query-rewrite-existing-facts-history", "memory-query-rewrite-existing-facts-advice", "memory-recall-joint-candidates", "memory-recall-joint-fallback", "memory-recall-targeted-isolation", "memory-recall-empty-query-core-only", "memory-query-rewrite-fallback", "memory-recall-revision-consistency", "memory-recall-empty-history-no-revision-failure", "memory-recall-local-deadline-fallback"],
+      scenarios: ["memory-query-context-roles", "memory-query-context-headroom", "memory-query-plan-cache", "memory-query-personal-history-empty-context", "memory-query-contextual-followup", "memory-query-social-no-rewrite", "memory-query-rewrite-off", "memory-query-rewrite-existing-facts-history", "memory-query-rewrite-existing-facts-advice", "memory-recall-plan-followups", "memory-recall-joint-candidates", "memory-recall-joint-fallback", "memory-recall-targeted-isolation", "memory-recall-empty-query-core-only", "memory-query-rewrite-fallback", "memory-recall-revision-consistency", "memory-recall-empty-history-no-revision-failure", "memory-recall-local-deadline-fallback"],
     },
     {
       id: "mm-50",
@@ -352,12 +368,13 @@ export const memoryContract: ModuleContract = {
     {
       id: "mm-49",
       feature: "当前与跨会话原文索引的来源、分批发布和治理接线",
-      description: "会话原文走独立只读引用通道，不把助手原话登记为用户事实；索引全部当前数据根会话而非打开标签，依照既有可见投影过滤可信用户/可见助手并保存角色、时间、原条目及锚点。长正文分成有界Unicode片段，512条一批暂存，仅最后complete发布完整快照；取消不继续发布。清空捕获实际seq上界而非时间，删除后按真实会话白名单prune且召回返回前复核来源仍存在；明确短指代只有关键词无命中才请求近期兜底，普通miss不补随机历史。该单元层只验证TS接口与引用接线；Rust FTS/事务、墓碑与跨IPC运行由内联Rust用例和后续原生验收负责，不冒充已运行的端到端证据",
+      description: "会话原文走独立只读引用通道，不把助手原话登记为用户事实；索引全部当前数据根会话而非打开标签，依照既有可见投影过滤可信用户/可见助手并保存角色、时间、原条目及锚点。长正文分成有界Unicode片段，512条一批暂存，仅最后complete发布完整快照；取消不继续发布。清空捕获实际seq上界而非时间，删除后按真实会话白名单prune且召回返回前复核来源仍存在；明确短指代仅在关键词全部未命中时使用近期回退，普通miss不补随机历史。该单元层只验证TS接口与引用接线；Rust FTS/事务、墓碑与跨IPC运行由内联Rust用例负责，不冒充已运行的端到端证据",
       why: "只保留用户事实无法回答助手过去说过什么；整会话巨型提交、旧快照回写或原文绕过遗忘会让会话检索不可靠，需要把引用、预算和治理贯穿新通道",
       layer: "unit",
       depth: "deep",
       scenarios: ["conversation-index-batch-publish", "conversation-index-abort-staging", "conversation-index-sessions", "conversation-clear-seq-fence", "conversation-referential-fallback", "conversation-revalidate-deleted-source", "conversation-empty-query-no-scan", "conversation-index-session-absolute-path", "conversation-index-empty-session-skipped"],
     },
+    { id: "mm-64", feature: "生产入口按记录时间检索原话", description: "真实生产回合写入可信用户原话后，经原生IPC执行空词查询；记录时间范围为[start,end)，命中范围返回该条且before同时间排他上界将其排除", why: "日期查询必须能以原话记录时间而非事件提及时间筛选，并保持 SQLite 搜索与回读的半开区间边界一致", layer: "e2e", depth: "deep", scenarios: ["memory-record-time-search"] },
     { id: "mm-01", feature: "记忆来源准入（两类通道，不混池）", description: "准入分两条互不混淆的通道：用户事实只收 origin=user + taint=trusted_user + eligibleForMemory=true 的已提交条目（助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局）；系统观察只收 origin=derived_behavior + taint=derived + eligibleForMemory=true 的系统观察来源（画像稳定结论与静默了解观察摘要两个子类，见 mm-47），错配（如 derived_behavior+trusted_user）拒收。投递时刻冻结的 cardId 随来源落盘；派生来源独立登记（合成会话 behavior、身份含内容文本 hash），不冒充用户事实", why: "「谁说的」是记忆的准入判据：把工具/助手来源放进去，模型的一次措辞就会被当成用户长期事实；把系统观察混进用户事实池，归纳出的推断会被说成「你告诉过我」", layer: "integration", depth: "deep", scenarios: ["memory-source-admission", "derived-behavior-source-registration", "derived-behavior-gate-blocks-registration", "derived-behavior-new-source-version"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },
     { id: "mm-37", feature: "adaptive 选择门槛与调用边界", description: "只在动态候选超过6条时调用重排，core不参加；最多发送12个真实候选且受总输入预算限制，白名单只认已发送ID；合法空数组表示不投影动态记忆，非空只投影有序子集；写后刷新可显式跳过重排、不重复调用；精确反馈目标不参加重排并沿用同一次原子读取的revision", why: "重排的开销和模型可见范围必须由宿主冻结：候选太少不值得调用，未发送的候选不能进入白名单，合法的空选择不能被补回全部", layer: "integration", depth: "deep", scenarios: ["memory-recall-selection"] },
