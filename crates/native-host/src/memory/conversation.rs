@@ -19,7 +19,6 @@ const FINGERPRINT_MAX: usize = 256;
 const CHUNK_CHARS_MAX: usize = 4_000;
 const SEARCH_LIMIT_DEFAULT: i64 = 8;
 const SEARCH_LIMIT_MAX: i64 = super::protocol::MEMORY_CONVERSATION_MAX_SEARCH_RESULTS;
-const CANDIDATE_LIMIT: i64 = 1_000;
 const RECENT_FALLBACK_MAX: i64 = 4;
 const INDEX_BATCH_CHUNKS_MAX: usize = super::protocol::MEMORY_CONVERSATION_BATCH_CHUNKS as usize;
 pub(super) const INDEX_STAGE_TTL_MS: i64 = 86_400_000;
@@ -89,6 +88,18 @@ struct IndexedEntry {
     anchor_entry_id: Option<String>,
     anchor_event_id: Option<String>,
     score: f64,
+}
+
+/// Existing best-first search order: relevance, recency, then stable identity keys.
+fn search_order(left: &IndexedEntry, right: &IndexedEntry) -> Ordering {
+    right
+        .score
+        .partial_cmp(&left.score)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| right.timestamp.cmp(&left.timestamp))
+        .then_with(|| left.session_id.cmp(&right.session_id))
+        .then_with(|| left.entry_id.cmp(&right.entry_id))
+        .then_with(|| left.chunk.cmp(&right.chunk))
 }
 
 fn valid_id(value: &str, name: &str, max: usize) -> AppResult<()> {
@@ -654,9 +665,6 @@ impl MemoryStore {
     }
 
     pub fn conversation_index_prune(&self, session_ids: &[String]) -> AppResult<i64> {
-        if session_ids.len() > INDEX_BATCH_MAX {
-            return Err(AppError::Memory("会话索引保留列表超过上限".into()));
-        }
         let mut keep = std::collections::HashSet::with_capacity(session_ids.len());
         for session_id in session_ids {
             valid_id(session_id, "sessionId", SESSION_ID_MAX)?;
@@ -794,16 +802,17 @@ impl MemoryStore {
                 values.push(rusqlite::types::Value::Text(like_pattern(term)));
             }
             sql.push_str(&conditions.join(" OR "));
-            sql.push_str(&format!(
-                " ) ORDER BY e.timestamp DESC,e.seq DESC,e.chunk DESC LIMIT {CANDIDATE_LIMIT}"
-            ));
+            sql.push_str(" ) ORDER BY e.timestamp DESC,e.seq DESC,e.chunk DESC");
             let mut statement = conn.prepare(&sql).map_err(db_err)?;
             let found = statement
                 .query_map(params_from_iter(values), Self::read_conversation_row)
                 .map_err(db_err)?;
-            rows = found.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
             let query_lower = query.trim().to_lowercase();
-            for row in &mut rows {
+            // Score every governed hit while retaining only the requested top limit (<= 50).
+            // SQL's recency order remains the deterministic tie order, but must not become a
+            // hidden candidate ceiling that excludes older exact matches before scoring.
+            for candidate in found {
+                let mut row = candidate.map_err(db_err)?;
                 let text = row.text.to_lowercase();
                 let matched = terms
                     .iter()
@@ -815,25 +824,130 @@ impl MemoryStore {
                 } else {
                     0.0
                 };
-                let current_session_tie = if row.session_id == session_id {
-                    0.1
-                } else {
-                    0.0
-                };
-                row.score = coverage + phrase + current_session_tie;
+                row.score = coverage
+                    + phrase
+                    + if row.session_id == session_id {
+                        0.1
+                    } else {
+                        0.0
+                    };
+                let insertion = rows
+                    .iter()
+                    .position(|existing| search_order(&row, existing) == Ordering::Less)
+                    .unwrap_or(rows.len());
+                rows.insert(insertion, row);
+                if rows.len() > limit {
+                    rows.pop();
+                }
             }
-            rows.sort_by(|left, right| {
-                right
-                    .score
-                    .partial_cmp(&left.score)
-                    .unwrap_or(Ordering::Equal)
-                    .then_with(|| right.timestamp.cmp(&left.timestamp))
-                    .then_with(|| left.session_id.cmp(&right.session_id))
-                    .then_with(|| left.entry_id.cmp(&right.entry_id))
-                    .then_with(|| left.chunk.cmp(&right.chunk))
-            });
-            rows.truncate(limit);
             rows = Self::expand_conversation_context(&conn, rows, clear_cutoff, before)?;
+        }
+
+        Ok(json!({
+            "revision": index_revision,
+            "memoryRevision": memory_revision,
+            "forgetEpoch": forget_epoch,
+            "entries": rows.into_iter().map(|entry| json!({
+                "sessionId": entry.session_id,
+                "entryId": entry.entry_id,
+                "eventId": entry.event_id,
+                "seq": entry.seq,
+                "chunk": entry.chunk,
+                "role": entry.role,
+                "text": entry.text,
+                "timestamp": entry.timestamp,
+                "anchorEntryId": entry.anchor_entry_id,
+                "anchorEventId": entry.anchor_event_id,
+                "score": entry.score,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
+    /// Read a bounded page of complete indexed turns from one already-selected hit session.
+    /// This is evidence expansion only; it does not change fact eligibility or search ranking.
+    pub fn conversation_context(
+        &self,
+        session_id: &str,
+        anchor_entry_id: &str,
+        after_seq: Option<i64>,
+        limit: Option<i64>,
+        before: Option<i64>,
+    ) -> AppResult<Value> {
+        valid_id(session_id, "sessionId", SESSION_ID_MAX)?;
+        valid_id(anchor_entry_id, "anchorEntryId", ID_MAX)?;
+        let after_seq = after_seq.unwrap_or(-1);
+        if after_seq < -1 {
+            return Err(AppError::Memory("会话上下文 afterSeq 不能小于 -1".into()));
+        }
+        let limit = limit
+            .unwrap_or(SEARCH_LIMIT_DEFAULT)
+            .clamp(1, SEARCH_LIMIT_MAX);
+        if before.is_some_and(|value| value < 0) {
+            return Err(AppError::Memory("会话上下文 before 不能为负数".into()));
+        }
+
+        // Hold one connection lock across the seed check, page read, and revision snapshot so
+        // callers never combine rows from one privacy epoch with metadata from another.
+        let conn = self.lock()?;
+        let (index_revision, clear_cutoff): (i64, i64) = conn
+            .query_row(
+                "SELECT revision,clear_cutoff FROM conversation_index_meta WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(db_err)?;
+        let memory_revision = Self::meta(&conn, "revision")?;
+        let forget_epoch = Self::meta(&conn, "forget_epoch")?;
+
+        let mut anchor_sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM conversation_index_entries e
+             WHERE e.session_id=?2 AND e.entry_id=?3 AND {CLEAR_CUTOFF_PREDICATE}
+               AND NOT {SUPPRESSION_EXISTS}"
+        );
+        let mut anchor_values = vec![
+            rusqlite::types::Value::Integer(clear_cutoff),
+            rusqlite::types::Value::Text(session_id.to_string()),
+            rusqlite::types::Value::Text(anchor_entry_id.to_string()),
+        ];
+        if let Some(before) = before {
+            anchor_sql.push_str(" AND e.timestamp<?4");
+            anchor_values.push(rusqlite::types::Value::Integer(before));
+        }
+        anchor_sql.push(')');
+        let anchor_visible: bool = conn
+            .query_row(&anchor_sql, params_from_iter(anchor_values), |row| {
+                row.get(0)
+            })
+            .map_err(db_err)?;
+
+        let mut rows = Vec::new();
+        if anchor_visible {
+            let mut sql = format!(
+                "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+                 FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}
+                   AND NOT {SUPPRESSION_EXISTS} AND e.session_id=?2 AND e.chunk=0 AND e.seq>?3"
+            );
+            let mut values = vec![
+                rusqlite::types::Value::Integer(clear_cutoff),
+                rusqlite::types::Value::Text(session_id.to_string()),
+                rusqlite::types::Value::Integer(after_seq),
+            ];
+            let limit_parameter = if let Some(before) = before {
+                sql.push_str(" AND e.timestamp<?4");
+                values.push(rusqlite::types::Value::Integer(before));
+                5
+            } else {
+                4
+            };
+            sql.push_str(&format!(
+                " ORDER BY e.seq ASC,e.entry_id ASC LIMIT ?{limit_parameter}"
+            ));
+            values.push(rusqlite::types::Value::Integer(limit));
+            let mut statement = conn.prepare(&sql).map_err(db_err)?;
+            let found = statement
+                .query_map(params_from_iter(values), Self::read_conversation_row)
+                .map_err(db_err)?;
+            rows = found.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
         }
 
         Ok(json!({
@@ -1284,6 +1398,186 @@ mod tests {
             50,
             "each returned candidate is distinct"
         );
+    }
+
+    #[test]
+    fn conversation_search_scores_older_exact_hit_beyond_one_thousand_recent_matches() {
+        let fixture = Fixture::new();
+        let mut rows = (0..1_001)
+            .map(|seq| {
+                entry(
+                    &format!("recent-{seq}"),
+                    None,
+                    seq + 1,
+                    "user",
+                    "alpha only recent match",
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        let older_exact = ConversationIndexEntry {
+            timestamp: 1_600_000_000_000,
+            ..entry(
+                "older-exact",
+                None,
+                0,
+                "user",
+                "alpha beta exact older match",
+                None,
+            )
+        };
+        rows.push(older_exact);
+        fixture.replace("s1", "fp1", None, rows, 0);
+
+        let result = fixture
+            .1
+            .conversation_search("alpha beta", "s1", Some(50), None, false)
+            .expect("search every governed hit");
+        let entries = result["entries"].as_array().expect("entries array");
+        assert!(
+            entries.iter().any(|row| row["entryId"] == "older-exact"),
+            "an older exact match must remain eligible after 1001 newer partial matches"
+        );
+        assert_eq!(entries[0]["entryId"], "older-exact");
+    }
+
+    #[test]
+    fn conversation_index_prune_accepts_more_than_twenty_thousand_valid_ids() {
+        let fixture = Fixture::new();
+        let keep = (0..20_001)
+            .map(|index| format!("keep-session-{index}"))
+            .collect::<Vec<_>>();
+
+        fixture
+            .1
+            .conversation_index_prune(&keep)
+            .expect("valid retention lists are not capped by total session count");
+    }
+
+    #[test]
+    fn conversation_context_pages_chunk_zero_rows_with_a_stable_revision_snapshot() {
+        let fixture = Fixture::new();
+        let first = entry("u1", Some("u1:user"), 1, "user", "第一轮", None);
+        let second = entry("u2", Some("u2:user"), 2, "user", "第二轮", None);
+        let second_continuation = ConversationIndexEntry {
+            chunk: 1,
+            text: "第二轮续片".into(),
+            ..second.clone()
+        };
+        let third = entry("a3", Some("a3:assistant"), 3, "assistant", "第三轮", None);
+        let fourth = entry("u4", Some("u4:user"), 4, "user", "第四轮", None);
+        fixture.replace(
+            "s1",
+            "fp1",
+            None,
+            vec![first, second, second_continuation, third, fourth],
+            0,
+        );
+
+        let page_one = fixture
+            .1
+            .conversation_context("s1", "u2", None, Some(2), None)
+            .expect("first context page");
+        let page_two = fixture
+            .1
+            .conversation_context(
+                "s1",
+                "u2",
+                page_one["entries"][1]["seq"].as_i64(),
+                Some(2),
+                None,
+            )
+            .expect("second context page");
+        let first_rows = page_one["entries"].as_array().expect("first entries");
+        let second_rows = page_two["entries"].as_array().expect("second entries");
+        assert_eq!(first_rows.len(), 2);
+        assert_eq!(first_rows[0]["entryId"], "u1");
+        assert_eq!(first_rows[1]["entryId"], "u2");
+        assert!(first_rows.iter().all(|row| row["chunk"] == 0));
+        assert_eq!(second_rows.len(), 2);
+        assert_eq!(second_rows[0]["entryId"], "a3");
+        assert_eq!(second_rows[1]["entryId"], "u4");
+        for key in ["revision", "memoryRevision", "forgetEpoch"] {
+            assert_eq!(
+                page_one[key], page_two[key],
+                "revision snapshot changed: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn conversation_context_rechecks_seed_and_neighbors_against_forget_clear_and_before() {
+        let fixture = Fixture::new();
+        let rows = vec![
+            entry("u1", Some("u1:user"), 1, "user", "清除前", None),
+            entry("u2", Some("u2:user"), 2, "user", "锚点", None),
+            entry("u3", Some("u3:user"), 3, "user", "遗忘邻居", None),
+            entry("u4", Some("u4:user"), 4, "user", "时间边界后", None),
+        ];
+        fixture.replace("s1", "fp1", None, rows, 0);
+        {
+            let conn = fixture.1.lock().expect("memory lock");
+            conn.execute(
+                "INSERT INTO conversation_index_clear_fences(session_id,max_seq,created_at) VALUES (?1,?2,?3)",
+                params!["s1", 1, now_ms()],
+            )
+            .expect("install clear fence");
+            conn.execute(
+                "INSERT INTO conversation_index_suppressions(session_id,entry_id,event_id,seq,created_at) VALUES (?1,?2,?3,?4,?5)",
+                params!["s1", "u3", "u3:user", 3, now_ms()],
+            )
+            .expect("forget neighboring entry");
+        }
+
+        let expanded = fixture
+            .1
+            .conversation_context("s1", "u2", None, Some(50), None)
+            .expect("expand visible anchor");
+        let rows = expanded["entries"].as_array().expect("context entries");
+        assert_eq!(
+            rows.len(),
+            2,
+            "visible entries remain while cleared/forgotten ones stay hidden"
+        );
+        assert_eq!(rows[0]["entryId"], "u2");
+        assert_eq!(rows[1]["entryId"], "u4");
+
+        let before = 1_700_000_000_004;
+        let bounded = fixture
+            .1
+            .conversation_context("s1", "u2", None, Some(50), Some(before))
+            .expect("apply before to page entries");
+        assert_eq!(bounded["entries"].as_array().unwrap().len(), 1);
+
+        let cleared_seed = fixture
+            .1
+            .conversation_context("s1", "u1", None, Some(50), None)
+            .expect("cleared seed returns empty context");
+        assert!(cleared_seed["entries"].as_array().unwrap().is_empty());
+        let forgotten_seed = fixture
+            .1
+            .conversation_context("s1", "u3", None, Some(50), None)
+            .expect("forgotten seed returns empty context");
+        assert!(forgotten_seed["entries"].as_array().unwrap().is_empty());
+        let time_excluded_seed = fixture
+            .1
+            .conversation_context("s1", "u4", None, Some(50), Some(before))
+            .expect("before-excluded seed returns empty context");
+        assert!(time_excluded_seed["entries"].as_array().unwrap().is_empty());
+
+        {
+            let conn = fixture.1.lock().expect("memory lock");
+            conn.execute(
+                "INSERT INTO conversation_index_suppressions(session_id,entry_id,event_id,seq,created_at) VALUES (?1,?2,?3,?4,?5)",
+                params!["s1", "u2", "u2:user", 2, now_ms()],
+            )
+            .expect("forget seed entry");
+        }
+        let forgotten_anchor = fixture
+            .1
+            .conversation_context("s1", "u2", None, Some(50), None)
+            .expect("forgotten anchor returns empty context");
+        assert!(forgotten_anchor["entries"].as_array().unwrap().is_empty());
     }
 
     #[test]

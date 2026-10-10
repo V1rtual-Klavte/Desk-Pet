@@ -9,13 +9,18 @@ const fixture = vi.hoisted(() => ({
   searchSnapshots: new Map<string, { revision: number; memoryRevision: number; forgetEpoch: number; entries: unknown[] }>(),
   calls: [] as Array<{ method: string; args: Record<string, unknown>; options?: { signal?: AbortSignal } }>,
   onReplace: undefined as undefined | ((args: Record<string, unknown>) => void),
+  onContext: undefined as undefined | ((args: Record<string, unknown>) => unknown),
+  transcriptReads: [] as string[],
 }))
 
 vi.mock("@/services/session", () => ({
   getPiSessionRepo: async () => ({ cwd: "/data" }),
   listPiSessionMetadata: async () => fixture.metadata,
   readPiSessionEntriesOnce: async (sessionId: string) => fixture.entries.get(sessionId) ?? [],
-  readVisibleSessionTranscript: async (sessionId: string) => fixture.transcripts.get(sessionId) ?? { entries: [], messages: [] },
+  readVisibleSessionTranscript: async (sessionId: string) => {
+    fixture.transcriptReads.push(sessionId)
+    return fixture.transcripts.get(sessionId) ?? { entries: [], messages: [] }
+  },
   withPiSessionFileLock: async (_sessionId: string, operation: () => Promise<unknown>) => operation(),
 }))
 
@@ -33,7 +38,8 @@ vi.mock("@/services/observation", () => ({ clearSilentUnderstanding: async () =>
 
 import type { HostBridge } from "@/services/host"
 import { setHostBridge } from "@/services/host"
-import { captureConversationClearFences, invalidateConversationSession, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
+import { captureConversationClearFences, expandConversationSessions, invalidateConversationSession, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
+import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "@/services/agent/memory/conversation"
 import { estimateContextTokens } from "@/services/context/budget"
 import { applyMemoryChange } from "@/services/agent/memory/ipc"
 import type { Entry } from "@earendil-works/pi-agent-core"
@@ -61,6 +67,7 @@ function installBridge() {
   const bridge = {
     async request(method: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown> {
       fixture.calls.push({ method, args, options })
+      if (method === "conversation_context") return fixture.onContext?.(args)
       if (method === "conversation_index_status") {
         return { sessions: [...fixture.indexed], stagedSessionIds: [], revision, forgetEpoch: 0 }
       }
@@ -104,6 +111,8 @@ function resetFixtures(): void {
   fixture.searchEntries = []
   fixture.searchSnapshots.clear()
   fixture.onReplace = undefined
+  fixture.onContext = undefined
+  fixture.transcriptReads = []
 }
 
 beforeEach(() => {
@@ -451,5 +460,63 @@ describe("会话原文索引", () => {
     expect(replaced).toContain(normal.id)
     expect(replaced).not.toContain(empty.id)
     expect(result.map(item => item.conversation?.entryId)).toEqual(["normal-user"])
+  })
+})
+
+function contextFixture(count = 64): { snapshot: ConversationEvidenceResult; rows: ConversationEvidenceEntry[] } {
+  const sessionId = "matched-history"
+  const rows: ConversationEvidenceEntry[] = Array.from({ length: count }, (_, seq) => ({
+    sessionId, entryId: `view-${seq}`, eventId: `event-${seq}`, seq, chunk: 0, role: "user",
+    text: `I viewed distinct property ${String(seq).padStart(2, "0")}.`, matchedText: `I viewed distinct property ${String(seq).padStart(2, "0")}.`,
+    timestamp: 100 + seq, score: 2,
+  }))
+  fixture.transcripts.set(sessionId, {
+    entries: rows.map(row => messageEntry(row.entryId, row.seq, "user", row.timestamp, row.eventId!)),
+    messages: rows.map(row => ({ id: row.entryId, eventId: row.eventId, role: "user", text: row.text, timestamp: row.timestamp, isUserInput: true })),
+  })
+  const snapshot: ConversationEvidenceResult = { revision: 3, memoryRevision: 7, forgetEpoch: 1, entries: [rows[rows.length - 1]!] }
+  fixture.onContext = args => ({ ...snapshot, entries: rows.filter(row => row.seq > Number(args.afterSeq)).slice(0, Number(args.limit)) })
+  installBridge()
+  return { snapshot, rows }
+}
+
+describe("命中会话的治理上下文展开", () => {
+  it("命中晚轮后跨页补入早轮事实，候选50条不成为最终证据上限 [conversation-expand-matched-session-pages]", async () => {
+    const { snapshot } = contextFixture()
+    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget: 20_000, before: 200 })
+    expect(result.entries).toHaveLength(64)
+    expect(result.entries.map(row => row.entryId)).toContain("view-0")
+    expect(new Set(result.entries.map(row => row.entryId)).size).toBe(64)
+    const calls = fixture.calls.filter(call => call.method === "conversation_context")
+    expect(calls.map(call => call.args.afterSeq)).toEqual([-1, 49])
+    expect(calls.every(call => call.args.sessionId === "matched-history" && call.args.anchorEntryId === "view-63" && call.args.before === 200)).toBe(true)
+    expect(fixture.transcriptReads).toEqual(["matched-history"])
+  })
+
+  it("按实际剩余空间停止展开，不为补全会话越过预算 [conversation-context-headroom]", async () => {
+    const { snapshot, rows } = contextFixture()
+    const tokenBudget = estimateContextTokens(snapshot.entries[0]!.text) + estimateContextTokens(rows[0]!.text) + estimateContextTokens(rows[1]!.text)
+    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget })
+    expect(result.entries.map(row => row.entryId)).toEqual(["view-63", "view-0", "view-1"])
+    expect(fixture.calls.filter(call => call.method === "conversation_context")).toHaveLength(1)
+  })
+
+  it("展开期间遗忘代变化时整组会话证据失效 [conversation-context-revision-fence]", async () => {
+    const { snapshot, rows } = contextFixture(3)
+    fixture.onContext = () => ({ ...snapshot, forgetEpoch: 2, entries: rows })
+    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget: 5_000 })
+    expect(result.entries).toEqual([])
+    expect(result.revisionChanged).toBe(true)
+    expect(fixture.transcriptReads).toEqual([])
+  })
+
+  it("治理通过仍需JSONL逐字校验，取消后不发布晚到页 [conversation-context-jsonl-and-cancel]", async () => {
+    const { snapshot, rows } = contextFixture(3)
+    fixture.onContext = () => ({ ...snapshot, entries: [{ ...rows[0]!, text: "stale indexed content" }] })
+    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget: 5_000 })
+    expect(result.entries.map(row => row.entryId)).toEqual(["view-2"])
+    const controller = new AbortController()
+    fixture.onContext = () => { controller.abort(); return { ...snapshot, entries: rows } }
+    expect((await expandConversationSessions(snapshot, { signal: controller.signal, tokenBudget: 5_000 })).entries).toEqual([])
   })
 })

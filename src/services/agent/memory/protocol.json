@@ -369,6 +369,28 @@
         "$ref": "#/definitions/ConversationSearchResult"
       }
     },
+    "conversation_context": {
+      "request": {
+        "sessionId": {
+          "type": "string"
+        },
+        "anchorEntryId": {
+          "type": "string"
+        },
+        "afterSeq": {
+          "type": "integer"
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "before": {
+          "type": "integer"
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/ConversationSearchResult"
+      }
+    },
     "memory_recall_candidates": {"request": {"query": {"type": "string"}, "cardId": {"type": ["string", "null"]}, "sessionId": {"type": "string"}, "limit": {"type": "integer"}, "targets": {"type": "array", "items": {"$ref": "#/definitions/MemoryRecallTarget"}}, "allowExpiredTargets": {"type": "boolean"}}, "response": {"$ref": "#/definitions/MemoryRecallCandidateSnapshot"}},
     "memory_job_list": {"request": {"limit": {"type": "integer"}, "offset": {"type": "integer"}}, "response": {"type": "array", "items": {"$ref": "#/definitions/MemoryJobListItem"}}},
     "memory_restore_preview": {"request": {"backupPath": {"type": "string"}}, "response": {"$ref": "#/definitions/MemoryRestorePreview"}},

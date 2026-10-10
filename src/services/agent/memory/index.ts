@@ -19,6 +19,7 @@ export { deriveMemoryRecallBudget } from "./budget"
 export type { MemoryRecallBudget } from "./budget"
 export { renderMemoryRecall } from "./projection"
 export { focusMemoryEvidence } from "./reader"
+export type { FocusedMemoryEvidence } from "./reader"
 
 export { parseRerankIds } from "./rerank"
 export { invalidateConversationSession, recallConversation, validateConversationProjections } from "./conversation"

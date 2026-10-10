@@ -206,9 +206,10 @@ fn protocol_commands_match_published_schema() {
     assert!(MEMORY_COMMANDS.contains(&"conversation_index_replace"));
     assert!(MEMORY_COMMANDS.contains(&"conversation_index_prune"));
     assert!(MEMORY_COMMANDS.contains(&"conversation_search"));
+    assert!(MEMORY_COMMANDS.contains(&"conversation_context"));
     assert_eq!(
         MEMORY_COMMANDS.len(),
-        31,
+        32,
         "命令数量变了就要同步 protocol.json 与 ipc.ts"
     );
     assert_eq!(MEMORY_SCHEMA_VERSION, SCHEMA_VERSION);

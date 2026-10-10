@@ -7,6 +7,7 @@ const fake = vi.hoisted(() => ({
   complete: vi.fn(),
   getFacts: vi.fn(),
   getConversation: vi.fn(),
+  expandConversation: vi.fn(),
 }))
 
 vi.mock("@/services/agent/memory/ipc", () => ({
@@ -17,6 +18,7 @@ vi.mock("@/services/agent/memory/evidence", () => ({ reconcileDerivedMemoryEvide
 
 vi.mock("@/services/agent/memory/conversation", () => ({
   searchConversationCandidates: fake.getConversation,
+  expandConversationSessions: fake.expandConversation,
   conversationProjection: (entry: ConversationSearchResult["entries"][number], indexRevision: number, memoryRevision: number) => ({
     sourceId: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`,
     memoryVersion: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}:index-${indexRevision}`,
@@ -137,6 +139,8 @@ beforeEach(() => {
   fake.getFacts.mockImplementation(async () => fake.factSnapshot)
   fake.getConversation.mockReset()
   fake.getConversation.mockImplementation(async () => fake.conversationSnapshot)
+  fake.expandConversation.mockReset()
+  fake.expandConversation.mockImplementation(async snapshot => snapshot)
 })
 
 afterEach(() => {
@@ -499,5 +503,50 @@ describe("联合记忆召回", () => {
     expect(req.localFallback?.some(item => item.conversation)).toBe(false)
     resolveHistory(conversationSnapshot(0))
     await pending
+  })
+})
+
+
+describe("先选择会话再展开受控上下文", () => {
+  it("仅展开重排选中的会话且不复活明确淘汰条目 [memory-context-after-selection]", async () => {
+    const snapshot = conversationSnapshot(10)
+    snapshot.entries.forEach((row, index) => { if (index >= 5) row.sessionId = "session-b" })
+    fake.conversationSnapshot = snapshot
+    fake.complete.mockResolvedValue({ text: '["conversation:session-a:entry-0:0"]' })
+    const early = { ...snapshot.entries[0]!, entryId: "earlier-unmatched", seq: 0, text: "First visit was an old bungalow.", matchedText: "First visit was an old bungalow." }
+    fake.expandConversation.mockImplementation(async selected => ({ ...selected, entries: [...selected.entries, snapshot.entries[1], early] }))
+    const result = await sqliteMemoryProvider.recall(request({ query: "How many properties did I view before making my offer?", queryRewriteMode: "off", rerankMode: "adaptive", tokenBudget: 10_000 }))
+    expect(fake.expandConversation).toHaveBeenCalledTimes(1)
+    expect(fake.expandConversation.mock.calls[0]![0].entries.map((row: { entryId: string }) => row.entryId)).toEqual(["entry-0"])
+    expect(result.map(row => row.sourceId)).toEqual(["conversation:session-a:entry-0:0", "conversation:session-a:earlier-unmatched:0"])
+    expect(result.find(row => row.sourceId.includes("earlier-unmatched"))?.text).toBe("First visit was an old bungalow.")
+  })
+
+  it("显式空重排不通过展开重获会话 [memory-context-empty-selection]", async () => {
+    fake.conversationSnapshot = conversationSnapshot(10)
+    fake.complete.mockResolvedValue({ text: "[]" })
+    const result = await sqliteMemoryProvider.recall(request({ queryRewriteMode: "off", rerankMode: "adaptive", tokenBudget: 10_000 }))
+    expect(result).toEqual([])
+    expect(fake.expandConversation).not.toHaveBeenCalled()
+  })
+
+  it("上下文读取版本变动只移除会话证据并保留当前核心事实 [memory-context-revision-fallback]", async () => {
+    fake.factSnapshot = factSnapshot([memoryItem("core", { pinned: true })])
+    fake.conversationSnapshot = conversationSnapshot(2)
+    fake.expandConversation.mockImplementation(async selected => ({ ...selected, entries: [], revisionChanged: true }))
+    const req = request({ queryRewriteMode: "off", rerankMode: "off", tokenBudget: 10_000 })
+    const result = await sqliteMemoryProvider.recall(req)
+    expect(result.map(row => row.sourceId)).toEqual(["core@2"])
+    expect(req.optionalFailures).toContainEqual({ channel: "conversation", reason: "revision_changed" })
+    expect(req.localFallback?.map(row => row.sourceId)).toEqual(["core@2"])
+  })
+
+  it("扩展I/O失败保留已验证命中并登记可选通道失败 [memory-context-io-fallback]", async () => {
+    fake.conversationSnapshot = conversationSnapshot(1)
+    fake.expandConversation.mockRejectedValue(new Error("context channel unavailable"))
+    const req = request({ queryRewriteMode: "off", rerankMode: "off", tokenBudget: 10_000 })
+    const result = await sqliteMemoryProvider.recall(req)
+    expect(result.map(row => row.sourceId)).toEqual(["conversation:session-a:entry-0:0"])
+    expect(req.optionalFailures).toContainEqual({ channel: "conversation", reason: "failed" })
   })
 })

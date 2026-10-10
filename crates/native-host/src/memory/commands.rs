@@ -4,11 +4,11 @@
 //! 业务规则一律留在 `store.rs`，命令层不复制第二份判定。
 //! IPC 层只做参数提取后转发，不含业务判定。
 
+use super::conversation::ConversationIndexEntry;
 use super::store::{
     JOB_LEASE_MS, JOB_LIST_LIMIT_DEFAULT, LIST_LIMIT_DEFAULT, QUERY_LIMIT_DEFAULT,
     RECALL_LIMIT_DEFAULT,
 };
-use super::conversation::ConversationIndexEntry;
 use super::MemoryState;
 use super::{ConversationClearFence, ConversationIndexBatch};
 use crate::error::{AppError, AppResult};
@@ -154,6 +154,19 @@ pub(crate) fn conversation_search(
         before,
         recent_fallback.unwrap_or(false),
     )
+}
+
+pub(crate) fn conversation_context(
+    state: &MemoryState,
+    session_id: String,
+    anchor_entry_id: String,
+    after_seq: Option<i64>,
+    limit: Option<i64>,
+    before: Option<i64>,
+) -> AppResult<Value> {
+    state
+        .0
+        .conversation_context(&session_id, &anchor_entry_id, after_seq, limit, before)
 }
 
 #[allow(clippy::too_many_arguments)]

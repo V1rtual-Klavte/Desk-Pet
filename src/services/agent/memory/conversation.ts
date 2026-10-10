@@ -54,6 +54,55 @@ export type ConversationEvidenceResult = Omit<ConversationSearchResult, "entries
   revisionChanged?: boolean
 }
 
+/** Expand only selected, governed session hits; pagination is an I/O batch, not a recall quota. */
+export async function expandConversationSessions(
+  snapshot: ConversationEvidenceResult,
+  request: { signal: AbortSignal; tokenBudget: number; before?: number },
+): Promise<ConversationEvidenceResult> {
+  const entries = [...snapshot.entries]
+  let remaining = Math.max(0, request.tokenBudget - entries.reduce((sum, entry) => sum + estimateContextTokens(entry.text), 0))
+  if (request.signal.aborted || remaining <= 0 || !entries.length) return { ...snapshot, entries }
+  const seen = new Set(entries.map(entry => `${entry.sessionId}\0${entry.entryId}`))
+  const sessions = new Map<string, { anchor: ConversationEvidenceEntry; afterSeq: number }>()
+  for (const entry of entries) {
+    if (!sessions.has(entry.sessionId)) sessions.set(entry.sessionId, { anchor: entry, afterSeq: -1 })
+  }
+  const transcripts = new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>()
+  while (sessions.size && remaining > 0 && !request.signal.aborted) {
+    // One page per session per round keeps a long session from consuming all remaining space.
+    for (const [sessionId, cursor] of sessions) {
+      if (request.signal.aborted || remaining <= 0) break
+      const page = await getHostBridge().request("conversation_context", {
+        sessionId, anchorEntryId: cursor.anchor.entryId, afterSeq: cursor.afterSeq,
+        limit: CONVERSATION_SEARCH_LIMIT, ...(request.before !== undefined ? { before: request.before } : {}),
+      }, { signal: request.signal })
+      if (request.signal.aborted) return { ...snapshot, entries: [] }
+      if (page.revision !== snapshot.revision || page.memoryRevision !== snapshot.memoryRevision
+        || page.forgetEpoch !== snapshot.forgetEpoch) {
+        return { ...snapshot, entries: [], revisionChanged: true }
+      }
+      const nextSeq = Math.max(cursor.afterSeq, ...page.entries.map(entry => entry.seq))
+      if (page.entries.length < CONVERSATION_SEARCH_LIMIT || nextSeq <= cursor.afterSeq) sessions.delete(sessionId)
+      cursor.afterSeq = nextSeq
+      const eligible = page.entries.filter(entry => entry.sessionId === sessionId && entry.chunk === 0
+        && !seen.has(`${entry.sessionId}\0${entry.entryId}`))
+        .map(entry => ({ ...entry, score: cursor.anchor.score / 2 }))
+      const expanded = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before, transcripts)
+      for (const entry of expanded) {
+        const key = `${entry.sessionId}\0${entry.entryId}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        const fullCost = estimateContextTokens(entry.text)
+        const cost = fullCost <= remaining ? fullCost : estimateContextTokens(entry.matchedText)
+        if (cost <= 0 || cost > remaining) continue
+        entries.push(entry)
+        remaining -= cost
+      }
+    }
+  }
+  return { ...snapshot, entries: request.signal.aborted ? [] : entries }
+}
+
 class SessionChangedDuringIndexError extends Error {}
 
 interface SessionStat {
@@ -189,6 +238,7 @@ async function expandSearchEntriesFromJsonl(
   entries: readonly ConversationSearchEntry[],
   signal: AbortSignal,
   before?: number,
+  transcripts = new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>(),
 ): Promise<ConversationEvidenceEntry[]> {
   const rankByEntry = new Map<string, number>()
   entries.forEach((entry, rank) => {
@@ -205,7 +255,12 @@ async function expandSearchEntriesFromJsonl(
   const expanded: ConversationEvidenceEntry[] = []
   for (const [sessionId, candidates] of bySession) {
     if (signal.aborted) return []
-    const transcript = await readVisibleSessionTranscript(sessionId, { releaseIfIdle: true })
+    let pending = transcripts.get(sessionId)
+    if (!pending) {
+      pending = readVisibleSessionTranscript(sessionId, { releaseIfIdle: true })
+      transcripts.set(sessionId, pending)
+    }
+    const transcript = await pending
     if (signal.aborted) return []
     if (transcript.error) throw new Error(`读取已命中会话原文失败: ${sessionId}`)
     const visible = new Map(transcript.messages.map(message => [message.id, message]))

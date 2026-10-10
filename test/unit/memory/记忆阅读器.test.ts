@@ -16,17 +16,77 @@ function projection(overrides: Partial<MemoryProjection> = {}): MemoryProjection
 }
 
 describe("query-focused memory reading", () => {
-  it("accepts only whitelisted ids and exact source quotes [memory-reading-source-validation]", () => {
-    expect(parseMemoryReadingNotes(JSON.stringify({ notes: [note] }), [source])).toEqual({ valid: true, notes: [note] })
-    expect(parseMemoryReadingNotes(JSON.stringify({ notes: [{ ...note, id: "ghost" }] }), [source]).valid).toBe(false)
-    expect(parseMemoryReadingNotes(JSON.stringify({ notes: [{ ...note, quote: "I bought a charger" }] }), [source]).valid).toBe(false)
-    expect(parseMemoryReadingNotes("not json", [source]).valid).toBe(false)
-    const directWording = { ...note, relevance: "The owned power bank is relevant to charging advice." }
-    expect(parseMemoryReadingNotes(JSON.stringify({ notes: [directWording] }), [source])).toEqual({ valid: true, notes: [directWording] })
-    expect(parseMemoryReadingNotes(JSON.stringify({ notes: [note, note] }), [source]).valid).toBe(false)
-    expect(parseMemoryReadingNotes(JSON.stringify({ notes: [{ ...note, relevance: " " }] }), [source]).valid).toBe(false)
-    expect(parseMemoryReadingNotes(JSON.stringify({ notes: [{ ...note, relevance: "x".repeat(181) }] }), [source]).valid).toBe(false)
-    expect(parseMemoryReadingNotes(JSON.stringify({ notes: [] }), [source])).toEqual({ valid: true, notes: [] })
+  it("retains exact notes independently and drops invalid ids, stitched quotes, and duplicates [memory-reading-partial-validation]", () => {
+    const second = { id: "conv:2", text: "The wireless charging pad is already in my bag." }
+    const legalSecond = { id: second.id, quote: "wireless charging pad is already in my bag", relevance: "已有无线充电板可用于建议" }
+    const parsed = parseMemoryReadingNotes(JSON.stringify({
+      notes: [
+        { ...note, quote: "power bank ... charging pad" },
+        note,
+        { ...note, quote: "power bank for the trip", relevance: "重复来源" },
+        { ...note, id: "ghost" },
+        legalSecond,
+      ],
+      questionChecks: [{ condition: "Use already owned charging items", status: "supported", sourceIds: [source.id, second.id] }],
+    }), [source, second])
+
+    expect(parsed.notes).toEqual([note, legalSecond])
+    expect(parsed.noteStatus).toBe("partial")
+    expect(parsed.errors).toEqual({ duplicate_note: 1, invalid_note_id: 1, non_contiguous_quote: 1 })
+    expect(parsed.guide).toEqual({ questionChecks: [{
+      condition: "Use already owned charging items", status: "supported", sourceIds: [source.id, second.id],
+    }] })
+    expect(parsed.guideStatus).toBe("valid")
+  })
+
+  it("marks a missing premise without inventing a source citation [memory-reading-missing-premise]", () => {
+    const parsed = parseMemoryReadingNotes(JSON.stringify({
+      notes: [],
+      questionChecks: [{ condition: "Purchase of the specifically named tablet", status: "missing", sourceIds: [] }],
+    }), [source])
+    expect(parsed.noteStatus).toBe("empty")
+    expect(parsed.guide).toEqual({ questionChecks: [{
+      condition: "Purchase of the specifically named tablet", status: "missing", sourceIds: [],
+    }] })
+  })
+
+  it("keeps a supported personal condition beside an unrelated missing condition [memory-reading-supported-and-missing]", () => {
+    const planned = { id: "conv:plan", text: "I am considering trying a different approach later." }
+    const parsed = parseMemoryReadingNotes(JSON.stringify({
+      notes: [note],
+      questionChecks: [
+        { condition: "A directly relevant current possession", status: "supported", sourceIds: [source.id] },
+        { condition: "Whether the future plan has happened", status: "missing", sourceIds: [] },
+      ],
+    }), [source, planned])
+
+    expect(parsed.notes).toEqual([note])
+    expect(parsed.guide?.questionChecks).toEqual([
+      { condition: "A directly relevant current possession", status: "supported", sourceIds: [source.id] },
+      { condition: "Whether the future plan has happened", status: "missing", sourceIds: [] },
+    ])
+  })
+
+  it("rejects a guide that cites an unvalidated note but keeps valid exact notes [memory-reading-guide-isolation]", () => {
+    const parsed = parseMemoryReadingNotes(JSON.stringify({
+      notes: [note],
+      questionChecks: [{ condition: "A related but invalid source", status: "supported", sourceIds: ["ghost"] }],
+    }), [source])
+    expect(parsed.notes).toEqual([note])
+    expect(parsed.guide).toBeUndefined()
+    expect(parsed.guideStatus).toBe("invalid")
+    expect(parsed.errors).toEqual({ invalid_check_source: 1 })
+  })
+
+  it("requires a parseable document and returns raw when every note fails validation [memory-reading-all-invalid-raw]", () => {
+    const invalid = parseMemoryReadingNotes(JSON.stringify({
+      notes: [{ ...note, id: "ghost" }, { ...note, quote: "I bought a charger" }],
+      questionChecks: [{ condition: "No substitution", status: "missing", sourceIds: [] }],
+    }), [source])
+    expect(invalid.noteStatus).toBe("invalid")
+    expect(invalid.notes).toEqual([])
+    expect(invalid.errors).toEqual({ invalid_note_id: 1, non_contiguous_quote: 1 })
+    expect(parseMemoryReadingNotes("not json", [source]).errors).toEqual({ invalid_json: 1 })
   })
 
   it("adds tentative annotation without changing source identity, trust, or evidence text [memory-reading-source-preservation]", () => {

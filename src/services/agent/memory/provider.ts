@@ -22,7 +22,8 @@ import { DERIVED_BEHAVIOR_ORIGIN } from "./sources"
 import { parseRerankSelection } from "./rerank"
 import { planMemoryQueries, recordOptionalFailure } from "./query"
 import type { MemoryQueryPlan, MemoryRecallFailureChannel, MemoryRecallOptionalFailure, MemoryRerankMode, QueryRewriteMode } from "./query"
-import { conversationProjection, searchConversationCandidates, shouldUseRecentConversationFallback } from "./conversation"
+import { conversationProjection, expandConversationSessions, searchConversationCandidates, shouldUseRecentConversationFallback } from "./conversation"
+import { hasExplicitRewriteHint, hasPersonalRecallIntent } from "./query-shape"
 import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "./conversation"
 import { MEMORY_LIMITS } from "./protocol"
 import { reconcileDerivedMemoryEvidence } from "./evidence"
@@ -470,14 +471,55 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   }
 
   request.readRevision = snapshot.revision
-  const localDynamic = collectDynamicCandidates(snapshot, conversationSnapshot, proactive, exactTargetMode)
+  let localDynamic = collectDynamicCandidates(snapshot, conversationSnapshot, proactive, exactTargetMode)
   const rerankMode: MemoryRerankMode = exactTargetMode ? "off" : request.rerankMode ?? memoryConfig.rerank
   request.localFallback = projectCandidateSet(snapshot, conversationSnapshot, request, proactive, localDynamic)
   request.localFallbackFailures = [...(request.optionalFailures ?? [])]
   request.localFallbackFailureChannel = "rerank"
 
-  const selectedDynamic = await selectRecallCandidates(localDynamic, request, rerankMode)
+  let selectedDynamic = await selectRecallCandidates(localDynamic, request, rerankMode)
   if (request.signal.aborted) return []
+  if (!proactive && !exactTargetMode && conversationSnapshot
+    && (hasPersonalRecallIntent(request.query) || hasExplicitRewriteHint(request.query))) {
+    const seeds = selectedDynamic.flatMap(candidate => candidate.channel === "conversation" ? [candidate.entry] : [])
+    if (seeds.length) {
+      request.localFallbackFailureChannel = "conversation"
+      try {
+        const expanded = await expandConversationSessions({ ...conversationSnapshot, entries: seeds }, {
+          signal: request.signal, before: request.before,
+          tokenBudget: Math.min(request.tokenBudget, request.budget?.recall ?? request.tokenBudget),
+        })
+        if (request.signal.aborted) return []
+        if (expanded.revisionChanged) {
+          recordOptionalFailure(request, "conversation", "revision_changed")
+          selectedDynamic = selectedDynamic.filter(candidate => candidate.channel !== "conversation")
+          localDynamic = localDynamic.filter(candidate => candidate.channel !== "conversation")
+          conversationSnapshot = undefined
+        } else {
+          const selectedIds = new Set(selectedDynamic.map(candidateId))
+          const localIds = new Set(localDynamic.map(candidateId))
+          const selectedEntries = new Set(seeds.map(entry => `${entry.sessionId}\0${entry.entryId}`))
+          const declinedEntries = new Set(localDynamic.flatMap(candidate => candidate.channel === "conversation"
+            && !selectedEntries.has(`${candidate.entry.sessionId}\0${candidate.entry.entryId}`)
+            ? [`${candidate.entry.sessionId}\0${candidate.entry.entryId}`] : []))
+          const additions = interleaveCandidates([], expanded.entries).filter(candidate => candidate.channel === "conversation"
+            && !selectedIds.has(candidate.id) && !declinedEntries.has(`${candidate.entry.sessionId}\0${candidate.entry.entryId}`))
+          selectedDynamic.push(...additions)
+          localDynamic.push(...additions.filter(candidate => !localIds.has(candidate.id)))
+          conversationSnapshot = { ...conversationSnapshot, entries: [
+            ...conversationSnapshot.entries,
+            ...additions.flatMap(candidate => candidate.channel === "conversation" ? [candidate.entry] : []),
+          ] }
+        }
+        request.localFallback = projectCandidateSet(snapshot, conversationSnapshot, request, proactive, selectedDynamic)
+        request.localFallbackFailures = [...(request.optionalFailures ?? [])]
+      } catch (error) {
+        if (request.signal.aborted) return []
+        recordOptionalFailure(request, "conversation", "failed")
+        log.warn("Matched-session context read failed; retaining verified search hits:", formatError(error))
+      }
+    }
+  }
   const result = projectCandidateSet(snapshot, conversationSnapshot, request, proactive, selectedDynamic)
   const projectedSourceIds = new Set(result.map(item => item.sourceId))
   const currentCore = proactive ? [] : uniqueMemoryItems(snapshot.pinned)
