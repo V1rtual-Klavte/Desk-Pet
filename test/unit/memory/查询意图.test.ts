@@ -32,6 +32,46 @@ describe("记忆检索意图", () => {
     expect(deriveMemoryQueryPlan("我们之前聊过这个方案为什么失败？").recallIntent).toBe("explanation")
     expect(deriveMemoryQueryPlan("我之前分享过修复步骤是什么？").recallIntent).toBe("procedure")
     expect(deriveMemoryQueryPlan("我曾经推荐过几本书？").recallIntent).toBe("count")
+    for (const query of ["我们之前聊过什么？", "我们之前讨论过什么？", "我们之前谈过什么？"]) {
+      expect(deriveMemoryQueryPlan(query)).toMatchObject({
+        recallIntent: "overview",
+        evidenceNeeds: ["coverage"],
+      })
+    }
+  })
+
+  it("识别第三人称英文过去时事实问句为原话检索 [memory-query-third-person-past-fact]", () => {
+    expect(deriveMemoryQueryPlan("What did Caroline research?")).toMatchObject({
+      recallIntent: "lookup",
+      entities: expect.arrayContaining(["Caroline", "research"]),
+      evidenceNeeds: ["specific_fact"],
+    })
+    expect(hasAdaptiveQueryShape("What did Caroline research?", "lookup")).toBe(true)
+    expect(deriveMemoryQueryPlan("Why did Dana leave?")).toMatchObject({
+      recallIntent: "explanation", evidenceNeeds: ["reason"],
+    })
+    expect(deriveMemoryQueryPlan("Why is SQLite useful?").recallIntent).toBe("none")
+    expect(deriveMemoryQueryPlan("What is SQLite?").recallIntent).toBe("none")
+  })
+
+  it("识别第三方状态与经历问句，但不把一般知识改成记忆检索 [memory-query-third-person-present-history]", () => {
+    expect(deriveMemoryQueryPlan("What is Caroline's relationship status?")).toMatchObject({
+      recallIntent: "lookup", evidenceNeeds: ["specific_fact"],
+    })
+    expect(deriveMemoryQueryPlan("How does Gina describe the feeling that dance brings?")).toMatchObject({
+      recallIntent: "lookup", evidenceNeeds: ["specific_fact"],
+    })
+    expect(deriveMemoryQueryPlan("What has Alex done with public speaking?").recallIntent).toBe("lookup")
+    expect(deriveMemoryQueryPlan("What is SQLite?").recallIntent).toBe("none")
+    expect(deriveMemoryQueryPlan("How does SQL work?").recallIntent).toBe("none")
+    expect(deriveMemoryQueryPlan("What does Git do?").recallIntent).toBe("none")
+
+    const plan = deriveMemoryQueryPlan("What book did Caroline recommend to Melanie?")
+    expect(plan.queries).toEqual([
+      "What book did Caroline recommend to Melanie?",
+      "Caroline Melanie book recommend",
+      "book recommend",
+    ])
   })
 
   it("从个人事件问句识别数量、原因和步骤，同时跳过一般知识问题 [memory-query-plan-personal-event]", () => {

@@ -6,7 +6,6 @@
  * 需要「阻断」语义的门禁不要挂在这里 —— 那属于 Pi 原生 hook（`beforeToolCall` / `afterToolCall`）。
  */
 
-import { MEMORY_READING_ERROR_CATEGORIES } from "@/services/agent/memory/reading-errors"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
@@ -43,9 +42,8 @@ export type RuntimeTraceKind =
   | "memory_recall_selected"
   | "memory_recall_projected"
   | "memory_recall_rendered"
+  | "memory_navigation_rendered"
   | "memory_recall_end"
-  | "memory_reading_end"
-  | "memory_coverage_end"
   | "memory_extraction_start"
   | "memory_extraction_end"
   | "input_accepted"
@@ -165,12 +163,11 @@ const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
   tool_execution_end: ["toolName", "isError", "resultTextChars", "resultPartCount", "durationMs", "detailPrefix"],
   retry_start: ["attempt", "step"], retry_end: ["attempt", "step", "success"],
   compaction_start: ["reason"], compaction_end: ["reason", "status"], compaction_requested: ["reason"],
-  provider_request_start: ["purpose", "step", "attempt", "model", "api"], provider_request_end: ["purpose", "step", "attempt", "model", "api", "status", "durationMs", "inputTokens", "outputTokens", "cacheRead", "cacheWrite"],
-  provider_payload: ["model", "api", "payloadHash", "redactions"], provider_response: ["model", "api", "status", "headerNames"], humanizer_transform: ["flow", "status", "split", "silent", "partCount"], provider_usage: ["inputTokens", "outputTokens", "cacheRead", "cacheWrite", "driftRatio"], prompt_snapshot: ["captureStage", "contentHash", "snapshotId", "requestId", "turnId"],
-  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "readingNoteSourceIds", "readingNoteSourceIdsOmitted", "questionCheckCount", "guideStatus", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount"],
+  provider_request_start: ["purpose", "memoryStage", "step", "attempt", "model", "api"], provider_request_end: ["purpose", "memoryStage", "step", "attempt", "model", "responseModel", "api", "status", "durationMs", "inputTokens", "outputTokens", "cacheRead", "cacheWrite", "cacheUsageReported", "reasoningEffort", "thinkingMode", "idleTimeout"],
+  provider_payload: ["model", "api", "payloadHash", "redactions", "toolNames"], provider_response: ["model", "api", "status", "headerNames"], humanizer_transform: ["flow", "status", "split", "silent", "partCount"], provider_usage: ["inputTokens", "outputTokens", "cacheRead", "cacheWrite", "driftRatio"], prompt_snapshot: ["captureStage", "contentHash", "snapshotId", "requestId", "turnId"],
+  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount"],
+  memory_navigation_rendered: ["sourceIds", "conversationRefs", "readRefs", "usedTokens"],
   memory_extraction_start: ["jobId", "revision", "phase"], memory_extraction_end: ["jobId", "revision", "status", "candidateCount", "sourceIds", "sourceCount", "durationMs", "reason"],
-  memory_reading_end: ["status", "noteCount", "sourceCount", "durationMs", "noteSourceIds", "noteSourceIdsOmitted", "noteStatus", "guideStatus", "errorCounts", "checkCounts"],
-  memory_coverage_end: ["status", "retrievalCount", "sourceCount"],
   input_accepted: ["requestId", "status", "source", "priority"], input_consumed: ["requestId"], input_cancelled: ["requestId", "reason"],
   plan_created: ["planId", "stepCount"], plan_confirmed: ["planId", "stepId", "decision"], plan_settled: ["planId", "status"], plan_step_end: ["planId", "stepId", "status"],
   permission_asked: ["toolName", "decision", "source"], permission_decided: ["toolName", "decision", "source"], active_message_delivered: ["requestId", "status"],
@@ -221,15 +218,6 @@ function safePayload(kind: RuntimeTraceKind, payload: Record<string, unknown>): 
       }
       safe[field] = Object.freeze(byScope)
     }
-    else if ((field === "errorCounts" || field === "checkCounts") && value && typeof value === "object" && !Array.isArray(value)) {
-      // Only fixed diagnostic keys and nonnegative integer counts may cross this boundary.
-      const counts = value as Record<string, unknown>
-      const keys = field === "errorCounts" ? MEMORY_READING_ERROR_CATEGORIES : ["supported", "missing", "conflicting"]
-      safe[field] = Object.freeze(Object.fromEntries(keys.flatMap(key => {
-        const count = counts[key]
-        return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? [[key, count]] : []
-      })))
-    }
     else if (field === "conversationRefs" && Array.isArray(value)) {
       // Identifiers only: conversation text, thinking and paths never enter trace payloads.
       safe[field] = Object.freeze(value.slice(0, maxArrayItems).flatMap(item => {
@@ -243,6 +231,25 @@ function safePayload(kind: RuntimeTraceKind, payload: Record<string, unknown>): 
           eventId: typeof record.eventId === "string" ? runtimeTracePreview(record.eventId) : null,
           role: record.role, timestamp: typeof record.timestamp === "number" ? record.timestamp : null,
           chunk: typeof record.chunk === "number" ? record.chunk : null,
+        })]
+      }))
+    }
+    else if (field === "readRefs" && Array.isArray(value)) {
+      // Exact admitted character ranges, never source text or arbitrary nested data.
+      safe[field] = Object.freeze(value.slice(0, maxArrayItems).flatMap(item => {
+        if (!item || typeof item !== "object") return []
+        const record = item as Record<string, unknown>
+        const range = record.range as Record<string, unknown> | undefined
+        if (typeof record.sourceId !== "string" || !range || typeof range !== "object"
+          || !Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end)
+          || (range.start as number) < 0 || (range.end as number) < (range.start as number)) return []
+        return [Object.freeze({
+          sourceId: runtimeTracePreview(record.sourceId),
+          ...(typeof record.sessionId === "string" ? { sessionId: runtimeTracePreview(record.sessionId) } : {}),
+          ...(typeof record.entryId === "string" ? { entryId: runtimeTracePreview(record.entryId) } : {}),
+          ...(record.role === "user" || record.role === "assistant" ? { role: record.role } : {}),
+          ...(typeof record.timestamp === "number" && Number.isFinite(record.timestamp) ? { timestamp: record.timestamp } : {}),
+          range: Object.freeze({ start: range.start, end: range.end }),
         })]
       }))
     }

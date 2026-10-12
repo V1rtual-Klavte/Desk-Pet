@@ -1,3 +1,9 @@
+// 2026-10-12 首次证据跨通道复用定向复核：runtime 的首次记忆插入同步登记实际证据范围；最终回复渲染、人格与流式发送分支未变。
+// 2026-10-12 范围复用收口复核：runtime 的本次差异仅是可见 memory_read 新正文与完整引用成本计量、冻结记忆 selector 模型；行为归 memory mm-51/63/72，未改本域用户交互/权限/图片投影分支。
+// 2026-10-12 定向复核：runtime变更落在导航原文来源trace与Provider timeout说明，未改分泡、回复提交及typing sink。Provider流停滞新增error出口由agent-runtime验证；hz既有生产回复/取消覆盖保持，不将其称为新增真实网络验证。
+// 2026-10-12 定向复核：仅显式 memory 回合收窄到治理读取工具；默认回合和主动 tools=[] 不变。真实 payload 工具名、进入请求的原文来源与 bench 分账同步；跨域旧行为不变。
+// 2026-10-11 按需导航影响复核：runtime.ts 的改动收口在记忆装配/请求投影与版本失效，归 memory mm-72；hm-* humanizer 分词、变量剥离、提交和展示分支未改。源码 hash 在行为审查后刷新。
+// 2026-10-10 官方评测与 token 改造（analyze→刷新）：runtime 的动态上下文改到请求尾注；humanizer 静态规则、durable guard seed、正文解析与显示释放路径逐点核对不变。 sourceHash 按本轮冻结源码刷新，验证结果另记检查点。
 // 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：输入去重和空工具选项不改变分泡、提交与顶栏所有权，覆盖点静态对照；未执行测试。
 // 2026-10-05 本批复查与刷新：契约 sourceFiles 里 runtime.ts 由另一会话同批写入
@@ -84,7 +90,7 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "0b6861a3f653cec66492a5b8926f946d86287f5079a5a86d740db258a32eb779",
+  sourceHash: "5c37ffb502b2c7cc16f74e6e67043e3a9045b67209f02365467dd576c543aeee",
   coverage: [
     {
       id: "hz-01",

@@ -8,11 +8,9 @@
 // Provider —— 模型是否自觉写区块不是断言对象（脚本保证）；引擎在违约后有没有把提醒
 // 送进下一回合的请求、履约后有没有停止送，才是。
 //
-// 观测面：自定义 streamFn 在每次请求进入 pi-ai 前抓下 `context.systemPrompt` —— 这是
-// 「请求真的带了块」的最终事实（提醒经 buildPrompt 的 `ephemeral:runtime-data` 块进入
-// kernel 的 systemPrompt，再由 Harness 作为 spec.systemPrompt 交给 agent loop）。
-// 不能用 `installFakeProvider` 的 payloads：那组探针只记录 messages/tools，不含
-// systemPrompt，拿它断言会变成真空断言。
+// 观测面：自定义 streamFn 抓下稳定 systemPrompt 与最后一条请求尾注。
+// 提醒经 buildPrompt 的 ephemeral:runtime-data 块进入 turnDynamic，再由 Harness 附在
+// transcript 之后；履约与未履约之间系统前缀保持相同。
 //
 // 空区块的**判定**语义（hasBlock：有区块、无内容也算履约）由 vp-23 的 L2 用例
 // `variable-runtime-data-empty-block-fulfills` 覆盖；本文件补的是它的**接线**面：
@@ -107,10 +105,11 @@ function emptyBlockReply(): string {
 
 interface CapturedRequest {
   systemPrompt: string
+  turnNote: string
 }
 
 /**
- * fake provider + 请求视图抓取（唯一目的：把 `context.systemPrompt` 留下来）。
+ * fake provider + 最终请求视图抓取（稳定系统规则与动态尾注分别保留）。
  *
  * `installFakeProvider` 的 payloads 不含 systemPrompt，这里按它的最小装配自建一份：
  * 响应脚本仍走 pi-ai 的 faux，真实 agent/tool loop 照常执行。
@@ -131,7 +130,10 @@ function installCapturingProvider(responses: FauxResponseStep[], definition?: Fa
   const restore = installPiRuntimeProviderForTest({
     model,
     streamFn: ((requestModel: Model<any>, context: Context, options?: SimpleStreamOptions) => {
-      requests.push({ systemPrompt: context.systemPrompt ?? "" })
+      const last = context.messages[context.messages.length - 1]
+      const turnNote = typeof last?.content === "string" ? last.content
+        : (last?.content ?? []).map(part => part.type === "text" ? part.text : "").join("")
+      requests.push({ systemPrompt: context.systemPrompt ?? "", turnNote })
       return fake.provider.streamSimple(requestModel, context, options)
     }) as StreamFn,
   })
@@ -213,18 +215,20 @@ describe("RUNTIME_DATA 提醒接线", () => {
       expect(first.failure, `违约回合以失败结束: ${first.failure?.message ?? "(无失败)"}`).toBeUndefined()
       expect(getPoolSnapshot().card[VAR]?.value, "违约回合不该产生变量写入").toBe(0)
 
-      // ② 下一回合的请求必须真的带提醒：断言的是交给 provider 的 systemPrompt，
+      // ② 下一回合的请求必须真的带提醒：断言的是交给 provider 的请求尾注，
       //    不是状态函数（把 buildPrompt 传参删掉这条立即红）。
       const second = await runTurn(sessionId, "再来一句。")
       expect(second.failure, `履约回合以失败结束: ${second.failure?.message ?? "(无失败)"}`).toBeUndefined()
       expect(provider.requests.length, "两回合应各发出一次请求").toBe(2)
+      expect(provider.requests[1].systemPrompt).toBe(provider.requests[0].systemPrompt)
+      expect(provider.requests[1].systemPrompt).not.toContain(RUNTIME_DATA_REMINDER_TEXT)
       expect(
-        provider.requests[1].systemPrompt,
+        provider.requests[1].turnNote,
         "上一回合违约后，下一回合请求没有携带 RUNTIME_DATA 提醒",
       ).toContain(RUNTIME_DATA_REMINDER_TEXT)
       // 反向判据：没有任何挂起时提醒块不该出现（否则提醒会变成每回合常驻）。
       expect(
-        provider.requests[0].systemPrompt,
+        provider.requests[0].turnNote,
         "无挂起状态的回合请求也带了提醒（提醒被无条件注入）",
       ).not.toContain(RUNTIME_DATA_REMINDER_TEXT)
 
@@ -237,7 +241,7 @@ describe("RUNTIME_DATA 提醒接线", () => {
       expect(third.failure, `第三回合以失败结束: ${third.failure?.message ?? "(无失败)"}`).toBeUndefined()
       expect(provider.requests.length, "三回合应各发出一次请求").toBe(3)
       expect(
-        provider.requests[2].systemPrompt,
+        provider.requests[2].turnNote,
         "履约之后提醒仍在注入（clear 未接在结算侧）",
       ).not.toContain(RUNTIME_DATA_REMINDER_TEXT)
     } finally {
@@ -262,8 +266,10 @@ describe("RUNTIME_DATA 提醒接线", () => {
       expect(second.failure, `空区块回合以失败结束: ${second.failure?.message ?? "(无失败)"}`).toBeUndefined()
       expect(getPoolSnapshot().card[VAR]?.value, "空区块回合产生了变量写入").toBe(0)
       expect(provider.requests.length, "两回合应各发出一次请求").toBe(2)
+      expect(provider.requests[1].systemPrompt).toBe(provider.requests[0].systemPrompt)
+      expect(provider.requests[1].systemPrompt).not.toContain(RUNTIME_DATA_REMINDER_TEXT)
       expect(
-        provider.requests[1].systemPrompt,
+        provider.requests[1].turnNote,
         "违约后的下一回合请求没有携带提醒（空区块用例的前置未成立）",
       ).toContain(RUNTIME_DATA_REMINDER_TEXT)
 
@@ -272,7 +278,7 @@ describe("RUNTIME_DATA 提醒接线", () => {
       expect(third.failure, `第三回合以失败结束: ${third.failure?.message ?? "(无失败)"}`).toBeUndefined()
       expect(provider.requests.length, "三回合应各发出一次请求").toBe(3)
       expect(
-        provider.requests[2].systemPrompt,
+        provider.requests[2].turnNote,
         "空区块回合被当成违约：提醒被重新挂起并再次注入",
       ).not.toContain(RUNTIME_DATA_REMINDER_TEXT)
     } finally {

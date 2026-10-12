@@ -149,9 +149,11 @@ describe("RUNTIME_DATA 提醒状态", () => {
     const block = withReminder.blocks.find(item => item.blockId === "ephemeral:runtime-data")
     expect(block, "传入提醒时必须产出一个可审计的上下文块").toBeDefined()
     expect(block?.text).toBe(RUNTIME_DATA_REMINDER_TEXT)
-    expect(withReminder.systemPrompt, "提醒块必须真的进请求视图").toContain(RUNTIME_DATA_REMINDER_TEXT)
+    expect(withReminder.turnDynamic, "提醒块必须进入请求尾部数据").toContain(RUNTIME_DATA_REMINDER_TEXT)
+    expect(withReminder.systemPrompt).not.toContain(RUNTIME_DATA_REMINDER_TEXT)
 
     const withoutReminder = buildPrompt(base, card, getPoolSnapshot())
+    expect(withReminder.systemPrompt, "提醒变化不应破坏 system 前缀").toBe(withoutReminder.systemPrompt)
     expect(withoutReminder.blocks.some(item => item.blockId === "ephemeral:runtime-data"), "没有提醒时不该凭空出现提醒块").toBe(false)
     expect(withoutReminder.systemPrompt).not.toContain(RUNTIME_DATA_REMINDER_TEXT)
   })

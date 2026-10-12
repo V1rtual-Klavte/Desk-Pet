@@ -62,3 +62,7 @@
 | proactive_budgets | 每日预算与用量（规划/表达尝试、成功消息与上限、token 预留/已用/未知 —— 只记账观测，不参与准入、观察与话题尝试、下一次成功间隔） |
 | proactive_auxiliary_reservations | 辅助模型（observation/topic）调用租约：reserved/unresolved/committed/failed |
 | proactive_operations | operation_id 幂等账本（提交结果未知时先查，不盲重放） |
+
+目录分页、词面搜索和原文资格读取复用同一 MemoryStore 连接与现有来源/遗忘表，不增加第二个事实库。run owner 在首次 catalogue/search 前准备并冻结当前索引快照，结束时 dispose/release 才 flush dirty 状态；lease 防止并发续建交错。文件 watch 只给失效提示，内容身份由 seq 快照及内容 hash 核验。会话索引按全来源构建，`before` 限制查询/读取资格；fingerprint 复核只到索引时的 `throughSeq`，之后追加内容不改变旧快照的身份。游标绑定范围及 revision/forget epoch；原文句柄由 Node 按运行签发，读取时 Rust 校验版本/指纹资格，Node 再核对 JSONL 的冻结内容指纹。并发 owner 共享尚待续建的快照时显式返回 indexUpdating，不能宣称全范围已枚举；切换数据根后旧 lease 失效。目录仅有界预览，不是新事实。
+
+人物与主题导航保存在 memory_items.navigation_json（默认空 people/topics），随条目版本、SQLite 备份与恢复一起管理；该默认值字段走现有结构修复，不建第二个事实库，也不把导航标签作为可信原话。

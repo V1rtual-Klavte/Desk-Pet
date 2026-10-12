@@ -118,68 +118,7 @@ describe("Runtime trace 持久化锚点", () => {
     }
   })
 
-  it("reader 的问题核对指南随证据进入实际主 Provider 请求 [trace-memory-reading-guide-in-request]", async () => {
-    const oldConfig = {
-      enabled: memoryConfig.enabled,
-      rerank: memoryConfig.rerank,
-      planEnabled: planConfig.enabled,
-    }
-    const readerReply = fakeText(JSON.stringify({
-      notes: [],
-      questionChecks: [{ condition: "Specific phone accessory already owned", status: "missing", sourceIds: [] }],
-    }))
-    const provider = installFakeProvider([readerReply, fakeText("先用好已经有的物品，也可以关闭耗电后台功能。")], {
-      id: "memory-reading-guide-runtime-model", name: "Memory Reading Guide Runtime Model",
-      contextWindow: 128_000, maxTokens: 4_096,
-    })
-    const restoreMemory = installMemoryProvider({
-      async recall(): Promise<MemoryProjection[]> {
-        return Array.from({ length: 4 }, (_, index) => ({
-          sourceId: `fact:reading-guide-${index}@1`,
-          memoryVersion: `reading-guide-v1-${index}`,
-          provenance: `fixture:reading-guide-${index}`,
-          taint: "trusted_user" as const,
-          text: index === 0 ? "I own a portable power bank." : `Earlier user preference ${index}.`,
-          tokenBudget: 32,
-          tier: "recall" as const,
-          origin: "user" as const,
-        }))
-      },
-    })
-    setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.plan.enabled": false })
-    await flushConfig()
-    await ensureSession()
-    const trace = captureRuntimeTrace()
-    try {
-      await runRuntimeTurn("我手机电池最近很困扰，有什么建议？")
-      const payloadText = provider.payloads.flatMap(payload => payload.messages.map(message => typeof message.content === "string"
-        ? message.content
-        : message.content.map(part => part.type === "text" ? part.text : "").join("")))
-      const memoryText = payloadText.find(text => text.includes("[记忆与会话参考]")) ?? ""
-      const packet = JSON.parse(memoryText.slice(memoryText.indexOf("\n{") + 1)) as {
-        evidence: Array<{ id: string; text: string }>
-        questionChecks: Array<{ condition: string; status: string; sourceIds: string[] }>
-      }
-      const rendered = trace.events.find(event => event.kind === "memory_recall_rendered")
-      expect(packet.evidence[0]?.text, "原始证据仍须完整进入主请求").toBe("I own a portable power bank.")
-      expect(packet.questionChecks).toEqual([{
-        condition: "Specific phone accessory already owned", status: "missing", sourceIds: [],
-      }])
-      expect(rendered?.payload.guideStatus).toBe("included")
-      expect(rendered?.payload.questionCheckCount).toBe(1)
-      expect(rendered?.payload.readingNoteSourceIds).toEqual([])
-      expect(provider.payloads[provider.payloads.length - 1]?.messages.length).toBeGreaterThan(0)
-    } finally {
-      trace.unsubscribe()
-      restoreMemory()
-      provider.restore()
-      setOverrides({ "ai.memory.enabled": oldConfig.enabled, "ai.memory.rerank": oldConfig.rerank,
-        "ai.plan.enabled": oldConfig.planEnabled })
-      await flushConfig()
-    }
-  })
-
-  it("按模型实际窗口派生预算并把超旧限额的完整事实送入请求 [memory-recall-layered-runtime]", async () => {
+  it("请求空间充足时按任务额度召回并保留完整事实 [memory-recall-layered-runtime]", async () => {
     const oldConfig = {
       contextMaxTokens: aiConfig.contextMaxTokens,
       enabled: memoryConfig.enabled,
@@ -220,9 +159,9 @@ describe("Runtime trace 持久化锚点", () => {
     await ensureSession()
     const trace = captureRuntimeTrace()
     try {
-      await runRuntimeTurn("请概括家庭安排。")
+      await runRuntimeTurn("我们之前聊过哪些家庭安排？")
       const shortHeadroom = receivedBudgets[receivedBudgets.length - 1] ?? 0
-      await runRuntimeTurn(`请结合下面这段当前消息概括家庭安排：${"当前背景信息。".repeat(600)}`)
+      await runRuntimeTurn(`我们之前聊过哪些家庭安排？请结合这段背景：${"当前背景信息。".repeat(600)}`)
       const longHeadroom = receivedBudgets[receivedBudgets.length - 1] ?? 0
 
       const recallStart = trace.events.find(event => event.kind === "memory_recall_start")
@@ -234,7 +173,7 @@ describe("Runtime trace 持久化锚点", () => {
 
       expect(factTokens, "回归事实没有超过旧单层召回上限").toBeGreaterThan(1_000)
       expect(shortHeadroom, "MemoryProvider 未获得超过旧1000上限的真实可用预算").toBeGreaterThan(1_000)
-      expect(longHeadroom, "更长的当前正文没有消耗记忆可用预算").toBeLessThan(shortHeadroom)
+      expect(longHeadroom, "请求空间充足时不应因正文增长改变同一任务额度").toBe(shortHeadroom)
       expect(longHeadroom, "当前正文占用后没有留下足以读取完整回归事实的预算").toBeGreaterThan(factTokens)
       expect(recallStart?.payload.budget, "trace 总预算应等于真实可用量并扣除记忆消息结构开销")
         .toBe(shortHeadroom)

@@ -47,7 +47,9 @@ const SETTINGS = compactionSettingsFor(WINDOW_TOKENS, FAKE_MODEL.maxTokens)
 /** 上游保留窗口换算回字符（上游按 chars/4 计消息）：切点保住的就是这么多字符。 */
 const RETAINED_CHARS = SETTINGS.keepRecentTokens * 4
 /** 重试视图里「摘要 + 静态前缀」的保守占用（B 的尺寸上界从这里来）。 */
-const RETRY_RESERVE = 8_000
+// Include the complete stable prefix, summary, dynamic tail and message envelope;
+// 8k no longer covered this shape after dynamic context moved to a tail message.
+const RETRY_RESERVE = 10_000
 
 const PAYLOAD_UNIT = "硬预算超限必须先压缩再重试。"
 function payload(chars: number): string {
@@ -167,6 +169,9 @@ export const 预算溢出恢复: SceneDef = {
     tags: ["memory", "compaction", "budget", "boundary", "error"],
   },
   setup: async () => {
+    if (SECOND.length <= RETAINED_CHARS || FIRST.length + SECOND.length <= BUDGET.hardInputLimit) {
+      throw new Error(`溢出恢复夹具失去独立超保留窗口或合并超硬预算的前提：${sizing()}`)
+    }
     requests.length = 0
     requestCosts.length = 0
     installFakeProvider([

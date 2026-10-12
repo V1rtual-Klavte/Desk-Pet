@@ -20,7 +20,7 @@
 | 契约 | 模块行为覆盖门禁（sourceHash + caseId 三层记账） | README「Contract 与 sourceHash」；`test/contracts/` | 预检 attestation；caseids-*.json |
 | trace 证据 | 运行线路完整落盘、完整性核对、理想稿审阅 | README「Trace、记忆质量与性能门禁」；`test:trace-review` | `test/reports/traces/trace-bundle-*`（bench / quality 在各自子目录的 `traces/`） |
 | 理想稿 | 用户手写的"期望线路"，审阅对照基准（只由用户写） | [ideal-traces/README.md](ideal-traces/README.md) | 审阅 JSON（与报告配对、连带淘汰） |
-| 外部记忆基准（权威对照） | 质量主口径：LongMemEval / MemoryBank cn / LoCoMo（基于官方判分移植；按消耗分层跑，不进 CI／发布门禁）；LongMemEval oracle 另有 privileged eval-only direct/CoN reader upper-bound control，报告不得当产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
+| 外部记忆基准（质量对照） | LongMemEval / LoCoMo 权威得分由绑定源报告 hash 的 hypotheses 经固定官方评测脚本产生并回填；产品只负责导出/导入，不把 adapter judge 称为官方判分。MemoryBank cn 暂无同类官方自动判分，保留自适配观测口径。旧 final 报告不追认为官方结果。按消耗分层运行，不进 CI／发布门禁；LongMemEval oracle 的 direct/CoN 是 privileged reader 上限对照，不能当产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | 原始运行报告 + hash 绑定 hypotheses / 官方结果 + 可审计回填派生报告 |
 | 记忆质量（自建兜底） | 兜底冒烟与治理语义回归：外部集未覆盖的来源/scope 反例、纠正、遗忘、称呼/偏好（真实 Provider，烧 token） | README 记忆质量段；`test:memory-quality` | 报告 + review/scored 包（组保留） |
 | 记忆性能 | release 存储 + debug IPC 的资源账（1k/10k 库、P95） | README 性能段；`test:memory-performance` | `test/reports/performance/`（3 份滚动） |
 | 缺陷注入 | 快层的区分力观测（植入缺陷看抓不抓得到） | README「缺陷注入」；`test:mutation` | 控制台（不设阈值） |
@@ -31,7 +31,7 @@
 | 你要查 | 去哪 |
 |---|---|
 | 测试跑哪个被测模型 | 默认继承隔离副本的**合成 CONFIG**（随仓 `CONFIG.yaml` 模板 + `test/host/native/fixtures/config-overrides.yaml` 覆盖；不复制真实 `CONFIG-DEV.yaml`，不含凭据）；可在 [eval-models.json](eval-models.json)、本地 `test/eval-models.local.json`（凭据/临时覆盖；已 gitignore）或环境变量 `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_PROVIDER` 覆盖（凭据只经后两者写进隔离副本） |
-| judge 模型与异构纪律 | `--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > 两层模型配置文件（[eval-models.json](eval-models.json) 与本地 `eval-models.local.json`）的 `judge.model`（仓库默认 `deepseek-v4-pro`）；judge 继承测试侧网关的 endpoint/apiKey；**必须不同于被测模型**，同模型在开跑前报错 |
+| judge 模型与异构纪律 | `--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > 两层模型配置文件（[eval-models.json](eval-models.json) 与本地 `eval-models.local.json`）的 `judge.model`（仓库默认 `deepseek-v4-pro`）；judge 继承测试侧网关的 endpoint/apiKey；**必须不同于被测模型**，须按实际响应身份核验，同模型或身份缺失时不裁决 |
 | 上游评测数据怎么装、装到哪 | [memory-bench/README.md](memory-bench/README.md)：prepare 命令、`--data-dir` / `DESKPET_BENCH_DATA_DIR`、revision + SHA-256 锁定清单（`upstream-lock.json`） |
 | 报告与证据在哪、怎么淘汰 | README「报告在哪、怎么看」（组保留：最近 3 场 + 200 MiB；bench / quality 分目录各自淘汰） |
 | 评分口径与门槛 | README「Trace、记忆质量与性能门禁」+ [memory-bench/README.md](memory-bench/README.md)（judge 模板、F1 口径）；剩余质量问题的完成条件见[未完成总表 §3.2](../docs/plans/active/未完成工作与已知缺口.md#32-剩余质量问题的完成条件) |
@@ -65,8 +65,8 @@
   初始化不存在，缺的由 `standard-setup.ts` 补齐）——判据与模式见 README「Scene 规范」。
 - **Rust 单测**内联在 `crates/native-host/src/**`，由 `pnpm run test:rust`
   （`cargo test --lib -p native-host`）执行；CI 在 macOS 与 Windows 双端运行，缺少执行的测试不算门禁。
-- **质量口径与门禁分离**：**质量主口径是外部权威基准**（LongMemEval / MemoryBank cn / LoCoMo，
-  按 memory-bench 的分层节奏在本机运行，报告与 hypotheses 是质量证据）；自建 80 题只作**兜底
+- **质量口径与门禁分离**：**质量主口径是外部基准**；LongMemEval / LoCoMo 使用官方脚本权威评分，MemoryBank cn 保持自适配观测，
+  按 memory-bench 的分层节奏在本机运行）。权威得分只认固定官方脚本对 hypotheses 的判分，hypotheses 必须绑定源报告 hash 并随官方结果回填；产品 adapter 仅提供导出/导入，旧 final 报告不追认官方。报告与 hypotheses 是采集和判分证据；自建 80 题只作**兜底
   冒烟与外部集未覆盖的治理语义回归**，不能拿它替代权威对照结论。**门禁保持现状**：CI /
   `test:release` 不跑评测集（重成本不进流水线），最多冒烟级自检；完整评测集在本机跑通后再发布。
   judge 必须异构于被测模型，不许被测模型自评；上游数据不进仓库（`upstream-lock.json` 锁定

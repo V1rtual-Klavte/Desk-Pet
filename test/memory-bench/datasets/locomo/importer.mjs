@@ -6,11 +6,11 @@
 // 数据实测口径（2026-10-03 核对）：
 //   · 10 段对话，19–32 个会话；session 键按数字配对 _date_time；
 //     conv-26 存在 16 个只有 _date_time 而没有正文的悬挂键（上游数据瑕疵），导入时忽略。
-//   · QA 共 1986 条；category 5（对抗题）444 条只带 adversarial_answer 而没有 answer 字段。
+//   · QA 共 1986 条；category 5（对抗题）只带 adversarial_answer 而没有 answer 字段。
 //   · category：1 多跳 / 2 时序 / 3 开放域 / 4 单跳 / 5 对抗。
 // 转换只做结构与字段归一，不改写正文。
 
-export const LOCOMO_TRANSFORM_VERSION = "locomo10/1"
+export const LOCOMO_TRANSFORM_VERSION = "locomo10/2"
 
 const MONTHS = { january: 1, february: 2, march: 3, april: 4, may: 5, june: 6, july: 7,
   august: 8, september: 9, october: 10, november: 11, december: 12 }
@@ -54,7 +54,8 @@ export function importLocomoConversation(sample) {
       turns: turns.map(turn => {
         if (typeof turn?.dia_id !== "string" || typeof turn?.speaker !== "string" || typeof turn?.text !== "string")
           throw new Error(`${sampleId}/session_${session} 存在缺少 dia_id/speaker/text 的轮次`)
-        return { speaker: turn.speaker, diaId: turn.dia_id, text: turn.text }
+        return { speaker: turn.speaker, diaId: turn.dia_id, text: turn.text,
+          ...(typeof turn.blip_caption === "string" ? { blipCaption: turn.blip_caption } : {}) }
       }),
     }
   })

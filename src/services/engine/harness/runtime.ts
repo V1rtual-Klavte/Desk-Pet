@@ -10,15 +10,15 @@ import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, CompactionDeclineKind, CompactionDeclineRecord, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, completeMemoryEvidence, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
-import type { FocusedMemoryEvidence, MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
+import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, getMemoryProvider, createMemoryNavigation, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
+import type { MemoryProjection, MemoryRecallRequest, MemoryNavigation, MemoryNavigationRenderedRead } from "@/services/agent/memory"
 import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import { createPlanSettlement } from "@/services/engine/plan/settlement"
 import type { PlanCancelReason, PlanConfirmDeclineReason } from "@/services/engine/plan/settlement"
 import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
-import { buildPrompt, composeDynamicPrompt, currentTimeNote, currentTimeDate, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
+import { buildPrompt, composeDynamicPrompt, currentTimeNote, currentTimeDate, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress, toolResultTokenBudget } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
@@ -39,7 +39,7 @@ import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import {
   SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool,
-  createEnableToolsTool, defaultActiveToolNames,
+  createEnableToolsTool, defaultActiveToolNames, createMemoryNavigationTools,
   findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash,
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
@@ -195,7 +195,7 @@ interface PiAgentTurnBase {
   unansweredCount: number
   isActiveMessage?: boolean
   /** A per-turn capability policy, independent of proactive-message semantics. */
-  toolMode?: "none"
+  toolMode?: "none" | "memory"
   activeRequest?: ActiveMessageRequest
   turnContext?: ProactiveTurnContext
   runGeneration?: number
@@ -897,7 +897,8 @@ function createCompactionHook(options: {
 }
 
 /**
- * 逐请求 streamOptions：HTTP 请求超时用现有 PROVIDER_TIMEOUT_MS（SDK 默认约 10 分钟，项目口径更紧）。
+ * 逐请求 streamOptions：响应头等待与响应体无进展共用 PROVIDER_TIMEOUT_MS；后者由 piStream 实施。
+ * 持续输出会刷新空闲窗口；一次性任务的外层总 deadline 保持独立。
  * 不在此处重复 SDK 重试开关：piStream 已统一为 maxRetries 0，重试预算归 Harness RetryPolicy。
  *
  * `onRequest` 把上游的当次 step/attempt 交给调用方（回合路径记进内核），
@@ -989,6 +990,8 @@ function committedSilentStreak(messages: readonly AgentMessage[]): number {
 
 function createRequestViewHook(args: {
   projectToolResults: boolean
+  /** Frozen turn data, projected after transcript without changing the system prefix. */
+  turnContext?: string
   toolsByName: ReadonlyMap<string, ToolDef>
   /** `resultProjection: "preserve"` 的工具名（不缩短、不清空，地址照走）；与 `toolsByName` 出自同一份 `kernel.tools`。 */
   preserveToolNames: ReadonlySet<string>
@@ -1005,7 +1008,8 @@ function createRequestViewHook(args: {
    * 落位由前缀缓存决定：记忆每回合都可能不同，留在 system prompt 里会把缓存断在会话正文之前。
    * hook 将当前视图剩余 headroom 传给 recall，由 runtime 按本轮查询与配置派生 tier 预算。
    */
-  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext }
+  memory?: { recall: (availableTokens: number) => Promise<MemoryProjection[]>; traceContext: RuntimeTraceContext }
+  memoryNavigation?: MemoryNavigation
   activeAdmission?: { owner: ProactiveOwner; beforeGenerate: NonNullable<ActiveMessageRequest["beforeGenerate"]>; maxOutputTokens: number }
   providerAdmission?: { beforeProvider: (reservation: ProviderReservation) => Promise<boolean>; maxOutputTokens: number }
   supportsImages?: boolean
@@ -1020,12 +1024,13 @@ function createRequestViewHook(args: {
     if (args.silenceGuardSessionId) {
       humanizerSilenceGuard.seed(args.silenceGuardSessionId, committedSilentStreak(messages))
     }
-    // 注记逐请求重算而不是回合级冻结：它承载的就是「当前时间」，取当次更准；且它贴在末尾，
-    // 同回合内多次请求之间的分钟漂移不损失任何缓存。
+    // 动态上下文按回合冻结；时间按每次请求重算。两者都贴在末尾，
+    // 同回合内多次请求之间的分钟漂移不会截断 transcript 上游的稳定缓存前缀。
     // Hydrate path metadata only in the final request projection. The original lane entry
     // remains path-only, while budget estimation, snapshots and Provider payload see images.
     const conversationMessages = messages.filter(message => !isCompletedEmptyAssistant(message))
-    let prepared = [...await hydrateImageMessages(conversationMessages, { signal, supportsImages: args.supportsImages }), createTurnNoteMessage(currentTimeNote())]
+    const turnNote = [args.turnContext, currentTimeNote()].filter(Boolean).join("\n\n")
+    let prepared = [...await hydrateImageMessages(conversationMessages, { signal, supportsImages: args.supportsImages }), createTurnNoteMessage(turnNote)]
     let used: number
     try {
       if (args.projectToolResults) {
@@ -1064,6 +1069,7 @@ function createRequestViewHook(args: {
       }
       // 记忆召回块：先按「当前视图已用量」算出这块真正能占的额度，再逐条按预算追加。
       // 顺序必须在阶梯投影之后、快照之前 —— 快照要看到模型真正收到的视图。
+      let initialReads: MemoryNavigationRenderedRead[] = []
       if (args.memory) {
         try {
           const memoryBudget = Math.max(0,
@@ -1071,26 +1077,27 @@ function createRequestViewHook(args: {
               - used
               - estimateMessageTokens(createMemoryRecallMessage("")),
           )
-          const focused = await args.memory.recall(memoryBudget)
-          const rendered = renderMemoryRecall(focused.projections, memoryBudget, focused.guide)
+          const projections = await args.memory.recall(memoryBudget)
+          const rendered = renderMemoryRecall(projections, memoryBudget)
           if (rendered.text) {
-            // 注记恒为末条（缓存差异点落在「本来就是新的」那一段），记忆块插在它之前。
-            const note = prepared[prepared.length - 1]
-            const nextPrepared = [...prepared.slice(0, -1), createMemoryRecallMessage(rendered.text), note]
+            // Insert at the same input boundary throughout a tool loop. Appending it
+            // after each new tool result would break the otherwise stable prefix.
+            const eventId = args.memory.traceContext.requestId ? inputEventId(args.memory.traceContext.requestId) : undefined
+            const boundary = eventId ? prepared.findIndex(message => messageEventId(message) === eventId) : -1
+            const insertion = boundary >= 0 ? boundary : prepared.length - 1
+            const nextPrepared = [...prepared.slice(0, insertion), createMemoryRecallMessage(rendered.text), ...prepared.slice(insertion)]
             const nextUsed = estimateRequestTokens(systemPrompt, nextPrepared, tools)
             prepared = nextPrepared
             used = nextUsed
+            initialReads = rendered.reads
           }
           publishRuntimeTrace(args.memory.traceContext, "memory_recall_rendered", () => ({
             sourceIds: rendered.sourceIds,
-            conversationRefs: focused.projections.filter(item => item.conversation && rendered.sourceIds.includes(item.sourceId))
+            conversationRefs: projections.filter(item => item.conversation && rendered.sourceIds.includes(item.sourceId))
               .map(item => ({ sourceId: item.sourceId, ...item.conversation })),
-            projectedCount: focused.projections.length,
+            projectedCount: projections.length,
             usedTokens: rendered.usedTokens,
             droppedIds: rendered.droppedIds,
-            readingNoteSourceIds: rendered.readingNoteSourceIds,
-            questionCheckCount: rendered.questionCheckCount,
-            guideStatus: rendered.guideStatus,
             status: memoryBudget <= 0 ? "skipped_budget" : rendered.text ? "inserted" : "empty",
           }))
         } catch (error) {
@@ -1100,6 +1107,41 @@ function createRequestViewHook(args: {
           // 记忆缺席不该让整轮起不来：这里只留痕，继续用不含记忆的视图。
           log.warn("记忆召回块附加失败，按无记忆继续:", formatError(error))
         }
+      }
+      if (args.memoryNavigation) {
+        const visibleReads: Array<{ readId: string; text: string }> = []
+        const renderedReads: Array<{ sourceId: string; sessionId?: string; entryId?: string;
+          role?: "user" | "assistant"; timestamp?: number; range: unknown }> = []
+        let renderedReadTokens = 0
+        for (const message of prepared) {
+          if (message.role !== "toolResult" || message.toolName !== "memory_read" || message.isError) continue
+          try {
+            // The tool emits one JSON line; request projection appends the
+            // transcript address and loop notices on subsequent lines.
+            const page = JSON.parse(contentText(message.content).split("\n", 1)[0]!) as Record<string, unknown>
+            if (page.status === "ok") renderedReadTokens += estimateContextTokens(contentText(message.content))
+            if (page.status === "ok" && typeof page.readId === "string" && typeof page.text === "string" && page.text.length > 0) {
+              visibleReads.push({ readId: page.readId, text: page.text })
+              if (page.status === "ok" && typeof page.sourceId === "string" && page.text.length > 0) {
+                renderedReads.push({ sourceId: page.sourceId,
+                  ...(typeof page.sessionId === "string" ? { sessionId: page.sessionId } : {}),
+                  ...(typeof page.entryId === "string" ? { entryId: page.entryId } : {}),
+                  ...(page.role === "user" || page.role === "assistant" ? { role: page.role } : {}),
+                  ...(typeof page.timestamp === "number" ? { timestamp: page.timestamp } : {}), range: page.range })
+              }
+            }
+          } catch {
+            // L0 shortening/compaction may remove the JSON envelope. Such a result
+            // cannot authorize reuse; navigation will read the governed source again.
+            // The final projection is retained by the unified provider_payload/PromptSnapshot audit.
+          }
+        }
+        if (args.memory) publishRuntimeTrace(args.memory.traceContext, "memory_navigation_rendered", () => ({
+          sourceIds: renderedReads.map(read => read.sourceId), conversationRefs: renderedReads.filter(read => read.sessionId && read.entryId),
+          readRefs: renderedReads, usedTokens: renderedReadTokens,
+        }))
+        args.memoryNavigation.observeContext?.(visibleReads,
+          Math.max(0, contextBudget(args.model.contextWindow).normalInputTarget - used), initialReads)
       }
       args.latestMessages(prepared)
       // 运行期预算口径：与阶梯的 target、单条上限同一份 `contextBudget(window)`（不传 maxOutput）。
@@ -1249,6 +1291,7 @@ function attachUserImages(message: SettledAssistantMessage, state: HarnessRunSta
 /** 每回合的 Harness 运行规格；权限、投影、观测与 UI/统计消费点都在这里接线。 */
 function createTurnSpec(kernel: TurnKernel, options: {
   prompt: string | AgentMessage | AgentMessage[]
+  turnContext?: string
   /** 默认激活面（⊆ kernel.tools）：主对话回合收窄，省略 = 全量（子代理 / 计划步骤）。 */
   activeToolNames?: readonly string[]
   timeoutMs: number
@@ -1273,7 +1316,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
    */
   addressRefs?: () => Promise<ReadonlyMap<string, string>>
   /** 记忆召回块（只有主回合传）：headroom-aware 取数 thunk 与渲染在投影 hook 同处完成。 */
-  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext }
+  memory?: { recall: (availableTokens: number) => Promise<MemoryProjection[]>; traceContext: RuntimeTraceContext }
+  memoryNavigation?: MemoryNavigation
   /**
    * 子运行（规划 / 计划步骤 / 子代理）对聊天界面**不可见**：过程消息、工具结果与流式
    * 草稿都不进活跃会话的可见列表与瞬时尾巴。子运行槽是内存临时的、什么都不落盘，
@@ -1391,6 +1435,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
     },
     transformContext: createRequestViewHook({
       projectToolResults: options.projectToolResults,
+      turnContext: options.turnContext,
       toolsByName,
       preserveToolNames,
       model: kernel.model,
@@ -1403,6 +1448,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       latestMessages: messages => { kernel.latestMessages = messages },
       ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
       ...(options.memory ? { memory: options.memory } : {}),
+      ...(options.memoryNavigation ? { memoryNavigation: options.memoryNavigation } : {}),
       ...(options.activeRequest && options.activeOwner && options.activeRequest.beforeGenerate ? {
         activeAdmission: {
           owner: options.activeOwner,
@@ -1472,6 +1518,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
             api: payloadModel.api,
             payloadHash,
             redactions: safePayload.redactions,
+            toolNames: kernel.requestToolNames ?? [],
           }))
         })
         .catch(error => log.error("provider_payload 快照采集失败:", formatError(error)))
@@ -1710,9 +1757,10 @@ function createTurnSinks(kernel: TurnKernel, visible: boolean): HarnessRunSinks 
  * 激活集 ⊆ 全量）+ 结果回读工具 + 取用入口；默认激活集由 `defaultActiveToolNames` 唯一判定，
  * 未默认激活的工具（含全部 MCP 工具）由 enable_tools 在本回合按需加入（`addedToolNames` 渐进披露）。
  */
-function assembleConversationTools(slot: HarnessSlot, windowTokens: number): { tools: ToolDef[]; activeToolNames: string[] } {
+function assembleConversationTools(slot: HarnessSlot, windowTokens: number, memory?: { navigation: MemoryNavigation; onAccess: () => void }): { tools: ToolDef[]; activeToolNames: string[] } {
   const tools: ToolDef[] = [...listAll()]
   tools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens }))
+  if (memory) tools.push(...createMemoryNavigationTools(memory.navigation, { pageTokens: toolResultTokenBudget(windowTokens), onAccess: memory.onAccess }))
   // 取用入口只在确有未激活工具时挂载：没有任何这类工具时它无事可做，白占一份 schema。
   if (defaultActiveToolNames(tools).length < tools.length) tools.push(createEnableToolsTool({ tools }))
   return { tools, activeToolNames: defaultActiveToolNames(tools) }
@@ -1723,6 +1771,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   if (!input.sessionId.trim()) throw new Error("Pi Agent 回合缺少 sessionId")
   const { userText, unansweredCount, isActiveMessage } = input
   const toolsDisabled = isActiveMessage === true || input.toolMode === "none"
+  const memoryToolsOnly = !toolsDisabled && input.toolMode === "memory"
+  const capabilitiesRestricted = toolsDisabled || memoryToolsOnly
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
 
   const turnSessionId = input.sessionId
@@ -1768,6 +1818,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   applyResetPolicies(new Date(), getSessionCreatedAt(turnSessionId))
   const currentCard = getActiveCard()
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
+  const memoryBefore = input.ingress?.receivedAt ?? Date.now()
+  let memoryReadByTools = false
+  let memoryNavigation: MemoryNavigation | undefined
+  const frozenMemoryProvider = getMemoryProvider()
   const frozenSilentRejectedReply = getFallbackReply("silentRejected")
   const pool = getPoolSnapshot()
   const thinkingEffort = aiConfig.thinkingEffort
@@ -1785,7 +1839,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 事件只是通知通道，UI 不因此持有第二份运行状态。
     void emitUiEvent(HOST_EVENT_RUN_STATE, { sessionId: turnSessionId, running: true })
     assertCurrent()
-    if (!toolsDisabled) {
+    if (!capabilitiesRestricted) {
       const { prepareRunCapabilities } = await import("@/services/init")
       await prepareRunCapabilities(requestId, assertCurrent)
     }
@@ -1793,9 +1847,24 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     assertCurrent()
     // 工具结果回读（请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取）与默认激活面
     // 都在装配函数里；主动表达回合没有工具面（tools=[]），激活集同为空。
+    if (!toolsDisabled && memoryConfig.enabled) {
+      memoryNavigation = createMemoryNavigation(frozenMemoryProvider, {
+        sessionId: turnSessionId, cardId: card?.id, before: memoryBefore, signal: slot.runSignal,
+        isCurrent: runIsCurrent,
+      })
+    }
     const { tools: frozenTools, activeToolNames } = toolsDisabled
       ? { tools: [] as ToolDef[], activeToolNames: [] as string[] }
-      : assembleConversationTools(slot, windowTokens)
+      : memoryToolsOnly
+        ? (() => {
+          const tools = memoryNavigation ? createMemoryNavigationTools(memoryNavigation, {
+            pageTokens: toolResultTokenBudget(windowTokens), onAccess: () => { memoryReadByTools = true },
+          }) : []
+          return { tools, activeToolNames: tools.map(tool => tool.name) }
+        })()
+        : assembleConversationTools(slot, windowTokens, memoryNavigation ? {
+        navigation: memoryNavigation, onAccess: () => { memoryReadByTools = true },
+      } : undefined)
     // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
     // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
     assertCurrent()
@@ -1861,7 +1930,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     await input.onInputAdmitted?.()
     let planStepContext = ""
     let planUserText = userText
-    if (planConfig.enabled && !toolsDisabled) {
+    if (planConfig.enabled && !capabilitiesRestricted) {
       // 计划判定与生成都发生在 Harness 驱动之前（此时还没有 turn_start 的「思考中」），
       // 这段等待必须有提示，否则界面在复杂度判定 + 规划调用期间一片空白。
       emitStageHint(turnSessionId, "planning", generation)
@@ -1918,27 +1987,21 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     }
 
     // 记忆召回延迟到 transform_context：只有那里知道投影后的正文、理解块与工具结果实际占用，
-    // 才能按当前请求剩余 headroom 派生预算。命中内容随后按预算签名缓存供同轮请求复用。
+    // 才能按当前请求剩余 headroom 派生预算。首次小证据在同轮复用；后续读源由主模型工具决定。
     const memoryPurpose = input.activeRequest ? "proactive" as const : "conversation" as const
-    const memoryEvidenceDeadline = Date.now() + loopConfig.turnTimeoutMs
     // recall 走槽级取消信号：回合被停止时这次读取随之结束，旧代际的结果不会写进新投影。
     const memoryRequest: MemoryRecallRequest = {
       requestId, sessionId: turnSessionId, cardId: card?.id, runGeneration: generation,
       query: userText, tokenBudget: 0,
       budget: deriveMemoryRecallBudget(windowTokens, memoryPurpose, 0),
-      contextWindow: windowTokens, signal: slot.runSignal, traceContext,
-      before: input.ingress?.receivedAt ?? Date.now(),
+      model, contextWindow: windowTokens, signal: slot.runSignal, traceContext,
+      before: memoryBefore,
       timeAnchor: currentTimeDate().getTime(),
-      queryRewriteMode: memoryConfig.queryRewrite, rerankMode: memoryConfig.rerank,
+      queryRewriteMode: "off", rerankMode: "off",
       ...(input.activeRequest ? { purpose: "proactive" as const, targets: [...input.activeRequest.memoryTargets] }
         : input.turnContext?.memoryRefs.length ? { targets: input.turnContext.memoryRefs.map(ref => ({ id: ref.id, version: ref.version })), allowExpiredTargets: true } : {}),
     }
     let memoryProjections: MemoryProjection[] = []
-    const emptyFocusedEvidence = (projections: MemoryProjection[] = []): FocusedMemoryEvidence => ({
-      projections, noteSourceIds: [], errors: {}, noteStatus: "empty", guideStatus: "absent",
-      checkCounts: { supported: 0, missing: 0, conflicting: 0 },
-    })
-    let focusedMemory: FocusedMemoryEvidence = emptyFocusedEvidence()
     const recordedRecallFailures = new Set<string>()
     const auditOptionalFailures = () => {
       for (const failure of memoryRequest.optionalFailures ?? []) {
@@ -1950,111 +2013,42 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         } as unknown as JsonValue)
       }
     }
-    let recalledBudgetKey = ""
-    const readFocusedEvidence = async (rawProjections: MemoryProjection[]): Promise<FocusedMemoryEvidence> => {
-      memoryProjections = rawProjections
-      if (memoryPurpose !== "conversation" || (memoryRequest.targets?.length ?? 0) > 0) {
-        focusedMemory = emptyFocusedEvidence(rawProjections)
-        return focusedMemory
-      }
-      try {
-        const focused = await completeMemoryEvidence({
-          query: userText,
-          queryPlan: memoryRequest.queryPlan ?? deriveMemoryQueryPlan(userText, memoryRequest.timeAnchor),
-          timeAnchor: memoryRequest.timeAnchor,
-          readRevision: memoryRequest.readRevision,
-          deadlineAt: memoryEvidenceDeadline,
-          projections: rawProjections,
-          contextWindow: windowTokens,
-          tokenBudget: memoryRequest.tokenBudget,
-          signal: slot.runSignal,
-          requestId,
-          sessionId: turnSessionId,
-          traceContext,
-          timeoutMs: loopConfig.turnTimeoutMs,
-        }, async (queryPlan, signal) => {
-          const followupRequest: MemoryRecallRequest = { ...memoryRequest, queryPlan, skipRerank: true, signal }
-          const projections = await recallMemory(followupRequest)
-          if (signal.aborted) return { projections: [], readRevision: followupRequest.readRevision }
-          assertCurrent()
-          memoryRequest.optionalFailures = followupRequest.optionalFailures
-          if (followupRequest.readRevision === memoryRequest.readRevision) {
-            const prior = memoryRequest.queryPlan ?? queryPlan
-            memoryRequest.queryPlan = { ...prior, queries: [...new Set([...prior.queries, ...queryPlan.queries])] }
-          }
-          auditOptionalFailures()
-          return { projections, readRevision: followupRequest.readRevision }
-        }, async (projections, signal) => {
-          const validated = await validateConversationProjections(projections, signal)
-          assertCurrent()
-          // The merge also retains facts from the original recall. Check their
-          // governing revision after the asynchronous transcript validation.
-          const readRevision = memoryRequest.readRevision === undefined ? undefined : (await memoryStatus()).revision
-          return { projections: validated, readRevision }
-        })
-        if (slot.runSignal.aborted) throw new Error("记忆证据整理已取消")
-        assertCurrent()
-        focusedMemory = focused
-        memoryProjections = focused.projections
-        return focused
-      } catch (error) {
-        if (!runIsCurrent() || slot.runSignal.aborted) throw error
-        log.warn("记忆证据整理失败，保留原始证据继续:", { sessionId: turnSessionId, requestId }, formatError(error))
-        const validated = await validateConversationProjections(rawProjections, slot.runSignal)
-        const revisionCurrent = memoryRequest.readRevision === undefined || (await memoryStatus()).revision === memoryRequest.readRevision
-        focusedMemory = emptyFocusedEvidence(revisionCurrent ? validated : [])
-        memoryProjections = focusedMemory.projections
-        return focusedMemory
-      }
-    }
+    let recalled = false
     stopMemoryRevision = subscribeMemoryRevision(async revision => {
       const feedbackHasMemory = Boolean(input.turnContext?.memoryRefs.length)
       const projections = memoryProjections
-      if (!runIsCurrent() || (!projections.length && !feedbackHasMemory)
-        || (!feedbackHasMemory && projections.every(item => item.memoryRevision === revision))) return
-      // The UI waits for this closure before reporting the change as applied. Already-sent inputs cannot be recalled.
+      if (!runIsCurrent() || (!projections.length && !feedbackHasMemory && !memoryReadByTools)
+        || (!memoryReadByTools && !feedbackHasMemory && projections.every(item => item.memoryRevision === revision))) return
+      // Wait for cancellation admission, not idle: a memory tool may publish this revision itself.
+      // The aborted run cannot send another request; its normal exit owns settlement.
       memoryProjections = []
-      focusedMemory = emptyFocusedEvidence()
-      await slot.abort("user")
-      await slot.waitForIdle()
+      await slot.requestAbort("user")
     })
     /** Reuse only a current DB revision; write-after-read refresh is local and does not repeat reranking. */
-    const memoryRecallForRequest = async (availableTokens: number): Promise<FocusedMemoryEvidence> => {
+    const memoryRecallForRequest = async (availableTokens: number): Promise<MemoryProjection[]> => {
       const nextBudget = memoryConfig.enabled
-        ? deriveMemoryRecallBudget(windowTokens, memoryPurpose, availableTokens)
+        ? deriveMemoryRecallBudget(windowTokens, memoryPurpose, availableTokens,
+          memoryRequest.targets?.length || memoryPurpose === "proactive" ? "standard" : "initial_evidence")
         : deriveMemoryRecallBudget(windowTokens, memoryPurpose, 0)
       memoryRequest.budget = nextBudget
       memoryRequest.tokenBudget = nextBudget.total
-      const budgetKey = `${nextBudget.core}:${nextBudget.recall}:${nextBudget.total}`
       if (nextBudget.total <= 0 || (input.activeRequest && input.activeRequest.memoryTargets.length === 0)) {
-        memoryProjections = []
-        focusedMemory = emptyFocusedEvidence()
         publishRuntimeTrace(traceContext, "memory_recall_start", () => ({ budget: nextBudget.total, coreBudget: nextBudget.core, recallBudget: nextBudget.recall, contextWindow: windowTokens }))
         publishRuntimeTrace(traceContext, "memory_recall_end", () => ({
           status: input.activeRequest && memoryConfig.enabled && input.activeRequest.memoryTargets.length === 0
             ? "skipped_no_targets" : "skipped_budget",
           fallback: false,
         }))
-        recalledBudgetKey = budgetKey
-        return focusedMemory
+        return []
       }
       try {
-        if (recalledBudgetKey === budgetKey) {
+        if (recalled) {
           // Injected providers without a Rust revision stay cached as isolated L3 probes.
           if (memoryRequest.readRevision === undefined && !memoryProjections.some(item => item.conversation)) {
-            return focusedMemory.projections.length || focusedMemory.guide ? focusedMemory : emptyFocusedEvidence(memoryProjections)
+            return memoryProjections
           }
           if (memoryProjections.some(item => item.conversation)) {
-            const beforeValidation = memoryProjections.map(item => item.sourceId)
             memoryProjections = await validateConversationProjections(memoryProjections, slot.runSignal)
-            const afterValidation = memoryProjections.map(item => item.sourceId)
-            if (beforeValidation.length !== afterValidation.length
-              || beforeValidation.some((sourceId, index) => sourceId !== afterValidation[index])) {
-              // A deleted/invalid transcript reference must also disappear from the
-              // request-local reading guide. Re-focus the surviving raw set; the
-              // reader's same-turn cache avoids another model call when unchanged.
-              await readFocusedEvidence(memoryProjections)
-            }
           }
           const currentRevision = (await memoryStatus()).revision
           if (currentRevision !== memoryRequest.readRevision
@@ -2065,10 +2059,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
             memoryRequest.queryPlan = refreshRequest.queryPlan
             memoryRequest.optionalFailures = refreshRequest.optionalFailures
             auditOptionalFailures()
-            await readFocusedEvidence(memoryProjections)
           }
         } else {
-          const freshRequest = { ...memoryRequest, skipRerank: Boolean(recalledBudgetKey) }
+          const freshRequest = { ...memoryRequest, skipRerank: true }
           memoryProjections = await recallMemory(freshRequest)
           memoryRequest.readRevision = freshRequest.readRevision
           memoryRequest.queryPlan = freshRequest.queryPlan
@@ -2076,17 +2069,13 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           memoryRequest.fallbackReason = freshRequest.fallbackReason
           memoryRequest.droppedCandidateIds = freshRequest.droppedCandidateIds
           auditOptionalFailures()
-          await readFocusedEvidence(memoryProjections)
-          recalledBudgetKey = budgetKey
+          recalled = true
         }
       } catch (error) {
         // An unavailable DB cannot prove the eligibility of old facts: fail closed for this optional block.
         memoryProjections = []
-        focusedMemory = emptyFocusedEvidence()
         memoryRequest.readRevision = undefined
-        const phase = recalledBudgetKey === budgetKey
-          ? "revision_recheck"
-          : recalledBudgetKey ? "budget_refresh" : "initial_recall"
+        const phase = recalled ? "revision_recheck" : "initial_recall"
         const formatted = formatError(error)
         log.warn(phase === "revision_recheck"
           ? "记忆revision复核失败，本请求放弃记忆投影:"
@@ -2099,10 +2088,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         } as unknown as JsonValue)
       }
       assertCurrent()
-      return focusedMemory
+      return memoryProjections
     }
     assertCurrent()
-    const frozenContext = { ...frozenUserContext, skillsPromptBlock: toolsDisabled ? "" : getSkillsPromptBlock() }
+    const frozenContext = { ...frozenUserContext, skillsPromptBlock: capabilitiesRestricted ? "" : getSkillsPromptBlock() }
     const frozenHumanizerEnabled = humanizerConfig.enabled
     const frozenUnderstandingBlock = silentAccessFrequency() !== "off" ? getUnderstandingPromptBlock() : undefined
     const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
@@ -2159,6 +2148,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     const spec = createTurnSpec(kernel, {
       // 正文在准入时已提交（与 toolRun 一起装配），spec 只承载驱动面。
       prompt: promptInput,
+      turnContext: context.turnDynamic,
       activeToolNames,
       timeoutMs: loopConfig.turnTimeoutMs,
       // 主聊天回合不传 maxToolCalls：自然出口 = 模型不再调工具，兜底走循环病理检测（契约 Part 1）。
@@ -2172,6 +2162,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       addressRefs: () => slot.addressRefs(),
       // 记忆块与额度一起交给投影 hook：额度是这块的硬上限，实际可用量还要减当前视图已用量。
       memory: { recall: memoryRecallForRequest, traceContext },
+      ...(memoryNavigation ? { memoryNavigation } : {}),
       // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
       isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
     })
@@ -2220,6 +2211,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     throw error
   } finally {
     stopMemoryRevision?.()
+    memoryNavigation?.dispose()
     if (!deferTypingTitlebarRelease) releaseTitlebarStatus(processTitlebarOwner(turnSessionId, generation))
     if (restoreRetryPolicy) {
       await restoreRetryPolicy().catch(error => log.error("主动回合恢复重试策略失败:", formatError(error)))
@@ -2902,6 +2894,9 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   const generation = harnessSlots.begin(sessionId, { requestId })
   if (generation === undefined) throw new Error(`会话已有运行中的 Agent: ${sessionId}`)
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
+  let navigation: MemoryNavigation | undefined
+  let stopRevision: (() => void) | undefined
+  let memoryUsed = false
   try {
     // 恢复路径与主回合走同一个能力准备入口（不再绕过 MCP / Skill 准备）：中断期间能力可能
     // 已经漂移（服务器不可用、设置变更），续跑前的准备结果就是本次运行的真实能力面。
@@ -2924,7 +2919,19 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const currentCard = getActiveCard()
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
     const pool = getPoolSnapshot()
-    const { tools: frozenTools, activeToolNames } = assembleConversationTools(slot, model.contextWindow)
+    if (memoryConfig.enabled) {
+      navigation = createMemoryNavigation(getMemoryProvider(), {
+        sessionId, cardId: card?.id, before: Date.now(), signal: slot.runSignal,
+        isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
+      })
+      stopRevision = subscribeMemoryRevision(async () => {
+        if (!memoryUsed || !harnessSlots.isCurrent(sessionId, generation)) return
+        await slot.requestAbort("user")
+      })
+    }
+    const { tools: frozenTools, activeToolNames } = assembleConversationTools(slot, model.contextWindow, navigation ? {
+      navigation, onAccess: () => { memoryUsed = true },
+    } : undefined)
     // 恢复中的工具调用仍要可执行：Pi 执行工具批次时按激活集过滤（`drive/tools.js` 的
     // activeToolNames），中断前激活、若落到默认面外的 MCP 工具会被判成 unavailable。
     // 把中断操作里 running 的工具名并回本回合激活集；这不改变「取用不跨 run 保留」——
@@ -2964,6 +2971,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     })
     const spec = createTurnSpec(kernel, {
       prompt: recoveryInput,
+      turnContext: context.turnDynamic,
       activeToolNames,
       humanizerEnabled: humanizerConfig.enabled,
       timeoutMs: loopConfig.turnTimeoutMs,
@@ -2972,11 +2980,14 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       runGeneration: generation,
       // 续跑与主回合同口径：同一份地址目录 thunk 同时供给投影与压缩。
       addressRefs: () => slot.addressRefs(),
+      ...(navigation ? { memoryNavigation: navigation } : {}),
       isPermissionCurrent: () => harnessSlots.isCurrent(sessionId, generation) && getActiveSessionId() === sessionId,
     })
     const result = await slot.resumeInterrupted(spec)
     return await settleMainTurn({ input: { sessionId, userText: "继续", userPrompt: recoveryInput, unansweredCount: 0 }, kernel, result, toolCallHistory })
   } finally {
+    stopRevision?.()
+    navigation?.dispose()
     harnessSlots.end(sessionId, generation)
     // 恢复路径借用过能力，收尾按同一 owner 释放（与主回合的 requestId 释放同一口径）。
     const { releaseMcpOwner } = await import("@/services/tool")
@@ -3057,6 +3068,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
       // 工具的口径一致）。
       transformContext: createRequestViewHook({
         projectToolResults: true,
+        turnContext: context.turnDynamic,
         toolsByName: new Map(),
         preserveToolNames: structurePreserveToolNames,
         model,
@@ -3330,7 +3342,7 @@ export function createActiveMessage(text: string, active: ActiveMessageRequest, 
  * 尾随瞬时注记：附在请求视图**最末**，不进 system prompt、不落会话条目。
  *
  * 落点由前缀缓存决定：缓存只在第一个差异处之前命中，而 system prompt 整体排在会话正文
- * 之前 —— 每回合变化的内容（当前时间；将来的召回）留在 system prompt 里，就会把缓存断在
+ * 之前 —— 每回合变化的内容（变量、计划、协议提醒和当前时间）留在 system prompt 里，就会把缓存断在
  * 正文上游，让整个会话正文每轮重新计费。贴在消息数组末尾时，差异点落在「本来就是新的」
  * 那一段，不额外损失任何缓存。
  *

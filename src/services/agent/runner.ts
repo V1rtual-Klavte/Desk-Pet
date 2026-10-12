@@ -226,8 +226,8 @@ export async function initChat(): Promise<void> {
  */
 export interface SendMessageOptions {
   requestId?: string
-  /** Freeze an empty capability surface for this whole turn, including internal tools and Plan. */
-  toolMode?: "none"
+  /** Freeze this turn to no tools, or governed memory navigation only; both exclude Plan/MCP/Skills. */
+  toolMode?: "none" | "memory"
   priority?: MessagePriority
   /** 原文件路径；准入前验证，JSONL 不保存图片编码。 */
   imagePaths?: readonly string[]
@@ -286,7 +286,7 @@ interface TurnInvocation {
   requestId: string
   runGeneration: number
   userText: string
-  toolMode?: "none"
+  toolMode?: "none" | "memory"
   /** 本次投递的正文：普通输入带身份与来源标记；继续暂停输入是取回的原文。技能准入不投递正文。 */
   userPrompt?: AgentMessage | AgentMessage[]
   ingress?: IngressEnvelope
@@ -505,9 +505,9 @@ async function dispatchMessageInner(
   let busyPreResult: Awaited<ReturnType<typeof preProcess>> | undefined
   if (await harnessSlots.hasOpenOperation(originSessionId)) {
     // An input cannot change the already-frozen capabilities of a running lane.
-    if (options.toolMode === "none") return {
+    if (options.toolMode) return {
       reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [],
-      failure: { kind: "admission", message: "空工具回合需要独立的空闲运行槽" },
+      failure: { kind: "admission", message: "受限工具回合需要独立的空闲运行槽" },
     }
     const preResult = await preProcess(text, preprocessStateFor(originSessionId), { busy: true, imageInput: imagePaths.length > 0 })
     admissionScope.current = preResult.dedupAdmission

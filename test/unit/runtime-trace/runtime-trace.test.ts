@@ -111,47 +111,25 @@ describe("Runtime trace [trace-runtime]", () => {
     expect(JSON.stringify(observed)).not.toContain("private.app")
   })
 
+  it("preserves admitted original ranges and roles without copying bodies into trace [trace-navigation-read-schema]", () => {
+    let observed: RuntimeTraceEvent | undefined
+    unsubscribes.push(subscribeRuntimeTrace(event => { observed = event }))
+    const ref = { sourceId: "conversation:session-a:entry-a:0", sessionId: "session-a", entryId: "entry-a",
+      role: "assistant", timestamp: 123, range: { start: 5, end: 17 }, text: "private original", arbitrary: { secret: "private" } }
+    publishRuntimeTrace(createRuntimeTraceContext("session-test"), "memory_navigation_rendered", () => ({
+      sourceIds: [ref.sourceId], conversationRefs: [ref], readRefs: [ref,
+        { ...ref, range: { start: 17, end: 5 } }, { ...ref, range: { start: 0.5, end: 8 } }], usedTokens: 32,
+    }))
+    expect(observed?.payload.conversationRefs).toEqual([{ sourceId: ref.sourceId, sessionId: "session-a", entryId: "entry-a",
+      eventId: null, role: "assistant", timestamp: 123, chunk: null }])
+    expect(observed?.payload.readRefs).toEqual([{ sourceId: ref.sourceId, sessionId: "session-a", entryId: "entry-a",
+      role: "assistant", timestamp: 123, range: { start: 5, end: 17 } }])
+    expect(Object.isFrozen((observed!.payload.readRefs as Array<{ range: unknown }>)[0]!.range)).toBe(true)
+    expect(JSON.stringify(observed)).not.toContain("private")
+  })
+
   it("redacts secrets before applying the preview length cap [trace-preview]", () => {
     expect(runtimeTracePreview("key=sk-1234567890abcdefghijklmnop\n" + "x".repeat(400))).toBe("key=[redacted]\n" + "x".repeat(285))
     expect(runtimeTracePreview("contact me at hello@example.com")).toBe("contact me at [redacted]")
-  })
-})
-
-describe("阅读诊断的隐私边界", () => {
-  it("补查结束仅记录停止原因与次数，不泄露检索词或缺口正文 [trace-memory-coverage-schema]", () => {
-    const observed: RuntimeTraceEvent[] = []
-    unsubscribes.push(subscribeRuntimeTrace(event => { observed.push(event) }))
-    publishRuntimeTrace(createRuntimeTraceContext("session-test", "request-test"), "memory_coverage_end", {
-      status: "no_progress", retrievalCount: 2, sourceCount: 3,
-      queries: ["private-search"], condition: "private-condition", quote: "private-quote",
-    })
-    expect(observed).toHaveLength(1)
-    expect(observed[0]?.payload).toEqual({ status: "no_progress", retrievalCount: 2, sourceCount: 3 })
-  })
-
-  it("保留合法来源和固定状态计数，拒绝引用正文与任意错误键 [trace-memory-reading-schema]", () => {
-    const context = createRuntimeTraceContext("session-test", "request-test")
-    const observed: RuntimeTraceEvent[] = []
-    unsubscribes.push(subscribeRuntimeTrace(event => { observed.push(event) }))
-    publishRuntimeTrace(context, "memory_reading_end", {
-      status: "partial", noteCount: 1, sourceCount: 4, noteSourceIds: ["conv:1"],
-      noteStatus: "partial", guideStatus: "valid",
-      errorCounts: { invalid_note_id: 1, invalid_quote: -1, invalid_json: "private-query", private_query: 8 },
-      checkCounts: { supported: 1, missing: 2, conflicting: 0, private_query: 8 },
-      query: "private-query", quote: "private-quote", questionChecks: [{ condition: "private-condition" }],
-    })
-    publishRuntimeTrace(context, "memory_recall_rendered", {
-      sourceIds: ["conv:1"], readingNoteSourceIds: ["conv:1"], questionCheckCount: 3, guideStatus: "included",
-      questionChecks: [{ condition: "private-condition" }],
-    })
-    expect(observed[0]?.payload).toEqual({
-      status: "partial", noteCount: 1, sourceCount: 4, noteSourceIds: ["conv:1"],
-      noteStatus: "partial", guideStatus: "valid", errorCounts: { invalid_note_id: 1 },
-      checkCounts: { supported: 1, missing: 2, conflicting: 0 },
-    })
-    expect(observed[1]?.payload).toEqual({
-      sourceIds: ["conv:1"], readingNoteSourceIds: ["conv:1"], questionCheckCount: 3, guideStatus: "included",
-    })
-    expect(JSON.stringify(observed)).not.toContain("private")
   })
 })

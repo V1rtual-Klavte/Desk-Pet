@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import type { ContextBlockInput } from "@/services/context"
+import { refreshMessageAllocations } from "@/services/engine/runtime/snapshot"
+import { TURN_NOTE_CUSTOM_TYPE, createMemoryRecallMessage } from "@/services/engine/runtime/input-identity"
 import {
   ContextBudgetError,
   ESTIMATE_DRIFT_WARN_RATIO,
@@ -86,6 +88,39 @@ describe("保留窗口随窗口长大", () => {
 })
 
 describe("上下文预算", () => {
+  it("TURN_NOTE 已分账块只在原逻辑层计一次，尾部只留时间/框架增量；无尾注不扣 [memory-snapshot-turn-note-allocation-delta]", () => {
+    const dynamic = { layer: "dynamic", origin: "system", text: "变量状态=此刻" }
+    const summary = { layer: "memory", origin: "assistant", text: "会话摘要=近期" }
+    const plan = { layer: "ephemeral", origin: "plan", text: "计划步骤=下一步" }
+    const reminder = { layer: "ephemeral", origin: "system", text: "runtime reminder=请记录" }
+    const active = { layer: "ephemeral", origin: "active", text: "不进入TURN_NOTE" }
+    const blocks = [dynamic, summary, plan, reminder, active]
+    const noteText = [dynamic.text, summary.text, plan.text, reminder.text, "[当前时间] 2026-10-10 12:34 周六"].join("\n\n")
+    const turnNote = { role: "custom", customType: TURN_NOTE_CUSTOM_TYPE, content: noteText }
+    const activeInput = { role: "user", content: "本轮投递", deskpetEventId: "event-1" }
+    const recall = createMemoryRecallMessage("召回记忆")
+    const allocation = (["dynamic", "memory", "transcript", "ephemeral"] as const).map(layer => ({
+      layer, requested: 100, used: 100,
+    }))
+
+    const projected = refreshMessageAllocations(allocation, [activeInput, turnNote, recall], {
+      transientInput: true, blocks,
+    })
+    const used = (layer: string) => projected.find(item => item.layer === layer)!.used
+    const noteRemainder = estimateMessageTokens(turnNote) - [dynamic, summary, plan, reminder]
+      .reduce((total, block) => total + estimateContextTokens(block.text), 0)
+    expect(used("dynamic")).toBe(100)
+    expect(used("memory")).toBe(100 + estimateMessageTokens(recall))
+    expect(used("transcript")).toBe(0)
+    expect(used("ephemeral")).toBe(estimateContextTokens(plan.text) + estimateContextTokens(reminder.text)
+      + estimateMessageTokens(activeInput) + noteRemainder)
+
+    const withoutTail = refreshMessageAllocations(allocation, [activeInput, recall], { transientInput: true, blocks })
+    expect(withoutTail.find(item => item.layer === "ephemeral")!.used)
+      .toBe(estimateContextTokens(plan.text) + estimateContextTokens(reminder.text)
+        + estimateMessageTokens(activeInput))
+  })
+
   it("上下文内核只做预算：块排序、硬上限判定、可选块整块淘汰与分配账目 [memory-context-budget]", () => {
     for (const window of [16_000, 32_000, 128_000]) {
       const budget = contextBudget(window)
@@ -107,6 +142,9 @@ describe("上下文预算", () => {
       blockId: "dynamic:runtime", layer: "dynamic", source: "runtime", text: "变量状态=B", priority: 90, origin: "system", taint: "system",
     }], 32_000)
     expect(first.staticPrefix, "动态变量改变了冻结静态前缀").toBe(second.staticPrefix)
+    expect(first.systemPrompt, "动态变量改变了实际 system 前缀").toBe(second.systemPrompt)
+    expect(first.systemPrompt).not.toContain("变量状态=")
+    expect(first.turnDynamic).toContain("变量状态=A")
     expect(first.turnDynamic, "动态变量没有进入动态层").not.toBe(second.turnDynamic)
 
     const schema = first.blocks.find(block => block.blockId === "static:tool-schema")

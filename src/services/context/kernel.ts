@@ -97,7 +97,8 @@ export function buildPromptBlocks(inputBlocks: ContextBlockInput[], contextMaxTo
   const ordered = sortBlocks(selected)
   const staticPrefix = joinPrompt(ordered, block => block.blockId === "static:card" || block.blockId === "static:v1rtual" || block.blockId === "static:humanizer" || block.blockId === "static:tool-protocol")
   const turnDynamic = joinPrompt(ordered, block => block.layer !== "static" && !(block.layer === "ephemeral" && block.origin === "active"))
-  const systemPrompt = joinPrompt(ordered, block => block.blockId !== "static:tool-schema" && !(block.layer === "ephemeral" && block.origin === "active"))
+  // Stable instructions precede transcript; changing turn data is projected once at its tail.
+  const systemPrompt = joinPrompt(ordered, block => block.layer === "static" && block.blockId !== "static:tool-schema")
   return { blocks: ordered, systemPrompt, staticPrefix, turnDynamic,
     estimatedInputTokens: used, inputTokenBudget, budget, allocations, budgetDrops: drops }
 }

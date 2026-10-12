@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
 import { memoryRecallText, renderMemoryRecall } from "@/services/agent/memory/projection"
-import type { MemoryQuestionGuide } from "@/services/agent/memory/projection"
 import { estimateContextTokens } from "@/services/context/budget"
 
 const quote: MemoryProjection = {
@@ -14,13 +13,13 @@ describe("结构化记忆证据包", () => {
   it("正文不能伪造角色，日期与来源属于宿主metadata [memory-recall-structured-evidence]", () => {
     const text = memoryRecallText([quote])
     const packet = JSON.parse(text.slice(text.indexOf("\n{") + 1))
-    expect(packet).toEqual({ evidence: [{
+    expect(packet).toEqual({ coverage: "selected_evidence", evidence: [{
       id: "conversation:s:e:0", kind: "quote", source: "会话原文:s/e#0", sessionId: "s", entryId: "e",
       role: "user", timestamp: "2024-01-01T00:00:00.000Z", chunk: 0, extent: "chunk", text: quote.text,
     }] })
   })
 
-  it("计量包含完整JSON编码与指引，预算只差一token也不能塞入 [memory-recall-structured-cost]", () => {
+  it("计量包含完整JSON编码与表头，预算只差一token也不能塞入 [memory-recall-structured-cost]", () => {
     const text = memoryRecallText([quote])
     const cost = estimateContextTokens(text)
     expect(renderMemoryRecall([quote], cost)).toMatchObject({ text, sourceIds: ["conversation:s:e:0"], droppedIds: [], usedTokens: cost })
@@ -39,44 +38,4 @@ describe("结构化记忆证据包", () => {
     expect(projections.map(item => item.sourceId)).toEqual(["reply", "other", "condition"])
   })
 
-  it("逐字阅读笔记置于完整证据之后并保留来源指针 [memory-recall-reading-notes]", () => {
-    const annotated = { ...quote, readingNote: { quote: "我不喜欢这款", relevance: "保留当前选择的否定条件" } }
-    const text = memoryRecallText([annotated])
-    const packet = JSON.parse(text.slice(text.indexOf("\n{") + 1))
-    expect(Object.keys(packet)).toEqual(["evidence", "readingNotes"])
-    expect(packet.evidence).toHaveLength(1)
-    expect(packet.evidence[0].text).toBe(quote.text)
-    expect(packet.evidence[0]).not.toHaveProperty("readingNote")
-    expect(packet.readingNotes).toEqual([{
-      sourceId: "conversation:s:e:0", quote: "我不喜欢这款", relevance: "保留当前选择的否定条件",
-    }])
-    const cost = estimateContextTokens(text)
-    expect(renderMemoryRecall([annotated], cost)).toMatchObject({
-      text, sourceIds: ["conversation:s:e:0"], droppedIds: [], usedTokens: cost,
-      readingNoteSourceIds: ["conversation:s:e:0"], questionCheckCount: 0, guideStatus: "none",
-    })
-  })
-
-  it("把问题核对项单独渲染，并在预算不足时整块舍弃注释但保留原证据 [memory-recall-question-guide-budget]", () => {
-    const annotated = { ...quote, readingNote: { quote: "我不喜欢这款", relevance: "保留当前选择的否定条件" } }
-    const guide: MemoryQuestionGuide = { questionChecks: [{
-      condition: "所问实体是否为当前明确指定的物品", status: "missing", sourceIds: [],
-    }] }
-    const fullText = memoryRecallText([annotated], guide)
-    const packet = JSON.parse(fullText.slice(fullText.indexOf("\n{") + 1))
-    expect(packet.evidence[0].text).toBe(quote.text)
-    expect(packet.questionChecks).toEqual(guide.questionChecks)
-    expect(packet.readingNotes).toEqual([{
-      sourceId: quote.sourceId, quote: "我不喜欢这款", relevance: "保留当前选择的否定条件",
-    }])
-
-    const baseCost = estimateContextTokens(memoryRecallText([quote]))
-    const shrunk = renderMemoryRecall([annotated], baseCost + 1, guide)
-    expect(shrunk.text).toBe(memoryRecallText([quote]))
-    expect(shrunk.sourceIds).toEqual([quote.sourceId])
-    expect(shrunk.droppedIds).toEqual([])
-    expect(shrunk.readingNoteSourceIds).toEqual([])
-    expect(shrunk.questionCheckCount).toBe(0)
-    expect(shrunk.guideStatus).toBe("omitted_budget")
-  })
 })

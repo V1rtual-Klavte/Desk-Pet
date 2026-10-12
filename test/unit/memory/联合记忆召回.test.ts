@@ -5,20 +5,21 @@ const fake = vi.hoisted(() => ({
   conversationSnapshot: undefined as unknown,
   visibleTranscript: undefined as unknown,
   complete: vi.fn(),
+  resolveModel: vi.fn(() => ({ id: "memory-test-model", contextWindow: 65_536, maxTokens: 4_096 })),
   getFacts: vi.fn(),
   getConversation: vi.fn(),
-  expandConversation: vi.fn(),
 }))
 
 vi.mock("@/services/agent/memory/ipc", () => ({
   getMemoryRecallCandidates: fake.getFacts,
 }))
 // Evidence migration has its own transaction/retry suite; this suite isolates retrieval boundaries.
+vi.mock("@/services/agent/memory/sqlite-navigation", () => ({ sqliteMemoryNavigation: {} }))
 vi.mock("@/services/agent/memory/evidence", () => ({ reconcileDerivedMemoryEvidence: async () => undefined }))
 
 vi.mock("@/services/agent/memory/conversation", () => ({
+  CONVERSATION_RRF_RANK_CONSTANT: 60,
   searchConversationCandidates: fake.getConversation,
-  expandConversationSessions: fake.expandConversation,
   conversationProjection: (entry: ConversationSearchResult["entries"][number], indexRevision: number, memoryRevision: number) => ({
     sourceId: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`,
     memoryVersion: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}:index-${indexRevision}`,
@@ -44,6 +45,7 @@ vi.mock("@/services/agent/memory/conversation", () => ({
 
 vi.mock("@/services/engine/harness", () => ({
   completePiText: fake.complete,
+  resolvePiTurnModel: fake.resolveModel,
 }))
 
 vi.mock("@/services/session", () => ({
@@ -85,6 +87,8 @@ function factSnapshot(items: MemoryItem[], revision = 7): MemoryRecallCandidateS
   const pinned = items.filter(item => item.draft.pinned)
   return {
     revision,
+    indexRevision: 3,
+    forgetEpoch: 1,
     candidatesByScope: { user: items, card: [], session: [] },
     candidates: items.filter(item => !item.draft.pinned),
     pinned,
@@ -96,7 +100,7 @@ function conversationSnapshot(count: number, memoryRevision = 7): ConversationSe
   return {
     revision: 3,
     memoryRevision,
-    forgetEpoch: 1,
+    forgetEpoch: 1, nextCursor: null, complete: true, freshness: "current", fingerprints: [],
     entries: Array.from({ length: count }, (_, index) => ({
       entryId: `entry-${index}`,
       eventId: `event-${index}`,
@@ -123,6 +127,7 @@ function request(overrides: Partial<Parameters<typeof sqliteMemoryProvider.recal
 }
 
 beforeEach(() => {
+  fake.resolveModel.mockReset().mockReturnValue({ id: "memory-test-model", contextWindow: 65_536, maxTokens: 4_096 })
   fake.factSnapshot = factSnapshot([])
   fake.conversationSnapshot = conversationSnapshot(0)
   fake.visibleTranscript = {
@@ -135,13 +140,11 @@ beforeEach(() => {
     ],
   }
   fake.complete.mockReset()
-  fake.complete.mockResolvedValue({ text: '{"queries":["备用钥匙 放置位置","备用钥匙位置"]}' })
+  fake.complete.mockResolvedValue({ text: '{"queries":["备用钥匙 放置位置","备用钥匙位置"]}', stopReason: "stop" })
   fake.getFacts.mockReset()
   fake.getFacts.mockImplementation(async () => fake.factSnapshot)
   fake.getConversation.mockReset()
   fake.getConversation.mockImplementation(async () => fake.conversationSnapshot)
-  fake.expandConversation.mockReset()
-  fake.expandConversation.mockImplementation(async snapshot => snapshot)
 })
 
 afterEach(() => {
@@ -149,8 +152,26 @@ afterEach(() => {
 })
 
 describe("联合记忆召回", () => {
+  it("召回过程中配置模型变化，rewrite与rerank仍使用调用方冻结模型 [memory-recall-frozen-model]", async () => {
+    type RecallModel = NonNullable<Parameters<typeof sqliteMemoryProvider.recall>[0]["model"]>
+    const model = { id: "frozen-main", contextWindow: 65_536, maxTokens: 4_096 } as RecallModel
+    fake.factSnapshot = factSnapshot(Array.from({ length: 7 }, (_, index) => memoryItem(`fact-${index}`)))
+    fake.conversationSnapshot = conversationSnapshot(8, 7)
+    fake.complete.mockImplementationOnce(async () => {
+      fake.resolveModel.mockReturnValue({ id: "new-live-setting", contextWindow: 32_768, maxTokens: 2_048 })
+      return { text: '{"queries":["备用钥匙位置"]}', stopReason: "stop" }
+    }).mockResolvedValueOnce({ text: '["fact-0"]', stopReason: "stop" })
+    const req = request({ sessionId: "frozen-model-session", model, queryRewriteMode: "adaptive", rerankMode: "adaptive", before: 200 })
+    await sqliteMemoryProvider.recall(req)
+    expect(fake.complete).toHaveBeenCalledTimes(2)
+    expect(fake.complete.mock.calls[0]?.[0].model).toBe(model)
+    expect(fake.complete.mock.calls[1]?.[0].model).toBe(model)
+    expect(req.contextWindow).toBe(65_536)
+    expect(fake.resolveModel).not.toHaveBeenCalled()
+  })
+
   it("rewrite上下文标记user/assistant角色，assistant只作引用而非用户事实 [memory-query-context-roles]", async () => {
-    fake.complete.mockResolvedValueOnce({ text: '{"queries":["备用钥匙位置"]}' })
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["备用钥匙位置"]}', stopReason: "stop" })
     const request = {
       requestId: "query-plan",
       sessionId: "session-a",
@@ -163,9 +184,13 @@ describe("联合记忆召回", () => {
     const plan = await planMemoryQueries(request)
 
     expect(plan.queries).toEqual([request.query, "备用钥匙位置"])
-    expect(fake.complete.mock.calls[0]?.[0].maxTokens).toBeGreaterThanOrEqual(1_000)
+    expect(fake.complete.mock.calls[0]?.[0].model).toEqual(fake.resolveModel())
+    expect(fake.complete.mock.calls[0]?.[0].maxTokens).toBeGreaterThan(0)
     expect(fake.complete.mock.calls[0]?.[0].thinkingEffort).toBe("low")
     expect(fake.complete.mock.calls[0]?.[0].timeoutMs).toBe(memoryConfig.recallTimeoutMs)
+    expect(fake.complete.mock.calls[0]?.[0].memoryStage).toBe("rewrite")
+    expect(fake.complete.mock.calls[0]?.[0].systemPrompt).toContain('Return only JSON shaped as {"queries":["..."]}')
+    expect(fake.complete.mock.calls[0]?.[0].systemPrompt).not.toContain("evidenceNeeds")
     const rewrite = JSON.parse(String(fake.complete.mock.calls[0]?.[0].userText)) as {
       originalQuery: string
       recentMessages: Array<{ role: string; text: string }>
@@ -179,7 +204,7 @@ describe("联合记忆召回", () => {
 
   it("rewrite输入按模型上下文窗口预算，不因固定小阈值提前回退 [memory-query-context-headroom]", async () => {
     fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
-    fake.complete.mockResolvedValueOnce({ text: '{"queries":["苹果产品偏好"]}' })
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["苹果产品偏好"]}', stopReason: "stop" })
     const query = `我之前告诉你苹果${"苹果".repeat(900)}是什么？`
 
     const plan = await planMemoryQueries({
@@ -193,6 +218,46 @@ describe("联合记忆召回", () => {
 
     expect(fake.complete).toHaveBeenCalledTimes(1)
     expect(plan.rewriteStatus).toBe("rewritten")
+  })
+
+  it("本地计划已有互补检索词时跳过rewrite模型 [memory-query-local-complements-first]", async () => {
+    const query = "What did Taylor mention?"
+    const localPlan = deriveMemoryQueryPlan(query)
+
+    const plan = await planMemoryQueries({
+      requestId: "local-complement-plan",
+      sessionId: "session-a",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive",
+      localCandidateCount: 0,
+    })
+
+    expect(localPlan.queries.length).toBeGreaterThan(1)
+    expect(plan.queries).toEqual(localPlan.queries)
+    expect(plan.rewriteStatus).toBe("not_needed")
+    expect(fake.complete).not.toHaveBeenCalled()
+  })
+
+  it("同一会话与query的成功rewrite跨预算变化复用计划 [memory-query-plan-cache-budget-independent]", async () => {
+    fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["book recommendation"]}', stopReason: "stop" })
+    const query = "What book did you recommend?"
+    const base = {
+      requestId: "stable-rewrite-plan",
+      sessionId: "session-rewrite-cache",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive" as const,
+      localCandidateCount: 0,
+    }
+
+    const first = await planMemoryQueries({ ...base, contextWindow: 32_768 })
+    const second = await planMemoryQueries({ ...base, requestId: "stable-rewrite-plan-next", contextWindow: 8_192 })
+
+    expect(first.rewriteStatus).toBe("rewritten")
+    expect(second).toEqual(first)
+    expect(fake.complete).toHaveBeenCalledTimes(1)
   })
 
   it("时间解析使用冻结的问题时间锚点，不把来源截止时间当作现在 [memory-query-time-anchor]", async () => {
@@ -222,7 +287,7 @@ describe("联合记忆召回", () => {
 
   it("英文个人历史问句在零事实命中且无当前会话上下文时只改写检索同义词 [memory-query-personal-history-empty-context]", async () => {
     fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
-    fake.complete.mockResolvedValueOnce({ text: '{"queries":["book recommendation"]}' })
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["book recommendation"]}', stopReason: "stop" })
     const query = "What book did you recommend?"
 
     const plan = await planMemoryQueries({
@@ -246,7 +311,7 @@ describe("联合记忆召回", () => {
       entries: [],
       messages: [{ id: "u", role: "user", text: "我想整理书架", timestamp: 90, isUserInput: true }],
     }
-    fake.complete.mockResolvedValueOnce({ text: '{"queries":["整理书架方法"]}' })
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["整理书架方法"]}', stopReason: "stop" })
     const query = "这该怎么弄"
 
     const plan = await planMemoryQueries({
@@ -322,7 +387,7 @@ describe("联合记忆召回", () => {
     ]
     fake.factSnapshot = factSnapshot(facts)
     fake.conversationSnapshot = conversationSnapshot(8, 7)
-    fake.complete.mockResolvedValueOnce({ text: '{"queries":["备用钥匙 放置位置","备用钥匙位置"]}' })
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["备用钥匙 放置位置","备用钥匙位置"]}', stopReason: "stop" })
     fake.complete.mockResolvedValueOnce({ text: '["fact-0","conversation:session-a:entry-0:0"]' })
 
     const req = request({ queryRewriteMode: "adaptive", rerankMode: "adaptive", before: 200 })
@@ -337,10 +402,13 @@ describe("联合记忆召回", () => {
     expect(fake.getConversation.mock.calls[0]?.[0].before).toBe(200)
     expect(fake.getConversation.mock.calls[1]?.[0].queries).toEqual(["备用钥匙 放置位置", "备用钥匙位置"])
     expect(fake.complete).toHaveBeenCalledTimes(2)
+    expect(fake.complete.mock.calls[0]?.[0].model).toBe(fake.complete.mock.calls[1]?.[0].model)
+    expect(fake.complete.mock.calls[0]?.[0].model).toMatchObject({ id: "memory-test-model", contextWindow: 65_536 })
     const rankPayload = JSON.parse(String(fake.complete.mock.calls[1]?.[0].userText)) as {
       originalQuery: string
       candidates: Array<{ id: string; channel: string; role?: string; origin?: string }>
     }
+    expect(fake.complete.mock.calls[1]?.[0].memoryStage).toBe("rerank")
     expect(rankPayload.originalQuery).toBe(req.query)
     expect(rankPayload.candidates.some(item => item.channel === "memory" && item.origin === "derived_behavior")).toBe(true)
     expect(rankPayload.candidates.some(item => item.channel === "conversation" && item.role === "user")).toBe(true)
@@ -348,6 +416,51 @@ describe("联合记忆召回", () => {
     expect(result.map(item => item.sourceId)).toContain("conversation:session-a:entry-0:0")
     expect(result.find(item => item.sourceId === "core@2")?.tier).toBe("core")
     expect(result.find(item => item.sourceId === "conversation:session-a:entry-0:0")?.memoryRevision).toBe(7)
+  })
+
+  it("rewrite阶段按各自排名做RRF融合并保留更高排名阶段的同entry正文 [memory-recall-rewrite-conversation-rrf-fusion]", async () => {
+    const entry = (entryId: string, text: string, score: number, seq: number) => ({
+      sessionId: "session-a", entryId, eventId: `${entryId}-event`, seq, chunk: 0,
+      role: "user" as const, text, timestamp: 100 + seq, score,
+    })
+    const base = {
+      ...conversationSnapshot(0, 7),
+      entries: [
+        entry("base-only", "Base-only first-rank hit", 100, 1),
+        entry("shared-b", "Shared B base representation", 0.1, 2),
+        entry("shared-c", "Shared C base representation", 0.01, 3),
+      ],
+    }
+    const extension = {
+      ...conversationSnapshot(0, 7),
+      entries: [
+        entry("shared-b", "Shared B rewrite representation", 0.001, 2),
+        entry("shared-c", "Shared C rewrite representation", 2_000, 3),
+        entry("rewrite-only", "Rewrite-only third-rank hit", 100_000, 4),
+      ],
+    }
+    fake.getConversation.mockReset()
+      .mockResolvedValueOnce(base)
+      .mockResolvedValueOnce(extension)
+    fake.complete.mockReset().mockResolvedValueOnce({
+      text: '{"queries":["备用钥匙 放置位置","备用钥匙位置"]}', stopReason: "stop",
+    })
+
+    const result = await sqliteMemoryProvider.recall(request({
+      queryRewriteMode: "adaptive", rerankMode: "off", tokenBudget: 1_000,
+      budget: { core: 0, recall: 1_000, total: 1_000 },
+    }))
+
+    const conversation = result.filter(item => item.conversation).map(item => ({
+      id: item.conversation!.entryId, text: item.text,
+    }))
+    expect(conversation.map(item => item.id)).toEqual(["shared-b", "shared-c", "base-only", "rewrite-only"])
+    expect(conversation.find(item => item.id === "shared-b")?.text).toBe("Shared B rewrite representation")
+    expect(conversation.find(item => item.id === "shared-c")?.text).toBe("Shared C rewrite representation")
+    expect(fake.getConversation.mock.calls.map(([call]) => call.queries)).toEqual([
+      ["我之前告诉你那个偏好是什么？"],
+      ["备用钥匙 放置位置", "备用钥匙位置"],
+    ])
   })
 
   it("动态召回先覆盖不同会话，超预算的首条不会阻断同会话较短候选 [memory-recall-session-coverage]", async () => {
@@ -400,7 +513,9 @@ describe("联合记忆召回", () => {
     expect(new Set(result.map(item => item.conversation?.role))).toEqual(new Set(["assistant", "user"]))
   })
 
-  it("首会话完整正文能单独装下时仍给后续会话预留命中证据 [memory-recall-session-reservation]", async () => {
+  it("overview保留跨会话覆盖，而单事实lookup不强制纳入低相关会话 [memory-recall-session-reservation]", async () => {
+    const overviewQuery = "回顾我们之前聊过的所有项目迁移内容"
+    expect(deriveMemoryQueryPlan(overviewQuery).recallIntent).toBe("overview")
     const snapshot = {
       ...conversationSnapshot(0),
       entries: [
@@ -409,16 +524,30 @@ describe("联合记忆召回", () => {
       ],
     }
     fake.conversationSnapshot = { ...snapshot, entries: snapshot.entries.slice(0, 1) }
-    const full = await sqliteMemoryProvider.recall(request({ queryRewriteMode: "off", rerankMode: "off" }))
+    const full = await sqliteMemoryProvider.recall(request({
+      query: overviewQuery, queryRewriteMode: "off", rerankMode: "off",
+    }))
     expect(full[0]?.text).toBe(snapshot.entries[0]!.text)
     const tokenBudget = memoryRecallTokens(full) + 1
     fake.conversationSnapshot = snapshot
     const result = await sqliteMemoryProvider.recall(request({
-      queryRewriteMode: "off", rerankMode: "off", tokenBudget,
+      query: overviewQuery, queryRewriteMode: "off", rerankMode: "off", tokenBudget,
       budget: { core: 0, recall: tokenBudget, total: tokenBudget },
     }))
     expect(new Set(result.map(item => item.conversation?.sessionId))).toEqual(new Set(["session-a", "session-b"]))
     expect(result.find(item => item.conversation?.sessionId === "session-a")?.conversation?.extent).toBe("chunk")
+
+    fake.conversationSnapshot = snapshot
+    const lookupQuery = "我之前提过项目迁移什么内容？"
+    const lookupPlan = deriveMemoryQueryPlan(lookupQuery)
+    expect(lookupPlan.recallIntent).toBe("lookup")
+    const lookup = await sqliteMemoryProvider.recall(request({
+      query: lookupQuery, queryPlan: lookupPlan, queryRewriteMode: "off", rerankMode: "off", tokenBudget,
+      budget: { core: 0, recall: tokenBudget, total: tokenBudget },
+    }))
+    expect(lookup.map(item => item.conversation?.sessionId)).toContain("session-a")
+    expect(lookup.map(item => item.conversation?.sessionId)).not.toContain("session-b")
+    expect(lookup.find(item => item.conversation?.sessionId === "session-a")?.conversation?.extent).toBe("entry")
   })
 
   it("默认不为自足查询改写；坏重排响应回退到同一份本地候选 [memory-recall-joint-fallback]", async () => {
@@ -442,30 +571,29 @@ describe("联合记忆召回", () => {
     expect(result.map(item => item.sourceId)).toContain("fact-0@2")
   })
 
-  it("coverage follow-up 查询复用结构化意图并完整进入会话检索 [memory-recall-plan-followups]", async () => {
+  it("版本刷新复用完整结构化计划及本地互补查询 [memory-recall-supplied-plan]", async () => {
+    const originalQuery = "我之前聊过项目A迁移的哪些内容？"
     const queryPlan = {
-      originalQuery: "我之前聊过项目A的迁移吗？",
-      queries: ["我之前聊过项目A的迁移吗？", "项目A 数据迁移", "项目A 上线步骤", "项目A 迁移原因"],
+      ...deriveMemoryQueryPlan(originalQuery),
+      queries: [originalQuery, "项目A 数据迁移", "项目A 上线步骤", "项目A 迁移原因"],
       rewriteStatus: "rewritten" as const,
-      recallIntent: "overview" as const,
-      sourceRoles: ["user", "assistant"],
-      entities: ["项目A"],
-      evidenceNeeds: ["coverage", "steps", "reason"],
     } satisfies MemoryQueryPlan
-    const req = request({ query: queryPlan.originalQuery, queryPlan, queryRewriteMode: "off", rerankMode: "off" })
+    const req = request({ query: originalQuery, queryPlan, queryRewriteMode: "off", rerankMode: "off" })
 
     await sqliteMemoryProvider.recall(req)
 
     expect(fake.getConversation.mock.calls[0]?.[0].queries).toEqual(queryPlan.queries)
     expect(fake.getConversation.mock.calls[0]?.[0].queryPlan).toMatchObject({
-      recallIntent: "overview", entities: ["项目A"], evidenceNeeds: ["coverage", "steps", "reason"],
+      recallIntent: "overview", entities: queryPlan.entities, evidenceNeeds: queryPlan.evidenceNeeds,
     })
+    expect(req.queryPlan?.queries).toEqual(queryPlan.queries)
+    expect(fake.getFacts.mock.calls[0]?.[0]).toEqual(queryPlan.queries.join(" "))
   })
 
   it("少量事实候选不会挡住个人历史问题的补充检索 [memory-query-rewrite-existing-facts-history]", async () => {
     fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
     const query = "How many projects have I led?"
-    fake.complete.mockResolvedValueOnce({ text: '{"queries":["projects I led","leadership project count"]}' })
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["projects I led","leadership project count"]}', stopReason: "stop" })
 
     const plan = await planMemoryQueries({
       requestId: "history-query-existing-facts",
@@ -484,7 +612,7 @@ describe("联合记忆召回", () => {
   it("少量事实候选不会挡住个人推荐问题的补充检索 [memory-query-rewrite-existing-facts-advice]", async () => {
     fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
     const query = "Can you recommend a book for me?"
-    fake.complete.mockResolvedValueOnce({ text: '{"queries":["book recommendations","books suited to my interests"]}' })
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["book recommendations","books suited to my interests"]}', stopReason: "stop" })
 
     const plan = await planMemoryQueries({
       requestId: "advice-query-existing-facts",
@@ -534,15 +662,55 @@ describe("联合记忆召回", () => {
 
   it("queryrewrite坏输出回到原query并只记录安全失败原因 [memory-query-rewrite-fallback]", async () => {
     fake.factSnapshot = factSnapshot([memoryItem("fact-1")])
-    fake.complete.mockResolvedValueOnce({ text: "not-json" })
+    fake.complete.mockResolvedValueOnce({ text: "not-json", stopReason: "stop" })
 
-    const req = request({ queryRewriteMode: "adaptive", rerankMode: "off" })
+    const req = request({ sessionId: "fallback-unique-session", queryRewriteMode: "adaptive", rerankMode: "off" })
     await sqliteMemoryProvider.recall(req)
 
     expect(req.queryPlan?.queries).toEqual([req.query])
     expect(req.queryPlan?.rewriteStatus).toBe("fallback")
     expect(fake.getFacts.mock.calls[0]?.[0]).toBe(req.query)
     expect(req.optionalFailures).toContainEqual({ channel: "query_rewrite", reason: "invalid_output" })
+  })
+
+  it("rewrite只接受三条以内的query JSON，不接受复制计划元数据 [memory-query-rewrite-short-schema]", async () => {
+    fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
+    fake.complete.mockResolvedValueOnce({
+      text: '{"queries":["book recommendations"],"entities":["book"]}',
+      stopReason: "stop",
+    })
+    const query = "Can you recommend a book for me?"
+
+    const plan = await planMemoryQueries({
+      requestId: "rewrite-short-schema",
+      sessionId: "session-short-schema",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive",
+      localCandidateCount: 0,
+    })
+
+    expect(plan.queries).toEqual([query])
+    expect(plan.rewriteStatus).toBe("fallback")
+  })
+
+  it("rewrite输出被截断时不解析部分JSON而回退 [memory-query-rewrite-truncated-fallback]", async () => {
+    fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["book recommendations"]}', stopReason: "length" })
+    const query = "Can you recommend a book for me?"
+
+    const plan = await planMemoryQueries({
+      requestId: "rewrite-truncated",
+      sessionId: "session-truncated",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive",
+      localCandidateCount: 0,
+    })
+
+    expect(plan.queries).toEqual([query])
+    expect(plan.rewriteStatus).toBe("fallback")
+    expect(fake.complete).toHaveBeenCalledTimes(1)
   })
 
   it("facts和history版本无法对齐时丢弃history并记录revision_changed [memory-recall-revision-consistency]", async () => {
@@ -589,50 +757,5 @@ describe("联合记忆召回", () => {
     expect(req.localFallback?.some(item => item.conversation)).toBe(false)
     resolveHistory(conversationSnapshot(0))
     await pending
-  })
-})
-
-
-describe("先选择会话再展开受控上下文", () => {
-  it("仅展开重排选中的会话且不复活明确淘汰条目 [memory-context-after-selection]", async () => {
-    const snapshot = conversationSnapshot(10)
-    snapshot.entries.forEach((row, index) => { if (index >= 5) row.sessionId = "session-b" })
-    fake.conversationSnapshot = snapshot
-    fake.complete.mockResolvedValue({ text: '["conversation:session-a:entry-0:0"]' })
-    const early = { ...snapshot.entries[0]!, entryId: "earlier-unmatched", seq: 0, text: "First visit was an old bungalow.", matchedText: "First visit was an old bungalow." }
-    fake.expandConversation.mockImplementation(async selected => ({ ...selected, entries: [...selected.entries, snapshot.entries[1], early] }))
-    const result = await sqliteMemoryProvider.recall(request({ query: "How many properties did I view before making my offer?", queryRewriteMode: "off", rerankMode: "adaptive", tokenBudget: 10_000 }))
-    expect(fake.expandConversation).toHaveBeenCalledTimes(1)
-    expect(fake.expandConversation.mock.calls[0]![0].entries.map((row: { entryId: string }) => row.entryId)).toEqual(["entry-0"])
-    expect(result.map(row => row.sourceId)).toEqual(["conversation:session-a:entry-0:0", "conversation:session-a:earlier-unmatched:0"])
-    expect(result.find(row => row.sourceId.includes("earlier-unmatched"))?.text).toBe("First visit was an old bungalow.")
-  })
-
-  it("显式空重排不通过展开重获会话 [memory-context-empty-selection]", async () => {
-    fake.conversationSnapshot = conversationSnapshot(10)
-    fake.complete.mockResolvedValue({ text: "[]" })
-    const result = await sqliteMemoryProvider.recall(request({ queryRewriteMode: "off", rerankMode: "adaptive", tokenBudget: 10_000 }))
-    expect(result).toEqual([])
-    expect(fake.expandConversation).not.toHaveBeenCalled()
-  })
-
-  it("上下文读取版本变动只移除会话证据并保留当前核心事实 [memory-context-revision-fallback]", async () => {
-    fake.factSnapshot = factSnapshot([memoryItem("core", { pinned: true })])
-    fake.conversationSnapshot = conversationSnapshot(2)
-    fake.expandConversation.mockImplementation(async selected => ({ ...selected, entries: [], revisionChanged: true }))
-    const req = request({ queryRewriteMode: "off", rerankMode: "off", tokenBudget: 10_000 })
-    const result = await sqliteMemoryProvider.recall(req)
-    expect(result.map(row => row.sourceId)).toEqual(["core@2"])
-    expect(req.optionalFailures).toContainEqual({ channel: "conversation", reason: "revision_changed" })
-    expect(req.localFallback?.map(row => row.sourceId)).toEqual(["core@2"])
-  })
-
-  it("扩展I/O失败保留已验证命中并登记可选通道失败 [memory-context-io-fallback]", async () => {
-    fake.conversationSnapshot = conversationSnapshot(1)
-    fake.expandConversation.mockRejectedValue(new Error("context channel unavailable"))
-    const req = request({ queryRewriteMode: "off", rerankMode: "off", tokenBudget: 10_000 })
-    const result = await sqliteMemoryProvider.recall(req)
-    expect(result.map(row => row.sourceId)).toEqual(["conversation:session-a:entry-0:0"])
-    expect(req.optionalFailures).toContainEqual({ channel: "conversation", reason: "failed" })
   })
 })

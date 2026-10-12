@@ -1,3 +1,8 @@
+// 2026-10-12 首次证据跨通道复用定向复核：memory/index.ts 仅补导航渲染范围类型导出；观察采集、来源治理和画像提交未变。
+// 2026-10-12 范围复用定向复核：memory/index.ts 仅扩展导航类型导出；ob-08废弃barrel检查与了解来源治理消费者未改。
+// 2026-10-12 定向复核：仅显式 memory 回合收窄到治理读取工具；默认回合和主动 tools=[] 不变。真实 payload 工具名、进入请求的原文来源与 bench 分账同步；跨域旧行为不变。
+// 2026-10-11 按需导航影响复核：memory/index.ts 仅导出面，snapshot.ts 尾注分账归 memory mm-34；dispatch.rs 仅记忆导航分派，ob-* 观察准入、调度与来源沉淀分支未改。源码 hash 在行为审查后刷新。
+// 2026-10-10 官方评测与 token 改造（analyze→刷新）：共享 snapshot.ts 仅修正动态尾注的分层重复计账；观察证据脱敏、身份、画像与 presence 的 ob-01..07 语义核对不变，sourceHash 按冻结源码刷新。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 host/dispatch.rs（memory_job_checkpoint 分派臂加可选 coveredSourceIds）与 agent/memory/ipc.ts（按批内已处理来源传参）变化；观察、画像与 presence 路径不受影响，ob-01..07 逐点复核未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 最终静态复核：稳定artifact与输入证据分离、去重和话题立场透传已复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
@@ -301,7 +306,7 @@ export const observationContract: ModuleContract = {
     "test/unit/observation/证据身份稳定.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "f886858b82a917e8c5e48662ef8b072b8e4494e54f886725cff109a742add1fc",
+  sourceHash: "354c9de3935788b129f4083c35e7c379ccdb9f8ddbe7cd47674bb3a7c2c4dab0",
   coverage: [
     {
       id: "ob-01",

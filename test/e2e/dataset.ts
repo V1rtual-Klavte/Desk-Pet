@@ -66,7 +66,9 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
 // 2026-10-10.1：分泡生产入口使用粘连、空格/小写变体的 SPLIT 夹具，
 // 验证模型偏离整行标记要求时仍能按原协议提交和逐泡揭示。
 // 2026-10-10.2：新增 memory-record-time-search，验证生产写入后真实 Rust IPC 的空词时间范围检索与 before 排他上界。
-export const LIVE_DATASET_VERSION = "2026-10-10.2"
+// 2026-10-11.1：多轮记忆显式区分specific_fact不扩展与overview扩展，仍覆盖before/clear治理；溢出恢复夹具给完整请求形状留足重试空间。
+// 2026-10-11.3：导航元数据、episode原始来源IPC与按ContextKernel预算分页。
+export const LIVE_DATASET_VERSION = "2026-10-12.3"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

@@ -15,7 +15,7 @@ import type { StreamFn } from "@earendil-works/pi-agent-core"
 import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 
 /** 时间片段的形态：与生产同形，但按形态写死、不复用生产实现（不用被测代码验证被测代码）。 */
-const TURN_NOTE_PATTERN = /^\[当前时间\] \d{4}-\d{2}-\d{2} \d{2}:\d{2} 周[日一二三四五六]$/
+const TURN_NOTE_PATTERN = /(?:^|\n\n)\[当前时间\] \d{4}-\d{2}-\d{2} \d{2}:\d{2} 周[日一二三四五六]$/
 
 /**
  * 记忆召回块的表头：与生产同形、按形态写死。它排在尾随注记之前，也是「这一回合新加的」
@@ -24,7 +24,7 @@ const TURN_NOTE_PATTERN = /^\[当前时间\] \d{4}-\d{2}-\d{2} \d{2}:\d{2} 周[�
 const MEMORY_RECALL_HEADER = "[记忆与会话参考]"
 
 /**
- * 请求视图里「最后一条真实输入」的文本：跳过宿主逐请求附加的尾随瞬时注记（当前时间）
+ * 请求视图里「最后一条真实输入」的文本：跳过宿主逐请求附加的尾随瞬时注记（动态变量/计划/提醒与末尾时间）
  * 与记忆召回块。
  *
  * 注记落在消息数组最末（`createTurnNoteMessage`），而脚本按文本判别请求时依赖的是
@@ -41,7 +41,8 @@ export function lastRequestText(context: Context): string {
     const text = typeof content === "string"
       ? content
       : (content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-    if (!TURN_NOTE_PATTERN.test(text) && !text.startsWith(MEMORY_RECALL_HEADER)) return text
+    const isTurnNote = index === context.messages.length - 1 && TURN_NOTE_PATTERN.test(text)
+    if (!isTurnNote && !text.startsWith(MEMORY_RECALL_HEADER)) return text
   }
   return ""
 }

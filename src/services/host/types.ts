@@ -8,7 +8,7 @@
 //
 // 权威来源：
 // - 命令清单与参数名：Rust `crates/native-host/src/host/dispatch.rs` 的 `NativeDispatcher`
-//   分派表（141 条，逐条对应本文件的 `HostCommandMap`），实现落在 `crates/native-host/src/`
+//   分派表（142 条，逐条对应本文件的 `HostCommandMap`），实现落在 `crates/native-host/src/`
 //   各域。参数是 camelCase 线格式（Rust `max_bytes` → `maxBytes`）。TS 调用点
 //   （138 处 / 35 文件）只用于核对「谁在用、返回类型被当成什么」，不作为签名依据。
 // - `RunScope` / `HostBlobRef`：`crates/native-host/src/ipc/protocol.rs` 逐字段对齐。
@@ -60,6 +60,11 @@
 
 import type {
   MemoryCandidateDraft,
+  MemoryCatalogueFactScope,
+  MemoryCatalogueLevel,
+  MemoryCataloguePage,
+  MemoryCatalogueScope,
+  MemoryEpisodeSourcePage,
   MemoryChangeRequest,
   MemoryDreamingBudget,
   MemoryHistoryEntry,
@@ -1158,6 +1163,29 @@ export type HostCommandMap = {
   // 结构复用 src/services/agent/memory/protocol.ts / barrel（生成物是唯一真相源，
   // 不在此重抄）；失败（含 MEMORY_CONFLICT）走 reject。
   memory_status: { args: Record<string, never>; result: MemoryStatusSnapshot }
+  /** 有界读取事实与会话导航目录；目录摘录只用于定位，事实仍以条目来源治理为准。 */
+  memory_catalogue: {
+    args: {
+      level: MemoryCatalogueLevel
+      scope?: MemoryCatalogueScope | null
+      factScope?: MemoryCatalogueFactScope | null
+      cursor?: string | null
+      limit?: number | null
+      expectedRevision?: number | null
+      expectedMemoryRevision?: number | null
+      expectedForgetEpoch?: number | null
+    }
+    result: MemoryCataloguePage
+  }
+  /** 在治理、作用域及索引版本下逐页枚举 episode 的原文来源锚点。 */
+  memory_episode_sources: {
+    args: {
+      itemId: string; version: number; sessionId: string; cardId: string | null
+      scope: MemoryCatalogueScope; cursor: string | null; limit: number
+      expectedRevision: number; expectedMemoryRevision: number; expectedForgetEpoch: number
+    }
+    result: MemoryEpisodeSourcePage
+  }
   memory_list: {
     args: { scope?: MemoryScope | null; scopeId?: string | null; limit?: number | null }
     result: MemoryItem[]
@@ -1214,6 +1242,8 @@ export type HostCommandMap = {
       limit?: number
       before?: number
       recentFallback?: boolean
+      scope?: MemoryCatalogueScope
+      cursor?: string | null
       recordTime?: {
         start?: number
         end?: number
@@ -1222,9 +1252,10 @@ export type HostCommandMap = {
     }
     result: ConversationSearchResult
   }
-  /** Expand an already-selected conversation hit into a paged, privacy-filtered chunk-0 transcript. */
-  conversation_context: {
-    args: { sessionId: string; anchorEntryId: string; afterSeq?: number; limit?: number; before?: number }
+  /** Re-admit exact locators or one anchored turn against a frozen privacy snapshot. */
+  conversation_read: {
+    args: { sessionId: string; entryId: string; turn: boolean; before?: number;
+      expectedRevision: number; expectedMemoryRevision: number; expectedForgetEpoch: number; expectedFingerprint: string }
     result: ConversationSearchResult
   }
   memory_get_items: { args: { ids: string[] }; result: MemoryItem[] }

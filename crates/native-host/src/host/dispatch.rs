@@ -1,7 +1,7 @@
 //! 原生宿主完整命令分派器（W4）。
 //!
 //! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 141 条（总数以 types.ts
-//! 为准；分项已复核为「107 冻结 + 34 扩展」：冻结件删 `profile_clone`（「新建 Profile」
+//! 为准；分项已复核为「107 冻结 + 35 扩展」：冻结件删 `profile_clone`（「新建 Profile」
 //! 改造）与 `mcp_send`，MCP 裸行收发改由 `mcp_write` / `mcp_read` 两条有意扩展承担）。
 //! A2 追加 `apply_chat_projection` / `apply_titlebar_status`，
 //! A3 追加 `set_popup_placement` / `set_popup_size`，管理面批次追加通用文件对话框
@@ -12,7 +12,7 @@
 //! 聊天图片批次追加删会话清理 `chat_delete_session_images`，
 //! 折叠批次追加会话根写入 `session_write_text`（会话专用放宽路径，边界钉在会话根）；
 //! 会话检索批次追加 `conversation_index_status` / `conversation_index_replace` /
-//! `conversation_index_prune` / `conversation_search` / `conversation_context`。
+//! `conversation_index_prune` / `conversation_search` / `conversation_read`。
 //! 每条：从 JSON 参数解出（**参数名逐字对齐矩阵的 camelCase 线格式**）
 //! → 调用 `commands/**` 或对应域的实现 → 结果按矩阵形状序列化。
 //!
@@ -820,6 +820,8 @@ impl NativeDispatcher {
 
             // ── 记忆（memory/commands.rs）──
             // 失败（含 MEMORY_CONFLICT）走结构化 AppError；结果形状与协议生成物一致。
+            "memory_catalogue" => memory_commands::memory_catalogue(self.memory()?, args.clone()),
+            "memory_episode_sources" => memory_commands::memory_episode_sources(self.memory()?, args.clone()),
             "conversation_index_status" => {
                 memory_commands::conversation_index_status(self.memory()?)
             }
@@ -862,20 +864,20 @@ impl NativeDispatcher {
                 arg_opt_bool(args, "recentFallback")?,
                 args.get("recordTime")
                     .map(|value| {
-                        serde_json::from_value(value.clone()).map_err(|error| {
-                            AppError::Config(format!("命令参数解析失败: {error}"))
-                        })
+                        serde_json::from_value(value.clone())
+                            .map_err(|error| AppError::Config(format!("命令参数解析失败: {error}")))
                     })
                     .transpose()?,
+                args.get("scope")
+                    .filter(|v| !v.is_null())
+                    .map(|v| {
+                        serde_json::from_value(v.clone())
+                            .map_err(|e| AppError::Config(format!("scope 参数无效: {e}")))
+                    })
+                    .transpose()?,
+                arg_opt_str(args, "cursor")?,
             ),
-            "conversation_context" => memory_commands::conversation_context(
-                self.memory()?,
-                arg_str(args, "sessionId")?,
-                arg_str(args, "anchorEntryId")?,
-                arg_opt_i64(args, "afterSeq")?,
-                arg_opt_i64(args, "limit")?,
-                arg_opt_i64(args, "before")?,
-            ),
+            "conversation_read" => memory_commands::conversation_read(self.memory()?, args.clone()),
             "memory_status" => memory_commands::memory_status(self.memory()?),
             "memory_list" => ser(memory_commands::memory_list(
                 self.memory()?,
@@ -1400,7 +1402,9 @@ fn arg_opt_strings(args: &Value, key: &str) -> AppResult<Option<Vec<String>>> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::Array(_)) => Ok(Some(arg_strings(args, key)?)),
-        Some(_) => Err(AppError::Config(format!("参数不是字符串数组或 null: {key}"))),
+        Some(_) => Err(AppError::Config(format!(
+            "参数不是字符串数组或 null: {key}"
+        ))),
     }
 }
 
@@ -1717,14 +1721,16 @@ mod tests {
         // 折叠批次追加 `session_write_text`（会话根专用写入路径：折叠结果超工具面 5 MiB
         // 时由它落地；漏登记会让折叠结果写不出去、`too-large` 无声回归）—— 分项变为
         // 「107 冻结 + 29 扩展」。
-        // 会话原文索引追加五条 conversation_*，分项为「107 冻结 + 34 扩展」。
-        assert_eq!(names.len(), 141, "HostCommandMap 条数（以 types.ts 为准）");
+        // 会话原文索引追加五条 conversation_*，分项为「107 冻结 + 35 扩展」。
+        assert_eq!(names.len(), 143, "HostCommandMap 条数（以 types.ts 为准）");
         for name in [
+            "memory_catalogue",
+            "memory_episode_sources",
             "conversation_index_status",
             "conversation_index_replace",
             "conversation_index_prune",
             "conversation_search",
-            "conversation_context",
+            "conversation_read",
         ] {
             assert!(
                 names.contains(&name.to_string()),

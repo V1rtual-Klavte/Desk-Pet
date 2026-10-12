@@ -105,25 +105,68 @@ function countsFromSets(expected, actual) {
 function mergeCounts(left, right) { left.tp += right.tp; left.fp += right.fp; left.fn += right.fn; return left }
 
 /** Pi input excludes its normalized cache counters. Zero-initialized/missing usage cannot prove zero cost. */
+export function summarizePiUsage(usages) {
+  const rows = usages.map(usage => ({
+    inputTokens: usage?.input,
+    outputTokens: usage?.output,
+    cacheRead: usage?.cacheRead,
+    cacheWrite: usage?.cacheWrite,
+    cacheUsageReported: usage?.cacheUsageReported,
+  }))
+  const finite = value => Number.isFinite(value) && value >= 0
+  const cacheReported = row => row.cacheUsageReported === true
+  const cacheRequestKind = row => finite(row.cacheRead) && row.cacheRead > 0 ? "hit"
+    : cacheReported(row) && finite(row.cacheRead) && finite(row.cacheWrite) ? "miss" : "unknown"
+  const cacheRequests = { hit: 0, miss: 0, unknown: 0 }
+  for (const row of rows) cacheRequests[cacheRequestKind(row)] += 1
+  const normalizedCache = row => (finite(row.cacheRead) ? row.cacheRead : 0) + (finite(row.cacheWrite) ? row.cacheWrite : 0)
+  const knownRows = rows.filter(row => finite(row.inputTokens) && finite(row.outputTokens)
+    && row.inputTokens + row.outputTokens + normalizedCache(row) > 0)
+  const knownUsage = knownRows.length ? {
+    inputTokens: knownRows.reduce((sum, row) => sum + row.inputTokens + normalizedCache(row), 0),
+    outputTokens: knownRows.reduce((sum, row) => sum + row.outputTokens, 0), requests: knownRows.length,
+    uncachedInputTokens: knownRows.reduce((sum, row) => sum + row.inputTokens, 0),
+    cacheReadTokens: knownRows.every(row => finite(row.cacheRead)) ? knownRows.reduce((sum, row) => sum + row.cacheRead, 0) : null,
+    cacheWriteTokens: knownRows.every(row => finite(row.cacheWrite)) ? knownRows.reduce((sum, row) => sum + row.cacheWrite, 0) : null,
+    cacheUsageReported: knownRows.every(cacheReported),
+    accounting: "pi-input-plus-normalized-cache",
+  } : null
+  return { usage: knownRows.length === rows.length ? knownUsage : null,
+  knownUsage, unknownUsageRequests: rows.length - knownRows.length,
+  // Pi normalizes unsupported/missing cache counters to zero, which cannot prove a cache miss.
+  cache: cacheRequests.hit > 0 ? "hit"
+    : cacheRequests.unknown === 0 && cacheRequests.miss > 0 ? "miss" : "unknown",
+  cacheRequests}
+}
+
 export function summarizeMemoryQualityUsage(events) {
   const requests = new Map()
-  for (const event of events) if (event.kind === "provider_request_end" && event.spanId && event.payload)
+  const responseModels = new Map()
+  for (const event of events) {
+    // A started request without a terminal usage event remains an unknown cost.
+    if (event.kind === "provider_request_start" && event.spanId && event.payload && !requests.has(event.spanId))
+      requests.set(event.spanId, event.payload)
+    if (event.kind !== "provider_request_end" || !event.spanId || !event.payload) continue
     requests.set(event.spanId, event.payload)
-  const rows = [...requests.values()]
-  const finite = value => Number.isFinite(value) && value >= 0
-  const normalizedCache = row => (finite(row.cacheRead) ? row.cacheRead : 0) + (finite(row.cacheWrite) ? row.cacheWrite : 0)
-  const known = rows.length > 0 && rows.every(row => finite(row.inputTokens) && finite(row.outputTokens)
-    && row.inputTokens + row.outputTokens + normalizedCache(row) > 0)
-  return {usage: known ? {
-    inputTokens: rows.reduce((sum, row) => sum + row.inputTokens + normalizedCache(row), 0),
-    outputTokens: rows.reduce((sum, row) => sum + row.outputTokens, 0), requests: rows.length,
-    uncachedInputTokens: rows.reduce((sum, row) => sum + row.inputTokens, 0),
-    cacheReadTokens: rows.every(row => finite(row.cacheRead)) ? rows.reduce((sum, row) => sum + row.cacheRead, 0) : null,
-    cacheWriteTokens: rows.every(row => finite(row.cacheWrite)) ? rows.reduce((sum, row) => sum + row.cacheWrite, 0) : null,
-    accounting: "pi-input-plus-normalized-cache",
-  } : null,
-  // Pi normalizes unsupported/missing cache counters to zero, which cannot prove a cache miss.
-  cache: rows.some(row => finite(row.cacheRead) && row.cacheRead > 0) ? "hit" : "unknown"}
+    const model = event.payload.responseModel
+    if (typeof model === "string" && model.trim()) {
+      const purpose = typeof event.payload.purpose === "string" ? event.payload.purpose : "unknown"
+      const models = responseModels.get(purpose) ?? new Set()
+      models.add(model.trim())
+      responseModels.set(purpose, models)
+    }
+  }
+  const summarized = summarizePiUsage([...requests.values()].map(row => ({
+    input: row.inputTokens,
+    output: row.outputTokens,
+    cacheRead: row.cacheRead,
+    cacheWrite: row.cacheWrite,
+    cacheUsageReported: row.cacheUsageReported,
+  })))
+  return {
+    ...summarized,
+    responseModels: Object.fromEntries([...responseModels].map(([purpose, models]) => [purpose, [...models]])),
+  }
 }
 
 function extractionCounts(gold, outcome) {

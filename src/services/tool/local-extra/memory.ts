@@ -1,9 +1,9 @@
 // ==========================================
-// 本地工具：长期记忆（查询 / 改变）
+// 本地工具：长期记忆（用户明确改变）
 // ==========================================
 //
 // 两个面分开是有意的：
-// - `memory_query` 只读，走与运行时同一份召回数据；
+// - 只读 list/search/read 由回合按冻结身份装配；
 // - `memory_change` 只响应用户本轮明确要求，来源身份由运行时绑定，不采纳模型提供的来源 ID。
 // 模型不能发布 dreaming 批次、不能跑 SQL、不能写 Markdown。
 
@@ -15,7 +15,6 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { applyMemoryChange, memoryDetail, memoryStatus, resolveCurrentTrustedMemorySource } from "@/services/agent/memory"
 import { DRAFT_SUMMARY_CHARS } from "@/services/agent/memory/draft"
-import { queryMemoryVisibleToCurrentTurn } from "@/services/agent/memory/visible-query"
 import type { MemoryDraft, MemoryKind, MemoryScope, TemporalAnchor, WorkingState } from "@/services/agent/memory"
 
 const log = createLogger("ToolMemory")
@@ -48,45 +47,6 @@ function temporalAnchor(value: unknown, name: string): TemporalAnchor | null | u
   }
   throw new Error(`${name} 的 precision 与时间字段不匹配`)
 }
-
-const memoryQueryTool: ToolDef = defineTool({
-  id: "local-memory-query",
-  name: "memory_query",
-  description: "查询当前用户、当前 Card 与当前会话可见的长期记忆。只读，不会写入。",
-  parameters: {
-    type: "object",
-    properties: {
-      query: { type: "string", description: "要查的关键词或问题" },
-      limit: { type: "number", description: "返回条数上限（默认 8）" },
-    },
-    required: ["query"],
-  },
-  safetyLevel: "SAFE",
-  source: "local",
-  sourceId: "",
-  actionCategory: "_default",
-  policy: {
-    version: TOOL_POLICY_VERSION,
-    permission: { defaultDecision: "passthrough" },
-    execution: { effect: "read", isolation: "shared_read", replay: "safe" },
-    // 查询结果要原样交给模型判断，不能被阶梯缩短成半句话。
-    context: { resultProjection: "preserve", historyCompaction: "summarize" },
-  },
-}, async (params, ctx) => {
-  const query = text(params.query)
-  if (!query) return { success: false, content: "", error: "查询内容不能为空" }
-  if (!ctx.sessionId || !ctx.trustedUserEventId) return { success: false, content: "", error: "记忆查询必须绑定本轮已提交的可信用户输入" }
-  const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? params.limit : 8
-  try {
-    const items = await queryMemoryVisibleToCurrentTurn(query, ctx.sessionId, ctx.trustedUserEventId, limit)
-    if (items.length === 0) return { success: true, content: "没有查到相关记忆。" }
-    const lines = items.map(item =>
-      `- [id=${item.id} · ${item.draft.kind} · ${item.draft.scope} · v${item.version} · sourceIds=${item.draft.sourceIds.join(",")}] ${item.draft.content}`)
-    return { success: true, content: lines.join("\n") }
-  } catch (error) {
-    return { success: false, content: "", error: formatError(error) }
-  }
-})
 
 const memoryChangeTool: ToolDef = defineTool({
   id: "local-memory-change",
@@ -230,7 +190,6 @@ const memoryChangeTool: ToolDef = defineTool({
 })
 
 export function registerMemoryTools(): void {
-  register(memoryQueryTool)
   register(memoryChangeTool)
-  log.info("记忆工具已注册 (memory.query / memory.change)")
+  log.info("记忆写入工具已注册 (memory.change)")
 }

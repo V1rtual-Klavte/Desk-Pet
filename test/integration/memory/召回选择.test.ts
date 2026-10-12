@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { estimateContextTokens } from "@/services/context/budget"
+import { toolResultTokenBudget } from "@/services/context/tool-output"
 
 const mocks = vi.hoisted(() => ({
   memoryConfig: { rerank: "adaptive" as "off" | "adaptive", rerankTimeoutMs: 500, recallTimeoutMs: 1_000 },
   recallCandidates: vi.fn(),
   completePiText: vi.fn(),
+  resolvePiTurnModel: vi.fn(() => ({ id: "recall-fixture", contextWindow: 65_536, maxTokens: 4_096 })),
 }))
 
 vi.mock("@/services/config", () => ({ memoryConfig: mocks.memoryConfig }))
@@ -24,6 +26,7 @@ vi.mock("@/services/agent/memory/ipc", () => ({
 // 目前不触达那条分支，但工厂桩必须覆盖消费到的公开导出，否则路径一变就整片红。
 vi.mock("@/services/engine/harness", () => ({
   completePiText: mocks.completePiText,
+  resolvePiTurnModel: mocks.resolvePiTurnModel,
   isAIGenerating: vi.fn(() => false),
 }))
 vi.mock("@/services/engine/runtime", () => ({ publishRuntimeTrace: vi.fn() }))
@@ -48,6 +51,7 @@ function item(id: string, pinned = false, summary = `摘要${id}`, origin: Memor
 function configure(dynamic: MemoryItem[], pinned: MemoryItem[] = []) {
   mocks.recallCandidates.mockResolvedValue({
     revision: 9,
+    indexRevision: 1, forgetEpoch: 0,
     candidatesByScope: { user: dynamic, card: [], session: [] },
     candidates: dynamic,
     pinned,
@@ -89,12 +93,12 @@ describe("本地与adaptive召回选择", () => {
     mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-3","dynamic-0"]' })
     const rows = await sqliteMemoryProvider.recall(request())
     const sent = JSON.parse(mocks.completePiText.mock.calls[0]![0].userText) as { candidates: Array<{ id: string }> }
-    expect(sent.candidates.length).toBeLessThanOrEqual(12)
-    expect(sent.candidates.some(candidate => candidate.id === "dynamic-12")).toBe(false)
+    // 候选按产品工具预算准入；13 个短摘要应全部容纳，不再被旧的固定条数截断。
+    expect(sent.candidates.map(candidate => candidate.id)).toEqual(Array.from({ length: 13 }, (_, index) => `dynamic-${index}`))
     expect(rows.map(row => row.sourceId)).toEqual(["dynamic-3@1", "dynamic-0@1"])
-    expect(estimateContextTokens(`${mocks.completePiText.mock.calls[0]![0].systemPrompt}\n${mocks.completePiText.mock.calls[0]![0].userText}`)).toBeLessThanOrEqual(2_048)
+    expect(estimateContextTokens(`${mocks.completePiText.mock.calls[0]![0].systemPrompt}\n${mocks.completePiText.mock.calls[0]![0].userText}`)).toBeLessThanOrEqual(toolResultTokenBudget(65_536))
     // 白名单外 id 让整份输出判无效并回退本地同一顺序（mm-02：未知 id 不裁掉放行）。
-    mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-0","dynamic-12"]' })
+    mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-0","not-in-sent-candidates"]' })
     const fallback = await sqliteMemoryProvider.recall(request())
     expect(fallback.map(row => row.sourceId)).toEqual(Array.from({ length: 13 }, (_, index) => `dynamic-${index}@1`))
   })
@@ -115,6 +119,7 @@ describe("本地与adaptive召回选择", () => {
     const targeted = item("expired-target")
     mocks.recallCandidates.mockResolvedValueOnce({
       revision: 10,
+      indexRevision: 1, forgetEpoch: 0,
       candidatesByScope: { user: [], card: [], session: [] },
       candidates: [], pinned: [], targeted: [targeted],
     })

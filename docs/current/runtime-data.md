@@ -37,7 +37,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 新字段若按产品范围决定不提供设置控件，必须在对应文档说明用途与文件修改入口，不能把漏接 UI 当作默认豁免。改名/删除还需定义旧用户文件的兼容、迁移或忽略语义，清理旧 UI 映射与消费者；当前配置初始化不会自动把缺失字段与默认 YAML 深合并。
 
-`ai.memory.queryRewrite`（默认 `adaptive`，可取 `off`）与 `ai.memory.rerank`（默认 `off`，可取 `adaptive`）为统一检索技术参数，作用于用户事实、派生画像和会话原话，沿用记忆总时限与预算。它们不提供设置控件或 `settings_commit` 单独映射；编辑当前运行模式的完整 CONFIG 文件后重启生效。缺少新 queryRewrite 字段时只按出厂值读取，不自动改写用户配置；真实 CONFIG-DEV.yaml 未由本批修改。
+`ai.memory.queryRewrite`（默认 `adaptive`，可取 `off`）与 `ai.memory.rerank`（默认 `off`，可取 `adaptive`）为 MemoryProvider 的可选检索技术参数，作用于未显式覆盖模式的调用方；普通主回合固定 off，由主模型工具按需深入，专项投影对照仍可显式启用这些模式。它们不提供设置控件或 `settings_commit` 单独映射；编辑当前运行模式的完整 CONFIG 文件后重启生效。缺少新 queryRewrite 字段时只按出厂值读取，不自动改写用户配置；真实 CONFIG-DEV.yaml 未由本批修改。
 
 当前主保存路径为：原生设置窗控件（Rust 草稿）→ `SettingsPort`（[ui/ports.rs](../../crates/native-host/src/ui/ports.rs) 的 `settings_commit` 请求）→ Node `settingsCommit` → setOverrides → config 写队列 → `flushConfig` → `reapplyRuntimeSettings` → `pushNativeUiState`（快捷键/字体/主题/舞台/聊天列/图片预览/摆位/尺寸/自动呼出/音效十条推送，逐项口径见 [pushes.ts](../../src/services/native-ui/pushes.ts) 头部）。字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
 
@@ -90,6 +90,8 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | `ai.memory.maxSessions` | 会话标签保留上限 | [session/store.ts](../../src/services/session/store.ts) |
 
 记忆请求预算由运行期按实际剩余输入空间自动派生，不提供手动 core/recall 额度或切换开关，见[记忆预算](memory.md#预算与工具大结果)。
+
+DeepSeek 模型能力按精确模型 ID 解析：当前 `deepseek-flash` 支持推理和图片，`deepseek-v4-pro` 支持推理；不在产品内把一个模型名替换成另一个。`auto` 留给服务端默认值，low 显式发送 low，medium 按官方约定发送 high，high 发送 high。能力依据为 [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) 与 [Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)；目录价格仅按峰时估算，评测 token 统计不依赖价格估算。
 
 另有从不提供控件、也不在本表撤下语义内的技术参数：`ai.loop.turnTimeoutMs`（主回合/恢复墙钟，默认 600s）与 `ai.plan.stepTimeoutMs`（计划步骤墙钟，默认 300s）——用途、与 bash 档位的约束关系（回合墙钟必须 ≥ 工具档位 + 一次模型往返）与修改入口见[工具系统](tool-system.md#文件命令与取消)的档位说明，不重复默认值。
 
@@ -173,7 +175,7 @@ Rust 持有 base 的命令接收域内相对路径，例如 personality 命令�
 
 会话 JSONL 是 append-only 日志：帧（`pi.pending.assistant_frame`）的每次流式增量都追加一行，`list/delete` 与 `value/delete` 只追加一条删除记录，被删 key 的历史写入行不会自动消失。因此会话文件会在安全时机被**纯删除式折叠**（[session-fold.ts](../../src/services/engine/harness/session-fold.ts) 的 `foldSessionFile`）：只回收已被 `list/delete` 与 `value/delete` 删除的 key 在**最后一次 delete 之前**的全部 `list/append` 与 `value/set`，以及被反复覆盖但**从未 delete** 的 value key 中**非最后一次**的 `value/set`（2026-10-06 规则扩展：同一 value key 只保留最后一次写入；`list/append` 是累积语义，不适用这条）；**保留行逐字不变，entryId 与 seq 不变**，entry/usage 行一个不动 —— 折叠不是删除历史。写盘前须**折叠前后重放状态摘要一致**（`sha256Text(stableSerialize(replayLogState(...)))`），不一致就放弃折叠、保留原文件（磁盘未改动）；替换走**同目录临时文件 + `rename` 原子替换**。header 不是当前支持的 v4 格式 + `storageVersion: 1` 时整文件跳过（安全降级：不抛错、不影响会话功能，首次按版本值留一条 warn）。**会话读路径没有单次大小上限**（会话根内的读经宿主 `session_read_text`）；写侧的工具面上限 `MAX_TOOL_FILE_BYTES`（5 MiB）只约束模型文件工具，**会话根内的写**经宿主 `session_write_text` 放宽到 `SESSION_WRITE_MAX_BYTES`（64 MiB，与折叠读取守卫同值，只限会话根）——所以折叠结果超过 5 MiB 的会话现在也会落盘，结果守卫只按会话专用上限判定。折叠只解决体积，不改变「打开会话 = 全量读 + 逐行重放」的复杂度；成功折叠不可逆、没有回滚路径，安全防线只有摘要比对与原子替换。
 
-触发时机：① 会话经 `releasePiSession` 关闭之后（回收主路径；先等 `session.close()` 与帧缓冲 flush 收尾再折叠，失败只留痕）；② `open` 前按需兜底（只针对未被干净关闭的会话），仅当文件超过 `FOLD_POLICY.minFileBytes` 才读全文判定。「压缩提交后」经评估不做（挂点在压缩层，需求已被前两者覆盖）。折叠失败或跳过一律不影响会话功能。
+触发时机：① 会话经 `releasePiSession` 关闭之后（回收主路径；先等 `session.close()` 与帧缓冲 flush 收尾再折叠，失败只留痕）；② `open` 前按需兜底（只针对未被干净关闭的会话），仅当文件超过 `FOLD_POLICY.minFileBytes` 才读全文判定。「压缩提交后」经评估不做（挂点在压缩层，需求已被前两者覆盖）。折叠失败或跳过一律不影响会话功能。同会话的并发重开等待 close、帧缓冲 flush 和折叠全部退出，多次 release 共享同一关闭任务，避免后台索引临时释放与前台打开争抢仓库句柄。
 
 折叠阈值是源码常量 `FOLD_POLICY`（与 `foldSessionFile` 同在 [session-fold.ts](../../src/services/engine/harness/session-fold.ts)，唯一可调点），**不是** YAML 运行时 CONFIG 字段，不适用上面的配置同步清单：`minFileBytes = 512 KiB`（不超过它不探测）、`minReclaimBytes = 128 KiB` 与 `minReclaimRatio = 0.15`（可回收字节须同时达到二者），三者 AND、维持现值（用户 2026-09-28 定稿）；第四个阈值 `maxFileBytes = 64 MiB` 是读取守卫（文件超过它不读不折，是折叠自愿的上界，不是读路径的限制），与会话写路径的上限 `SESSION_WRITE_MAX_BYTES`（[session-file-system.ts](../../src/services/engine/harness/session-file-system.ts)，同值）成对：折叠只删不增 ⇒ 结果 ≤ 输入 ≤ 读守卫，读得到就写得回；改一个必须核对另一个（测试有断言兜底）。
 

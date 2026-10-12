@@ -49,6 +49,30 @@ export interface ConversationSearchResult {
   memoryRevision: number
   forgetEpoch: number
   entries: Array<ConversationSearchEntry>
+  nextCursor: string | null
+  complete: boolean
+  freshness: "current" | "stale"
+  fingerprints: Array<MemoryCatalogueFingerprint>
+}
+
+export interface ConversationReadEntry {
+  sessionId: string
+  entryId: string
+  seq: number
+  role: "user" | "assistant"
+  timestamp: number
+  eventId: string | null
+}
+
+export interface ConversationReadResult {
+  revision: number
+  memoryRevision: number
+  forgetEpoch: number
+  entries: Array<ConversationSearchEntry>
+  nextCursor: string | null
+  complete: boolean
+  freshness: "current" | "stale"
+  fingerprints: Array<MemoryCatalogueFingerprint>
 }
 
 export type MemoryScope = "user" | "card" | "session"
@@ -383,6 +407,8 @@ export interface MemoryRecallTarget {
 
 export interface MemoryRecallCandidateSnapshot {
   revision: number
+  indexRevision: number
+  forgetEpoch: number
   candidatesByScope: { "user": Array<MemoryItem>; "card": Array<MemoryItem>; "session": Array<MemoryItem> }
   candidates: Array<MemoryItem>
   pinned: Array<MemoryItem>
@@ -449,6 +475,7 @@ export interface MemoryDraft {
   scope: MemoryScope
   scopeId?: string
   aliases: Array<string>
+  navigation?: MemoryNavigationMetadata
   pinned: boolean
   importance: number
   confidence: number
@@ -464,6 +491,16 @@ export interface MemoryDraft {
   sourceIds: Array<string>
 }
 
+export interface MemoryNavigationPerson {
+  name: string
+  aliases: Array<string>
+}
+
+export interface MemoryNavigationMetadata {
+  people: Array<MemoryNavigationPerson>
+  topics: Array<string>
+}
+
 export interface MemoryItem {
   id: string
   version: number
@@ -472,6 +509,122 @@ export interface MemoryItem {
   createdAt: number
   updatedAt: number
   origin: MemoryOrigin
+}
+
+export type MemoryCatalogueLevel = "sessions" | "turns" | "events" | "facts" | "people" | "topics"
+
+export type MemoryCatalogueFreshness = "current" | "stale"
+
+export interface MemoryCatalogueScope {
+  sessionIds?: Array<string>
+  start?: number
+  end?: number
+  before?: number
+}
+
+export interface MemoryCatalogueFactScope {
+  scope?: MemoryScope
+  scopeId?: string | null
+  sessionId: string
+  cardId?: string | null
+  query?: string
+  sessionIds?: Array<string>
+  start?: number
+  end?: number
+  before?: number
+}
+
+export interface MemoryCatalogueFingerprint {
+  sessionId: string
+  fingerprint: string
+}
+
+export interface MemoryCatalogueSessionEntry {
+  kind: "session"
+  sessionId: string
+  fingerprint: string
+  latestTimestamp: number
+  entryCount: number
+  turnCount: number
+  preview: string | null
+}
+
+export interface MemoryCatalogueTurnEntry {
+  kind: "turn"
+  sessionId: string
+  turnId: string
+  eventId: string | null
+  seq: number
+  timestamp: number
+  preview: string
+}
+
+export interface MemoryCatalogueEpisodeEntry {
+  kind: "episode"
+  itemId: string
+  version: number
+  summary: string
+  sourceCount: number
+  sourceCoverage: "pending"
+  navigationOnly: true
+  scopePartial: boolean
+}
+
+export interface MemoryCataloguePeopleEntry {
+  kind: "people"
+  itemId: string
+  version: number
+  memoryKind: string
+  people: Array<MemoryNavigationPerson>
+  navigationOnly: true
+}
+
+export interface MemoryCatalogueTopicsEntry {
+  kind: "topics"
+  itemId: string
+  version: number
+  memoryKind: string
+  topics: Array<string>
+  navigationOnly: true
+}
+
+export type MemoryCatalogueEntry = MemoryCatalogueSessionEntry | MemoryCatalogueTurnEntry | MemoryCatalogueEpisodeEntry | MemoryCataloguePeopleEntry | MemoryCatalogueTopicsEntry | MemoryItem
+
+export interface MemoryCataloguePage {
+  level: MemoryCatalogueLevel
+  entries: Array<MemoryCatalogueEntry>
+  nextCursor: string | null
+  complete: boolean
+  freshness: MemoryCatalogueFreshness
+  revision: number
+  memoryRevision: number
+  forgetEpoch: number
+  fingerprints: Array<MemoryCatalogueFingerprint>
+}
+
+export interface MemoryEpisodeSource {
+  sourceId: string
+  sessionId: string
+  entryId: string
+  eventId: string | null
+  seq: number
+  timestamp: number
+  fingerprint: string
+  contentHash: string
+}
+
+export interface MemoryEpisodeSourcePage {
+  entries: Array<MemoryEpisodeSource>
+  nextCursor: string | null
+  complete: boolean
+  scopePartial: boolean
+  sourceCount: number
+  readableSourceCount: number
+  sourceCoverage: "complete" | "partial" | "unavailable"
+  freshness: MemoryCatalogueFreshness
+  revision: number
+  memoryRevision: number
+  forgetEpoch: number
 }
 
 export interface MemoryJob {
@@ -497,7 +650,7 @@ export interface MemoryCandidateDraft {
   reason?: string
 }
 
-export type MemoryCommand = "conversation_index_status" | "conversation_index_replace" | "conversation_index_prune" | "conversation_search" | "conversation_context" | "memory_recall_candidates" | "memory_job_list" | "memory_restore_preview" | "memory_source_evidence" | "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_pending_source_count" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
+export type MemoryCommand = "memory_catalogue" | "memory_episode_sources" | "conversation_index_status" | "conversation_index_replace" | "conversation_index_prune" | "conversation_search" | "conversation_read" | "memory_recall_candidates" | "memory_job_list" | "memory_restore_preview" | "memory_source_evidence" | "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_pending_source_count" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
 export type ProactiveCommand = "proactive_scan" | "proactive_query" | "proactive_change" | "proactive_claim" | "proactive_validate" | "proactive_settle" | "proactive_reconcile" | "proactive_control" | "proactive_auxiliary_budget_reserve" | "proactive_auxiliary_budget_settle"
 export const PROACTIVE_LIMITS = Object.freeze({
   "tickMs": 300000,
@@ -625,5 +778,15 @@ export const MEMORY_LIMITS = Object.freeze({
   "conversation": {
     "batchChunks": 512,
     "maxSearchResults": 50
+  },
+  "navigation": {
+    "cataloguePageDefault": 30,
+    "cataloguePageMax": 100,
+    "episodeSourcesPageDefault": 1,
+    "scopeSessionIdsMax": 100,
+    "previewMaxCharacters": 360,
+    "searchQueryMaxCharacters": 480,
+    "hostCursorMaxCharacters": 4096,
+    "providerCursorMaxCharacters": 8192
   }
 } as const)

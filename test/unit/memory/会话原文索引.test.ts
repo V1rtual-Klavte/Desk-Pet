@@ -9,23 +9,38 @@ const fixture = vi.hoisted(() => ({
   searchSnapshots: new Map<string, { revision: number; memoryRevision: number; forgetEpoch: number; entries: unknown[] }>(),
   calls: [] as Array<{ method: string; args: Record<string, unknown>; options?: { signal?: AbortSignal } }>,
   onReplace: undefined as undefined | ((args: Record<string, unknown>) => void),
-  onContext: undefined as undefined | ((args: Record<string, unknown>) => unknown),
   transcriptReads: [] as string[],
+  transcriptReadsUnderLock: [] as string[],
+  lockedSessions: new Set<string>(),
+  root: "/data/sessions",
+  onMetadataRead: undefined as undefined | (() => Promise<void>),
+  onTranscriptRead: undefined as undefined | ((sessionId: string) => void),
+}))
+
+vi.mock("node:fs", async importOriginal => ({
+  ...await importOriginal<typeof import("node:fs")>(),
+  watch: () => ({ close() {}, on() { return this }, unref() { return this } }),
 }))
 
 vi.mock("@/services/session", () => ({
-  getPiSessionRepo: async () => ({ cwd: "/data" }),
-  listPiSessionMetadata: async () => fixture.metadata,
+  getPiSessionRepo: async () => ({ cwd: "/data", sessionsRoot: fixture.root }),
+  listPiSessionMetadata: async () => { await fixture.onMetadataRead?.(); return fixture.metadata },
   readPiSessionEntriesOnce: async (sessionId: string) => fixture.entries.get(sessionId) ?? [],
   readVisibleSessionTranscript: async (sessionId: string) => {
     fixture.transcriptReads.push(sessionId)
+    fixture.onTranscriptRead?.(sessionId)
+    if (fixture.lockedSessions.has(sessionId)) fixture.transcriptReadsUnderLock.push(sessionId)
     return fixture.transcripts.get(sessionId) ?? { entries: [], messages: [] }
   },
-  withPiSessionFileLock: async (_sessionId: string, operation: () => Promise<unknown>) => operation(),
+  withPiSessionFileLock: async (sessionId: string, operation: () => Promise<unknown>) => {
+    fixture.lockedSessions.add(sessionId)
+    try { return await operation() }
+    finally { fixture.lockedSessions.delete(sessionId) }
+  },
 }))
 
 vi.mock("@/services/paths", () => ({
-  BaseDirs: { sessions: () => "/data/sessions" },
+  BaseDirs: { sessions: () => fixture.root },
   relativeWithinRoot: (root: string, full: string) => full.startsWith(`${root}/`) ? full.slice(root.length + 1) : null,
 }))
 
@@ -38,8 +53,8 @@ vi.mock("@/services/observation", () => ({ clearSilentUnderstanding: async () =>
 
 import type { HostBridge } from "@/services/host"
 import { setHostBridge } from "@/services/host"
-import { captureConversationClearFences, expandConversationSessions, invalidateConversationSession, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
-import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "@/services/agent/memory/conversation"
+import { acquireConversationIndexSnapshot, flushConversationIndex, conversationFingerprint, refreshConversationIndex, captureConversationClearFences, invalidateConversationSession, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
+import { notifySessionFileChanged } from "@/services/session/change-signal"
 import { estimateContextTokens } from "@/services/context/budget"
 import { applyMemoryChange } from "@/services/agent/memory/ipc"
 import type { MemoryQueryPlan } from "@/services/agent/memory/query"
@@ -68,7 +83,6 @@ function installBridge() {
   const bridge = {
     async request(method: string, args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<unknown> {
       fixture.calls.push({ method, args, options })
-      if (method === "conversation_context") return fixture.onContext?.(args)
       if (method === "conversation_index_status") {
         return { sessions: [...fixture.indexed], stagedSessionIds: [], revision, forgetEpoch: 0 }
       }
@@ -105,6 +119,7 @@ function installBridge() {
 }
 
 function resetFixtures(): void {
+  fixture.calls.length = 0
   fixture.metadata = []
   fixture.transcripts.clear()
   fixture.entries.clear()
@@ -112,8 +127,12 @@ function resetFixtures(): void {
   fixture.searchEntries = []
   fixture.searchSnapshots.clear()
   fixture.onReplace = undefined
-  fixture.onContext = undefined
   fixture.transcriptReads = []
+  fixture.transcriptReadsUnderLock = []
+  fixture.lockedSessions.clear()
+  fixture.root = "/data/sessions"
+  fixture.onMetadataRead = undefined
+  fixture.onTranscriptRead = undefined
 }
 
 beforeEach(() => {
@@ -125,6 +144,102 @@ afterEach(() => {
 })
 
 describe("会话原文索引", () => {
+  it("完整发现后移除已删及外部路径的dirty标记，准备快照可以收敛 [conversation-index-deleted-dirty-converges]", async () => {
+    const current = session("deleted-dirty")
+    const entry = messageEntry("user-entry", 1, "user", 10, "event-user")
+    fixture.metadata = [current]
+    fixture.transcripts.set(current.id, { entries: [entry], messages: [
+      { id: entry.id, eventId: "event-user", role: "user", text: "first", timestamp: 10, isUserInput: true },
+    ] })
+    installBridge()
+    const lease = await acquireConversationIndexSnapshot(new AbortController().signal)
+    fixture.metadata = []
+    fixture.transcripts.delete(current.id)
+    notifySessionFileChanged(current.path)
+    notifySessionFileChanged("/another-root/sessions/outside.jsonl")
+    // A change during discovery must survive that pass and be resolved by the
+    // next discovery, rather than getting erased by an older captured version.
+    let changedDuringDiscovery = false
+    fixture.onMetadataRead = async () => {
+      if (!changedDuringDiscovery) {
+        changedDuringDiscovery = true
+        notifySessionFileChanged(current.path)
+      }
+    }
+    lease.release()
+    await flushConversationIndex()
+    expect(fixture.indexed).toEqual([])
+    const fresh = await acquireConversationIndexSnapshot(new AbortController().signal)
+    expect(fresh.indexUpdating).toBe(false)
+    fresh.release()
+  })
+
+  it("前台与后台刷新整段串行，发现及prune不能越过另一轮发布 [conversation-index-refresh-single-writer]", async () => {
+    installBridge()
+    let active = 0
+    let peak = 0
+    let release!: () => void
+    let entered!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const started = new Promise<void>(resolve => { entered = resolve })
+    let first = true
+    fixture.onMetadataRead = async () => {
+      active += 1; peak = Math.max(peak, active)
+      if (first) { first = false; entered(); await gate }
+      else await Promise.resolve()
+      active -= 1
+    }
+    const signal = new AbortController().signal
+    const initial = refreshConversationIndex(signal)
+    await started
+    const second = refreshConversationIndex(signal)
+    const third = refreshConversationIndex(signal)
+    // Yield to queued promise continuations, then explicitly release the writer.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    release()
+    await Promise.all([initial, second, third])
+    expect(peak).toBe(1)
+  })
+
+  it("增量脏来源在lease释放前不改索引，后来的owner明确未完成更新 [conversation-index-snapshot-dirty-release]", async () => {
+    const current = session("lease-source")
+    const entry = messageEntry("user-entry", 1, "user", 10, "event-user")
+    fixture.metadata = [current]
+    fixture.transcripts.set(current.id, { entries: [entry], messages: [
+      { id: entry.id, eventId: "event-user", role: "user", text: "first", timestamp: 10, isUserInput: true },
+    ] })
+    installBridge()
+    const first = await acquireConversationIndexSnapshot(new AbortController().signal)
+    const oldFingerprint = fixture.indexed[0]!.fingerprint
+    const extra = messageEntry("later-user", 2, "user", 20, "event-later")
+    fixture.transcripts.get(current.id)!.entries.push(extra)
+    fixture.transcripts.get(current.id)!.messages.push(
+      { id: extra.id, eventId: "event-later", role: "user", text: "second", timestamp: 20, isUserInput: true },
+    )
+    notifySessionFileChanged(current.path)
+    const second = await acquireConversationIndexSnapshot(new AbortController().signal)
+    expect(first.indexUpdating).toBe(false)
+    expect(second.indexUpdating).toBe(true)
+    expect(fixture.indexed[0]!.fingerprint).toBe(oldFingerprint)
+    second.release()
+    first.release()
+    await flushConversationIndex()
+    expect(fixture.indexed[0]!.fingerprint).not.toBe(oldFingerprint)
+    const fresh = await acquireConversationIndexSnapshot(new AbortController().signal)
+    expect(fresh.indexUpdating).toBe(false)
+    fresh.release()
+  })
+
+  it("数据根切换立即使旧快照lease失效 [conversation-index-snapshot-root-owner]", async () => {
+    installBridge()
+    const lease = await acquireConversationIndexSnapshot(new AbortController().signal)
+    expect(lease.isCurrent()).toBe(true)
+    fixture.root = "/other/sessions"
+    expect(lease.isCurrent()).toBe(false)
+    lease.release()
+    expect(lease.isCurrent()).toBe(false)
+  })
+
   it("空 query 且没有明确近期回退意图时不扫描或索引 JSONL [conversation-empty-query-no-scan]", async () => {
     const result = await recallConversation({
       sessionId: "empty-query-session",
@@ -311,7 +426,7 @@ describe("会话原文索引", () => {
     expect(fixture.calls.find(call => call.method === "conversation_search")?.args.recentFallback).toBeUndefined()
   })
 
-  it("多个词面query独立检索后轮询合并并按entry去重 [conversation-query-facet-fusion]", async () => {
+  it("多个词面query按倒数名次融合并按entry去重 [conversation-query-facet-fusion]", async () => {
     const current = session("query-fusion-session")
     fixture.metadata = [current]
     const first = messageEntry("first-entry", 1, "user", 100, "first-event")
@@ -340,6 +455,40 @@ describe("会话原文索引", () => {
     expect(searches.map(call => call.args.query)).toEqual(["alpha project", "beta detail"])
     expect(result.entries.map(entry => entry.entryId)).toEqual(["first-entry", "second-entry"])
     expect(result.entries.every(entry => entry.text === entry.matchedText)).toBe(true)
+  })
+
+  it("跨query分数不可比时按RRF综合名次而不是原始分值 [conversation-query-rrf-fusion]", async () => {
+    const current = session("query-rrf-session")
+    fixture.metadata = [current]
+    const consensus = messageEntry("consensus-entry", 1, "user", 100, "consensus-event")
+    fixture.transcripts.set(current.id, {
+      entries: [consensus],
+      messages: [{ id: consensus.id, eventId: "consensus-event", role: "user", text: "consensus-entry evidence", timestamp: 100, isUserInput: true }],
+    })
+    const hit = (entryId: string, score: number, seq: number) => ({
+      sessionId: current.id, entryId, eventId: `${entryId}-event`, seq, chunk: 0,
+      role: "user" as const, text: `${entryId} evidence`, timestamp: entryId === "consensus-entry" ? 100 : 100 + seq, score,
+    })
+    fixture.searchSnapshots.set("original", { revision: 1, memoryRevision: 7, forgetEpoch: 0, entries: [
+      hit("original-front", 1_000, 2), hit("consensus-entry", 900, 1),
+    ] })
+    fixture.searchSnapshots.set("facet-one", { revision: 1, memoryRevision: 7, forgetEpoch: 0, entries: [
+      hit("facet-one-front", 800, 3), hit("consensus-entry", 0.001, 1),
+    ] })
+    fixture.searchSnapshots.set("facet-two", { revision: 1, memoryRevision: 7, forgetEpoch: 0, entries: [
+      hit("facet-two-front", 700, 4), hit("consensus-entry", 0.0001, 1),
+    ] })
+    installBridge()
+
+    const result = await searchConversationCandidates({
+      sessionId: current.id,
+      queries: ["original", "facet-one", "facet-two"],
+      signal: new AbortController().signal,
+      limit: 1,
+    })
+
+    expect(result.entries.map(entry => entry.entryId)).toEqual(["consensus-entry"])
+    expect(result.entries[0]?.score).toBe(900)
   })
 
   it("不同记忆修订代的query结果不会混合 [conversation-query-snapshot-fence]", async () => {
@@ -564,102 +713,73 @@ describe("会话原文索引", () => {
     expect(replaced).not.toContain(empty.id)
     expect(result.map(item => item.conversation?.entryId)).toEqual(["normal-user"])
   })
+
+  it("索引全源正文读取持有会话文件锁且读取失败不提交快照 [conversation-index-transcript-read-locked]", async () => {
+    const current = session("transcript-close-race")
+    fixture.root = "/data/sessions/transcript-close-race"
+    current.path = `${fixture.root}/${current.id}.jsonl`
+    fixture.metadata = [current]
+    fixture.transcripts.set(current.id, { entries: [], messages: [], error: "Session is closed" })
+    installBridge()
+
+    await expect(refreshConversationIndex(new AbortController().signal)).rejects.toThrow("Session is closed")
+
+    expect(fixture.transcriptReadsUnderLock).toContain(current.id)
+    expect(fixture.calls.some(call => call.method === "conversation_index_replace")).toBe(false)
+  })
 })
 
-function contextFixture(count = 64): { snapshot: ConversationEvidenceResult; rows: ConversationEvidenceEntry[] } {
-  const sessionId = "matched-history"
-  const rows: ConversationEvidenceEntry[] = Array.from({ length: count }, (_, seq) => ({
-    sessionId, entryId: `view-${seq}`, eventId: `event-${seq}`, seq, chunk: 0, role: "user",
-    text: `I viewed distinct property ${String(seq).padStart(2, "0")}.`, matchedText: `I viewed distinct property ${String(seq).padStart(2, "0")}.`,
-    timestamp: 100 + seq, score: 2,
-  }))
-  fixture.transcripts.set(sessionId, {
-    entries: rows.map(row => messageEntry(row.entryId, row.seq, "user", row.timestamp, row.eventId!)),
-    messages: rows.map(row => ({ id: row.entryId, eventId: row.eventId, role: "user", text: row.text, timestamp: row.timestamp, isUserInput: true })),
-  })
-  const snapshot: ConversationEvidenceResult = { revision: 3, memoryRevision: 7, forgetEpoch: 1, entries: [rows[rows.length - 1]!] }
-  fixture.onContext = args => ({ ...snapshot, entries: rows.filter(row => row.seq > Number(args.afterSeq)).slice(0, Number(args.limit)) })
-  installBridge()
-  return { snapshot, rows }
-}
-
-describe("命中会话的治理上下文展开", () => {
-  it("命中晚轮后跨页补入早轮事实，候选50条不成为最终证据上限 [conversation-expand-matched-session-pages]", async () => {
-    const { snapshot } = contextFixture()
-    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget: 20_000, before: 200 })
-    expect(result.entries).toHaveLength(64)
-    expect(result.entries.map(row => row.entryId)).toContain("view-0")
-    expect(new Set(result.entries.map(row => row.entryId)).size).toBe(64)
-    const calls = fixture.calls.filter(call => call.method === "conversation_context")
-    expect(calls.map(call => call.args.afterSeq)).toEqual([38, -1, 49])
-    expect(calls.every(call => call.args.sessionId === "matched-history" && call.args.anchorEntryId === "view-63" && call.args.before === 200)).toBe(true)
-    expect(fixture.transcriptReads).toEqual(["matched-history"])
-  })
-
-  it("预算紧张时先纳入命中附近轮次，不越过预算回填会话开头 [conversation-context-nearby-headroom]", async () => {
-    const { snapshot, rows } = contextFixture()
-    const tokenBudget = estimateContextTokens(snapshot.entries[0]!.text) + estimateContextTokens(rows[0]!.text) + estimateContextTokens(rows[1]!.text)
-    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget })
-    expect(result.entries.map(row => row.entryId)).toEqual(["view-63", "view-62", "view-61"])
-    expect(fixture.calls.filter(call => call.method === "conversation_context")).toHaveLength(1)
-  })
-
-  it("长会话的紧预算优先保留命中前的原因回合并成对保留 user/assistant [conversation-context-nearest-prior-turn-bundle]", async () => {
-    const sessionId = "late-cause-session"
-    const rows: ConversationEvidenceEntry[] = Array.from({ length: 61 }, (_, seq) => ({
-      sessionId, entryId: `old-${seq}`, eventId: `old-event-${seq}`, seq, chunk: 0, role: "user",
-      text: `旧话题 ${seq}`, matchedText: `旧话题 ${seq}`, timestamp: 100 + seq, score: 0.2,
-    }))
-    const causeUser: ConversationEvidenceEntry = {
-      sessionId, entryId: "cause-user", eventId: "cause-event", seq: 61, chunk: 0, role: "user",
-      text: "The limited rollout window was the reason.", matchedText: "The limited rollout window was the reason.", timestamp: 161, score: 0.5,
+describe("全源原文内容指纹", () => {
+  it("发现后追加使用冻结seq前缀发布且后续dirty刷新纳入新原话 [conversation-index-append-after-discovery]", async () => {
+    const current = session("append-during-index")
+    fixture.root = "/data/sessions/append-during-index"
+    current.path = `${fixture.root}/${current.id}.jsonl`
+    fixture.metadata = [current]
+    const user = messageEntry("user-before", 1, "user", 100, "event-before")
+    const initial = { entries: [user], messages: [
+      { id: user.id, eventId: "event-before", role: "user", text: "original user", timestamp: 100, isUserInput: true },
+    ] }
+    fixture.transcripts.set(current.id, initial)
+    const later = messageEntry("assistant-after", 2, "assistant", 200)
+    fixture.onTranscriptRead = id => {
+      if (id === current.id && fixture.transcriptReads.filter(read => read === id).length === 2) {
+        fixture.transcripts.set(id, { entries: [...initial.entries, later], messages: [...initial.messages,
+          { id: later.id, role: "assistant", text: "later assistant", timestamp: 200 }] })
+      }
     }
-    const causeAssistant: ConversationEvidenceEntry = {
-      sessionId, entryId: "cause-assistant", eventId: "cause-assistant", seq: 62, chunk: 0, role: "assistant",
-      text: "We chose the smaller migration because the rollout window was tight.",
-      matchedText: "We chose the smaller migration because the rollout window was tight.",
-      timestamp: 162, anchorEntryId: causeUser.entryId, anchorEventId: causeUser.eventId, score: 0.5,
-    }
-    const hit: ConversationEvidenceEntry = {
-      sessionId, entryId: "late-hit", eventId: "late-hit-event", seq: 63, chunk: 0, role: "user",
-      text: "Which migration approach did we settle on?", matchedText: "Which migration approach did we settle on?", timestamp: 163, score: 1,
-    }
-    const answer: ConversationEvidenceEntry = {
-      sessionId, entryId: "late-answer", eventId: "late-answer", seq: 64, chunk: 0, role: "assistant",
-      text: "We settled on the smaller migration.", matchedText: "We settled on the smaller migration.",
-      timestamp: 164, anchorEntryId: hit.entryId, anchorEventId: hit.eventId, score: 0.5,
-    }
-    rows.push(causeUser, causeAssistant, hit, answer)
-    fixture.transcripts.set(sessionId, {
-      entries: rows.map(row => messageEntry(row.entryId, row.seq, row.role, row.timestamp, row.role === "user" ? row.eventId ?? undefined : undefined)),
-      messages: rows.map(row => ({ id: row.entryId, eventId: row.eventId, role: row.role, text: row.text, timestamp: row.timestamp, ...(row.role === "user" ? { isUserInput: true } : {}) })),
-    })
-    const snapshot: ConversationEvidenceResult = { revision: 3, memoryRevision: 7, forgetEpoch: 1, entries: [hit] }
-    fixture.onContext = args => ({ ...snapshot, entries: rows.filter(row => row.seq > Number(args.afterSeq)).slice(0, Number(args.limit)) })
     installBridge()
-    const tokenBudget = estimateContextTokens(hit.text) + estimateContextTokens(causeUser.text) + estimateContextTokens(causeAssistant.text)
+    const signal = new AbortController().signal
+    await refreshConversationIndex(signal)
+    const published = fixture.calls.filter(call => call.method === "conversation_index_replace")
+    expect(published).toHaveLength(1)
+    expect((published[0]!.args.entries as Array<{ entryId: string; text: string }>).map(entry => [entry.entryId, entry.text]))
+      .toEqual([["user-before", "original user"]])
+    const firstFingerprint = fixture.indexed[0]!.fingerprint
+    expect(await conversationFingerprint(current.id, signal, firstFingerprint)).toBe(firstFingerprint)
 
-    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget })
-
-    expect(result.entries.map(row => row.entryId)).toEqual(["late-hit", "cause-user", "cause-assistant"])
+    notifySessionFileChanged(current.path)
+    await flushConversationIndex(signal)
+    const allPublished = fixture.calls.filter(call => call.method === "conversation_index_replace")
+    expect((allPublished[allPublished.length - 1]!.args.entries as Array<{ entryId: string; text: string }>).map(entry => [entry.entryId, entry.text]))
+      .toEqual([["user-before", "original user"], ["assistant-after", "later assistant"]])
+    expect(fixture.indexed[0]!.fingerprint).not.toBe(firstFingerprint)
   })
 
-  it("展开期间遗忘代变化时整组会话证据失效 [conversation-context-revision-fence]", async () => {
-    const { snapshot, rows } = contextFixture(3)
-    fixture.onContext = () => ({ ...snapshot, forgetEpoch: 2, entries: rows })
-    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget: 5_000 })
-    expect(result.entries).toEqual([])
-    expect(result.revisionChanged).toBe(true)
-    expect(fixture.transcriptReads).toEqual([])
-  })
-
-  it("治理通过仍需JSONL逐字校验，取消后不发布晚到页 [conversation-context-jsonl-and-cancel]", async () => {
-    const { snapshot, rows } = contextFixture(3)
-    fixture.onContext = () => ({ ...snapshot, entries: [{ ...rows[0]!, text: "stale indexed content" }] })
-    const result = await expandConversationSessions(snapshot, { signal: new AbortController().signal, tokenBudget: 5_000 })
-    expect(result.entries.map(row => row.entryId)).toEqual(["view-2"])
-    const controller = new AbortController()
-    fixture.onContext = () => { controller.abort(); return { ...snapshot, entries: rows } }
-    expect((await expandConversationSessions(snapshot, { signal: controller.signal, tokenBudget: 5_000 })).entries).toEqual([])
+	it("快照后追加不使旧引用失效，快照内原文改写会失效 [conversation-snapshot-through-seq]", async () => {
+    const current = session("prefix-session")
+    fixture.metadata = [current]
+    const user = messageEntry("u", 1, "user", 100, "event-u")
+    const messages = [{ id: "u", eventId: "event-u", role: "user", text: "original", timestamp: 100, isUserInput: true }]
+    fixture.transcripts.set(current.id, { entries: [user], messages })
+    installBridge()
+    const signal = new AbortController().signal
+    await refreshConversationIndex(signal)
+    const initial = fixture.indexed.find(item => item.sessionId === current.id)?.fingerprint
+    expect(initial).toMatch(/^[a-f0-9]{64}$/)
+    fixture.transcripts.set(current.id, { entries: [user, messageEntry("later", 2, "assistant", 201)],
+      messages: [...messages, { id: "later", role: "assistant", text: "later preamble", timestamp: 201 }] })
+    expect(await conversationFingerprint(current.id, signal, initial!)).toBe(initial)
+    messages[0]!.text = "edited original"
+    expect(await conversationFingerprint(current.id, signal, initial!)).not.toBe(initial)
   })
 })

@@ -53,6 +53,7 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           scope TEXT NOT NULL,
           scope_id TEXT,
           aliases_json TEXT NOT NULL,
+          navigation_json TEXT NOT NULL DEFAULT '{"people":[],"topics":[]}',
           pinned INTEGER NOT NULL CHECK (pinned IN (0,1)),
           importance REAL NOT NULL,
           confidence REAL NOT NULL,

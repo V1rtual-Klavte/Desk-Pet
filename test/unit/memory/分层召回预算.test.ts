@@ -1,14 +1,24 @@
 import { describe, expect, it } from "vitest"
 
-import { deriveMemoryRecallBudget, memorySelectionOutputBudget } from "@/services/agent/memory/budget"
-import { contextBudget } from "@/services/context/budget"
+import { deriveMemoryRecallBudget, memorySelectorInputBudget, memoryStructuredReplyTokenBudget } from "@/services/agent/memory/budget"
+import { contextBudget, estimateValueTokens } from "@/services/context/budget"
+import { toolResultTokenBudget } from "@/services/context/tool-output"
 
 describe("分层召回预算", () => {
-  it("结构化选择输出容纳合法最长中文查询并为思考预留空间 [memory-selector-output-budget]", () => {
+  it("结构化辅助输出预算直接来自合法 JSON 回复 schema [memory-selector-output-budget]", () => {
     const maximumReply = { queries: ["中".repeat(240), "文".repeat(240)] }
-    const budget = memorySelectionOutputBudget(maximumReply)
-    expect(budget).toBeGreaterThanOrEqual(1_000)
-    expect(budget).toBeLessThanOrEqual(2_048)
+    expect(memoryStructuredReplyTokenBudget(maximumReply)).toBe(estimateValueTokens(maximumReply))
+    expect(memoryStructuredReplyTokenBudget([])).toBeGreaterThan(0)
+  })
+
+  it("rerank 输入是工具结果级小包，并给实际回复 schema 留出窗口空间 [memory-selector-input-budget]", () => {
+    const window = 8_192
+    const shortReply = memorySelectorInputBudget(window, 12)
+    const largerReply = memorySelectorInputBudget(window, 7_800)
+    expect(shortReply).toBeLessThanOrEqual(toolResultTokenBudget(window))
+    expect(shortReply).toBeLessThan(contextBudget(window).normalInputTarget)
+    expect(largerReply).toBeLessThan(shortReply)
+    expect(largerReply).toBeLessThanOrEqual(toolResultTokenBudget(window))
   })
 
   it("主回合两层共用真实 headroom，不随窗口比例变化 [memory-recall-layered-budget]", () => {

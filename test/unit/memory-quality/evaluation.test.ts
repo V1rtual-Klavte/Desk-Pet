@@ -53,9 +53,15 @@ describe("memory quality dataset and score", () => {
     const usageEvent = {kind:"provider_request_end",spanId:"request-1",payload:{inputTokens:100,outputTokens:20,cacheRead:80,cacheWrite:10}}
     const measured = summarizeMemoryQualityUsage([usageEvent,usageEvent])
     expect(measured.usage?.inputTokens).toBe(190)
+    expect(measured.usage?.uncachedInputTokens).toBe(100)
+    expect(measured.usage?.cacheReadTokens).toBe(80)
+    expect(measured.usage?.cacheWriteTokens).toBe(10)
+    expect(measured.usage?.accounting).toBe("pi-input-plus-normalized-cache")
     expect(measured.usage?.requests).toBe(1)
     expect(measured.cache).toBe("hit")
     expect(summarizeMemoryQualityUsage([{...usageEvent,payload:{inputTokens:100,outputTokens:20,cacheRead:0,cacheWrite:0}}]).cache).toBe("unknown")
+    expect(summarizeMemoryQualityUsage([{...usageEvent,payload:{inputTokens:100,outputTokens:20,cacheRead:0,cacheWrite:0,cacheUsageReported:false}}]).cache).toBe("unknown")
+    expect(summarizeMemoryQualityUsage([{...usageEvent,payload:{inputTokens:100,outputTokens:20,cacheRead:0,cacheWrite:0,cacheUsageReported:true}}]).cache).toBe("miss")
     expect(summarizeMemoryQualityUsage([{...usageEvent,payload:{inputTokens:0,outputTokens:0,cacheRead:0,cacheWrite:0}}]).usage).toBeNull()
   })
 

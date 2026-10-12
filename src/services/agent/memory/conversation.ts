@@ -4,6 +4,8 @@
 
 import type { Entry, JsonlSessionMetadata } from "@earendil-works/pi-agent-core"
 import { createHash, randomUUID } from "node:crypto"
+import { watch, type FSWatcher } from "node:fs"
+import { extname, resolve } from "node:path"
 import { getHostBridge } from "@/services/host"
 import { MEMORY_LIMITS } from "./protocol"
 import type { ConversationClearFence, ConversationIndexBatch, ConversationIndexEntry, ConversationSearchEntry, ConversationSearchResult } from "@/services/agent/memory/protocol"
@@ -17,10 +19,12 @@ import { getPiSessionRepo, listPiSessionMetadata, readPiSessionEntriesOnce, read
 import type { MemoryProjection } from "./provider"
 import { deriveMemoryQueryPlan } from "./query"
 import type { MemoryQueryPlan } from "./query"
+import { subscribeSessionFileChanges } from "@/services/session/change-signal"
 
 const log = createLogger("ConversationMemory")
 
 const CONVERSATION_SEARCH_LIMIT = MEMORY_LIMITS.conversation.maxSearchResults
+export const CONVERSATION_RRF_RANK_CONSTANT = 60
 const MAX_INDEX_RETRIES = 2
 const CHUNK_SCHEMA_VERSION = 2
 const CHUNK_MAX_CODEPOINTS = 1_600
@@ -51,148 +55,210 @@ export interface ConversationCandidateRequest {
 export type ConversationSourceRef = NonNullable<MemoryProjection["conversation"]>
 
 /** Search-gated JSONL expansion. matchedText is retained for budget fallback to the indexed hit. */
-export type ConversationEvidenceEntry = ConversationSearchEntry & { matchedText: string }
-export type ConversationEvidenceResult = Omit<ConversationSearchResult, "entries"> & {
+export type ConversationEvidenceEntry = ConversationSearchEntry & {
+  matchedText: string
+  /** Coordinates are produced while validating the indexed chunk against JSONL. */
+  readSource?: { range: { start: number; end: number }; totalChars: number; contentHash: string }
+  matchedRange?: { start: number; end: number }
+}
+export type ConversationEvidenceResult = Pick<ConversationSearchResult, "revision" | "memoryRevision" | "forgetEpoch"> & {
   entries: ConversationEvidenceEntry[]
   revisionChanged?: boolean
 }
 
-/** Expand only selected, governed session hits; pagination is an I/O batch, not a recall quota. */
-export async function expandConversationSessions(
-  snapshot: ConversationEvidenceResult,
-  request: { signal: AbortSignal; tokenBudget: number; before?: number; recordTime?: NonNullable<MemoryQueryPlan["timeConstraint"]> },
-): Promise<ConversationEvidenceResult> {
-  const entries = [...snapshot.entries]
-  const uniqueSeeds = [...new Map(entries.map(entry => [`${entry.sessionId}\0${entry.entryId}`, entry])).values()]
-  const usedBySeeds = uniqueSeeds.reduce((sum, entry) => {
-    const fullCost = estimateContextTokens(entry.text)
-    return sum + (fullCost <= request.tokenBudget ? fullCost : estimateContextTokens(entry.matchedText))
-  }, 0)
-  let remaining = Math.max(0, request.tokenBudget - usedBySeeds)
-  if (request.signal.aborted || remaining <= 0 || !entries.length) return { ...snapshot, entries }
-  const seen = new Set(uniqueSeeds.map(entry => `${entry.sessionId}\0${entry.entryId}`))
-  const cursors = new Map<string, { sessionId: string; anchor: ConversationEvidenceEntry; afterSeq: number; prefixPending: boolean }>()
-  for (const entry of uniqueSeeds) {
-    const cursorId = `${entry.sessionId}\0${entry.entryId}`
-    if (!cursors.has(cursorId)) {
-      const nearbyStart = Math.max(-1, entry.seq - Math.floor(CONVERSATION_SEARCH_LIMIT / 2))
-      cursors.set(cursorId, { sessionId: entry.sessionId, anchor: entry, afterSeq: nearbyStart, prefixPending: nearbyStart > -1 })
-    }
-  }
-  const transcripts = new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>()
-  while (cursors.size && remaining > 0 && !request.signal.aborted) {
-    // One page per matched evidence turn per round keeps a large session from masking other hits.
-    for (const [cursorId, cursor] of cursors) {
-      if (request.signal.aborted || remaining <= 0) break
-      const page = await getHostBridge().request("conversation_context", {
-        sessionId: cursor.sessionId, anchorEntryId: cursor.anchor.entryId, afterSeq: cursor.afterSeq,
-        limit: CONVERSATION_SEARCH_LIMIT, ...(request.before !== undefined ? { before: request.before } : {}),
-      }, { signal: request.signal })
-      if (request.signal.aborted) return { ...snapshot, entries: [] }
-      if (page.revision !== snapshot.revision || page.memoryRevision !== snapshot.memoryRevision
-        || page.forgetEpoch !== snapshot.forgetEpoch) {
-        return { ...snapshot, entries: [], revisionChanged: true }
-      }
-      const nextSeq = Math.max(cursor.afterSeq, ...page.entries.map(entry => entry.seq))
-      if (page.entries.length < CONVERSATION_SEARCH_LIMIT || nextSeq <= cursor.afterSeq) {
-        if (cursor.prefixPending) {
-          cursor.afterSeq = -1
-          cursor.prefixPending = false
-        } else {
-          cursors.delete(cursorId)
-        }
-      } else {
-        cursor.afterSeq = nextSeq
-      }
-      const eligible = page.entries.filter(entry => entry.sessionId === cursor.sessionId && entry.chunk === 0
-        && (!request.recordTime || timestampMatchesRecordTime(entry.timestamp, request.recordTime))
-        && !seen.has(`${entry.sessionId}\0${entry.entryId}`))
-        .map(entry => ({ ...entry, score: cursor.anchor.score / 2 }))
-      const expanded = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before, transcripts)
-      const anchors = uniqueSeeds.filter(entry => entry.sessionId === cursor.sessionId)
-      for (const turn of orderEvidenceTurns(expanded, anchors)) {
-        const fullCost = turn.reduce((sum, entry) => sum + estimateContextTokens(entry.text), 0)
-        const excerptCost = turn.reduce((sum, entry) => sum + estimateContextTokens(entry.matchedText), 0)
-        const cost = fullCost <= remaining ? fullCost : excerptCost
-        if (cost <= 0 || cost > remaining) continue
-        for (const entry of turn) {
-          const key = `${entry.sessionId}\0${entry.entryId}`
-          if (seen.has(key)) continue
-          seen.add(key)
-          entries.push(entry)
-        }
-        remaining -= cost
-      }
-    }
-  }
-  return { ...snapshot, entries: request.signal.aborted ? [] : entries }
-}
-
-function orderEvidenceTurns(
-  entries: readonly ConversationEvidenceEntry[],
-  anchors: readonly ConversationEvidenceEntry[],
-): ConversationEvidenceEntry[][] {
-  const aliases = new Map<string, string>()
-  for (const entry of [...anchors, ...entries]) {
-    if (entry.role !== "user") continue
-    aliases.set(`${entry.sessionId}:entry:${entry.entryId}`, entry.entryId)
-    if (entry.eventId) aliases.set(`${entry.sessionId}:event:${entry.eventId}`, entry.entryId)
-  }
-  const turnKey = (entry: ConversationEvidenceEntry): string => {
-    if (entry.role === "user") return `${entry.sessionId}:turn:${entry.entryId}`
-    const anchor = entry.anchorEntryId
-      ? aliases.get(`${entry.sessionId}:entry:${entry.anchorEntryId}`) ?? entry.anchorEntryId
-      : entry.anchorEventId
-        ? aliases.get(`${entry.sessionId}:event:${entry.anchorEventId}`) ?? entry.anchorEventId
-        : entry.entryId
-    return `${entry.sessionId}:turn:${anchor}`
-  }
-  const turns = new Map<string, ConversationEvidenceEntry[]>()
-  for (const entry of entries) {
-    const key = turnKey(entry)
-    const turn = turns.get(key) ?? []
-    turn.push(entry)
-    turns.set(key, turn)
-  }
-  return [...turns.values()]
-    .map(turn => turn.sort((left, right) => left.seq - right.seq))
-    .sort((left, right) => {
-      const distance = (turn: ConversationEvidenceEntry[]) => Math.min(...turn.flatMap(entry => anchors.map(anchor => Math.abs(entry.seq - anchor.seq))))
-      const leftDistance = distance(left)
-      const rightDistance = distance(right)
-      if (leftDistance !== rightDistance) return leftDistance - rightDistance
-      const side = (turn: ConversationEvidenceEntry[]) => {
-        const nearest = turn.flatMap(entry => anchors.map(anchor => ({ delta: entry.seq - anchor.seq, distance: Math.abs(entry.seq - anchor.seq) })))
-          .sort((a, b) => a.distance - b.distance || a.delta - b.delta)[0]
-        return nearest?.delta ?? 0
-      }
-      return side(left) - side(right) || left[0]!.seq - right[0]!.seq
-    })
-}
-
-function timestampMatchesRecordTime(
-  timestamp: number,
-  constraint: NonNullable<MemoryQueryPlan["timeConstraint"]>,
-): boolean {
-  if (constraint.start !== undefined && timestamp < constraint.start) return false
-  if (constraint.end !== undefined && timestamp >= constraint.end) return false
-  if (constraint.calendarDate) {
-    const date = new Date(timestamp)
-    if (date.getMonth() + 1 !== constraint.calendarDate.month || date.getDate() !== constraint.calendarDate.day) return false
-    if (constraint.calendarDate.year !== undefined && date.getFullYear() !== constraint.calendarDate.year) return false
-  }
-  return true
-}
-
 class SessionChangedDuringIndexError extends Error {}
+class SessionRootChangedError extends Error {}
 
 interface SessionStat {
   metadata: JsonlSessionMetadata
   relativePath: string
   fingerprint: string
+  throughSeq: number
 }
 
 const inFlightIndexes = new Map<string, Promise<number>>()
+let indexedRootKey: string | undefined
+let indexedRootGeneration = 0
+let indexedRootController = new AbortController()
+let contentVerifiedRootGeneration = -1
+let contentVerifiedSourceGeneration = -1
+let knownMetadataByPath = new Map<string, JsonlSessionMetadata>()
+// Metadata for the exact source snapshot currently represented in SQLite. Never retain transcript text here.
+const indexedSnapshotsBySession = new Map<string, { fingerprint: string; throughSeq: number }>()
+const dirtySourcePaths = new Set<string>()
+const sourceChangeVersions = new Map<string, number>()
+let changeSubscriptionInstalled = false
+let sourceWatcher: FSWatcher | undefined
+let sourceWatcherRoot: string | undefined
+let sourceWatcherTrusted = false
+let watcherSetupFailureReportedRoot: string | undefined
+let rootNeedsContentAudit = true
+let sourceChangeGeneration = 0
+let backgroundRefreshFlight: Promise<void> | undefined
+let backgroundRefreshRequested = false
+const activeIndexSnapshots = new Set<symbol>()
+let indexRefreshFlight: Promise<Awaited<ReturnType<typeof refreshConversationIndexNow>>> | undefined
+
+/** One writer owns discovery, pruning and publication, including all its awaits. */
+export async function refreshConversationIndex(signal: AbortSignal) {
+  while (indexRefreshFlight) await waitForIndexRefresh(indexRefreshFlight, signal)
+  signal.throwIfAborted()
+  const flight = refreshConversationIndexNow(signal)
+  indexRefreshFlight = flight
+  try { return await flight }
+  finally { if (indexRefreshFlight === flight) indexRefreshFlight = undefined }
+}
+
+async function waitForIndexRefresh(flight: Promise<unknown>, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  await new Promise<void>((resolveWait, reject) => {
+    const abort = () => { cleanup(); reject(signal.reason) }
+    const cleanup = () => signal.removeEventListener("abort", abort)
+    signal.addEventListener("abort", abort, { once: true })
+    flight.then(() => { cleanup(); resolveWait() }, error => { cleanup(); reject(error) })
+  })
+}
+
+function installSessionChangeSubscription(): void {
+  if (changeSubscriptionInstalled) return
+  changeSubscriptionInstalled = true
+  subscribeSessionFileChanges(path => {
+    const normalized = resolve(path)
+    dirtySourcePaths.add(normalized)
+    sourceChangeVersions.set(normalized, (sourceChangeVersions.get(normalized) ?? 0) + 1)
+    sourceChangeGeneration += 1
+    requestBackgroundRefresh()
+  })
+}
+
+function markSourceChanged(path: string): void {
+  dirtySourcePaths.add(path)
+  sourceChangeVersions.set(path, (sourceChangeVersions.get(path) ?? 0) + 1)
+  requestBackgroundRefresh()
+}
+
+function markAllSourcesDirty(reason: string): void {
+  const wasTrusted = sourceWatcherTrusted
+  rootNeedsContentAudit = true
+  sourceWatcherTrusted = false
+  if (wasTrusted || reason === "watch_setup_failed" && watcherSetupFailureReportedRoot !== sourceWatcherRoot) {
+    log.warn("会话来源监测不可信，下一次准备将重新核对当前数据根全部 JSONL:", { reason })
+  }
+}
+
+function selectIndexRoot(rootKey: string): void {
+  if (indexedRootKey === rootKey) return
+  sourceWatcher?.close()
+  sourceWatcher = undefined
+  sourceWatcherRoot = undefined
+  sourceWatcherTrusted = false
+  indexedRootController.abort()
+  indexedRootController = new AbortController()
+  indexedRootGeneration += 1
+  indexedRootKey = rootKey
+  knownMetadataByPath.clear()
+  indexedSnapshotsBySession.clear()
+  dirtySourcePaths.clear()
+  sourceChangeVersions.clear()
+  activeIndexSnapshots.clear()
+  rootNeedsContentAudit = true
+  contentVerifiedRootGeneration = -1
+  contentVerifiedSourceGeneration = -1
+}
+
+function invalidateIndexRoot(): void {
+  if (indexedRootKey === undefined) return
+  sourceWatcher?.close()
+  sourceWatcher = undefined
+  sourceWatcherRoot = undefined
+  sourceWatcherTrusted = false
+  indexedRootController.abort()
+  indexedRootController = new AbortController()
+  indexedRootGeneration += 1
+  indexedRootKey = undefined
+  knownMetadataByPath.clear()
+  indexedSnapshotsBySession.clear()
+  dirtySourcePaths.clear()
+  sourceChangeVersions.clear()
+  activeIndexSnapshots.clear()
+  rootNeedsContentAudit = true
+  contentVerifiedRootGeneration = -1
+  contentVerifiedSourceGeneration = -1
+}
+
+function assertIndexRootCurrent(rootKey: string, generation: number): void {
+  const root = BaseDirs.sessions()
+  if (indexedRootKey !== rootKey || indexedRootGeneration !== generation || !root
+    || resolve(root) !== rootKey.slice(rootKey.indexOf("\0") + 1)) {
+    throw new SessionRootChangedError("会话数据根已切换，取消旧根索引操作")
+  }
+}
+
+function requestBackgroundRefresh(): void {
+  backgroundRefreshRequested = true
+  if (backgroundRefreshFlight || activeIndexSnapshots.size > 0) return
+  backgroundRefreshFlight = Promise.resolve().then(async () => {
+    while (backgroundRefreshRequested) {
+      backgroundRefreshRequested = false
+      try {
+        await refreshConversationIndex(new AbortController().signal)
+      } catch (error) {
+        log.warn("后台会话索引刷新失败，保留 dirty 状态供后续准备重试:", error)
+        break
+      }
+    }
+  }).finally(() => {
+    backgroundRefreshFlight = undefined
+    if (backgroundRefreshRequested) requestBackgroundRefresh()
+  })
+}
+
+function installSourceWatcher(root: string): void {
+  if (sourceWatcherRoot === root && sourceWatcher && sourceWatcherTrusted) return
+  sourceWatcher?.close()
+  sourceWatcher = undefined
+  sourceWatcherRoot = root
+  sourceWatcherTrusted = false
+  try {
+    const watcher = watch(root, { recursive: true }, (eventType, filename) => {
+      sourceChangeGeneration += 1
+      if (filename === null) {
+        markAllSourcesDirty("missing_filename")
+        requestBackgroundRefresh()
+        return
+      }
+      const path = resolve(root, filename.toString())
+      if (knownMetadataByPath.has(path)) {
+        if (eventType === "rename") {
+          markAllSourcesDirty("session_rename")
+          requestBackgroundRefresh()
+        }
+        else markSourceChanged(path)
+      } else if (extname(path) === ".jsonl" || eventType === "rename" && !extname(path)) {
+        markAllSourcesDirty("unmapped_session_filesystem_change")
+        requestBackgroundRefresh()
+      }
+    })
+    watcher.on("error", error => {
+      if (sourceWatcher === watcher) {
+        markAllSourcesDirty("watch_error")
+        log.error("会话文件监测器报错:", error)
+        sourceWatcher?.close()
+        sourceWatcher = undefined
+      }
+    })
+    sourceWatcher = watcher
+    sourceWatcherTrusted = true
+    watcherSetupFailureReportedRoot = undefined
+    watcher.unref()
+  } catch (error) {
+    const reportSetupFailure = watcherSetupFailureReportedRoot !== root
+    watcherSetupFailureReportedRoot = root
+    markAllSourcesDirty("watch_setup_failed")
+    if (reportSetupFailure) log.error("无法监测会话文件变化:", error)
+  }
+}
+
 
 /**
  * Search the persisted transcript index, refreshing changed sessions from their JSONL source first.
@@ -216,8 +282,216 @@ export async function recallConversation(request: ConversationRecallRequest): Pr
     candidateSnapshot.revision,
     candidateSnapshot.memoryRevision,
     request.tokenBudget,
+    candidateSnapshot.forgetEpoch,
   )
   return validateConversationProjections(projections, request.signal)
+}
+
+/** Maintain the canonical full-source index; `before` limits only governed search and reads. */
+async function refreshConversationIndexNow(signal: AbortSignal) {
+  installSessionChangeSubscription()
+  const host = getHostBridge()
+  const repo = await getPiSessionRepo()
+  const root = BaseDirs.sessions()
+  if (!root) throw new Error("会话检索索引无法读取 sessions 数据根")
+  if (resolve(repo.sessionsRoot) !== resolve(root)) {
+    invalidateIndexRoot()
+    watcherSetupFailureReportedRoot = undefined
+    rootNeedsContentAudit = true
+    throw new Error("会话仓库与运行时 sessions 数据根不一致，拒绝刷新记忆索引")
+  }
+  const rootKey = `${repo.cwd}\0${resolve(root)}`
+  selectIndexRoot(rootKey)
+  const generation = indexedRootGeneration
+  signal = AbortSignal.any([signal, indexedRootController.signal])
+  // Attach before reading any source so changes during the cold scan are either observed
+  // as dirty events or keep the full-root audit pending.
+  installSourceWatcher(root)
+  const startGeneration = sourceChangeGeneration
+  const dirtyVersionsAtDiscovery = new Map([...dirtySourcePaths].map(path => [path, sourceChangeVersions.get(path) ?? 0]))
+  const [status, metadata] = await Promise.all([
+    host.request("conversation_index_status", {}, { signal }),
+    listPiSessionMetadata(),
+  ])
+  assertIndexRootCurrent(rootKey, generation)
+  if (signal.aborted) return { ...status, sessionIds: [] as string[] }
+
+  const currentMetadata = metadata.filter(item => item.cwd === repo.cwd)
+  const byPath = new Map(currentMetadata.map(item => [resolve(item.path), item]))
+  knownMetadataByPath = byPath
+  const currentIds = new Set(currentMetadata.map(item => item.id))
+  for (const sessionId of indexedSnapshotsBySession.keys()) {
+    if (!currentIds.has(sessionId)) indexedSnapshotsBySession.delete(sessionId)
+  }
+  if (activeIndexSnapshots.size > 0) return { ...status, sessionIds: [...currentIds] }
+  const hasStaleSessions = status.sessions.some(item => !currentIds.has(item.sessionId))
+    || status.stagedSessionIds.some(sessionId => !currentIds.has(sessionId))
+  let currentStatus = status
+  if (hasStaleSessions) {
+    assertIndexRootCurrent(rootKey, generation)
+    await host.request("conversation_index_prune", { sessionIds: [...currentIds] }, { signal: signal })
+    assertIndexRootCurrent(rootKey, generation)
+    currentStatus = await host.request("conversation_index_status", {}, { signal: signal })
+  }
+
+  const indexedBySession = new Map(currentStatus.sessions.map(item => [item.sessionId, item.fingerprint]))
+  const dirtyIds = new Set<string>()
+  // A process restart loses the seq boundary. Re-read each indexed source once to restore it;
+  // matching content does not rewrite SQLite or advance its global revision.
+  for (const item of currentStatus.sessions) {
+    if (!indexedSnapshotsBySession.has(item.sessionId)) dirtyIds.add(item.sessionId)
+  }
+  for (const path of dirtySourcePaths) {
+    const item = byPath.get(path)
+    if (item) dirtyIds.add(item.id)
+    else rootNeedsContentAudit = true
+  }
+  const fullAudit = rootNeedsContentAudit || !sourceWatcherTrusted
+  let sourcesToCheck: SessionStat[]
+  if (fullAudit) {
+    sourcesToCheck = await listCurrentRootSessions(signal)
+    assertIndexRootCurrent(rootKey, generation)
+    const sourcePaths = new Set(sourcesToCheck.map(source => resolve(source.metadata.path)))
+    // Deleted/renamed files and notifications from another repository are not
+    // refreshable sessions. Only an authoritative full discovery may retire
+    // them, and never if a newer change arrived while discovery was awaiting I/O.
+    for (const [path, version] of dirtyVersionsAtDiscovery) {
+      if (!sourcePaths.has(path) && (sourceChangeVersions.get(path) ?? 0) === version) {
+        dirtySourcePaths.delete(path)
+        sourceChangeVersions.delete(path)
+      }
+    }
+    const sourceIds = new Set(sourcesToCheck.map(source => source.metadata.id))
+    if (status.sessions.some(item => !sourceIds.has(item.sessionId))) {
+      assertIndexRootCurrent(rootKey, generation)
+      await host.request("conversation_index_prune", { sessionIds: [...sourceIds] }, { signal })
+      assertIndexRootCurrent(rootKey, generation)
+      currentStatus = await host.request("conversation_index_status", {}, { signal })
+      indexedBySession.clear()
+      for (const item of currentStatus.sessions) indexedBySession.set(item.sessionId, item.fingerprint)
+    }
+    for (const source of sourcesToCheck) dirtyIds.add(source.metadata.id)
+  } else {
+    for (const item of currentMetadata) {
+      if (!indexedBySession.has(item.id)) dirtyIds.add(item.id)
+    }
+    sourcesToCheck = []
+  }
+
+  for (const sessionId of dirtyIds) {
+    if (signal.aborted) return { ...currentStatus, sessionIds: [] as string[] }
+    const item = currentMetadata.find(candidate => candidate.id === sessionId)
+    if (!item) continue
+    if (fullAudit && !sourcesToCheck.some(source => source.metadata.id === sessionId)) continue
+    const path = resolve(item.path)
+    const versionBeforeRead = sourceChangeVersions.get(path) ?? 0
+    const source = sourcesToCheck.find(candidate => candidate.metadata.id === sessionId)
+      ?? (await listCurrentRootSessions(signal, sessionId))[0]
+    assertIndexRootCurrent(rootKey, generation)
+    if (!source) continue
+    const previousFingerprint = indexedBySession.get(sessionId) ?? null
+    if (previousFingerprint !== source.fingerprint) {
+      await ensureSessionIndex(source, previousFingerprint, currentStatus.forgetEpoch, signal,
+        () => assertIndexRootCurrent(rootKey, generation))
+    }
+    assertIndexRootCurrent(rootKey, generation)
+    const latestStatus = await host.request("conversation_index_status", {}, { signal })
+    assertIndexRootCurrent(rootKey, generation)
+    if (latestStatus.sessions.some(indexed => indexed.sessionId === sessionId && indexed.fingerprint === source.fingerprint)) {
+      indexedSnapshotsBySession.set(sessionId, { fingerprint: source.fingerprint, throughSeq: source.throughSeq })
+    } else {
+      indexedSnapshotsBySession.delete(sessionId)
+    }
+    if ((sourceChangeVersions.get(path) ?? 0) === versionBeforeRead) dirtySourcePaths.delete(path)
+  }
+  if (signal.aborted) return { ...currentStatus, sessionIds: [] as string[] }
+  if (startGeneration === sourceChangeGeneration && dirtySourcePaths.size === 0) {
+    contentVerifiedRootGeneration = generation
+    contentVerifiedSourceGeneration = sourceChangeGeneration
+    if (fullAudit) rootNeedsContentAudit = !sourceWatcherTrusted
+    else if (sourceWatcherTrusted) rootNeedsContentAudit = false
+  } else if (fullAudit) {
+    rootNeedsContentAudit = true
+  }
+
+  assertIndexRootCurrent(rootKey, generation)
+  const final = await host.request("conversation_index_status", {}, { signal })
+  assertIndexRootCurrent(rootKey, generation)
+  return { ...final, sessionIds: [...currentIds] }
+}
+
+/** Wait for the event-driven index update queue and synchronously drain any remaining dirty sources. */
+export async function flushConversationIndex(signal: AbortSignal = new AbortController().signal): Promise<void> {
+  while (!signal.aborted) {
+    // Existing readers own an immutable SQLite revision. A new owner can share
+    // it with indexUpdating=true; it must not spin waiting on its own tool loop.
+    if (activeIndexSnapshots.size > 0) return
+    const repo = await getPiSessionRepo()
+    const root = BaseDirs.sessions()
+    if (!root || resolve(repo.sessionsRoot) !== resolve(root)) {
+      throw new Error("会话仓库与运行时 sessions 数据根不一致，不能准备索引快照")
+    }
+    const rootKey = `${repo.cwd}\0${resolve(root)}`
+    selectIndexRoot(rootKey)
+    const generation = indexedRootGeneration
+    await refreshConversationIndex(signal)
+    assertIndexRootCurrent(rootKey, generation)
+    const running = backgroundRefreshFlight
+    if (running) await running
+    while (indexRefreshFlight) await waitForIndexRefresh(indexRefreshFlight, signal)
+    assertIndexRootCurrent(rootKey, generation)
+    if (signal.aborted) return
+    if (dirtySourcePaths.size === 0
+      && contentVerifiedRootGeneration === generation
+      && contentVerifiedSourceGeneration === sourceChangeGeneration) return
+  }
+}
+
+export interface ConversationIndexSnapshotLease {
+  /** A concurrent owner froze an older snapshot while new source changes wait. */
+  indexUpdating: boolean
+  isCurrent(): boolean
+  release(): void
+}
+
+/** Freeze the global SQLite index revision for one navigation/run owner. */
+export async function acquireConversationIndexSnapshot(signal: AbortSignal): Promise<ConversationIndexSnapshotLease> {
+  const repo = await getPiSessionRepo()
+  const root = BaseDirs.sessions()
+  if (!root || resolve(repo.sessionsRoot) !== resolve(root)) {
+    throw new Error("会话仓库与运行时 sessions 数据根不一致，不能冻结记忆索引")
+  }
+  const rootKey = `${repo.cwd}\0${resolve(root)}`
+  selectIndexRoot(rootKey)
+  if (activeIndexSnapshots.size === 0) await flushConversationIndex(signal)
+  const sharingSnapshot = activeIndexSnapshots.size > 0
+  if (signal.aborted) return { indexUpdating: true, isCurrent: () => false, release: () => undefined }
+  assertIndexRootCurrent(rootKey, indexedRootGeneration)
+  const indexUpdating = dirtySourcePaths.size > 0 || contentVerifiedRootGeneration !== indexedRootGeneration
+    || contentVerifiedSourceGeneration !== sourceChangeGeneration
+  if (!sharingSnapshot && indexUpdating) {
+    throw new Error("会话索引仍有未收敛来源，拒绝冻结旧快照")
+  }
+  const lease = Symbol("conversation-index-snapshot")
+  activeIndexSnapshots.add(lease)
+  const generation = indexedRootGeneration
+  let released = false
+  return {
+    indexUpdating,
+    isCurrent: () => {
+      const liveRoot = BaseDirs.sessions()
+      return !released && activeIndexSnapshots.has(lease) && indexedRootGeneration === generation
+        && indexedRootKey === rootKey && liveRoot !== undefined && resolve(liveRoot) === resolve(root)
+    },
+    release: () => {
+      if (released) return
+      released = true
+      activeIndexSnapshots.delete(lease)
+      if (activeIndexSnapshots.size === 0 && (dirtySourcePaths.size > 0 || rootNeedsContentAudit)) {
+        requestBackgroundRefresh()
+      }
+    }
+  }
 }
 
 /** Local FTS candidate surface consumed only by sqliteMemoryProvider's joint candidate pool. */
@@ -227,29 +501,9 @@ export async function searchConversationCandidates(request: ConversationCandidat
   }
 
   const host = getHostBridge()
-  const [status, sessions] = await Promise.all([
-    host.request("conversation_index_status", {}, { signal: request.signal }),
-    listCurrentRootSessions(request.signal),
-  ])
-  if (request.signal.aborted) return { revision: status.revision, memoryRevision: 0, forgetEpoch: status.forgetEpoch, entries: [] }
-
-  const currentIds = new Set(sessions.map(item => item.metadata.id))
-  const hasStaleSessions = status.sessions.some(item => !currentIds.has(item.sessionId))
-    || status.stagedSessionIds.some(sessionId => !currentIds.has(sessionId))
-  let currentStatus = status
-  if (hasStaleSessions) {
-    await host.request("conversation_index_prune", { sessionIds: [...currentIds] }, { signal: request.signal })
-    currentStatus = await host.request("conversation_index_status", {}, { signal: request.signal })
-  }
-
-  const indexedBySession = new Map(currentStatus.sessions.map(item => [item.sessionId, item.fingerprint]))
-  for (const session of sessions) {
-    if (request.signal.aborted) return { revision: currentStatus.revision, memoryRevision: 0, forgetEpoch: currentStatus.forgetEpoch, entries: [] }
-    if (indexedBySession.get(session.metadata.id) === session.fingerprint) continue
-    await ensureSessionIndex(session, indexedBySession.get(session.metadata.id) ?? null, currentStatus.forgetEpoch, request.signal)
-  }
-  if (request.signal.aborted) return { revision: currentStatus.revision, memoryRevision: 0, forgetEpoch: currentStatus.forgetEpoch, entries: [] }
-
+  const currentStatus = await refreshConversationIndex(request.signal)
+  if (request.signal.aborted) return { ...currentStatus, memoryRevision: 0, entries: [] }
+  const currentIds = new Set(currentStatus.sessionIds)
   const queryPlan = request.queryPlan
   const recordTime = queryPlan?.timeConstraint?.basis === "record"
     ? {
@@ -309,27 +563,27 @@ export async function searchConversationCandidates(request: ConversationCandidat
     return compatible
   })
 
-  const fused = new Map<string, ConversationSearchEntry>()
-  const fusedOrder: ConversationSearchEntry[] = []
-  const maxRank = Math.max(0, ...compatibleResults.map(item => item.entries.length))
-  for (let rank = 0; rank < maxRank; rank += 1) {
-    for (const queryResult of compatibleResults) {
-      const entry = queryResult.entries[rank]
-      if (!entry) continue
+  // Rust scores belong to one query each, so fuse by rank (RRF) rather than
+  // comparing incomparable score scales. A strong result near the top of any
+  // complementary query contributes immediately; repeated hits gain consensus.
+  const fused = new Map<string, { entry: ConversationSearchEntry; fusionScore: number }>()
+  for (const queryResult of compatibleResults) {
+    queryResult.entries.forEach((entry, rank) => {
       const key = `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`
+      const contribution = 1 / (CONVERSATION_RRF_RANK_CONSTANT + rank + 1)
       const previous = fused.get(key)
-      if (!previous) {
-        fused.set(key, entry)
-        fusedOrder.push(entry)
-      } else if (entry.score > previous.score) {
-        fused.set(key, entry)
-        const index = fusedOrder.findIndex(item => `conversation:${item.sessionId}:${item.entryId}:${item.chunk}` === key)
-        if (index >= 0) fusedOrder[index] = entry
-      }
-    }
+      if (!previous) fused.set(key, { entry, fusionScore: contribution })
+      else fused.set(key, {
+        // Keep the first query's native score verbatim; scores from later
+        // queries are not comparable and only contribute through their rank.
+        entry: previous.entry,
+        fusionScore: previous.fusionScore + contribution,
+      })
+    })
   }
-  const eligible = fusedOrder
-    .map(entry => fused.get(`conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`) ?? entry)
+  const eligible = [...fused.values()]
+    .sort((left, right) => right.fusionScore - left.fusionScore)
+    .map(item => item.entry)
     .filter(entry => currentIds.has(entry.sessionId)
       && (request.recentFallback || usedRecentFallback || Boolean(recordTime) || entry.score > 0))
     .slice(0, limit)
@@ -383,18 +637,11 @@ async function expandSearchEntriesFromJsonl(
         || (before !== undefined && message.timestamp >= before)) continue
 
       let indexedChunkMatches = false
-      for (const chunk of chunksForEntry({
-        entryId: candidate.entryId,
-        eventId: candidate.eventId,
-        seq: candidate.seq,
-        role: candidate.role,
-        text: message.text,
-        timestamp: candidate.timestamp,
-        ...(candidate.anchorEntryId ? { anchorEntryId: candidate.anchorEntryId } : {}),
-        ...(candidate.anchorEventId ? { anchorEventId: candidate.anchorEventId } : {}),
-      }, signal)) {
+      let matchedRange: { start: number; end: number } | undefined
+      for (const chunk of conversationChunks(message.text, signal)) {
         if (chunk.chunk === candidate.chunk) {
           indexedChunkMatches = chunk.text === candidate.text
+          matchedRange = chunk.range
           break
         }
         if (chunk.chunk > candidate.chunk) break
@@ -405,7 +652,9 @@ async function expandSearchEntriesFromJsonl(
       const previous = bestByEntry.get(key)
       if (!previous || candidate.score > previous.score
         || (candidate.score === previous.score && candidate.chunk < previous.chunk)) {
-        bestByEntry.set(key, { ...candidate, text: message.text, matchedText: candidate.text })
+        bestByEntry.set(key, { ...candidate, text: message.text, matchedText: candidate.text, matchedRange,
+          readSource: { range: { start: 0, end: message.text.length }, totalChars: message.text.length,
+            contentHash: createHash("sha256").update(message.text.trim()).digest("hex") } })
       }
     }
     expanded.push(...bestByEntry.values())
@@ -425,6 +674,7 @@ export async function invalidateConversationSession(sessionId: string): Promise<
   const metadata = await listPiSessionMetadata()
   const keep = metadata.filter(item => item.cwd === repo.cwd).map(item => item.id)
   await getHostBridge().request("conversation_index_prune", { sessionIds: keep })
+  if (!keep.includes(sessionId)) indexedSnapshotsBySession.delete(sessionId)
 }
 
 /** Capture a lossless, per-session entry-sequence boundary for the memory clear transaction. */
@@ -437,7 +687,7 @@ export async function captureConversationClearFences(): Promise<ConversationClea
     if (relativeWithinRoot(repo.cwd, item.path) === null) {
       throw new Error(`清除记忆时会话路径不在当前数据根: ${item.id}`)
     }
-    const entries = await withPiSessionFileLock(item.id, () => readPiSessionEntriesOnce(item.id))
+    const entries = await withPiSessionFileLock(item.id, () => readPiSessionEntriesOnce(item.id, undefined, { fileLockHeld: true }))
     let maxSeq = -1
     for (const entry of entries) {
       if (!Number.isSafeInteger(entry.seq) || entry.seq < 0) {
@@ -457,19 +707,39 @@ export async function validateConversationProjections(
 ): Promise<MemoryProjection[]> {
   if (signal.aborted) return []
   if (!projections.some(item => item.conversation)) return [...projections]
-  const sessions = await listCurrentRootSessions(signal)
+  const repo = await getPiSessionRepo()
+  const sessions = await listPiSessionMetadata()
   if (signal.aborted) return []
-  const existing = new Set(sessions.map(item => item.metadata.id))
-  return projections.filter(item => !item.conversation || existing.has(item.conversation.sessionId))
+  const existing = new Set(sessions.filter(item => item.cwd === repo.cwd && relativeWithinRoot(repo.cwd, item.path) !== null).map(item => item.id))
+  const visible = new Map<string, Awaited<ReturnType<typeof readVisibleSessionTranscript>>>()
+  for (const sessionId of new Set(projections.flatMap(item => item.conversation ? [item.conversation.sessionId] : []))) {
+    if (!existing.has(sessionId)) continue
+    const transcript = await readVisibleSessionTranscript(sessionId, { releaseIfIdle: true })
+    if (transcript.error) throw new Error(`会话证据复核不完整: ${sessionId}`)
+    visible.set(sessionId, transcript)
+  }
+  if (signal.aborted) return []
+  return projections.filter(item => {
+    const ref = item.conversation
+    if (!ref) return true
+    const message = visible.get(ref.sessionId)?.messages.find(message => message.id === ref.entryId)
+    if (message?.role !== ref.role || message.timestamp !== ref.timestamp) return false
+    const source = item.readSource
+    return source
+      ? message.text.length === source.totalChars
+        && createHash("sha256").update(message.text.trim()).digest("hex") === source.contentHash
+        && message.text.slice(source.range.start, source.range.end) === item.text
+      : ref.extent === "entry" ? message.text === item.text : message.text.includes(item.text)
+  })
 }
 
-async function listCurrentRootSessions(signal: AbortSignal): Promise<SessionStat[]> {
+async function listCurrentRootSessions(signal: AbortSignal, selectedSessionId?: string): Promise<SessionStat[]> {
   const repo = await getPiSessionRepo()
   const root = BaseDirs.sessions()
   if (!root) throw new Error("会话检索索引无法读取 sessions 数据根")
 
   const metadata = await listPiSessionMetadata()
-  const currentRoot = metadata.filter(item => item.cwd === repo.cwd)
+  const currentRoot = metadata.filter(item => item.cwd === repo.cwd && (!selectedSessionId || item.id === selectedSessionId))
   const stats: SessionStat[] = []
   for (const item of currentRoot) {
     if (signal.aborted) return []
@@ -478,13 +748,76 @@ async function listCurrentRootSessions(signal: AbortSignal): Promise<SessionStat
       log.error("当前数据根会话路径越界，停止对话索引刷新:", { sessionId: item.id })
       throw new Error(`当前数据根会话路径越界: ${item.id}`)
     }
-    stats.push({ metadata: item, relativePath, fingerprint: fingerprint(item, relativePath) })
+    // Serialize metadata-derived reads and handle release with close/delete for this session.
+    const transcript = await withPiSessionFileLock(item.id, async () => {
+      // New session metadata may precede its first JSONL commit. It is not an indexed source yet.
+      try { await statSession(item, signal) } catch (error) {
+        if (errorCode(error) === "PATH_NOT_FOUND") return undefined
+        throw error
+      }
+      const visible = await readVisibleSessionTranscript(item.id, { releaseIfIdle: true, fileLockHeld: true })
+      if (visible.error) throw new Error(`会话索引源读取不完整 (${item.id}): ${visible.error}`)
+      return visible
+    })
+    if (!transcript) continue
+    const content = [...buildIndexEntryBatches(transcript.entries, transcript.messages, signal)].flat()
+    const throughSeq = content.reduce((max, entry) => entry.seq > max ? entry.seq : max, -1)
+    stats.push({ metadata: item, relativePath, fingerprint: contentFingerprint(item, relativePath, content), throughSeq })
   }
   return stats
 }
 
-function fingerprint(metadata: JsonlSessionMetadata, relativePath: string, modifiedAt = metadata.modifiedAt): string {
-  return createHash("sha256").update(JSON.stringify([CHUNK_SCHEMA_VERSION, relativePath, metadata.createdAt, modifiedAt])).digest("hex")
+function contentFingerprint(metadata: JsonlSessionMetadata, relativePath: string, content: readonly ConversationIndexEntry[]): string {
+  return createHash("sha256").update(JSON.stringify([CHUNK_SCHEMA_VERSION, relativePath, metadata.createdAt, content])).digest("hex")
+}
+
+function transcriptThroughSeq(
+  transcript: Awaited<ReturnType<typeof readVisibleSessionTranscript>>,
+  throughSeq: number,
+) {
+  const entries = transcript.entries.filter(entry => entry.seq <= throughSeq)
+  const entryIds = new Set(entries.map(entry => entry.id))
+  const messages = transcript.messages.filter(message => entryIds.has(message.id))
+  return { entries, messages }
+}
+
+function fingerprintTranscript(
+  session: SessionStat,
+  transcript: Awaited<ReturnType<typeof readVisibleSessionTranscript>>,
+  signal: AbortSignal,
+): string {
+  const { entries, messages } = transcriptThroughSeq(transcript, session.throughSeq)
+  const content = [...buildIndexEntryBatches(entries, messages, signal)].flat()
+  return contentFingerprint(session.metadata, session.relativePath, content)
+}
+
+/** Recompute the indexed snapshot from originals; later appends are outside its captured seq boundary. */
+export async function conversationFingerprint(
+  sessionId: string,
+  signal: AbortSignal,
+  expectedFingerprint: string,
+): Promise<string | undefined> {
+  const snapshot = indexedSnapshotsBySession.get(sessionId)
+  if (!snapshot || snapshot.fingerprint !== expectedFingerprint) return undefined
+  const repo = await getPiSessionRepo()
+  const root = BaseDirs.sessions()
+  const generation = indexedRootGeneration
+  if (!root || resolve(repo.sessionsRoot) !== resolve(root) || indexedRootKey !== `${repo.cwd}\0${resolve(root)}`) return undefined
+  signal = AbortSignal.any([signal, indexedRootController.signal])
+  const metadata = (await listPiSessionMetadata()).find(item => item.id === sessionId && item.cwd === repo.cwd)
+  if (!metadata) return undefined
+  const source = { metadata, relativePath: relativeWithinRoot(repo.cwd, metadata.path) ?? "", fingerprint: snapshot.fingerprint, throughSeq: snapshot.throughSeq }
+  if (!source.relativePath) return undefined
+  const transcript = await readVisibleSessionTranscript(sessionId, { releaseIfIdle: true })
+  if (transcript.error) throw new Error(`会话来源复核不完整: ${sessionId}`)
+  const actual = fingerprintTranscript(source, transcript, signal)
+  const confirmation = await readVisibleSessionTranscript(sessionId, { releaseIfIdle: true })
+  if (confirmation.error) throw new Error(`会话来源二次复核不完整: ${sessionId}`)
+  const confirmed = fingerprintTranscript(source, confirmation, signal)
+  const liveRoot = BaseDirs.sessions()
+  if (actual !== confirmed || signal.aborted || generation !== indexedRootGeneration
+    || !liveRoot || resolve(liveRoot) !== resolve(root)) return undefined
+  return actual
 }
 
 async function ensureSessionIndex(
@@ -492,7 +825,9 @@ async function ensureSessionIndex(
   expectedFingerprint: string | null,
   expectedForgetEpoch: number,
   signal: AbortSignal,
+  assertCurrent: () => void,
 ): Promise<number> {
+  assertCurrent()
   const flightKey = `${session.metadata.id}\u0000${session.fingerprint}\u0000${expectedForgetEpoch}`
   const existing = inFlightIndexes.get(flightKey)
   if (existing) {
@@ -500,6 +835,7 @@ async function ensureSessionIndex(
       // The owning runtime's readConversation logs/audits failures; this caller independently rechecks CAS below.
     }
     if (signal.aborted) return 0
+    assertCurrent()
     const latest = await getHostBridge().request("conversation_index_status", {}, { signal })
     if (latest.sessions.some(item => item.sessionId === session.metadata.id && item.fingerprint === session.fingerprint)) {
       return latest.revision
@@ -507,7 +843,7 @@ async function ensureSessionIndex(
     if (inFlightIndexes.get(flightKey) === existing) inFlightIndexes.delete(flightKey)
   }
 
-  const update = replaceStableSessionIndex(session, expectedFingerprint, expectedForgetEpoch, signal)
+  const update = replaceStableSessionIndex(session, expectedFingerprint, expectedForgetEpoch, signal, assertCurrent)
   inFlightIndexes.set(flightKey, update)
   try {
     return await update
@@ -528,22 +864,36 @@ async function replaceStableSessionIndex(
   initialExpectedFingerprint: string | null,
   expectedForgetEpoch: number,
   signal: AbortSignal,
+  assertCurrent: () => void,
 ): Promise<number> {
   return withPiSessionFileLock(initial.metadata.id, async () => {
+    assertCurrent()
     const host = getHostBridge()
     let session = initial
     let expectedFingerprint = initialExpectedFingerprint
 
     for (let attempt = 0; attempt <= MAX_INDEX_RETRIES; attempt += 1) {
       if (signal.aborted) return 0
+      const sourcePath = resolve(session.metadata.path)
+      const sourceVersion = sourceChangeVersions.get(sourcePath) ?? 0
       const before = await statSession(session.metadata, signal)
-      const transcript = await readVisibleSessionTranscript(session.metadata.id, { releaseIfIdle: true })
+      const transcript = await readVisibleSessionTranscript(session.metadata.id, { releaseIfIdle: true, fileLockHeld: true })
       if (transcript.error) {
         throw new Error(`会话索引源读取不完整 (${session.metadata.id}): ${transcript.error}`)
       }
       const after = await statSession(session.metadata, signal)
-      const afterFingerprint = fingerprint(session.metadata, session.relativePath, after.mtimeMs)
-      if (before.mtimeMs !== after.mtimeMs) {
+      assertCurrent()
+      // Discovery froze the seq boundary. Later appends belong to the next dirty
+      // refresh; publication and its confirmation must fingerprint the same prefix.
+      const prefix = transcriptThroughSeq(transcript, session.throughSeq)
+      const content = [...buildIndexEntryBatches(prefix.entries, prefix.messages, signal)].flat()
+      const afterFingerprint = contentFingerprint(session.metadata, session.relativePath, content)
+      const confirmation = await readVisibleSessionTranscript(session.metadata.id, { releaseIfIdle: true, fileLockHeld: true })
+      assertCurrent()
+      if (confirmation.error) throw new Error(`会话索引源二次读取不完整 (${session.metadata.id}): ${confirmation.error}`)
+      const confirmationFingerprint = fingerprintTranscript(session, confirmation, signal)
+      if (before.mtimeMs !== after.mtimeMs || afterFingerprint !== confirmationFingerprint
+        || (sourceChangeVersions.get(sourcePath) ?? 0) !== sourceVersion) {
         if (attempt === MAX_INDEX_RETRIES) {
           throw new Error(`会话在索引读取期间持续变化，索引未更新: ${session.metadata.id}`)
         }
@@ -551,23 +901,25 @@ async function replaceStableSessionIndex(
         continue
       }
 
-      const batches = buildIndexEntryBatches(transcript.entries, transcript.messages, signal)
+      const batches = buildIndexEntryBatches(prefix.entries, prefix.messages, signal)
       if (signal.aborted) return 0
       try {
         return await replaceIndexBatches({
           session,
           fingerprint: afterFingerprint,
           sourceMtimeMs: after.mtimeMs,
+          sourceChangeVersion: sourceVersion,
           expectedFingerprint,
           expectedForgetEpoch,
           batches,
           signal,
+          assertCurrent,
         })
       } catch (error) {
         if (error instanceof SessionChangedDuringIndexError) {
           if (attempt === MAX_INDEX_RETRIES) throw error
-          const changed = await statSession(session.metadata, signal)
-          session = { ...session, fingerprint: fingerprint(session.metadata, session.relativePath, changed.mtimeMs) }
+          await statSession(session.metadata, signal)
+          session = { ...session, fingerprint: afterFingerprint }
           continue
         }
         // Another request may have won this session's CAS. Accept its identical snapshot;
@@ -581,7 +933,7 @@ async function replaceStableSessionIndex(
 
         const stillStable = await statSession(session.metadata, signal)
         if (stillStable.mtimeMs !== after.mtimeMs) {
-          session = { ...session, fingerprint: fingerprint(session.metadata, session.relativePath, stillStable.mtimeMs) }
+          session = { ...session, fingerprint: afterFingerprint }
           continue
         }
         expectedFingerprint = winner?.fingerprint ?? null
@@ -674,15 +1026,19 @@ function* buildIndexEntryBatches(
 }
 
 function* chunksForEntry(source: Omit<ConversationIndexEntry, "chunk">, signal: AbortSignal): Generator<ConversationIndexEntry> {
-  if (!source.text.trim()) return
+  for (const { chunk, text } of conversationChunks(source.text, signal)) yield { ...source, chunk, text }
+}
+
+function* conversationChunks(body: string, signal: AbortSignal): Generator<{ chunk: number; text: string; range: { start: number; end: number } }> {
+  if (!body.trim()) return
   let start = 0
   let chunk = 0
-  while (start < source.text.length && !signal.aborted) {
-    const end = advanceChunkEnd(source.text, start)
-    const text = source.text.slice(start, end)
-    if (text.trim()) yield { ...source, chunk, text }
-    if (end === source.text.length) break
-    start = Math.max(start + 1, retreatChunkStart(source.text, end))
+  while (start < body.length && !signal.aborted) {
+    const end = advanceChunkEnd(body, start)
+    const text = body.slice(start, end)
+    if (text.trim()) yield { chunk, text, range: { start, end } }
+    if (end === body.length) break
+    start = Math.max(start + 1, retreatChunkStart(body, end))
     chunk += 1
   }
 }
@@ -748,10 +1104,12 @@ interface ReplaceIndexBatchesRequest {
   session: SessionStat
   fingerprint: string
   sourceMtimeMs: number
+  sourceChangeVersion: number
   expectedFingerprint: string | null
   expectedForgetEpoch: number
   batches: Generator<ConversationIndexEntry[]>
   signal: AbortSignal
+  assertCurrent: () => void
 }
 
 async function replaceIndexBatches(request: ReplaceIndexBatchesRequest): Promise<number> {
@@ -763,7 +1121,10 @@ async function replaceIndexBatches(request: ReplaceIndexBatchesRequest): Promise
 
   if (first.done) {
     const finalStat = await statSession(request.session.metadata, request.signal)
-    if (finalStat.mtimeMs !== request.sourceMtimeMs) throw new SessionChangedDuringIndexError("会话在索引发布前发生变化")
+    if (finalStat.mtimeMs !== request.sourceMtimeMs
+      || (sourceChangeVersions.get(resolve(request.session.metadata.path)) ?? 0) !== request.sourceChangeVersion) {
+      throw new SessionChangedDuringIndexError("会话在索引发布前发生变化")
+    }
     return commitIndexBatch([], true)
   }
 
@@ -774,7 +1135,10 @@ async function replaceIndexBatches(request: ReplaceIndexBatchesRequest): Promise
     const complete = next.done === true
     if (complete) {
       const finalStat = await statSession(request.session.metadata, request.signal)
-      if (finalStat.mtimeMs !== request.sourceMtimeMs) throw new SessionChangedDuringIndexError("会话在索引发布前发生变化")
+      if (finalStat.mtimeMs !== request.sourceMtimeMs
+        || (sourceChangeVersions.get(resolve(request.session.metadata.path)) ?? 0) !== request.sourceChangeVersion) {
+        throw new SessionChangedDuringIndexError("会话在索引发布前发生变化")
+      }
     }
     const revision = await commitIndexBatch(currentBatch, complete)
     offset += currentBatch.length
@@ -784,6 +1148,7 @@ async function replaceIndexBatches(request: ReplaceIndexBatchesRequest): Promise
 
   async function commitIndexBatch(entries: ConversationIndexEntry[], complete: boolean): Promise<number> {
     if (request.signal.aborted) return 0
+    request.assertCurrent()
     return host.request("conversation_index_replace", {
       sessionId: request.session.metadata.id,
       fingerprint: request.fingerprint,
@@ -800,16 +1165,19 @@ function projectSearchResults(
   indexRevision: number,
   memoryRevision: number,
   tokenBudget: number,
+  forgetEpoch: number,
 ): MemoryProjection[] {
   const result: MemoryProjection[] = []
   let remaining = Math.max(0, Math.floor(tokenBudget))
   for (const entry of entries) {
-    const projection = conversationProjection(entry, indexRevision, memoryRevision)
+    const projection = conversationProjection(entry, indexRevision, memoryRevision, forgetEpoch)
     let text = projection.text
     const tokens = estimateContextTokens(text)
     if (tokens <= 0 || tokens > remaining) {
       if (!entry.matchedText) continue
-      const matchedProjection = conversationProjection({ ...entry, text: entry.matchedText }, indexRevision, memoryRevision)
+      const matchedProjection = conversationProjection({ ...entry, text: entry.matchedText,
+        readSource: entry.readSource && entry.matchedRange ? { ...entry.readSource, range: entry.matchedRange } : undefined },
+      indexRevision, memoryRevision, forgetEpoch)
       text = matchedProjection.text
       const matchedTokens = estimateContextTokens(text)
       if (matchedTokens <= 0 || matchedTokens > remaining) continue
@@ -824,10 +1192,12 @@ function projectSearchResults(
 }
 
 export function conversationProjection(
-  entry: ConversationSearchEntry,
+  entry: ConversationSearchEntry & Partial<Pick<ConversationEvidenceEntry, "readSource" | "matchedText">>,
   indexRevision: number,
   memoryRevision: number,
+  forgetEpoch?: number,
 ): MemoryProjection {
+  const evidence = entry
   return {
     sourceId: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`,
     memoryVersion: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}:index-${indexRevision}`,
@@ -837,6 +1207,9 @@ export function conversationProjection(
     tokenBudget: estimateContextTokens(entry.text),
     tier: "recall",
     memoryRevision,
+    ...(evidence.readSource && forgetEpoch !== undefined ? { readSource: { ...evidence.readSource,
+      sourceId: `conversation:${entry.sessionId}:${entry.entryId}:0`,
+      revision: indexRevision, memoryRevision, forgetEpoch } } : {}),
     conversation: {
       sessionId: entry.sessionId,
       entryId: entry.entryId,
@@ -845,7 +1218,9 @@ export function conversationProjection(
       timestamp: entry.timestamp,
       seq: entry.seq,
       chunk: entry.chunk,
-      ...("matchedText" in entry ? { extent: "entry" as const } : { extent: "chunk" as const }),
+      extent: evidence.readSource
+        ? evidence.readSource.range.start === 0 && evidence.readSource.range.end === evidence.readSource.totalChars ? "entry" : "chunk"
+        : "matchedText" in entry ? "entry" : "chunk",
     },
   }
 }

@@ -123,6 +123,257 @@ fn add(store: &MemoryStore, op: &str, base: i64, draft: &Value) -> i64 {
         .expect("写入记忆")
 }
 
+#[test]
+fn episode_navigation_reads_all_scoped_sources_and_marks_partial_coverage() {
+    let (_fixture, store) = Fixture::new();
+    let mut sources = Vec::new();
+    for (session, source_id, entry_id, timestamp) in [
+        ("s1", "episode-source-a", "entry-a", 100i64),
+        ("s2", "episode-source-b", "entry-b", 200i64),
+    ] {
+        let mut value = source(source_id, entry_id, source_id);
+        value["sessionId"] = json!(session);
+        // Commit time differs from the user message time in real Pi sessions.
+        value["observedAt"] = json!(timestamp + 7);
+        sources.push(value);
+        store
+            .conversation_index_replace(
+                session,
+                source_id,
+                None,
+                0,
+                &[ConversationIndexEntry {
+                    entry_id: entry_id.into(),
+                    event_id: Some(format!("{entry_id}:user")),
+                    seq: 1,
+                    chunk: 0,
+                    role: "user".into(),
+                    text: format!("{session} original"),
+                    timestamp,
+                    anchor_entry_id: None,
+                    anchor_event_id: None,
+                }],
+                None,
+            )
+            .unwrap();
+    }
+    store.register_sources(&sources).unwrap();
+    let mut episode = draft(
+        "跨会话项目事件",
+        vec!["episode-source-a", "episode-source-b"],
+    );
+    episode["kind"] = json!("episode");
+    episode["scope"] = json!("session");
+    episode["scopeId"] = json!("s1");
+    episode["navigation"] =
+        json!({"people":[{"name":"Ada","aliases":["A"]}],"topics":["project alpha"]});
+    add(
+        &store,
+        "episode-nav",
+        store.status().unwrap().revision,
+        &episode,
+    );
+    for level in ["people", "topics"] {
+        let page = store
+            .memory_catalogue(
+                &serde_json::from_value(json!({
+                    "level":level,"limit":1,"factScope":{"sessionId":"s1","sessionIds":["s1","s2"]}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            page["entries"].as_array().unwrap().len(),
+            1,
+            "{level}: {page}"
+        );
+    }
+    let catalogue = store
+        .memory_catalogue(
+            &serde_json::from_value(json!({
+                "level":"events","limit":1,"factScope":{"sessionId":"s1","sessionIds":["s1","s2"]}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(catalogue["entries"].as_array().unwrap().len(), 1);
+    let item_id = catalogue["entries"][0]["itemId"].as_str().unwrap();
+    let request = |scope: Value, cursor: Option<&str>| {
+        serde_json::from_value(json!({
+        "itemId":item_id,"version":1,"sessionId":"s1","scope":scope,"cursor":cursor,"limit":1,
+        "expectedRevision":catalogue["revision"],"expectedMemoryRevision":catalogue["memoryRevision"],
+        "expectedForgetEpoch":catalogue["forgetEpoch"]
+    })).unwrap()
+    };
+    let scope = json!({"sessionIds":["s1","s2"]});
+    let first = store
+        .memory_episode_sources(&request(scope.clone(), None))
+        .unwrap();
+    assert_eq!(first["readableSourceCount"], 2);
+    assert_eq!(first["sourceCoverage"], "complete");
+    assert_eq!(first["complete"], false);
+    assert_eq!(first["entries"][0]["sessionId"], "s1");
+    let next = first["nextCursor"].as_str().unwrap();
+    let last = store
+        .memory_episode_sources(&request(scope.clone(), Some(next)))
+        .unwrap();
+    assert_eq!(last["entries"][0]["sessionId"], "s2");
+    assert_eq!(last["complete"], true);
+    assert!(last["nextCursor"].is_null());
+    let partial = store
+        .memory_episode_sources(&request(
+            json!({"sessionIds":["s1","s2"],"before":200}),
+            None,
+        ))
+        .unwrap();
+    assert_eq!(partial["readableSourceCount"], 1);
+    assert_eq!(partial["scopePartial"], true);
+    assert_eq!(partial["sourceCoverage"], "partial");
+    assert!(store
+        .memory_episode_sources(&request(json!({"sessionIds":["s1"]}), Some(next)))
+        .is_err());
+    store
+        .apply_change(
+            "forget-episode",
+            store.status().unwrap().revision,
+            "forget",
+            Some(item_id),
+            Some(1),
+            None,
+        )
+        .unwrap();
+    let stale = store.memory_episode_sources(&request(scope, None)).unwrap();
+    assert_eq!(stale["freshness"], "stale");
+    assert_eq!(stale["entries"], json!([]));
+}
+
+#[test]
+fn facts_catalogue_aliases_paginate_only_visible_active_items_and_bind_revision() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[source(
+            "catalogue-source",
+            "catalogue-entry",
+            "catalogue-hash",
+        )])
+        .expect("register source");
+    for (name, scope, scope_id, kind) in [
+        ("user-visible", "user", None, "fact"),
+        ("card-visible", "card", Some("card-a"), "fact"),
+        ("card-hidden", "card", Some("card-b"), "fact"),
+        ("session-visible", "session", Some("s1"), "fact"),
+        ("session-hidden", "session", Some("s2"), "fact"),
+        ("working-visible", "session", Some("s1"), "working"),
+        ("expired-hidden", "user", None, "fact"),
+    ] {
+        let mut value = draft(name, vec!["catalogue-source"]);
+        value["scope"] = json!(scope);
+        value["scopeId"] = json!(scope_id);
+        value["kind"] = json!(kind);
+        value["aliases"] = json!(["nebula"]);
+        value["observedAt"] = json!(100);
+        value["navigation"] = json!({"people":[{"name":"Ada","aliases":["A"]}],"topics":["nebula"]});
+        if kind == "working" {
+            value["workingState"] = json!("open");
+        }
+        if name == "expired-hidden" {
+            value["expiresAt"] = json!(1);
+        }
+        add(&store, name, store.status().unwrap().revision, &value);
+    }
+    let request = |cursor: Option<&str>, card: &str, query: &str| {
+        serde_json::from_value(json!({
+            "level":"facts", "limit":1, "cursor":cursor,
+            "factScope":{"sessionId":"s1","cardId":card,"query":query}
+        }))
+        .unwrap()
+    };
+    let first = store
+        .memory_catalogue(&request(None, "card-a", "nebula"))
+        .unwrap();
+    assert_eq!(first["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(first["complete"], false);
+    let first_cursor = first["nextCursor"].as_str().unwrap().to_owned();
+    let mut page = first;
+    let mut names = std::collections::BTreeSet::new();
+    loop {
+        for item in page["entries"].as_array().unwrap() {
+            assert!(
+                names.insert(item["draft"]["content"].as_str().unwrap().to_owned()),
+                "duplicate page item"
+            );
+        }
+        if page["complete"] == true {
+            break;
+        }
+        page = store
+            .memory_catalogue(&request(page["nextCursor"].as_str(), "card-a", "nebula"))
+            .unwrap();
+    }
+    assert_eq!(
+        names,
+        [
+            "user-visible",
+            "card-visible",
+            "session-visible",
+            "working-visible"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
+    assert_eq!(
+        store
+            .memory_catalogue(&request(None, "card-a", "unmatched-alias"))
+            .unwrap()["entries"],
+        json!([])
+    );
+    assert_eq!(
+        store
+            .memory_catalogue(&request(Some(&first_cursor), "card-b", "nebula"))
+            .unwrap()["freshness"],
+        "stale"
+    );
+    // Metadata navigation must obey the same scope as non-episode facts,
+    // without requiring those facts to have a conversation-index row.
+    for level in ["people", "topics"] {
+        for (sessions, start, end, before, expected) in [
+            (vec!["s1"], None, None, Some(101), 4),
+            (vec!["s2"], None, None, Some(101), 0),
+            (vec!["s1"], None, None, Some(100), 0),
+            (vec!["s1"], Some(101), None, None, 0),
+            (vec!["s1"], None, Some(100), None, 0),
+        ] {
+            let scoped_request = serde_json::from_value(json!({
+                "level":level,"limit":100,
+                "factScope":{"sessionId":"s1","cardId":"card-a","sessionIds":sessions,
+                    "start":start,"end":end,"before":before}
+            })).unwrap();
+            let page = store.memory_catalogue(&scoped_request).unwrap();
+            assert_eq!(page["entries"].as_array().unwrap().len(), expected, "{level}: {scoped_request:?}");
+        }
+    }
+    let id = store.list(None, None, 100).unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    store
+        .apply_change(
+            "catalogue-forget",
+            store.status().unwrap().revision,
+            "forget",
+            Some(&id),
+            None,
+            None,
+        )
+        .unwrap();
+    let stale = store
+        .memory_catalogue(&request(Some(&first_cursor), "card-a", "nebula"))
+        .unwrap();
+    assert_eq!(stale["freshness"], "stale");
+    assert_eq!(stale["entries"], json!([]));
+}
+
 /// id 后缀必须扛住「计数器与时钟锁步推进」：旧实现是两数 XOR，
 /// `(c+1) ^ (t+1) == c ^ t` 在两者尾随 1 的个数相同时恒成立（约 1/3），同一毫秒内的
 /// 相邻两次调用会生成逐字相同的 id，撞 `memory_items` 主键
@@ -206,10 +457,12 @@ fn protocol_commands_match_published_schema() {
     assert!(MEMORY_COMMANDS.contains(&"conversation_index_replace"));
     assert!(MEMORY_COMMANDS.contains(&"conversation_index_prune"));
     assert!(MEMORY_COMMANDS.contains(&"conversation_search"));
-    assert!(MEMORY_COMMANDS.contains(&"conversation_context"));
+    assert!(MEMORY_COMMANDS.contains(&"conversation_read"));
+    assert!(MEMORY_COMMANDS.contains(&"memory_catalogue"));
+    assert!(MEMORY_COMMANDS.contains(&"memory_episode_sources"));
     assert_eq!(
         MEMORY_COMMANDS.len(),
-        32,
+        34,
         "命令数量变了就要同步 protocol.json 与 ipc.ts"
     );
     assert_eq!(MEMORY_SCHEMA_VERSION, SCHEMA_VERSION);
@@ -557,10 +810,27 @@ fn pinned_core_is_read_without_query_and_bound_to_current_scopes_and_revision() 
     assert!(!texts
         .iter()
         .any(|text| text.contains("其它Card") || text.contains("过期")));
+    let memory_status = store.status().unwrap();
+    let index_status = store.conversation_index_status().unwrap();
     assert_eq!(
         snapshot["revision"],
-        json!(store.status().unwrap().revision),
-        "候选和核心画像 revision 应来自同一读取快照"
+        json!(memory_status.revision),
+        "召回 revision 应对应当前记忆库状态"
+    );
+    assert_eq!(
+        snapshot["forgetEpoch"],
+        json!(memory_status.forget_epoch),
+        "召回 forgetEpoch 应对应当前记忆库状态"
+    );
+    assert_eq!(
+        snapshot["indexRevision"],
+        index_status["revision"],
+        "召回 indexRevision 应对应当前会话索引状态"
+    );
+    assert_eq!(
+        snapshot["forgetEpoch"],
+        index_status["forgetEpoch"],
+        "记忆快照与会话索引状态应共享 forgetEpoch"
     );
 }
 
@@ -2746,12 +3016,30 @@ fn database_repair_recovers_clear_cutoff_before_conversation_cache_existed() {
         .expect("index future committed entry");
     let old_result = fixture
         .store
-        .conversation_search("旧内容", "future-session", Some(5), None, false, None)
+        .conversation_search(
+            "旧内容",
+            "future-session",
+            Some(5),
+            None,
+            false,
+            None,
+            None,
+            None,
+        )
         .expect("search pre-clear history after cache rebuild");
     assert_eq!(old_result["entries"].as_array().unwrap().len(), 0);
     let result = fixture
         .store
-        .conversation_search("新提交", "future-session", Some(5), None, false, None)
+        .conversation_search(
+            "新提交",
+            "future-session",
+            Some(5),
+            None,
+            false,
+            None,
+            None,
+            None,
+        )
         .expect("search future committed entry");
     assert_eq!(result["entries"].as_array().unwrap().len(), 1);
     assert_eq!(result["entries"][0]["entryId"], "future-user-entry");
@@ -2857,7 +3145,16 @@ fn database_repair_does_not_infer_complete_clear_inventory_from_a_leftover_fence
         .expect("index a new session after clear");
     let result = fixture
         .store
-        .conversation_search("新会话", "new-session-after-clear", Some(5), None, false, None)
+        .conversation_search(
+            "新会话",
+            "new-session-after-clear",
+            Some(5),
+            None,
+            false,
+            None,
+            None,
+            None,
+        )
         .expect("search newly indexed session");
     assert_eq!(result["entries"].as_array().unwrap().len(), 1);
 }
@@ -2892,9 +3189,11 @@ fn database_repair_rolls_back_when_existing_rows_violate_the_authoritative_const
         .lock()
         .expect("memory lock after rolled back repair");
     let row: (i64, i64) = conn
-        .query_row("SELECT id,revision FROM proactive_control WHERE id=1", [], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })
+        .query_row(
+            "SELECT id,revision FROM proactive_control WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .expect("singleton row remains after rollback");
     assert_eq!(row, (1, 3));
     assert_eq!(

@@ -48,6 +48,7 @@ import { ok } from "@earendil-works/pi-agent-core"
 import type { Context, FileError, FileInfo, FileSystem, Result } from "@earendil-works/pi-agent-core"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
+import { notifySessionFileChanged } from "@/services/session/change-signal"
 
 const log = createLogger("FrameBuffer")
 
@@ -311,7 +312,9 @@ export class FrameBufferingFileSystem implements FileSystem {
       // 转发前先在链上排队 flush：本次 drain 排在更早的帧入队之后，即使并发也先落帧、后落非帧。
       // drain 内部先物化合并项，因此非帧写入永远不会插到「比它早的 delta」前面。
       await this.flushPath(path, context)
-      return this.inner.appendFile(path, content, context)
+      const result = await this.inner.appendFile(path, content, context)
+      if (result.ok) notifySessionFileChanged(path)
+      return result
     }
 
     const frame = content as string

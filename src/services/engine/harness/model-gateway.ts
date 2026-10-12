@@ -23,6 +23,7 @@ import type { PromptSnapshot, PromptSnapshotInput } from "@/services/engine/runt
 import type { HarnessSlotSnapshot } from "./harness-slot"
 import chatImageLimits from "@/services/images/limits.json"
 import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, providerResponseByteCap, validateProviderUrl } from "./net-guard"
+import { createProviderObservation } from "./provider-observation"
 
 const log = createLogger("PiGateway")
 
@@ -39,6 +40,7 @@ export type PiModel = Model<any>
 /** 按模型 id 缓存的网关（聊天模型 + 辅助模型各自一份，签名变化即重建）。 */
 const gatewayCacheByModel = new Map<string, PiGateway>()
 const modelGateways = new WeakMap<Model<any>, PiGateway>()
+const responseObservations = new WeakMap<AssistantMessage, ReturnType<ReturnType<typeof createProviderObservation>["snapshot"]> & { reasoningEffort?: string; thinkingMode?: string }>()
 
 function configuredProviderId(): string {
   return aiConfig.provider.trim().toLowerCase() || "openai-compatible"
@@ -50,6 +52,30 @@ function builtinProvider(providerId: string): Provider | undefined {
   return undefined
 }
 
+/** Exact current IDs, not aliases. Pi 0.85.1 predates the Flash model name/capabilities.
+ * Source: https://api-docs.deepseek.com/api/create-chat-completion/ and /quick_start/pricing/
+ * `off: null` preserves our auto = server default; Pi otherwise sends thinking=disabled.
+ */
+function configuredCatalogModel(modelId: string): Model<any> | undefined {
+  const providerId = configuredProviderId()
+  if (providerId === "deepseek" && (modelId === "deepseek-flash" || modelId === "deepseek-v4-pro")) {
+    return {
+      id: modelId, name: modelId, api: "openai-completions", provider: providerId,
+      baseUrl: "https://api.deepseek.com", reasoning: true,
+      input: modelId === "deepseek-flash" ? ["text", "image"] : ["text"],
+      contextWindow: 1_000_000, maxTokens: 393_216,
+      // Peak-rate estimates only; actual provider billing varies by time of day.
+      cost: modelId === "deepseek-flash"
+        ? { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 }
+        : { input: 1.32, output: 3.96, cacheRead: 0.044, cacheWrite: 0 },
+      thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: "high", high: "high", max: "max" },
+      compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: true,
+        maxTokensField: "max_tokens", requiresReasoningContentOnAssistantMessages: true, thinkingFormat: "deepseek" },
+    }
+  }
+  return builtinProvider(providerId)?.getModels().find(model => model.id === modelId)
+}
+
 /**
  * 配置模型的有效窗口与输出预算：窗口取「模型目录 ∩ 配置窗口」，
  * 输出取「窗口比例推导值」与「模型目录 maxTokens」的较小者。
@@ -59,7 +85,7 @@ function builtinProvider(providerId: string): Provider | undefined {
  * 目录里没有的自定义模型 id 只用比例推导值，不再落回固定 4096。
  */
 function resolvePiModelBudget(modelId: string = aiConfig.model): { contextWindow: number; outputBudget: number } {
-  const catalog = builtinProvider(configuredProviderId())?.getModels().find(model => model.id === modelId)
+  const catalog = configuredCatalogModel(modelId)
   const contextWindow = Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens)
   const derived = contextBudget(contextWindow).outputReserve
   return { contextWindow, outputBudget: Math.min(derived, catalog?.maxTokens ?? derived) }
@@ -81,7 +107,7 @@ function createConfiguredGateway(modelId: string = aiConfig.model): PiGateway {
   if (cached?.signature === signature) return cached
 
   const builtin = builtinProvider(providerId)
-  const catalog = builtin?.getModels().find(model => model.id === modelId)
+  const catalog = configuredCatalogModel(modelId)
   const { contextWindow, outputBudget } = resolvePiModelBudget(modelId)
   const model: Model<any> = {
     ...catalog,
@@ -154,14 +180,56 @@ export function toPiReasoningLevel(effort: ThinkingEffort | undefined): Thinking
 
 export function piStream(model: Model<any>, context: Context, options?: SimpleStreamOptions) {
   const gateway = modelGateways.get(model) ?? createConfiguredGateway()
-  return gateway.models.streamSimple(model, context, {
-    ...options,
-    // 网络防护挂在 fetch 上：协议白名单与响应体上限对主链路同样生效。
-    // 不支持外部传入 fetch —— 边界只有一处，不接受绕过。
-    fetch: gateway.fetch,
-    // Harness owns retry budgets; avoid multiplying SDK retries by turn retries.
-    maxRetries: 0,
-  })
+  const observation = createProviderObservation()
+  const params: { reasoningEffort?: string; thinkingMode?: string } = {}
+  const controller = new AbortController()
+  const abortFromCaller = () => controller.abort(options?.signal?.reason ?? new Error("Provider 请求已取消"))
+  if (options?.signal?.aborted) abortFromCaller()
+  else options?.signal?.addEventListener("abort", abortFromCaller, { once: true })
+  const timeoutMs = options?.timeoutMs ?? PROVIDER_TIMEOUT_MS
+  let stream: AssistantMessageEventStream
+  try {
+    stream = gateway.models.streamSimple(model, context, {
+      ...options,
+      signal: controller.signal,
+      timeoutMs,
+      // 网络防护挂在 fetch 上：协议白名单与响应体上限对主链路同样生效。
+      // 同一 60s timeoutMs 约束响应头等待和 SSE body 无进展时间；持续输出会刷新 body 窗口。
+      // 不支持外部传入 fetch —— 边界只有一处，不接受绕过。
+      fetch: observation.fetch(gateway.fetch, {
+        signal: controller.signal,
+        idleTimeoutMs: timeoutMs,
+        onIdleTimeout: error => controller.abort(error),
+      }),
+      async onPayload(payload, payloadModel) {
+        const replacement = await options?.onPayload?.(payload, payloadModel)
+        const finalPayload = replacement === undefined ? payload : replacement
+        if (finalPayload && typeof finalPayload === "object") {
+          const value = finalPayload as { reasoning_effort?: unknown; thinking?: { type?: unknown } }
+          if (typeof value.reasoning_effort === "string") params.reasoningEffort = value.reasoning_effort
+          if (typeof value.thinking?.type === "string") params.thinkingMode = value.thinking.type
+        }
+        return finalPayload
+      },
+      // Harness owns retry budgets; avoid multiplying SDK retries by turn retries.
+      maxRetries: 0,
+    })
+  } catch (error) {
+    options?.signal?.removeEventListener("abort", abortFromCaller)
+    throw error
+  }
+  // Observe before consumers receive result(). Pi's message.model can be the requested ID.
+  void stream.result().then(message => {
+    const observed = observation.snapshot()
+    // An idle watchdog cancellation is a Provider failure, while an upstream user stop remains aborted.
+    if (observed.idleTimeout && message.stopReason === "aborted") {
+      message.stopReason = "error"
+      message.errorMessage = "Provider response stream made no progress before the idle deadline"
+    }
+    responseObservations.set(message, { ...observed, ...params })
+  }, () => { /* The caller's provider_request_end and Pi error path own failures; observation adds no second error outlet. */ })
+    .finally(() => options?.signal?.removeEventListener("abort", abortFromCaller))
+  return stream
 }
 
 // ── Harness 注入面 ──
@@ -258,6 +326,7 @@ export function createHarnessModels(options: HarnessModelsOptions = {}): Models 
               model: model.id,
               api: model.api,
               purpose: "main",
+              ...responseObservations.get(message),
               status: message.stopReason,
               ...requestInfo,
               durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - started,
@@ -396,6 +465,7 @@ export interface PiTextCallAudit {
 export interface PiTextCallInput {
   /** 调用用途：进入按 purpose 分列的用量统计，也用于日志。 */
   purpose: PiTextPurpose
+  memoryStage?: "rewrite" | "rerank" | "dreaming"
   systemPrompt: string
   userText: string
   /** In-memory visual inputs for one-shot calls. Prompt snapshots record only their count. */
@@ -416,6 +486,9 @@ export interface PiTextCallInput {
 
 export interface PiTextCallResult {
   text: string
+  /** Raw provider identity, absent when the response does not establish it. */
+  responseModel?: string
+  cacheUsageReported?: boolean
   /** 拼接后的 thinking 块；stages 需要 text+thinking 合并解析 */
   thinking?: string
   usage: Usage
@@ -469,8 +542,8 @@ function thinkingText(content: AssistantMessage["content"]): string {
  * 三个刻意的语义决策：
  * 1. 自己检查 `stopReason`：pi-ai 的失败是「正常结束 + stopReason=error/aborted」，
  *    不检查就会把失败当成空回复交给调用方。
- * 2. 自己用 AbortController 兜总时限：`timeoutMs` 只是 SDK 的请求超时（收到响应头就清），
- *    SSE 断在半路不会触发。abort 文案沿用旧 provider 的「Provider 请求超时或已取消」。
+ * 2. 自己用 AbortController 兜总时限：piStream 同时约束响应头与 body 空闲时间，
+ *    本入口另保留整体 deadline，持续有数据也不能无限运行。
  * 3. 不写 updateRequestStats：这是一次性旁路调用，不属于 transcript，混进主回合的 last/上下文统计
  *    只会污染主链路的 token/工具计数。用量按 purpose 记进分列统计（含失败响应），既不冒充主回复
  *    统计，也不从总消耗里消失。给出 `audit` 归属后请求前后各写一档 PromptSnapshot（条目落在
@@ -571,7 +644,7 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     spanId = traceEnabled ? `provider-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}` : undefined
     providerStarted = traceEnabled ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
     if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_start", () => ({
-      purpose: input.purpose, model: model.id, api: model.api,
+      purpose: input.purpose, memoryStage: input.memoryStage, model: model.id, api: model.api,
     }), { spanId, parentRunId: traceContext.runId })
     // StreamFn 允许返回 Promise（pi-agent-core 的签名），先 await 拿到流本身。
     const stream = await streamFn(model, { systemPrompt, messages }, {
@@ -585,6 +658,8 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     const message = await stream.result()
     if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_end", () => ({
       purpose: input.purpose,
+      memoryStage: input.memoryStage,
+      ...responseObservations.get(message),
       model: model.id,
       api: model.api,
       status: message.stopReason,
@@ -637,6 +712,8 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     const thinking = thinkingText(message.content)
     const result: PiTextCallResult = {
       text: contentText(message.content),
+      ...(responseObservations.get(message)?.responseModel ? { responseModel: responseObservations.get(message)!.responseModel } : {}),
+      ...(responseObservations.get(message)?.cacheUsageReported !== undefined ? { cacheUsageReported: responseObservations.get(message)!.cacheUsageReported } : {}),
       ...(thinking ? { thinking } : {}),
       usage: message.usage,
       stopReason: message.stopReason,
@@ -646,7 +723,7 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     return result
   } catch (e) {
     if (traceContext && spanId && !providerEndEmitted) publishRuntimeTrace(traceContext, "provider_request_end", () => ({
-      purpose: input.purpose, model: model.id, api: model.api, status: "failed",
+      purpose: input.purpose, memoryStage: input.memoryStage, model: model.id, api: model.api, status: "failed",
       ...(providerStarted ? { durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - providerStarted } : {}),
     }), { spanId, parentRunId: traceContext.runId })
     log.warn(`[${input.purpose}] 失败 (${Date.now() - startedAt}ms):`, formatError(e))

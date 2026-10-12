@@ -60,6 +60,7 @@ export {
   SESSION_TRANSCRIPT_TOOL,
 } from "./session-transcript"
 export type { ToolResultEntryReader, ToolResultLookup } from "./session-transcript"
+export { createMemoryNavigationTools, MEMORY_LIST_TOOL, MEMORY_SEARCH_TOOL, MEMORY_READ_TOOL } from "./memory-navigation"
 
 // ── 回合默认激活面与按需取用（唯一判定 + 取用入口）──
 export { defaultActiveToolNames } from "./activation"

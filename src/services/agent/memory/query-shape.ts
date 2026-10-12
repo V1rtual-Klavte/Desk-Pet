@@ -30,6 +30,20 @@ export function hasExplicitRewriteHint(query: string): boolean {
 const SOCIAL_ACKNOWLEDGEMENT = /^(?:你好|嗨|哈喽|hello|hi|谢谢|感谢|好的|好|收到|明白|知道了|嗯|ok|okay|got it|thanks|thank you)[!！?？。，,.\s]*$/iu
 const SHORT_FOLLOWUP = /(?:这|那|它|他|她|然后|接下来|这个|那个|呢|再说|继续|\b(?:that|this|it|those|them|and then|what about|how about)\b)/iu
 const PERSONAL_HISTORY_QUESTION = /(?:\b(?:what|which|when|where|how|who)\b.{0,140}\b(?:did you|did we|did i|have you|have we|have i|had i|i (?:was|am|earned|spent|bought|started|attended|took|have)|my)\b|\b(?:did you|did we|have you|have we)\b.{0,100}\b(?:recommend(?:ed)?|suggest(?:ed)?|mention(?:ed)?|say|said|tell|told|choose|decide)\b|\bwhat did i (?:say|tell|choose)\b|\bwhat (?:is|are|was|were) my\b|\bwhat do i\b|\bmy (?:favorite|favourite|preference|habit|usual|choice|plan|address|birthday|name)\b|我的(?:偏好|习惯|选择|安排|名字|地址|生日)|我(?:平时|通常|之前|上次).{0,12}(?:喜欢|选择|说过|告诉过)|我们(?:之前|上次|当时).{0,12}(?:决定|选定|说过)|你(?:刚才|之前|上次|当时).{0,12}(?:推荐|建议|提到|说过|告诉过))/iu
+// Past-tense questions about another subject can still ask for conversational
+// history (for example, "What did Caroline research?"). Keep present-tense
+// knowledge questions outside this retrieval intent.
+const THIRD_PERSON_PAST_FACT_QUESTION = /\b(?:what|which|when|where|who|how|why)\b.{0,120}\bdid\s+(?!(?:you|we|i)\b)(?:(?:the|a|an)\s+)?[\p{L}\p{N}][\p{L}\p{N}'’.-]*(?:\s+[\p{L}\p{N}][\p{L}\p{N}'’.-]*){0,2}\s+[\p{L}][\p{L}'’.-]*\b/iu
+// Third-person questions are memory-shaped only when their wording asks about
+// someone's own state/experience or explicitly reports what they said/did.
+// Generic subject knowledge ("What is SQLite?", "How does SQL work?") stays out.
+const THIRD_PERSON_PRESENT_HISTORY_QUESTION = /(?:\b(?:what|which|who|when|where|how)\b.{0,100}\b(?:is|are|was|were)\s+[\p{Lu}][\p{L}'’.-]*['’]s\s+(?:relationship\s+status|marital\s+status|(?:family|employment|living|health|emotional|personal)\s+(?:status|situation|history|experience|preference|plan|goal|feeling|opinion)|(?:favorite|favourite|usual|preferred)\s+[\p{L}]+|(?:job|family|goal|plan|hobby|birthday|address|experience|feeling|opinion|preference))\b|\b(?:what|which|who|when|where|how)\b.{0,100}\b(?:does|do|is|are|has|have)\s+[\p{Lu}][\p{L}'’.-]*\b.{0,80}\b(?:describe|describes|described|feel|feels|felt|think|thinks|thought|say|says|said|mention|mentions|mentioned|recommend|recommends|recommended|share|shares|shared|experience|experiences|experienced|try|tries|tried|choose|chooses|chose|decide|decides|decided|like|likes|liked|prefer|prefers|preferred|done|made|attend|attended|visit|visited|start|started|buy|bought|learn|learned|study|studied|live|lived|watch|watched|read|finish|finished|achieve|achieved)\b)/u
+
+function normalizeLeadingEnglishQuestionWord(query: string): string {
+  return query.replace(/^(\s*)(what|which|who|when|where|how)\b/iu, (_match, space: string, word: string) =>
+    `${space}${word.toLocaleLowerCase()}`)
+}
+
 const PERSONAL_ADVICE = /(?:\b(?:recommend|suggest)\b.{0,100}\b(?:for me|i|my)\b|\b(?:i['’]ve|i have|i am|i['’]m)\b.{0,100}\b(?:trouble|struggling|advice|tips|recommend)\b|给我.{0,12}(?:推荐|建议)|(?:我|我的).{0,24}(?:困扰|遇到问题|不太顺利|有何建议|怎么办))/iu
 const PAST_RECOMMENDATION = /(?:我(?:曾经|之前|以前|上次).{0,24}(?:推荐|建议)|你(?:曾经|之前|以前|上次).{0,24}(?:推荐|建议)|\bwhat did you recommend\b|\byou (?:previously|last time) recommended\b)/iu
 const PERSONAL_EVENT_QUESTION = /(?:\b(?:how many|how much|why|how|what|which|when|where|who)\b.{0,140}\b(?:did i|have i|had i|was i|did we|have we|had we|were we)\b|\b(?:what steps|which steps)\b.{0,100}\b(?:did i take|have i taken|did we take|have we taken)\b)/iu
@@ -44,8 +58,12 @@ export function hasPersonalRecallIntent(query: string): boolean {
 /** Derive a conservative, deterministic retrieval plan from the user's exact wording. */
 export function deriveLocalMemoryQueryShape(query: string, before?: number): LocalMemoryQueryShape {
   const text = query.trim()
+  const normalizedQuestionText = normalizeLeadingEnglishQuestionWord(text)
   const datedConversationOverview = isDatedConversationOverview(text)
-  const explicitRecall = datedConversationOverview || /(?:曾经分享过|分享过|推(?:过|荐过)|推过荐|推荐过|建议过|提过|说过|告诉过|记录|聊过|某天聊了什么|那天聊了什么|之前聊了什么|上次聊了什么|记得|回忆|我(?:之前|以前|上次|曾经)|我们(?:之前|以前|上次|曾经)|what did (?:you|we|i)|did you (?:recommend|suggest|mention|say)|have we discussed|previously shared)/iu.test(text)
+  const conversationalOverview = isConversationOverviewQuestion(text)
+  const explicitRecall = datedConversationOverview || conversationalOverview || THIRD_PERSON_PAST_FACT_QUESTION.test(text)
+    || THIRD_PERSON_PRESENT_HISTORY_QUESTION.test(normalizedQuestionText)
+    || /(?:曾经分享过|分享过|推(?:过|荐过)|推过荐|推荐过|建议过|提过|说过|告诉过|记录|聊过|某天聊了什么|那天聊了什么|之前聊了什么|上次聊了什么|记得|回忆|我(?:之前|以前|上次|曾经)|我们(?:之前|以前|上次|曾经)|what did (?:you|we|i)|did you (?:recommend|suggest|mention|say)|have we discussed|previously shared)/iu.test(text)
   const personal = hasPersonalRecallIntent(text)
   const personalEvent = PERSONAL_EVENT_QUESTION.test(text)
   const personalQuestionText = text.replace(/(?:帮|告诉|给|发|问|提醒|替)我/gu, " ")
@@ -54,7 +72,8 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
   const procedure = /(?:怎么(?:做|弄|用|操作|实现)|如何(?:做|使用|操作)|步骤|流程|办法|方法|过程|how to|how did i\b|how have i\b|steps?\b|process\b|procedure\b)/iu.test(text)
   const explanation = /(?:为什么|为何|原因|缘由|怎么会|what(?:'s| is) the reason|why\b|explain\b)/iu.test(text)
   const advice = !PAST_RECOMMENDATION.test(text) && (PERSONAL_ADVICE.test(text) || CURRENT_ADVICE_REQUEST.test(text))
-  const overview = datedConversationOverview || /(?:总结|概括|整体|总体|所有|全部|有哪些|哪些|哪类|列出|回顾|梳理|聊了什么|讨论了什么|谈了什么|overview|summari[sz]e|list all|all of my)/iu.test(text)
+  const overview = datedConversationOverview || conversationalOverview
+    || /(?:总结|概括|整体|总体|所有|全部|有哪些|哪些|哪类|列出|回顾|梳理|聊了什么|讨论了什么|谈了什么|overview|summari[sz]e|list all|all of my)/iu.test(text)
 
   let recallIntent: MemoryRecallIntent = "none"
   if (explicitRecall || personal || personalEvent || personalQuestion) {
@@ -77,12 +96,37 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
 }
 
 export function deriveMemoryQueryPlan(originalQuery: string, before?: number): DerivedMemoryQueryPlan {
+  const shape = deriveLocalMemoryQueryShape(originalQuery, before)
   return {
     originalQuery,
-    queries: originalQuery.trim() ? [originalQuery] : [],
+    queries: originalQuery.trim() ? deriveComplementaryQueries(originalQuery, shape) : [],
     rewriteStatus: "not_needed",
-    ...deriveLocalMemoryQueryShape(originalQuery, before),
+    ...shape,
   }
+}
+
+function deriveComplementaryQueries(query: string, shape: LocalMemoryQueryShape): string[] {
+  const original = query.trim()
+  const normalizedQuestionText = normalizeLeadingEnglishQuestionWord(original)
+  if (shape.recallIntent === "none" || !THIRD_PERSON_PAST_FACT_QUESTION.test(original)
+    && !THIRD_PERSON_PRESENT_HISTORY_QUESTION.test(normalizedQuestionText)) return [original]
+
+  const words = original.match(/[\p{L}\p{N}][\p{L}\p{N}'’.-]*/gu) ?? []
+  const proper = words.slice(1).filter(word => /^[\p{Lu}]/u.test(word))
+    .map(word => word.replace(/['’]s$/iu, ""))
+  const scaffolding = new Set([
+    "what", "which", "who", "when", "where", "why", "how", "did", "do", "does", "is", "are", "was", "were", "has", "have", "had",
+    "the", "a", "an", "and", "or", "but", "of", "to", "for", "from", "with", "at", "by", "on", "in", "it", "this", "that",
+    "you", "we", "i", "my", "your", "their", "his", "her", "they", "them", "me", "us",
+  ])
+  const properSet = new Set(proper.map(word => word.toLocaleLowerCase()))
+  const content = words.map(word => word.replace(/['’]s$/iu, "").toLocaleLowerCase())
+    .filter(word => word.length >= 3 && !scaffolding.has(word) && !properSet.has(word))
+  const variants = [
+    [...new Set([...proper, ...content])].join(" "),
+    [...new Set(content)].join(" "),
+  ].filter(value => value && value !== original.toLocaleLowerCase())
+  return [...new Set([original, ...variants])]
 }
 
 function isDatedConversationOverview(query: string): boolean {

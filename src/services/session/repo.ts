@@ -48,6 +48,7 @@ export async function resetPiSessionLayerForTest(): Promise<void> {
   for (const sessionId of [...openSessions.keys()]) {
     await releasePiSession(sessionId)
   }
+  await Promise.all([...closingSessions.values()])
   repoPromise = null
   // 句柄循环可能一次都没走（本 trial 没打开过仓库）：仍要冲一次 —— 帧缓冲挂在模块级
   // 注册表上，不跨 trial 残留（测试隔离；T-6 的测试侧）。
@@ -70,6 +71,8 @@ export async function deleteAllPiSessionsForTest(): Promise<number> {
  * 不要自行 createPiSessionRepo() 打开同一会话。
  */
 const openSessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>()
+/** Closing includes flush/fold: reopening before it finishes can race the sole JSONL writer. */
+const closingSessions = new Map<string, Promise<void>>()
 const sessionFileLockTails = new Map<string, Promise<void>>()
 
 /** Whether this process already owns a live session handle. */
@@ -78,7 +81,7 @@ export function isPiSessionOpen(sessionId: string): boolean {
 }
 
 /**
- * Serialize transcript indexing/clear snapshots with file deletion for one session.
+ * Serialize transcript indexing/clear snapshots with session close and file deletion.
  * Ordinary session writes retain their existing Harness ownership and do not use this lock.
  */
 export async function withPiSessionFileLock<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
@@ -125,6 +128,7 @@ export async function listPiSessionMetadata(): Promise<JsonlSessionMetadata[]> {
 
 /** 打开（或复用）会话句柄；句柄保持打开直到 releasePiSession()。 */
 export async function acquirePiSession(sessionId: string): Promise<Session<JsonlSessionMetadata>> {
+  while (closingSessions.has(sessionId)) await closingSessions.get(sessionId)
   const cached = openSessions.get(sessionId)
   if (cached) return cached
   const opening = (async () => {
@@ -139,7 +143,7 @@ export async function acquirePiSession(sessionId: string): Promise<Session<Jsonl
   try {
     return await opening
   } catch (error) {
-    openSessions.delete(sessionId)
+    if (openSessions.get(sessionId) === opening) openSessions.delete(sessionId)
     throw error
   }
 }
@@ -176,10 +180,36 @@ export async function acquirePiSession(sessionId: string): Promise<Session<Jsonl
  * （> `minFileBytes` 的会话多一次 stat，超过回收闸门的会读全文并可能重写）。若实测在历史
  * 面板刷新时有可见开销，上调 `FOLD_POLICY` 常量（单点可调），不要按调用方加旁路分支。
  */
-export async function releasePiSession(sessionId: string): Promise<void> {
+export function releasePiSession(sessionId: string, options: { fileLockHeld?: boolean } = {}): Promise<void> {
+  const closing = closingSessions.get(sessionId)
+  if (closing) return closing
+  let flight!: Promise<void>
+  const close = async (): Promise<void> => {
+    const inFlight = closingSessions.get(sessionId)
+    if (inFlight) return inFlight
+    // Publish the exact promise returned to callers, and only after the file lock is held.
+    // Publishing before lock acquisition would make a lock-owning reader wait on this close.
+    closingSessions.set(sessionId, flight)
+    try {
+      await closePiSessionHandle(sessionId)
+    } finally {
+      if (closingSessions.get(sessionId) === flight) closingSessions.delete(sessionId)
+    }
+  }
+  flight = options.fileLockHeld
+    ? Promise.resolve().then(close)
+    : withPiSessionFileLock(sessionId, close)
+  return flight
+}
+
+async function closePiSessionHandle(sessionId: string): Promise<void> {
   const handle = openSessions.get(sessionId)
-  if (!handle) return
+  if (!handle) return Promise.resolve()
   openSessions.delete(sessionId)
+  await closePiSession(sessionId, handle)
+}
+
+async function closePiSession(sessionId: string, handle: Promise<Session<JsonlSessionMetadata>>): Promise<void> {
   // 折叠要用 metadata 定位文件，而它只能从 `await handle` 得到的句柄上取（不另存一份，
   // 不给 openSessions 加第二种值形态）；因此先在这里声明、在 try 内赋值。
   let metadata: JsonlSessionMetadata | undefined
@@ -280,7 +310,7 @@ export async function deletePiSession(sessionId: string): Promise<boolean> {
       log.warn("待删除会话不存在:", sessionId)
       return false
     }
-    await releasePiSession(sessionId)
+    await releasePiSession(sessionId, { fileLockHeld: true })
     await repo.delete(metadata, BACKGROUND_CONTEXT)
     log.info("已删除会话:", sessionId)
     return true
@@ -298,7 +328,11 @@ export async function readPiSessionEntries(sessionId: string): Promise<Entry[]> 
  * 供启动期批量扫描使用（Plan checkpoint 恢复），避免把所有历史会话都留在句柄缓存里；
  * 扫描方按 `customType` 收窄读取集合，不再全量解析每个会话。
  */
-export async function readPiSessionEntriesOnce(sessionId: string, query?: EntryQuery): Promise<Entry[]> {
+export async function readPiSessionEntriesOnce(
+  sessionId: string,
+  query?: EntryQuery,
+  options: { fileLockHeld?: boolean } = {},
+): Promise<Entry[]> {
   const alreadyOpen = openSessions.has(sessionId)
   const session = await acquirePiSession(sessionId)
   try {
@@ -310,7 +344,9 @@ export async function readPiSessionEntriesOnce(sessionId: string, query?: EntryQ
       const [{ getActiveSessionId }, { harnessSlots }] = await Promise.all([
         import("./store"), import("@/services/engine/harness/harness-slot"),
       ])
-      if (getActiveSessionId() !== sessionId && !harnessSlots.peek(sessionId)) await releasePiSession(sessionId)
+      if (getActiveSessionId() !== sessionId && !harnessSlots.peek(sessionId)) {
+        await releasePiSession(sessionId, { fileLockHeld: options.fileLockHeld })
+      }
     }
   }
 }

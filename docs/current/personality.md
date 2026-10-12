@@ -48,7 +48,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 可选数值变量声明 `proactiveBands`（有限、严格递增且覆盖 min）；只有已提交 Card 数值跨过显式档位才形成机会，不按变量名写死规则。默认 Card 好感度 0–100，档位 0/10/30/60/85；有分量时按分量增加，不按消息数涨、不因沉默降低，亲密感不接采样 temperature。
 
-拟人提示词对所有问题都先保证准确回答，并保留必要事实、用户限制、条件、结论与步骤；简短、口语、分泡和避免文档腔都不能删减答案必需内容，只省去无关背景。
+产品回复约束先遵守用户明确的语言、格式、篇幅与无证据弃权要求，优先于 Card 风格；事实题先给核心答案，需要推断时明确标识且不得写成记忆事实。拟人提示词对所有问题都先保证准确回答，并保留必要事实、用户限制、条件、结论与步骤；简短、口语、分泡和避免文档腔都不能删减答案必需内容，只省去无关背景。
 
 提交前先剥离 RUNTIME_DATA，再把 SPLIT 标记转为同一助手条目的多个 text part；分隔 token 即使粘在正文旁或带空格、大小写变化，也会在代码围栏和行内代码之外归一化处理，task 回复只剥标记、不拆泡。原文留底与最终落盘文本精确配对，变量仍从原始正文解析。实时推送与重载共享分段，标记不进入下一次请求或压缩正文。
 
@@ -68,7 +68,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 结算只解析**结算正文**自己的 RUNTIME_DATA：结算取 `state.finalPlainAssistant ?? state.finalAssistant`（本回合最后一条无 toolCall 的助手消息；没有它时才退回最后一条助手消息），再用 Harness 的 afterResponse 留底的「原始正文 ↔ 剥离后正文」配对取回原始正文（剥离先于提交，提交的条目里已经没有协议块）。因此本回合其他助手消息（含带 toolCall 的过程消息）里的 RUNTIME_DATA 只被剥离、不写变量。计划步骤的子代理（`runPiSubAgent`）不解析变量：其原始正文随父会话的 `deskpet.plan_step_result` 条目留证（PLAN-09），变量解析入口只有主回合的 `generateReply` 一处。
 
-结算同时判定协议缺失并安排下一回合提醒：具备写入资格（Card 未过期且非主动表达）的完成回合，若结算原始正文不含 `<RUNTIME_DATA>…</RUNTIME_DATA>` 区块、而本回合冻结 Card 又声明了 `scope=card 且 updateBy=llm` 的变量，结算记一条 warn 并给该会话挂起提醒（[reply/reminder.ts](../../src/services/reply/reminder.ts) 的会话级 mark/clear/has：进程内存、不落盘、按会话隔离，重启后由新回合按缺失结果重新判定）。挂起期间下一回合的请求 system prompt 追加 `ephemeral:runtime-data` 块，文案取 `RUNTIME_DATA_REMINDER_TEXT`；该回合结算时含区块（含空区块）或已无可写变量就清除，仍缺区块则继续挂起并再记一条 warn。取消与中断的回合走不到结算，既不挂起也不清除；主动表达不参与判定、也不注入提醒。
+结算同时判定协议缺失并安排下一回合提醒：具备写入资格（Card 未过期且非主动表达）的完成回合，若结算原始正文不含 `<RUNTIME_DATA>…</RUNTIME_DATA>` 区块、而本回合冻结 Card 又声明了 `scope=card 且 updateBy=llm` 的变量，结算记一条 warn 并给该会话挂起提醒（[reply/reminder.ts](../../src/services/reply/reminder.ts) 的会话级 mark/clear/has：进程内存、不落盘、按会话隔离，重启后由新回合按缺失结果重新判定）。挂起期间下一回合生成 `ephemeral:runtime-data` 块，文案取 `RUNTIME_DATA_REMINDER_TEXT`，与变量值、计划状态一起投影到请求末尾的瞬时注记；system prompt 只保留稳定协议规则，提醒不写入会话或记忆。该回合结算时含区块（含空区块）或已无可写变量就清除，仍缺区块则继续挂起并再记一条 warn。取消与中断的回合走不到结算，既不挂起也不清除；主动表达不参与判定、也不注入提醒。
 
 ## 验证入口
 

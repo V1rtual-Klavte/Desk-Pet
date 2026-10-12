@@ -452,7 +452,7 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     }
     const caseFilter = raw.benchCase ? raw.benchCase.split(",").map(value => value.trim()).filter(Boolean) : undefined
     const judgeMode = raw.benchJudge === "off" ? "off" : "on"
-    const judgeModel = raw.benchJudgeModel ?? resolvedModels.judgeModel ?? "deepseek-reasoner"
+    const judgeModel = raw.benchJudgeModel ?? resolvedModels.judgeModel ?? "deepseek-v4-pro"
     const readerControlValue = raw.benchReaderControl ?? undefined
     if (readerControlValue && (dataset !== "longmemeval" || info.split !== "oracle" || !["direct", "con"].includes(readerControlValue))) {
       throw new Error("--bench-reader-control 仅支持 longmemeval oracle 的 direct|con")
@@ -461,7 +461,7 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     const planned = planBenchCells(dataset, file, { limit, caseFilter, seed })
     manifest.bench = {
       dataset, split: info.split, namespace: info.namespace, plannedCells: planned.length,
-      seed, judge: judgeMode === "off" ? null : judgeModel, readerControl: readerControl ?? null,
+      seed, judge: dataset === "memorybank" && judgeMode !== "off" ? judgeModel : null, readerControl: readerControl ?? null,
     }
     manifest.expectedTrials = planned.map(cell => ({ caseId: cell.caseId, sceneId: cell.caseId, trialId: "1" }))
     await writeManifest(false)
@@ -511,7 +511,7 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     const benchCorrect = scores.overall?.correct ?? scores.accuracy?.correct
     const qualityNote = benchAccuracy === null || benchAccuracy === undefined
       ? "无已判分样本"
-      : `${dataset === "locomo" ? "平均 F1" : "正确率"} ${(benchAccuracy * 100).toFixed(1)}%`
+      : `${dataset === "locomo" ? "官方 QA 均分" : "正确率"} ${(benchAccuracy * 100).toFixed(1)}%`
         + `（${dataset === "locomo" ? `n=${benchJudged ?? "?"}` : `${benchCorrect ?? "?"}/${benchJudged ?? "?"}`}）`
     view.finish({
       verdict: benchPassed ? "pass" : "fail",

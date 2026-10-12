@@ -1,3 +1,9 @@
+// 2026-10-12 首次证据跨通道复用定向复核：runtime 增加首次记忆范围授权；图片准备、附件投影与回执分支未变，域内既有覆盖保留。
+// 2026-10-12 范围复用收口复核：runtime 的本次差异仅是可见 memory_read 新正文与完整引用成本计量、冻结记忆 selector 模型；行为归 memory mm-51/63/72，未改本域用户交互/权限/图片投影分支。
+// 2026-10-12 定向复核：runtime本轮只补导航readRefs元数据、Provider超时注释；manager仅向release传递fileLockHeld。图片准入、正文投影及删除前收集图片路径未改，ci覆盖点保留；关闭锁的竞争回归归harness-storage，流超时归agent-runtime。
+// 2026-10-12 定向复核：仅显式 memory 回合收窄到治理读取工具；默认回合和主动 tools=[] 不变。真实 payload 工具名、进入请求的原文来源与 bench 分账同步；跨域旧行为不变。
+// 2026-10-11 按需导航影响复核：dispatch.rs 的记忆命令与 runtime.ts 的记忆工具/投影变化归 memory mm-08/72；ci-* 图片准入、引用和生命周期分支未改。源码 hash 在行为审查后刷新。
+// 2026-10-10 官方评测与 token 改造（analyze→刷新）：runtime 的请求投影将动态上下文合入既有尾注；图片 hydration、持久化元数据、预算计数与能力拒绝路径逐点核对不变。 sourceHash 按本轮冻结源码刷新，验证结果另记检查点。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中仅 host/dispatch.rs 变化 —— memory_job_checkpoint 分派臂新增可选 coveredSourceIds 参数；截图/图片命令的既有接线与错误语义未改，ci-01..06 逐点复核未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 最终静态复核：会话读取保留图片内容与托管删除入口，改动未改变图片准入或预算语义；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
@@ -169,7 +175,7 @@ export const chatImagesContract: ModuleContract = {
     "crates/native-host/src/ui/chat/model.rs",
     "crates/native-host/src/ui/chat/ui.rs",
   ],
-  sourceHash: "a4c232cf5561bfb735fba10f0b8c1696d59aac725ee5a74d0993a23dd6443d59",
+  sourceHash: "45c819ebd0f8e78494576370a10fb282cf0946e49bae5007927688a949b74bfc",
   coverage: [{ id: "ci-01", feature: "用户图片原路径整链", description: "原生常规图片准入最多4张/15MiB，图片-only输入提交后持久JSONL只存路径；模型请求临时读取真实图像，原文件删除后展示投影仍保留路径、请求明确缺失而无图像副本", why: "文本和UI缩略图不能证明模型收到了图像，也不能证明编码未进入JSONL", layer: "e2e", depth: "deep", scenarios: ["chat-image-path-production"] },
     { id: "ci-02", feature: "视觉预算与审计投影", description: "真实用户图像参与主请求与辅助请求的统一保守预算；base64长短不冒充语言token，完整图像内容仍进入仅hash审计投影", why: "图片预算为零会使上下文与主动持久额度准入失真，图像变化也不能得到相同审计内容", layer: "unit", depth: "deep", scenarios: ["chat-image-budget-content-hash"] },
     { id: "ci-03", feature: "截图展示给用户与隐私总闸", description: "screenshot 工具只在 ai.silentAccess.frequency 非 off（低/中/高档）时可用：Rust capture_screenshot 复检同一档位（off 即 Cancelled），前端命中时返回中性说明且不触达采集/落盘；show_to_user=true 时截图先经 save_screenshot 原子落盘（数据根 screenshots/；2026-10-06 取消 200 张保留上限，落盘文件不再被淘汰，回收只有删会话连带清理与用户手动删除）再挂到本回合提交的助手条目 deskpetImagePaths，读模型重载带回、原文件删除后仍保留路径（界面按不可用呈现）；show_to_user 缺省/false 时不落盘（不调用 save_screenshot、数据根不产生文件），工具结果 details 只有 showToUser、不带 screenshotPath，不挂条目、结算不回传；工具结果对模型始终携带 PNG image 块（私有截图模型照常看得见内嵌图片）", why: "「她给你看她看到的画面」要求条目与文件同源（先文件后条目、取消不产生半条消息），且隐私档位为 off 时不能截；私有截图不该在数据根留下用户没要展示的文件", layer: "integration", depth: "deep", scenarios: ["screenshot-show-to-user-attach", "screenshot-default-private", "screenshot-gate-neutral"] },

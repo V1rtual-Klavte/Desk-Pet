@@ -1,3 +1,13 @@
+// 2026-10-12 首次证据跨通道复用定向复核：runtime 的首次证据仅在最终请求视图实际插入后交给既有导航 owner；取消、工具调度和请求顺序未变，行为覆盖由 memory/mm-72 持有。
+// 2026-10-12 范围复用收口复核：runtime 的本次差异仅是可见 memory_read 新正文与完整引用成本计量、冻结记忆 selector 模型；行为归 memory mm-51/63/72，未改本域用户交互/权限/图片投影分支。
+// 2026-10-12 定向复核：仅显式 memory 回合收窄到治理读取工具；默认回合和主动 tools=[] 不变。真实 payload 工具名、进入请求的原文来源与 bench 分账同步；跨域旧行为不变。
+// Provider流空闲复核：pi-ai/openai timeout只约束响应头，piStream另以同timeoutMs约束body无进展，并向SDK signal取消；收到任意字节（含SSE心跳）刷新窗口，用户取消仍为aborted。ar-42覆盖真实piStream+安装SDK的fake HTTP路径；不覆盖真实网络及跨平台传输行为。
+// 2026-10-11 按需导航复核：runtime 的主回合工具面和记忆投影由 memory mm-72 覆盖；
+// harness-slot 新增 requestAbort，使用 Pi 持久取消准入，不等待当前工具所属驱动退出；
+// 与外部 abort 共用来源、队列归还与子槽级联逻辑，外部停止仍等待结算。mm-72 的 revision 用例
+// 真实触发工具内发布并断言无后续模型请求，ar-17 继续覆盖外部停止，准入/压缩/队列规则不变。
+// 2026-10-10 官方评测与 token 改造（analyze→刷新）：Provider 响应单流观测与 DeepSeek 当前能力接线由 ar-41/42 覆盖；turnDynamic 改为请求尾注，主回合/续跑/压缩均接入；原准入、治理与工具权限不变。 sourceHash 按本轮冻结源码刷新，验证结果另记检查点。
+// 2026-10-11 同批复核：builder 将动态上下文注入尾随 turn note；ar-25/ar-37 的断言分别核对 turnDynamic 与真实 Provider 尾注，修订契约中误称进入 systemPrompt 的旧描述。记忆预算/reader/检索语义归 memory 契约；provider cache 观测仍由 ar-41/42 承接，本轮未改变主回合准入、工具权限或 humanizer 转换。
 // 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：空工具回合与准入去重已沿生产调用链复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新（含保存会话动态导入改指名 harness-slot，行为不变）。
 // 2026-10-06 验收批次：声明更新，sourceHash 批量刷新（主会话统一复算）。
@@ -195,6 +205,8 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/engine/harness/delivery.ts",
     "src/services/engine/harness/harness-slot.ts",
     "src/services/engine/harness/model-gateway.ts",
+    // 2026-10-10 Provider 能力网线观测：只提取 raw model 与缓存读计数存在性，不改写响应流。
+    "src/services/engine/harness/provider-observation.ts",
     "src/services/engine/harness/runtime.ts",
     "src/services/engine/harness/stream-text.ts",
     "src/services/engine/harness/tool-loop-guard.ts",
@@ -229,7 +241,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "110bb3400ab06146f9ccba67ecfe6e5726cf7a34dff4295f3ec5c10c1ed15f92",
+  sourceHash: "428ce676bcdbd9e71fb0507b72ffa8a385d51bc2f3bdf98c6e2a728274fab52a",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -243,6 +255,36 @@ export const agentRuntimeContract: ModuleContract = {
       layer: "integration",
       depth: "deep",
       scenarios: ["runtime-empty-tools-turn"],
+    },
+    {
+      id: "ar-41",
+      feature: "Provider 模型能力与响应身份的网线契约",
+      description: "以真实 pi-ai streamSimple + 被替换的 global fetch SSE 检查 DeepSeek 官方精确模型 ID 和请求参数：deepseek-flash 的 low/medium/high 与 auto（auto 不发推理参数），deepseek-v4-pro low 不升档；请求 model 保持配置 ID，SSE 返回的 raw model 独立作为 responseModel 回传。缓存读计数为原始 0 时标记已报告，缺省仍未知；provider_request_end 白名单保留 memoryStage、responseModel、缓存报告状态及实际 reasoningEffort/thinkingMode，不携带 Prompt/API key。测试 endpoint 为 .invalid，不接触真实网络或 CONFIG",
+      why: "仅断言 Pi 模型目录不能证明最终发到 Provider 的 JSON；Pi message.model 可能仍是请求 ID，缺失缓存字段也不能被误判为 miss，因此需在真实解析链上从假 SSE 与真实请求体分别取证",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["provider-model-wire-capabilities"],
+    },
+    {
+      id: "ar-42",
+      feature: "Provider 响应观测的有界透传",
+      description: "`createProviderObservation` 包装 fetch 并在流消费期间增量提取 allowlist 元数据：SSE 分块正文按字节原样传给 Pi；JSON 与 SSE 都能读 raw model 和缓存读取计数存在性（合法零值算已报告，write-only/null/非法或缺字段保持未知）；不同 model 冲突时身份未知；覆盖 Anthropic message_start.message 与 Responses response 形状。单行/事件缓存有界，超限只跳过该观测单元并可继续读后续事件；下游取消传给源 Response body。真实piStream+安装SDK fake HTTP用例还覆盖timeoutMs body空闲、SDK signal abort、源body取消、持续字节刷新与调用方取消仍为aborted；fetch错误保持原样，观测解析失败不改Provider正文或错误出口",
+      why: "直接 clone/tee 会额外缓冲完整响应，且元数据缺失不能等同缓存 miss；本点把单请求流的字节完整性、观测边界、取消和未知语义逐项钉住",
+      layer: "integration",
+      depth: "deep",
+      scenarios: [
+        "provider-observation-sse-passthrough",
+        "provider-observation-json-cache-presence",
+        "provider-observation-cache-write-is-unknown",
+        "provider-observation-model-conflict",
+        "provider-observation-cancel",
+        "provider-observation-fetch-error",
+        "provider-observation-bounded-buffer",
+        "provider-stream-idle-timeout-cancels-http",
+        "provider-stream-heartbeat-refreshes-idle-timeout",
+        "pi-stream-sdk-body-idle-timeout",
+        "pi-stream-sdk-user-cancel-remains-aborted",
+      ],
     },
     {
       id: "ar-38",
@@ -482,7 +524,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-25",
       feature: "RUNTIME_DATA 协议提醒的挂起、文案与注入",
-      description: "协议提醒按会话收敛：markRuntimeDataMissing / clearRuntimeDataMissing / hasRuntimeDataReminder 以 sessionId 为键、进程内存不落盘，A 会话违约不提醒 B 会话；提醒文案 RUNTIME_DATA_REMINDER_TEXT 点名 RUNTIME_DATA 区块。buildPrompt 只在调用方传入可选入参 runtimeDataReminder 时产出一个 ephemeral:runtime-data 块（text 与传入值逐字相同、进入 systemPrompt 请求视图），不传时该块不存在。结算侧 mark/clear（完成回合缺区块标记、履约或无可写变量清除）与下一回合注入判定在 engine/harness/runtime.ts —— 本点的 L2 用例只验证状态、文案与请求视图三件套；该接线的行为面（违约挂起 → 下一回合请求真的带提醒 → 履约/空区块清除后不再带）已由 ar-37 的 L3 用例直接驱动",
+      description: "协议提醒按会话收敛：markRuntimeDataMissing / clearRuntimeDataMissing / hasRuntimeDataReminder 以 sessionId 为键、进程内存不落盘，A 会话违约不提醒 B 会话；提醒文案 RUNTIME_DATA_REMINDER_TEXT 点名 RUNTIME_DATA 区块。buildPrompt 只在调用方传入可选入参 runtimeDataReminder 时产出一个 ephemeral:runtime-data 块（text 与传入值逐字相同），只进入 turnDynamic，不进入 systemPrompt；不传时该块不存在。结算侧 mark/clear（完成回合缺区块标记、履约或无可写变量清除）与下一回合注入判定在 engine/harness/runtime.ts —— 本点的 L2 用例只验证状态、文案与请求视图三件套；该接线的行为面（违约挂起 → 下一回合真实 Provider 尾注带提醒 → 履约/空区块清除后尾注不再带）已由 ar-37 的 L3 用例直接驱动",
       why: "提醒是「上一回合违约」到「下一回合补一句」的唯一补救通道：状态不按会话隔离会提醒到别的会话，块无条件产出会让每回合都多一段本不该出现的协议要求，文案不点名区块则模型无法照做",
       layer: "unit",
       depth: "deep",
@@ -607,7 +649,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-37",
       feature: "RUNTIME_DATA 提醒的结算接线（挂起 → 下一回合注入 → 履约/空区块清除）",
-      description: "提醒的整条接线以真实请求的 systemPrompt 为终审面（场景自装 fake Provider 抓取每次请求进入 pi-ai 前的 context.systemPrompt；installFakeProvider 的 payloads 不含 systemPrompt，不能拿它断言）：违约回合（缺区块 + 声明了 llm 可写变量）结算后，下一回合的请求必须携带 RUNTIME_DATA_REMINDER_TEXT；无挂起状态的回合请求不带（提醒不被无条件注入，否则变成每回合常驻）；履约回合（带区块、变量写入落池且有 runtimeData 回传为独立证据）结算后清除，再下一回合不再携带；空区块（有区块、无内容）按既有判定算履约 —— 结算清除已挂起提醒、不产生任何变量写入、也不在下一回合重新注入。空区块的判定语义（hasBlock/履约）由 variable-pool 的 vp-23 L2 用例覆盖，本点只钉接线：mark/clear 与 buildPrompt 传参任一处断开都红",
+      description: "提醒的整条接线以真实 Provider 请求为终审面（场景自装 fake Provider 分别抓取稳定 systemPrompt 与请求末尾 turn note）：违约回合（缺区块 + 声明了 llm 可写变量）结算后，下一回合的尾注必须携带 RUNTIME_DATA_REMINDER_TEXT，同时 systemPrompt 保持稳定且不含提醒；无挂起状态的回合尾注不带（提醒不被无条件注入，否则变成每回合常驻）；履约回合（带区块、变量写入落池且有 runtimeData 回传为独立证据）结算后清除，再下一回合尾注不再携带；空区块（有区块、无内容）按既有判定算履约 —— 结算清除已挂起提醒、不产生任何变量写入、也不在下一回合尾注重新注入。空区块的判定语义（hasBlock/履约）由 variable-pool 的 vp-23 L2 用例覆盖，本点只钉接线：mark/clear 与 buildPrompt/Harness 尾注传递任一处断开都红",
       why: "状态函数与请求视图三件套各自绿着，接线断开也不会报错：漏 mark 提醒永不出现（模型一直违约无人纠正）、漏 clear 提醒变成每回合常驻的噪声、把空区块当违约会反复骚扰已履约的模型 —— 三种偏差都只能在真实请求的 systemPrompt 上看见",
       layer: "integration",
       depth: "deep",

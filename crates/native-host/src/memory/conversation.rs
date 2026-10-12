@@ -1,8 +1,9 @@
 //! 可重建的会话全文检索缓存。JSONL 仍是正文真相源；此模块只维护 MemoryStore 共库中的投影片段。
 
-use super::store::{db_err, memory_query_terms};
+use super::store::{db_err, memory_query_term_variants, memory_query_terms};
 use super::MemoryStore;
 use crate::error::{AppError, AppResult};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{Datelike, Local, NaiveDate, TimeZone, Utc};
 use rusqlite::{
     params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
@@ -10,7 +11,6 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::cmp::Ordering;
 
 const INDEX_BATCH_MAX: usize = 20_000;
 const INDEX_BATCH_BYTES_MAX: usize = 16 * 1024 * 1024;
@@ -31,7 +31,7 @@ const CLEAR_CUTOFF_PREDICATE: &str = "(e.timestamp>?1 OR EXISTS (
   AND NOT EXISTS (SELECT 1 FROM conversation_index_clear_fences f WHERE f.session_id=e.session_id)
 )) AND NOT EXISTS (SELECT 1 FROM conversation_index_clear_fences f WHERE f.session_id=e.session_id AND e.seq<=f.max_seq)";
 
-fn clear_eligibility(cutoff_parameter: usize) -> String {
+pub(super) fn clear_eligibility(cutoff_parameter: usize) -> String {
     CLEAR_CUTOFF_PREDICATE.replace("?1", &format!("?{cutoff_parameter}"))
 }
 
@@ -74,6 +74,217 @@ pub(crate) struct ConversationRecordTime {
     pub start: Option<i64>,
     pub end: Option<i64>,
     pub calendar_date: Option<ConversationCalendarDate>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConversationReadRequest {
+    pub session_id: String,
+    pub entry_id: String,
+    pub turn: bool,
+    pub before: Option<i64>,
+    pub expected_revision: i64,
+    pub expected_memory_revision: i64,
+    pub expected_forget_epoch: i64,
+    pub expected_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConversationCatalogueScope {
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+    pub before: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConversationCatalogueRequest {
+    pub level: String,
+    pub scope: Option<ConversationCatalogueScope>,
+    pub fact_scope: Option<MemoryCatalogueFactScope>,
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+    pub expected_revision: Option<i64>,
+    pub expected_memory_revision: Option<i64>,
+    pub expected_forget_epoch: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct MemoryEpisodeSourcesRequest {
+    pub item_id: String,
+    pub version: i64,
+    pub session_id: String,
+    pub card_id: Option<String>,
+    pub scope: ConversationCatalogueScope,
+    pub cursor: Option<String>,
+    pub limit: Option<i64>,
+    pub expected_revision: i64,
+    pub expected_memory_revision: i64,
+    pub expected_forget_epoch: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MemoryEpisodeSourcesCursor {
+    binding: String,
+    after_source_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct MemoryCatalogueFactScope {
+    pub scope: Option<String>,
+    pub scope_id: Option<String>,
+    pub session_id: String,
+    pub card_id: Option<String>,
+    pub query: Option<String>,
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+    pub before: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConversationCatalogueCursor {
+    level: String,
+    scope_hash: String,
+    fingerprint_hash: String,
+    revision: i64,
+    memory_revision: i64,
+    forget_epoch: i64,
+    after_timestamp: i64,
+    after_session_id: String,
+    after_seq: i64,
+    after_id: String,
+}
+
+fn catalogue_hash(value: &Value) -> AppResult<String> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|error| AppError::Config(format!("编码 catalogue scope 失败: {error}")))?;
+    let digest = Sha256::digest(bytes);
+    Ok(format!("{:x}", digest))
+}
+
+fn encode_catalogue_cursor(cursor: ConversationCatalogueCursor) -> AppResult<String> {
+    let bytes = serde_json::to_vec(&cursor)
+        .map_err(|error| AppError::Config(format!("编码 catalogue cursor 失败: {error}")))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn decode_catalogue_cursor(value: &str) -> AppResult<ConversationCatalogueCursor> {
+    if value.len() > super::protocol::MEMORY_NAVIGATION_HOST_CURSOR_MAX_CHARACTERS as usize {
+        return Err(AppError::Memory("memory catalogue cursor 超出范围".into()));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| AppError::Memory("memory catalogue cursor 无效".into()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::Memory("memory catalogue cursor 无效".into()))
+}
+
+fn encode_episode_sources_cursor(cursor: MemoryEpisodeSourcesCursor) -> AppResult<String> {
+    let bytes = serde_json::to_vec(&cursor)
+        .map_err(|error| AppError::Config(format!("episode source cursor 编码失败: {error}")))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn decode_episode_sources_cursor(value: &str) -> AppResult<MemoryEpisodeSourcesCursor> {
+    if value.len() > super::protocol::MEMORY_NAVIGATION_HOST_CURSOR_MAX_CHARACTERS as usize {
+        return Err(AppError::Memory("episode source cursor 超出范围".into()));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| AppError::Memory("episode source cursor 无效".into()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::Memory("episode source cursor 无效".into()))
+}
+
+fn catalogue_preview(text: &str) -> String {
+    let mut chars = text.chars();
+    let preview = chars
+        .by_ref()
+        .take(super::protocol::MEMORY_NAVIGATION_PREVIEW_MAX_CHARACTERS as usize)
+        .collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+fn append_catalogue_filters(
+    predicates: &mut Vec<String>,
+    values: &mut Vec<rusqlite::types::Value>,
+    scope: &ConversationCatalogueScope,
+    alias: &str,
+) -> AppResult<()> {
+    if !scope.session_ids.is_empty() {
+        let params = scope
+            .session_ids
+            .iter()
+            .map(|id| {
+                values.push(rusqlite::types::Value::Text(id.clone()));
+                format!("?{}", values.len())
+            })
+            .collect::<Vec<_>>();
+        predicates.push(format!("{alias}.session_id IN ({})", params.join(",")));
+    }
+    for (value, op) in [(scope.start, ">="), (scope.end, "<"), (scope.before, "<")] {
+        if let Some(value) = value {
+            let parameter = values.len() + 1;
+            values.push(rusqlite::types::Value::Integer(value));
+            predicates.push(format!("{alias}.timestamp{op}?{parameter}"));
+        }
+    }
+    Ok(())
+}
+
+fn catalogue_scope_fingerprints(
+    conn: &Connection,
+    session_ids: &[String],
+) -> AppResult<Vec<(String, String)>> {
+    let mut statement = conn
+        .prepare(
+            "SELECT session_id,fingerprint FROM conversation_index_sessions ORDER BY session_id",
+        )
+        .map_err(db_err)?;
+    let selected = session_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::HashSet<_>>();
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    Ok(if selected.is_empty() {
+        rows
+    } else {
+        rows.into_iter()
+            .filter(|(session_id, _)| selected.contains(session_id.as_str()))
+            .collect()
+    })
+}
+
+fn catalogue_page_fingerprints(entries: &[Value], all: &[(String, String)]) -> Vec<Value> {
+    let ids = entries
+        .iter()
+        .filter_map(|entry| entry.get("sessionId").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    all.iter()
+        .filter(|(session_id, _)| ids.contains(session_id.as_str()))
+        .map(|(session_id, fingerprint)| {
+            json!({ "sessionId": session_id, "fingerprint": fingerprint })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,18 +360,6 @@ struct IndexedEntry {
     anchor_entry_id: Option<String>,
     anchor_event_id: Option<String>,
     score: f64,
-}
-
-/// Existing best-first search order: relevance, recency, then stable identity keys.
-fn search_order(left: &IndexedEntry, right: &IndexedEntry) -> Ordering {
-    right
-        .score
-        .partial_cmp(&left.score)
-        .unwrap_or(Ordering::Equal)
-        .then_with(|| right.timestamp.cmp(&left.timestamp))
-        .then_with(|| left.session_id.cmp(&right.session_id))
-        .then_with(|| left.entry_id.cmp(&right.entry_id))
-        .then_with(|| left.chunk.cmp(&right.chunk))
 }
 
 fn valid_id(value: &str, name: &str, max: usize) -> AppResult<()> {
@@ -285,6 +484,472 @@ pub(super) fn conversation_suppressions_need_repair(conn: &Connection) -> AppRes
 }
 
 impl MemoryStore {
+    pub(crate) fn memory_episode_sources(
+        &self,
+        request: &MemoryEpisodeSourcesRequest,
+    ) -> AppResult<Value> {
+        valid_id(&request.item_id, "itemId", ID_MAX)?;
+        valid_id(&request.session_id, "sessionId", SESSION_ID_MAX)?;
+        if request.version < 1
+            || request.scope.session_ids.len()
+                > super::protocol::MEMORY_NAVIGATION_SCOPE_SESSION_IDS_MAX as usize
+            || request.scope.session_ids.windows(2).any(|p| p[0] >= p[1])
+            || request.scope.start.is_some_and(|v| v < 0)
+            || request.scope.end.is_some_and(|v| v < 0)
+            || request.scope.before.is_some_and(|v| v < 0)
+            || matches!((request.scope.start, request.scope.end), (Some(a),Some(b)) if a >= b)
+        {
+            return Err(AppError::Memory("episode sources 范围无效".into()));
+        }
+        let limit = request
+            .limit
+            .unwrap_or(super::protocol::MEMORY_NAVIGATION_EPISODE_SOURCES_PAGE_DEFAULT);
+        if !(1..=super::protocol::MEMORY_NAVIGATION_CATALOGUE_PAGE_MAX).contains(&limit) {
+            return Err(AppError::Memory("episode sources limit 无效".into()));
+        }
+        let conn = self.lock()?;
+        let tx = conn.unchecked_transaction().map_err(db_err)?;
+        let (revision, clear_cutoff): (i64, i64) = tx
+            .query_row(
+                "SELECT revision,clear_cutoff FROM conversation_index_meta WHERE id=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(db_err)?;
+        let memory_revision = Self::meta(&tx, "revision")?;
+        let forget_epoch = Self::meta(&tx, "forget_epoch")?;
+        if revision != request.expected_revision
+            || memory_revision != request.expected_memory_revision
+            || forget_epoch != request.expected_forget_epoch
+        {
+            tx.commit().map_err(db_err)?;
+            return Ok(
+                json!({"entries":[],"nextCursor":null,"complete":false,"scopePartial":false,"sourceCount":0,"readableSourceCount":0,"sourceCoverage":"unavailable","freshness":"stale","revision":revision,"memoryRevision":memory_revision,"forgetEpoch":forget_epoch}),
+            );
+        }
+        let mut predicates = vec![
+            "l.item_id=?1 AND l.item_version=?2".to_owned(),
+            "i.status='active' AND i.kind='episode' AND (i.valid_from IS NULL OR i.valid_from<=?3) AND (i.valid_to IS NULL OR i.valid_to>?3) AND (i.expires_at IS NULL OR i.expires_at>?3)".to_owned(),
+            "(i.scope='user' OR (i.scope='card' AND i.scope_id=?4) OR (i.scope='session' AND i.scope_id=?5))".to_owned(),
+            "((s.origin='user' AND s.taint='trusted_user') OR (s.origin='derived_behavior' AND s.taint='derived'))".to_owned(),
+            "e.role='user' AND e.entry_id=s.entry_id AND e.seq=s.seq AND (s.event_id IS NULL OR e.event_id=s.event_id)".to_owned(),
+            "NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash AND t.effect='block_extraction')".to_owned(),
+            "NOT EXISTS(SELECT 1 FROM conversation_index_suppressions x WHERE x.session_id=e.session_id AND (x.entry_id=e.entry_id OR (e.event_id IS NOT NULL AND x.event_id=e.event_id)))".to_owned(),
+        ];
+        let mut args = vec![
+            rusqlite::types::Value::Text(request.item_id.clone()),
+            rusqlite::types::Value::Integer(request.version),
+            rusqlite::types::Value::Integer(now_ms()),
+            request
+                .card_id
+                .clone()
+                .map(rusqlite::types::Value::Text)
+                .unwrap_or(rusqlite::types::Value::Null),
+            rusqlite::types::Value::Text(request.session_id.clone()),
+        ];
+        let base_predicates = predicates.clone();
+        let base_args = args.clone();
+        if !request.scope.session_ids.is_empty() {
+            let mut session_predicates = Vec::with_capacity(request.scope.session_ids.len());
+            for id in &request.scope.session_ids {
+                valid_id(id, "sessionId", SESSION_ID_MAX)?;
+                args.push(rusqlite::types::Value::Text(id.clone()));
+                session_predicates.push(format!("s.session_id=?{}", args.len()));
+            }
+            predicates.push(format!("({})", session_predicates.join(" OR ")));
+        }
+        for (v, op) in [
+            (request.scope.start, ">="),
+            (request.scope.end, "<"),
+            (request.scope.before, "<"),
+        ] {
+            if let Some(v) = v {
+                args.push(rusqlite::types::Value::Integer(v));
+                predicates.push(format!("e.timestamp{op}?{}", args.len()));
+            }
+        }
+        let cutoff = args.len() + 1;
+        args.push(rusqlite::types::Value::Integer(clear_cutoff));
+        predicates.push(clear_eligibility(cutoff));
+        let from = format!("FROM memory_item_sources l JOIN memory_items i ON i.id=l.item_id AND i.version=l.item_version JOIN memory_sources s ON s.source_id=l.source_id JOIN conversation_index_entries e ON e.session_id=s.session_id AND e.entry_id=s.entry_id AND e.chunk=0 JOIN conversation_index_sessions cs ON cs.session_id=s.session_id WHERE {}",predicates.join(" AND "));
+        let scoped_count: i64 = tx
+            .query_row(
+                &format!("SELECT COUNT(DISTINCT s.source_id) {from}"),
+                params_from_iter(args.iter()),
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        let all_cutoff = base_args.len() + 1;
+        let mut all_args = base_args;
+        all_args.push(rusqlite::types::Value::Integer(clear_cutoff));
+        let all_where = format!("FROM memory_item_sources l JOIN memory_items i ON i.id=l.item_id AND i.version=l.item_version JOIN memory_sources s ON s.source_id=l.source_id JOIN conversation_index_entries e ON e.session_id=s.session_id AND e.entry_id=s.entry_id AND e.chunk=0 JOIN conversation_index_sessions cs ON cs.session_id=s.session_id WHERE {} AND {}",base_predicates.join(" AND "),clear_eligibility(all_cutoff));
+        let source_count: i64 = tx
+            .query_row(
+                &format!("SELECT COUNT(DISTINCT s.source_id) {all_where}"),
+                params_from_iter(all_args.iter()),
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        let declared_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM memory_item_sources WHERE item_id=?1 AND item_version=?2",
+                params![request.item_id, request.version],
+                |r| r.get(0),
+            )
+            .map_err(db_err)?;
+        let scope_partial = scoped_count < source_count;
+        let source_coverage = if source_count < declared_count || scope_partial {
+            "partial"
+        } else {
+            "complete"
+        };
+        let binding = catalogue_hash(
+            &json!({"itemId":request.item_id,"version":request.version,"sessionId":request.session_id,"cardId":request.card_id,"scope":request.scope,"revision":revision,"memoryRevision":memory_revision,"forgetEpoch":forget_epoch}),
+        )?;
+        let cursor = request
+            .cursor
+            .as_deref()
+            .map(decode_episode_sources_cursor)
+            .transpose()?;
+        if cursor.as_ref().is_some_and(|c| c.binding != binding) {
+            return Err(AppError::Memory("episode sources cursor 范围不一致".into()));
+        }
+        let after = cursor.map(|c| c.after_source_id);
+        let mut page_args = args.clone();
+        if let Some(id) = &after {
+            page_args.push(rusqlite::types::Value::Text(id.clone()));
+        }
+        let after_sql = if after.is_some() {
+            format!(" AND s.source_id>?{}", args.len() + 1)
+        } else {
+            String::new()
+        };
+        page_args.push(rusqlite::types::Value::Integer(limit + 1));
+        let sql=format!("SELECT DISTINCT s.source_id,s.session_id,s.entry_id,s.event_id,s.seq,e.timestamp,cs.fingerprint,s.content_hash {from}{after_sql} ORDER BY s.source_id LIMIT ?{}",page_args.len());
+        let mut stmt = tx.prepare(&sql).map_err(db_err)?;
+        let mut entries=stmt.query_map(params_from_iter(page_args.iter()),|r|Ok(json!({"sourceId":r.get::<_,String>(0)?,"sessionId":r.get::<_,String>(1)?,"entryId":r.get::<_,String>(2)?,"eventId":r.get::<_,String>(3)?,"seq":r.get::<_,i64>(4)?,"timestamp":r.get::<_,i64>(5)?,"fingerprint":r.get::<_,String>(6)?,"contentHash":r.get::<_,String>(7)?}))).map_err(db_err)?.collect::<Result<Vec<_>,_>>().map_err(db_err)?;
+        let complete = entries.len() <= limit as usize;
+        if !complete {
+            entries.pop();
+        }
+        let next = if !complete {
+            entries
+                .last()
+                .and_then(|v| v["sourceId"].as_str())
+                .map(|id| {
+                    encode_episode_sources_cursor(MemoryEpisodeSourcesCursor {
+                        binding,
+                        after_source_id: id.into(),
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        drop(stmt);
+        tx.commit().map_err(db_err)?;
+        Ok(
+            json!({"entries":entries,"nextCursor":next,"complete":complete,"scopePartial":scope_partial,"sourceCount":declared_count,"readableSourceCount":scoped_count,"sourceCoverage":source_coverage,"freshness":"current","revision":revision,"memoryRevision":memory_revision,"forgetEpoch":forget_epoch}),
+        )
+    }
+
+    /// Local, rebuildable navigation over the already-governed transcript projection.
+    /// Summaries are bounded excerpts only; their contents are never promoted to facts.
+    pub(crate) fn memory_catalogue(
+        &self,
+        request: &ConversationCatalogueRequest,
+    ) -> AppResult<Value> {
+        match request.level.as_str() {
+            "facts" | "events" | "people" | "topics" => {
+                let fact_scope = request
+                    .fact_scope
+                    .as_ref()
+                    .ok_or_else(|| AppError::Memory("facts catalogue 缺少 factScope".into()))?;
+                if request.scope.is_some() {
+                    return Err(AppError::Memory("facts catalogue 不接受会话 scope".into()));
+                }
+                let page = self.memory_catalogue_facts(
+                    fact_scope,
+                    &request.level,
+                    request.cursor.as_deref(),
+                    request.limit,
+                    request.expected_revision,
+                    request.expected_memory_revision,
+                    request.expected_forget_epoch,
+                )?;
+                if request.level == "events" {
+                    let scope = fact_scope;
+                    let scope_partial = !scope.session_ids.is_empty()
+                        || scope.start.is_some()
+                        || scope.end.is_some()
+                        || scope.before.is_some();
+                    return Ok(map_episode_catalogue_page(page, scope_partial));
+                }
+                if matches!(request.level.as_str(), "people" | "topics") {
+                    return Ok(map_navigation_catalogue_page(page, &request.level));
+                }
+                return Ok(page);
+            }
+            "sessions" | "turns" => {}
+            _ => return Err(AppError::Memory("memory catalogue level 无效".into())),
+        }
+        if request.fact_scope.is_some() {
+            return Err(AppError::Memory("会话 catalogue 不接受 factScope".into()));
+        }
+
+        let mut scope = request.scope.clone().unwrap_or(ConversationCatalogueScope {
+            session_ids: Vec::new(),
+            start: None,
+            end: None,
+            before: None,
+        });
+        scope.session_ids.sort();
+        if scope.session_ids.len()
+            > super::protocol::MEMORY_NAVIGATION_SCOPE_SESSION_IDS_MAX as usize
+            || scope.session_ids.windows(2).any(|pair| pair[0] == pair[1])
+        {
+            return Err(AppError::Memory(
+                "memory catalogue sessionIds 含重复值".into(),
+            ));
+        }
+        for id in &scope.session_ids {
+            valid_id(id, "sessionId", SESSION_ID_MAX)?;
+        }
+        if request.level == "turns" && scope.session_ids.is_empty() {
+            return Err(AppError::Memory(
+                "turns catalogue 必须指定 sessionIds".into(),
+            ));
+        }
+        if scope.start.is_some_and(|v| v < 0)
+            || scope.end.is_some_and(|v| v < 0)
+            || scope.before.is_some_and(|v| v < 0)
+            || matches!((scope.start, scope.end), (Some(start), Some(end)) if start >= end)
+        {
+            return Err(AppError::Memory("memory catalogue 时间范围无效".into()));
+        }
+        let limit = request
+            .limit
+            .unwrap_or(super::protocol::MEMORY_NAVIGATION_CATALOGUE_PAGE_DEFAULT);
+        if !(1..=super::protocol::MEMORY_NAVIGATION_CATALOGUE_PAGE_MAX).contains(&limit) {
+            return Err(AppError::Memory(format!(
+                "memory catalogue limit 必须在 1..={}",
+                super::protocol::MEMORY_NAVIGATION_CATALOGUE_PAGE_MAX
+            )));
+        }
+
+        let scope_hash =
+            catalogue_hash(&json!({ "level": request.level.clone(), "scope": scope.clone() }))?;
+        let conn = self.lock()?;
+        let (revision, clear_cutoff): (i64, i64) = conn
+            .query_row(
+                "SELECT revision,clear_cutoff FROM conversation_index_meta WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(db_err)?;
+        let memory_revision = Self::meta(&conn, "revision")?;
+        let forget_epoch = Self::meta(&conn, "forget_epoch")?;
+        let session_fingerprints = catalogue_scope_fingerprints(&conn, &scope.session_ids)?;
+        let mut fingerprint_hasher = Sha256::new();
+        for (session_id, fingerprint) in &session_fingerprints {
+            fingerprint_hasher.update(session_id.as_bytes());
+            fingerprint_hasher.update([0]);
+            fingerprint_hasher.update(fingerprint.as_bytes());
+            fingerprint_hasher.update([b'\n']);
+        }
+        let fingerprint_hash = format!("{:x}", fingerprint_hasher.finalize());
+
+        let cursor = request
+            .cursor
+            .as_deref()
+            .map(decode_catalogue_cursor)
+            .transpose()?;
+        let stale = request.expected_revision.is_some_and(|v| v != revision)
+            || request
+                .expected_memory_revision
+                .is_some_and(|v| v != memory_revision)
+            || request
+                .expected_forget_epoch
+                .is_some_and(|v| v != forget_epoch)
+            || cursor.as_ref().is_some_and(|value| {
+                value.level != request.level
+                    || value.scope_hash != scope_hash
+                    || value.fingerprint_hash != fingerprint_hash
+                    || value.revision != revision
+                    || value.memory_revision != memory_revision
+                    || value.forget_epoch != forget_epoch
+            });
+        if stale {
+            return Ok(json!({
+                "level": request.level.clone(),
+                "entries": [],
+                "nextCursor": null,
+                "complete": false,
+                "freshness": "stale",
+                "revision": revision,
+                "memoryRevision": memory_revision,
+                "forgetEpoch": forget_epoch,
+                "fingerprints": [],
+            }));
+        }
+
+        let mut values = vec![rusqlite::types::Value::Integer(clear_cutoff)];
+        let mut predicates = vec![clear_eligibility(1), format!("NOT {SUPPRESSION_EXISTS}")];
+        append_catalogue_filters(&mut predicates, &mut values, &scope, "e")?;
+        let eligible = predicates.join(" AND ");
+        let sql = if request.level == "sessions" {
+            let mut cursor_filter = String::new();
+            if let Some(cursor) = &cursor {
+                let p = values.len() + 1;
+                cursor_filter = format!(
+                    " WHERE latest_timestamp<?{p} OR (latest_timestamp=?{p} AND session_id>?{})",
+                    p + 1
+                );
+                values.push(rusqlite::types::Value::Integer(cursor.after_timestamp));
+                values.push(rusqlite::types::Value::Text(
+                    cursor.after_session_id.clone(),
+                ));
+            }
+            let limit_parameter = values.len() + 1;
+            values.push(rusqlite::types::Value::Integer(limit + 1));
+            let sql = format!(
+                "WITH visible AS (
+                   SELECT e.session_id,e.entry_id,e.seq,e.chunk,e.role,e.text,e.timestamp
+                   FROM conversation_index_entries e WHERE {eligible}
+                 ), session_rows AS (
+                   SELECT v.session_id,s.fingerprint,MAX(v.timestamp) AS latest_timestamp,
+                     COUNT(DISTINCT v.entry_id) AS entry_count,
+                     SUM(CASE WHEN v.role='user' AND v.chunk=0 THEN 1 ELSE 0 END) AS turn_count,
+                     (SELECT p.text FROM visible p WHERE p.session_id=v.session_id AND p.role='user' AND p.chunk=0
+                       ORDER BY p.timestamp DESC,p.seq DESC,p.entry_id ASC LIMIT 1) AS preview
+                   FROM visible v JOIN conversation_index_sessions s ON s.session_id=v.session_id
+                   GROUP BY v.session_id,s.fingerprint
+                 )
+                 SELECT session_id,fingerprint,latest_timestamp,entry_count,turn_count,preview
+                 FROM session_rows{cursor_filter}
+                 ORDER BY latest_timestamp DESC,session_id ASC LIMIT ?{limit_parameter}"
+            );
+            sql
+        } else {
+            let mut cursor_filter = String::new();
+            if let Some(cursor) = &cursor {
+                let p = values.len() + 1;
+                cursor_filter = format!(
+                    " AND (u.timestamp<?{p} OR (u.timestamp=?{p} AND
+                       (u.session_id>?{} OR (u.session_id=?{} AND
+                        (u.seq<?{} OR (u.seq=?{} AND u.entry_id>?{}))))))",
+                    p + 1,
+                    p + 1,
+                    p + 2,
+                    p + 2,
+                    p + 3
+                );
+                values.push(rusqlite::types::Value::Integer(cursor.after_timestamp));
+                values.push(rusqlite::types::Value::Text(
+                    cursor.after_session_id.clone(),
+                ));
+                values.push(rusqlite::types::Value::Integer(cursor.after_seq));
+                values.push(rusqlite::types::Value::Text(cursor.after_id.clone()));
+            }
+            let limit_parameter = values.len() + 1;
+            values.push(rusqlite::types::Value::Integer(limit + 1));
+            let sql = format!(
+                "WITH visible AS (
+                   SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,
+                          e.anchor_entry_id,e.anchor_event_id
+                   FROM conversation_index_entries e WHERE {eligible}
+                 )
+                 SELECT u.session_id,u.entry_id,u.event_id,u.seq,u.timestamp,u.text,
+                   (SELECT a.text FROM visible a WHERE a.session_id=u.session_id AND a.role='assistant'
+                     AND (a.anchor_entry_id=u.entry_id OR (u.event_id IS NOT NULL AND a.anchor_event_id=u.event_id))
+                     ORDER BY a.seq ASC,a.entry_id ASC,a.chunk ASC LIMIT 1) AS assistant_preview
+                 FROM visible u WHERE u.role='user' AND u.chunk=0{cursor_filter}
+                 ORDER BY u.timestamp DESC,u.session_id ASC,u.seq DESC,u.entry_id ASC LIMIT ?{limit_parameter}"
+            );
+            sql
+        };
+        let mut statement = conn.prepare(&sql).map_err(db_err)?;
+        let rows = statement
+            .query_map(params_from_iter(values), |row| {
+                if request.level == "sessions" {
+                    Ok(json!({
+                        "kind": "session",
+                        "sessionId": row.get::<_, String>(0)?,
+                        "fingerprint": row.get::<_, String>(1)?,
+                        "latestTimestamp": row.get::<_, i64>(2)?,
+                        "entryCount": row.get::<_, i64>(3)?,
+                        "turnCount": row.get::<_, i64>(4)?,
+                        "preview": row.get::<_, Option<String>>(5)?.map(|s| catalogue_preview(&s)),
+                    }))
+                } else {
+                    let user_text: String = row.get(5)?;
+                    let assistant: Option<String> = row.get(6)?;
+                    let preview = match assistant {
+                        Some(text) if !text.trim().is_empty() => {
+                            format!("用户：{user_text}\n助手：{text}")
+                        }
+                        _ => user_text,
+                    };
+                    Ok(json!({
+                        "kind": "turn",
+                        "sessionId": row.get::<_, String>(0)?,
+                        "turnId": row.get::<_, String>(1)?,
+                        "eventId": row.get::<_, Option<String>>(2)?,
+                        "seq": row.get::<_, i64>(3)?,
+                        "timestamp": row.get::<_, i64>(4)?,
+                        "preview": catalogue_preview(&preview),
+                    }))
+                }
+            })
+            .map_err(db_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        let mut entries = rows;
+        let has_more = entries.len() > limit as usize;
+        if has_more {
+            entries.pop();
+        }
+        let page_fingerprints = catalogue_page_fingerprints(&entries, &session_fingerprints);
+        let next_cursor = if has_more {
+            let last = entries
+                .last()
+                .expect("non-empty catalogue page when has_more");
+            Some(encode_catalogue_cursor(ConversationCatalogueCursor {
+                level: request.level.clone(),
+                scope_hash,
+                fingerprint_hash,
+                revision,
+                memory_revision,
+                forget_epoch,
+                after_timestamp: if request.level == "sessions" {
+                    last["latestTimestamp"].as_i64().unwrap_or_default()
+                } else {
+                    last["timestamp"].as_i64().unwrap_or_default()
+                },
+                after_session_id: last["sessionId"].as_str().unwrap_or_default().to_owned(),
+                after_seq: last["seq"].as_i64().unwrap_or_default(),
+                after_id: if request.level == "sessions" {
+                    String::new()
+                } else {
+                    last["turnId"].as_str().unwrap_or_default().to_owned()
+                },
+            })?)
+        } else {
+            None
+        };
+        Ok(json!({
+            "level": request.level.clone(),
+            "entries": entries,
+            "nextCursor": next_cursor,
+            "complete": !has_more,
+            "freshness": "current",
+            "revision": revision,
+            "memoryRevision": memory_revision,
+            "forgetEpoch": forget_epoch,
+            "fingerprints": page_fingerprints,
+        }))
+    }
+
     pub fn conversation_index_status(&self) -> AppResult<Value> {
         let conn = self.lock()?;
         let mut statement = conn
@@ -797,6 +1462,8 @@ impl MemoryStore {
         before: Option<i64>,
         recent_fallback: bool,
         record_time: Option<&ConversationRecordTime>,
+        scope: Option<&ConversationCatalogueScope>,
+        cursor: Option<&str>,
     ) -> AppResult<Value> {
         valid_id(session_id, "sessionId", SESSION_ID_MAX)?;
         let limit = limit
@@ -808,6 +1475,33 @@ impl MemoryStore {
         if let Some(record_time) = record_time {
             record_time.validate()?;
         }
+        let mut scope = scope.cloned().unwrap_or(ConversationCatalogueScope {
+            session_ids: vec![],
+            start: None,
+            end: None,
+            before,
+        });
+        scope.before = match (scope.before, before) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        scope.session_ids.sort();
+        scope.session_ids.dedup();
+        for id in &scope.session_ids {
+            valid_id(id, "sessionId", SESSION_ID_MAX)?;
+        }
+        if scope.start.is_some_and(|v| v < 0)
+            || scope.end.is_some_and(|v| v < 0)
+            || matches!((scope.start, scope.end), (Some(a),Some(b)) if a>=b)
+        {
+            return Err(AppError::Memory("会话检索 scope 时间范围无效".into()));
+        }
+        let scope_hash = catalogue_hash(
+            &json!({"query":query,"sessionId":session_id,"scope":scope,
+            "recentFallback":recent_fallback,"recordStart":record_time.and_then(|r|r.start),
+            "recordEnd":record_time.and_then(|r|r.end),
+            "calendarDate":record_time.and_then(|r|r.calendar_date.as_ref()).map(|d|(d.year,d.month,d.day))}),
+        )?;
         let terms = memory_query_terms(query);
         let conn = self.lock()?;
         let (index_revision, clear_cutoff): (i64, i64) = conn
@@ -819,6 +1513,22 @@ impl MemoryStore {
             .map_err(db_err)?;
         let memory_revision = Self::meta(&conn, "revision")?;
         let forget_epoch = Self::meta(&conn, "forget_epoch")?;
+        let page_cursor = cursor.map(decode_catalogue_cursor).transpose()?;
+        if page_cursor.as_ref().is_some_and(|c| {
+            c.level != "search"
+                || c.scope_hash != scope_hash
+                || c.revision != index_revision
+                || c.memory_revision != memory_revision
+                || c.forget_epoch != forget_epoch
+        }) {
+            return Ok(
+                json!({"revision":index_revision,"memoryRevision":memory_revision,"forgetEpoch":forget_epoch,
+                "entries":[],"complete":false,"nextCursor":null,"freshness":"stale","fingerprints":[]}),
+            );
+        }
+        let offset = page_cursor
+            .as_ref()
+            .map_or(0, |c| c.after_seq.max(0) as usize);
         let mut rows = Vec::new();
 
         if terms.is_empty() {
@@ -833,105 +1543,182 @@ impl MemoryStore {
                     sql.push_str(" AND e.timestamp<?2");
                     values.push(rusqlite::types::Value::Integer(before));
                 }
-                sql.push_str(" ORDER BY e.timestamp DESC,e.seq DESC,CASE WHEN e.role='assistant' THEN 0 ELSE 1 END,e.chunk DESC");
-                if record_time.is_none() {
-                    sql.push_str(&format!(" LIMIT {}", limit.min(RECENT_FALLBACK_MAX as usize)));
+                let mut predicates = Vec::new();
+                append_catalogue_filters(&mut predicates, &mut values, &scope, "e")?;
+                if !predicates.is_empty() {
+                    sql.push_str(&format!(" AND {}", predicates.join(" AND ")));
                 }
+                sql.push_str(" ORDER BY e.timestamp DESC,e.seq DESC,CASE WHEN e.role='assistant' THEN 0 ELSE 1 END,e.chunk DESC");
                 let mut statement = conn.prepare(&sql).map_err(db_err)?;
                 let found = statement
                     .query_map(params_from_iter(values), Self::read_conversation_row)
                     .map_err(db_err)?;
-                let result_limit = if record_time.is_some() {
-                    limit
-                } else {
-                    limit.min(RECENT_FALLBACK_MAX as usize)
-                };
                 for candidate in found {
                     let row = candidate.map_err(db_err)?;
                     if record_time.map_or(true, |filter| filter.matches(row.timestamp)) {
                         rows.push(row);
-                        if rows.len() >= result_limit {
-                            break;
-                        }
                     }
                 }
             }
         } else {
-            let mut sql = format!(
-                "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
-                 FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}",
-            );
+            let variants = terms
+                .iter()
+                .map(|term| memory_query_term_variants(term, query))
+                .collect::<Vec<_>>();
             let mut values = vec![rusqlite::types::Value::Integer(clear_cutoff)];
+            let mut eligibility = CLEAR_CUTOFF_PREDICATE.to_owned();
             if let Some(before) = before {
                 let p = values.len() + 1;
-                sql.push_str(&format!(" AND e.timestamp<?{p}"));
+                eligibility.push_str(&format!(" AND e.timestamp<?{p}"));
                 values.push(rusqlite::types::Value::Integer(before));
             }
-            sql.push_str(&format!(" AND NOT {SUPPRESSION_EXISTS} AND ("));
+            if let Some(start) = record_time.and_then(|filter| filter.start) {
+                let p = values.len() + 1;
+                eligibility.push_str(&format!(" AND e.timestamp>=?{p}"));
+                values.push(rusqlite::types::Value::Integer(start));
+            }
+            if let Some(end) = record_time.and_then(|filter| filter.end) {
+                let p = values.len() + 1;
+                eligibility.push_str(&format!(" AND e.timestamp<?{p}"));
+                values.push(rusqlite::types::Value::Integer(end));
+            }
+            let mut scope_predicates = Vec::new();
+            append_catalogue_filters(&mut scope_predicates, &mut values, &scope, "e")?;
+            if !scope_predicates.is_empty() {
+                eligibility.push_str(&format!(" AND {}", scope_predicates.join(" AND ")));
+            }
+            eligibility.push_str(&format!(" AND NOT {SUPPRESSION_EXISTS}"));
             let mut conditions = Vec::new();
-            if let Some(expression) = fts_expression(&terms) {
+            let flat_variants = variants.iter().flatten().cloned().collect::<Vec<_>>();
+            if let Some(expression) = fts_expression(&flat_variants) {
                 let p = values.len() + 1;
                 conditions.push(format!("e.rowid IN (SELECT rowid FROM conversation_fts WHERE conversation_fts MATCH ?{p})"));
                 values.push(rusqlite::types::Value::Text(expression));
             }
-            for term in &terms {
-                let p = values.len() + 1;
-                conditions.push(format!("e.text LIKE ?{p} ESCAPE '\\'"));
-                values.push(rusqlite::types::Value::Text(like_pattern(term)));
+            let mut term_params = Vec::with_capacity(variants.len());
+            for term_variants in &variants {
+                let mut term_conditions = Vec::new();
+                let mut params = Vec::new();
+                for variant in term_variants {
+                    let p = values.len() + 1;
+                    term_conditions.push(format!("e.text LIKE ?{p} ESCAPE '\\'"));
+                    values.push(rusqlite::types::Value::Text(like_pattern(variant)));
+                    params.push(p);
+                }
+                conditions.push(format!("({})", term_conditions.join(" OR ")));
+                term_params.push(params);
             }
-            sql.push_str(&conditions.join(" OR "));
-            sql.push_str(" ) ORDER BY e.timestamp DESC,e.seq DESC,e.chunk DESC");
+
+            let term_predicate = |alias: &str, params: &[usize]| {
+                params
+                    .iter()
+                    .map(|p| format!("{alias}.text LIKE ?{p} ESCAPE '\\'"))
+                    .collect::<Vec<_>>()
+                    .join(" OR ")
+            };
+            let mut stats = vec!["COUNT(*) AS candidate_count".to_owned()];
+            let mut rank_terms = Vec::with_capacity(term_params.len());
+            for (index, params) in term_params.iter().enumerate() {
+                let predicate = term_predicate("candidate", params);
+                stats.push(format!(
+                    "COALESCE(SUM(CASE WHEN ({predicate}) THEN 1 ELSE 0 END),0) AS df_{index}"
+                ));
+                let predicate = term_predicate("c", params);
+                rank_terms.push(format!(
+                    "CASE WHEN ({predicate}) THEN (stats.candidate_count + 1.0) / (stats.df_{index} + 1.0) ELSE 0.0 END"
+                ));
+            }
+            let query_lower = query.trim().to_lowercase();
+            let mut relevance = rank_terms.join(" + ");
+            if let Some(phrase) = (!query_lower.is_empty()).then_some(query_lower.clone()) {
+                let p = values.len() + 1;
+                values.push(rusqlite::types::Value::Text(phrase));
+                relevance.push_str(&format!(
+                    " + CASE WHEN INSTR(LOWER(c.text), ?{p}) > 0 THEN 1.0 ELSE 0.0 END"
+                ));
+            }
+            let p = values.len() + 1;
+            values.push(rusqlite::types::Value::Text(session_id.to_owned()));
+            relevance.push_str(&format!(
+                " + CASE WHEN c.session_id=?{p} THEN 0.1 ELSE 0.0 END"
+            ));
+            let sql = format!(
+                "WITH candidates AS (
+                   SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+                   FROM conversation_index_entries e WHERE {eligibility} AND ({})
+                 ), stats AS (SELECT {} FROM candidates candidate)
+                 SELECT c.session_id,c.entry_id,c.event_id,c.seq,c.chunk,c.role,c.text,c.timestamp,c.anchor_entry_id,c.anchor_event_id,({relevance}) AS score
+                 FROM candidates c CROSS JOIN stats
+                 ORDER BY score DESC,c.timestamp DESC,c.session_id ASC,c.entry_id ASC,c.chunk ASC",
+                conditions.join(" OR "), stats.join(",")
+            );
             let mut statement = conn.prepare(&sql).map_err(db_err)?;
             let found = statement
-                .query_map(params_from_iter(values), Self::read_conversation_row)
+                .query_map(params_from_iter(values), |candidate| {
+                    let mut entry = Self::read_conversation_row(candidate)?;
+                    entry.score = candidate.get(10)?;
+                    Ok(entry)
+                })
                 .map_err(db_err)?;
-            let query_lower = query.trim().to_lowercase();
-            // Score every governed hit while retaining only the requested top limit (<= 50).
-            // SQL's recency order remains the deterministic tie order, but must not become a
-            // hidden candidate ceiling that excludes older exact matches before scoring.
             for candidate in found {
-                let mut row = candidate.map_err(db_err)?;
-                if record_time.map_or(false, |filter| !filter.matches(row.timestamp)) {
-                    continue;
-                }
-                let text = row.text.to_lowercase();
-                let matched = terms
-                    .iter()
-                    .filter(|term| text.contains(&term.to_lowercase()))
-                    .count();
-                let coverage = matched as f64 / terms.len() as f64;
-                let phrase = if !query_lower.is_empty() && text.contains(&query_lower) {
-                    0.5
-                } else {
-                    0.0
-                };
-                row.score = coverage
-                    + phrase
-                    + if row.session_id == session_id {
-                        0.1
-                    } else {
-                        0.0
-                    };
-                let insertion = rows
-                    .iter()
-                    .position(|existing| search_order(&row, existing) == Ordering::Less)
-                    .unwrap_or(rows.len());
-                rows.insert(insertion, row);
-                if rows.len() > limit {
-                    rows.pop();
+                let row = candidate.map_err(db_err)?;
+                if record_time.map_or(true, |filter| filter.matches(row.timestamp)) {
+                    rows.push(row);
                 }
             }
             rows = Self::expand_conversation_context(&conn, rows, clear_cutoff, before)?;
+            rows.retain(|row| {
+                (scope.session_ids.is_empty() || scope.session_ids.contains(&row.session_id))
+                    && scope.start.map_or(true, |v| row.timestamp >= v)
+                    && scope.end.map_or(true, |v| row.timestamp < v)
+            });
             if let Some(record_time) = record_time {
                 rows.retain(|row| record_time.matches(row.timestamp));
             }
         }
 
+        // One retrieval unit per source entry. Chunk matches locate a turn; raw text is paged separately.
+        let mut seen = std::collections::HashSet::new();
+        rows.retain(|row| seen.insert((row.session_id.clone(), row.entry_id.clone())));
+        if terms.is_empty() && record_time.is_none() {
+            rows.truncate(RECENT_FALLBACK_MAX as usize);
+        }
+        let total = rows.len();
+        let page = rows
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let consumed = offset + page.len();
+        let next_cursor = if consumed < total {
+            Some(encode_catalogue_cursor(ConversationCatalogueCursor {
+                level: "search".into(),
+                scope_hash,
+                fingerprint_hash: String::new(),
+                revision: index_revision,
+                memory_revision,
+                forget_epoch,
+                after_timestamp: 0,
+                after_session_id: String::new(),
+                after_seq: consumed as i64,
+                after_id: String::new(),
+            })?)
+        } else {
+            None
+        };
+        let session_fingerprints = catalogue_scope_fingerprints(&conn, &scope.session_ids)?;
+        let page_ids = page
+            .iter()
+            .map(|r| r.session_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        let fingerprints = session_fingerprints.into_iter().filter(|(id,_)|page_ids.contains(id.as_str()))
+            .map(|(session_id,fingerprint)|json!({"sessionId":session_id,"fingerprint":fingerprint})).collect::<Vec<_>>();
         Ok(json!({
             "revision": index_revision,
             "memoryRevision": memory_revision,
             "forgetEpoch": forget_epoch,
-            "entries": rows.into_iter().map(|entry| json!({
+            "complete": consumed>=total, "nextCursor":next_cursor, "freshness":"current", "fingerprints":fingerprints,
+            "entries": page.into_iter().map(|entry| json!({
                 "sessionId": entry.session_id,
                 "entryId": entry.entry_id,
                 "eventId": entry.event_id,
@@ -947,111 +1734,78 @@ impl MemoryStore {
         }))
     }
 
-    /// Read a bounded page of complete indexed turns from one already-selected hit session.
-    /// This is evidence expansion only; it does not change fact eligibility or search ranking.
-    pub fn conversation_context(
-        &self,
-        session_id: &str,
-        anchor_entry_id: &str,
-        after_seq: Option<i64>,
-        limit: Option<i64>,
-        before: Option<i64>,
-    ) -> AppResult<Value> {
-        valid_id(session_id, "sessionId", SESSION_ID_MAX)?;
-        valid_id(anchor_entry_id, "anchorEntryId", ID_MAX)?;
-        let after_seq = after_seq.unwrap_or(-1);
-        if after_seq < -1 {
-            return Err(AppError::Memory("会话上下文 afterSeq 不能小于 -1".into()));
+    /// Admit an exact source or one anchored turn under a single privacy snapshot.
+    /// This returns only indexed locators; TypeScript rereads and pages JSONL originals.
+    pub(crate) fn conversation_read(&self, request: &ConversationReadRequest) -> AppResult<Value> {
+        valid_id(&request.session_id, "sessionId", SESSION_ID_MAX)?;
+        valid_id(&request.entry_id, "entryId", ID_MAX)?;
+        if request.before.is_some_and(|v| v < 0) {
+            return Err(AppError::Memory("before 无效".into()));
         }
-        let limit = limit
-            .unwrap_or(SEARCH_LIMIT_DEFAULT)
-            .clamp(1, SEARCH_LIMIT_MAX);
-        if before.is_some_and(|value| value < 0) {
-            return Err(AppError::Memory("会话上下文 before 不能为负数".into()));
-        }
-
-        // Hold one connection lock across the seed check, page read, and revision snapshot so
-        // callers never combine rows from one privacy epoch with metadata from another.
         let conn = self.lock()?;
-        let (index_revision, clear_cutoff): (i64, i64) = conn
+        let (revision, clear_cutoff): (i64, i64) = conn
             .query_row(
                 "SELECT revision,clear_cutoff FROM conversation_index_meta WHERE id=1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(db_err)?;
         let memory_revision = Self::meta(&conn, "revision")?;
         let forget_epoch = Self::meta(&conn, "forget_epoch")?;
-
-        let mut anchor_sql = format!(
-            "SELECT EXISTS(SELECT 1 FROM conversation_index_entries e
-             WHERE e.session_id=?2 AND e.entry_id=?3 AND {CLEAR_CUTOFF_PREDICATE}
-               AND NOT {SUPPRESSION_EXISTS}"
-        );
-        let mut anchor_values = vec![
-            rusqlite::types::Value::Integer(clear_cutoff),
-            rusqlite::types::Value::Text(session_id.to_string()),
-            rusqlite::types::Value::Text(anchor_entry_id.to_string()),
-        ];
-        if let Some(before) = before {
-            anchor_sql.push_str(" AND e.timestamp<?4");
-            anchor_values.push(rusqlite::types::Value::Integer(before));
-        }
-        anchor_sql.push(')');
-        let anchor_visible: bool = conn
-            .query_row(&anchor_sql, params_from_iter(anchor_values), |row| {
-                row.get(0)
-            })
+        let fingerprint: Option<String> = conn
+            .query_row(
+                "SELECT fingerprint FROM conversation_index_sessions WHERE session_id=?1",
+                [&request.session_id],
+                |r| r.get(0),
+            )
+            .optional()
             .map_err(db_err)?;
-
-        let mut rows = Vec::new();
-        if anchor_visible {
-            let mut sql = format!(
-                "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
-                 FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}
-                   AND NOT {SUPPRESSION_EXISTS} AND e.session_id=?2 AND e.chunk=0 AND e.seq>?3"
+        let stale = revision != request.expected_revision
+            || memory_revision != request.expected_memory_revision
+            || forget_epoch != request.expected_forget_epoch
+            || fingerprint.as_deref() != Some(request.expected_fingerprint.as_str());
+        if stale {
+            return Ok(
+                json!({"revision":revision,"memoryRevision":memory_revision,"forgetEpoch":forget_epoch,
+            "entries":[],"complete":false,"nextCursor":null,"freshness":"stale","fingerprints":[]}),
             );
-            let mut values = vec![
-                rusqlite::types::Value::Integer(clear_cutoff),
-                rusqlite::types::Value::Text(session_id.to_string()),
-                rusqlite::types::Value::Integer(after_seq),
-            ];
-            let limit_parameter = if let Some(before) = before {
-                sql.push_str(" AND e.timestamp<?4");
-                values.push(rusqlite::types::Value::Integer(before));
-                5
+        }
+        let mut values = vec![
+            rusqlite::types::Value::Integer(clear_cutoff),
+            rusqlite::types::Value::Text(request.session_id.clone()),
+            rusqlite::types::Value::Text(request.entry_id.clone()),
+        ];
+        let mut eligibility =
+            format!("{CLEAR_CUTOFF_PREDICATE} AND NOT {SUPPRESSION_EXISTS} AND e.session_id=?2");
+        if let Some(before) = request.before {
+            eligibility.push_str(" AND e.timestamp<?4");
+            values.push(rusqlite::types::Value::Integer(before));
+        }
+        let anchor_sql=format!("SELECT EXISTS(SELECT 1 FROM conversation_index_entries e WHERE {eligibility} AND e.entry_id=?3)");
+        let admitted: bool = conn
+            .query_row(&anchor_sql, params_from_iter(values.clone()), |r| r.get(0))
+            .map_err(db_err)?;
+        let mut entries = Vec::new();
+        if admitted {
+            let selected = if request.turn {
+                "(e.entry_id=?3 OR (e.role='assistant' AND e.anchor_entry_id=?3))"
             } else {
-                4
+                "e.entry_id=?3"
             };
-            sql.push_str(&format!(
-                " ORDER BY e.seq ASC,e.entry_id ASC LIMIT ?{limit_parameter}"
-            ));
-            values.push(rusqlite::types::Value::Integer(limit));
+            let sql=format!("SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id FROM conversation_index_entries e WHERE {eligibility} AND {selected} AND e.chunk=0 ORDER BY e.seq,e.entry_id");
             let mut statement = conn.prepare(&sql).map_err(db_err)?;
-            let found = statement
+            let rows = statement
                 .query_map(params_from_iter(values), Self::read_conversation_row)
                 .map_err(db_err)?;
-            rows = found.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+            for row in rows {
+                let e = row.map_err(db_err)?;
+                entries.push(json!({"sessionId":e.session_id,"entryId":e.entry_id,"eventId":e.event_id,"seq":e.seq,"chunk":e.chunk,"role":e.role,"text":e.text,"timestamp":e.timestamp,"anchorEntryId":e.anchor_entry_id,"anchorEventId":e.anchor_event_id,"score":e.score}));
+            }
         }
-
-        Ok(json!({
-            "revision": index_revision,
-            "memoryRevision": memory_revision,
-            "forgetEpoch": forget_epoch,
-            "entries": rows.into_iter().map(|entry| json!({
-                "sessionId": entry.session_id,
-                "entryId": entry.entry_id,
-                "eventId": entry.event_id,
-                "seq": entry.seq,
-                "chunk": entry.chunk,
-                "role": entry.role,
-                "text": entry.text,
-                "timestamp": entry.timestamp,
-                "anchorEntryId": entry.anchor_entry_id,
-                "anchorEventId": entry.anchor_event_id,
-                "score": entry.score,
-            })).collect::<Vec<_>>(),
-        }))
+        Ok(
+            json!({"revision":revision,"memoryRevision":memory_revision,"forgetEpoch":forget_epoch,"entries":entries,
+            "complete":true,"nextCursor":null,"freshness":"current","fingerprints":[{"sessionId":request.session_id,"fingerprint":fingerprint}]}),
+        )
     }
 
     fn read_conversation_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedEntry> {
@@ -1195,7 +1949,7 @@ impl MemoryStore {
                     entry.entry_id.clone(),
                     entry.chunk,
                 );
-                if output.len() < SEARCH_LIMIT_MAX as usize && seen.insert(key) {
+                if seen.insert(key) {
                     output.push(entry);
                 }
             };
@@ -1222,9 +1976,6 @@ impl MemoryStore {
                 } else {
                     append(hit, &mut output, &mut seen);
                 }
-            }
-            if output.len() >= SEARCH_LIMIT_MAX as usize {
-                break;
             }
         }
         Ok(output)
@@ -1334,6 +2085,55 @@ impl MemoryStore {
     }
 }
 
+fn map_episode_catalogue_page(mut page: Value, scope_partial: bool) -> Value {
+    let entries = page.get_mut("entries").and_then(Value::as_array_mut);
+    if let Some(entries) = entries {
+        for item in entries.iter_mut() {
+            let draft = item.get("draft").cloned().unwrap_or_else(|| json!({}));
+            let source_ids = draft
+                .get("sourceIds")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            *item = json!({
+                "kind": "episode",
+                "itemId": item.get("id").and_then(Value::as_str).unwrap_or_default(),
+                "version": item.get("version").and_then(Value::as_i64).unwrap_or_default(),
+                "summary": draft.get("summary").and_then(Value::as_str).unwrap_or_default(),
+                "sourceCount": source_ids.len(),
+                "sourceCoverage": "pending",
+                "navigationOnly": true,
+                "scopePartial": scope_partial
+            });
+        }
+    }
+    page
+}
+
+fn map_navigation_catalogue_page(mut page: Value, level: &str) -> Value {
+    let entries = page.get_mut("entries").and_then(Value::as_array_mut);
+    if let Some(entries) = entries {
+        for item in entries.iter_mut() {
+            let draft = item.get("draft").cloned().unwrap_or_else(|| json!({}));
+            let mapped = if level == "people" {
+                json!({"kind":"people", "itemId":item.get("id").and_then(Value::as_str).unwrap_or_default(),
+                    "version":item.get("version").and_then(Value::as_i64).unwrap_or_default(),
+                    "memoryKind":draft.get("kind").and_then(Value::as_str).unwrap_or_default(),
+                    "people":draft.get("navigation").and_then(|value| value.get("people")).cloned().unwrap_or_else(|| json!([])),
+                    "navigationOnly":true})
+            } else {
+                json!({"kind":"topics", "itemId":item.get("id").and_then(Value::as_str).unwrap_or_default(),
+                    "version":item.get("version").and_then(Value::as_i64).unwrap_or_default(),
+                    "memoryKind":draft.get("kind").and_then(Value::as_str).unwrap_or_default(),
+                    "topics":draft.get("navigation").and_then(|value| value.get("topics")).cloned().unwrap_or_else(|| json!([])),
+                    "navigationOnly":true})
+            };
+            *item = mapped;
+        }
+    }
+    page
+}
+
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -1405,6 +2205,170 @@ mod tests {
         }
     }
 
+    fn catalogue_request(
+        level: &str,
+        scope: Value,
+        cursor: Option<&str>,
+    ) -> ConversationCatalogueRequest {
+        serde_json::from_value(json!({"level":level,"scope":scope,"limit":1,"cursor":cursor}))
+            .unwrap()
+    }
+
+    #[test]
+    fn catalogue_pages_all_turns_and_binds_cursor_to_scope_and_revision() {
+        let f = Fixture::new();
+        let revision = f.replace(
+            "s1",
+            "fp1",
+            None,
+            vec![
+                entry("u1", Some("event1"), 1, "user", "first topic", None),
+                entry("a1", None, 2, "assistant", "first answer", Some("u1")),
+                entry("u2", Some("event2"), 3, "user", "second topic", None),
+            ],
+            0,
+        );
+        let scope = json!({"sessionIds":["s1"]});
+        let page1 =
+            f.1.memory_catalogue(&catalogue_request("turns", scope.clone(), None))
+                .unwrap();
+        assert_eq!(page1["entries"][0]["turnId"], "u2");
+        assert_eq!(page1["complete"], false);
+        let cursor = page1["nextCursor"].as_str().unwrap();
+        let page2 =
+            f.1.memory_catalogue(&catalogue_request("turns", scope.clone(), Some(cursor)))
+                .unwrap();
+        assert_eq!(page2["entries"][0]["turnId"], "u1");
+        assert_eq!(page2["complete"], true);
+        assert_eq!(page2["fingerprints"][0]["fingerprint"], "fp1");
+        let changed_scope =
+            f.1.memory_catalogue(&catalogue_request(
+                "turns",
+                json!({"sessionIds":["s1"],"before":1700000000003_i64}),
+                Some(cursor),
+            ))
+            .unwrap();
+        assert_eq!(changed_scope["freshness"], "stale");
+        assert_eq!(changed_scope["entries"], json!([]));
+        let sessions =
+            f.1.memory_catalogue(&catalogue_request("sessions", scope.clone(), None))
+                .unwrap();
+        assert_eq!(sessions["entries"][0]["turnCount"], 2);
+        assert_eq!(sessions["entries"][0]["entryCount"], 3);
+        assert_eq!(sessions["revision"], revision);
+        f.replace(
+            "s1",
+            "fp2",
+            Some("fp1"),
+            vec![entry("u3", None, 4, "user", "edited", None)],
+            0,
+        );
+        let stale =
+            f.1.memory_catalogue(&catalogue_request("turns", scope, Some(cursor)))
+                .unwrap();
+        assert_eq!(stale["freshness"], "stale");
+        assert_eq!(stale["entries"], json!([]));
+    }
+
+    #[test]
+    fn read_admits_only_exact_entry_or_anchored_turn_and_rejects_stale_source() {
+        let f = Fixture::new();
+        let revision = f.replace(
+            "s1",
+            "fp1",
+            None,
+            vec![
+                entry("u1", Some("event1"), 1, "user", "first topic", None),
+                entry("a1", None, 2, "assistant", "first answer", Some("u1")),
+                entry("u2", Some("event2"), 3, "user", "unrelated", None),
+            ],
+            0,
+        );
+        let mut request: ConversationReadRequest = serde_json::from_value(json!({
+            "sessionId":"s1","entryId":"u1","turn":true,"expectedRevision":revision,
+            "expectedMemoryRevision":0,"expectedForgetEpoch":0,"expectedFingerprint":"fp1"
+        }))
+        .unwrap();
+        let page = f.1.conversation_read(&request).unwrap();
+        assert_eq!(
+            page["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["entryId"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["u1", "a1"]
+        );
+        request.before = Some(1700000000002);
+        assert_eq!(
+            f.1.conversation_read(&request).unwrap()["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        request.expected_fingerprint = "wrong".into();
+        let stale = f.1.conversation_read(&request).unwrap();
+        assert_eq!(stale["freshness"], "stale");
+        assert_eq!(stale["entries"], json!([]));
+    }
+
+    #[test]
+    fn lexical_search_cursor_exhausts_matching_entries_without_duplicate_chunks() {
+        let f = Fixture::new();
+        f.replace(
+            "s1",
+            "fp1",
+            None,
+            (0..55)
+                .map(|n| entry(&format!("u{n}"), None, n, "user", "distinct needle", None))
+                .collect(),
+            0,
+        );
+        let first =
+            f.1.conversation_search("needle", "s1", Some(50), None, false, None, None, None)
+                .unwrap();
+        assert_eq!(first["entries"].as_array().unwrap().len(), 50);
+        assert_eq!(first["complete"], false);
+        let cursor = first["nextCursor"].as_str().unwrap();
+        let second =
+            f.1.conversation_search(
+                "needle",
+                "s1",
+                Some(50),
+                None,
+                false,
+                None,
+                None,
+                Some(cursor),
+            )
+            .unwrap();
+        assert_eq!(second["entries"].as_array().unwrap().len(), 5);
+        assert_eq!(second["complete"], true);
+        let ids = first["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .chain(second["entries"].as_array().unwrap())
+            .map(|v| v["entryId"].as_str().unwrap())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), 55);
+        let wrong =
+            f.1.conversation_search(
+                "other",
+                "s1",
+                Some(50),
+                None,
+                false,
+                None,
+                None,
+                Some(cursor),
+            )
+            .unwrap();
+        assert_eq!(wrong["freshness"], "stale");
+        assert_eq!(wrong["entries"], json!([]));
+    }
+
     #[test]
     fn trigram_search_keeps_assistant_role_and_cross_session_hits() {
         let fixture = Fixture::new();
@@ -1432,7 +2396,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("咖啡", "s1", Some(10), None, false, None)
+            .conversation_search("咖啡", "s1", Some(10), None, false, None, None, None)
             .expect("search");
         let rows = result["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 2, "两字中文必须由 LIKE 回退命中两个会话");
@@ -1476,7 +2440,16 @@ mod tests {
         };
         let result = fixture
             .1
-            .conversation_search("", "s1", Some(10), None, false, Some(&record_time))
+            .conversation_search(
+                "",
+                "s1",
+                Some(10),
+                None,
+                false,
+                Some(&record_time),
+                None,
+                None,
+            )
             .expect("date overview");
         let entries = result["entries"].as_array().expect("entries array");
         assert_eq!(entries.len(), 2, "yearless date selects both stored years");
@@ -1524,7 +2497,16 @@ mod tests {
         };
         let result = fixture
             .1
-            .conversation_search("", "s1", Some(10), None, false, Some(&record_time))
+            .conversation_search(
+                "",
+                "s1",
+                Some(10),
+                None,
+                false,
+                Some(&record_time),
+                None,
+                None,
+            )
             .expect("bounded time search");
         let entries = result["entries"].as_array().expect("entries array");
         assert_eq!(entries.len(), 2);
@@ -1534,7 +2516,16 @@ mod tests {
 
         let before = fixture
             .1
-            .conversation_search("", "s1", Some(10), Some(2_000), false, Some(&record_time))
+            .conversation_search(
+                "",
+                "s1",
+                Some(10),
+                Some(2_000),
+                false,
+                Some(&record_time),
+                None,
+                None,
+            )
             .expect("before intersects record range");
         let before_entries = before["entries"].as_array().expect("entries array");
         assert_eq!(before_entries.len(), 1);
@@ -1565,7 +2556,16 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("专属召回限制探针", "s1", Some(100), None, false, None)
+            .conversation_search(
+                "专属召回限制探针",
+                "s1",
+                Some(100),
+                None,
+                false,
+                None,
+                None,
+                None,
+            )
             .expect("search clamps to the protocol candidate ceiling");
         let rows = result["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 50);
@@ -1577,6 +2577,165 @@ mod tests {
             unique_entries.len(),
             50,
             "each returned candidate is distinct"
+        );
+    }
+
+    #[test]
+    fn conversation_search_ranks_content_above_english_question_scaffolding() {
+        let fixture = Fixture::new();
+        let mut rows = (0..60)
+            .map(|seq| {
+                entry(
+                    &format!("recent-{seq}"),
+                    None,
+                    seq + 1,
+                    "user",
+                    "What did Dana think? Dana enjoyed the evening.",
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.push(entry(
+            "research",
+            None,
+            0,
+            "user",
+            "Dana researched local libraries.",
+            None,
+        ));
+        rows.push(entry(
+            "generic",
+            None,
+            61,
+            "user",
+            "What did you do yesterday?",
+            None,
+        ));
+        fixture.replace("s1", "fp1", None, rows, 0);
+
+        let result = fixture
+            .1
+            .conversation_search(
+                "What did Dana research?",
+                "s1",
+                Some(50),
+                None,
+                false,
+                None,
+                None,
+                None,
+            )
+            .expect("content-based search");
+        let entries = result["entries"].as_array().expect("entries");
+        assert_eq!(entries[0]["entryId"], "research");
+        assert!(!entries.iter().any(|row| row["entryId"] == "generic"));
+        assert_eq!(
+            super::super::store::memory_query_terms("What did Dana research?"),
+            vec!["dana".to_owned(), "research".to_owned()]
+        );
+        assert_eq!(
+            super::super::store::memory_query_terms("Caroline researched family history"),
+            vec!["caroline", "researched", "family", "history"]
+        );
+        let capped_terms = super::super::store::memory_query_terms(
+            "zebra yodel xylophone waltz violet tumble orange novel meadow lemon kernel jasmine island harbor garden forest diamond",
+        );
+        assert_eq!(capped_terms.len(), 16);
+        assert_eq!(capped_terms.first().map(String::as_str), Some("zebra"));
+        assert_eq!(capped_terms.last().map(String::as_str), Some("forest"));
+        assert!(super::super::store::memory_query_terms("What did you do?").is_empty());
+    }
+
+    #[test]
+    fn conversation_search_ranks_rare_content_over_repeated_names() {
+        let fixture = Fixture::new();
+        let mut rows = (0..60)
+            .map(|seq| {
+                entry(
+                    &format!("name-match-{seq}"),
+                    None,
+                    seq + 1,
+                    "user",
+                    "Mira and Tovan discussed a novel.",
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        rows.push(entry(
+            "rare-content-hit",
+            None,
+            0,
+            "user",
+            "I praised the novel Ember Circuit by Orin Vale.",
+            None,
+        ));
+        fixture.replace("s1", "fp1", None, rows, 0);
+
+        let result = fixture
+            .1
+            .conversation_search(
+                "Which novel did Mira praise to Tovan?",
+                "s1",
+                Some(1),
+                None,
+                false,
+                None,
+                None,
+                None,
+            )
+            .expect("content-weighted search");
+        let entries = result["entries"].as_array().expect("entries");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["entryId"], "rare-content-hit");
+    }
+
+    #[test]
+    fn conversation_search_matches_english_inflection_variants() {
+        let fixture = Fixture::new();
+        fixture.replace(
+            "s1",
+            "fp1",
+            None,
+            vec![entry(
+                "studied",
+                None,
+                1,
+                "user",
+                "Dana studied architecture at college.",
+                None,
+            )],
+            0,
+        );
+
+        let result = fixture
+            .1
+            .conversation_search(
+                "What did Dana study?",
+                "s1",
+                Some(8),
+                None,
+                false,
+                None,
+                None,
+                None,
+            )
+            .expect("inflection-aware search");
+        let entries = result["entries"].as_array().expect("entries");
+        assert_eq!(entries[0]["entryId"], "studied");
+        assert!(
+            super::super::store::memory_query_term_variants("study", "What did Dana study?")
+                .contains(&"studied".to_owned())
+        );
+        assert_eq!(
+            super::super::store::memory_query_term_variants(
+                "caroline",
+                "What did Caroline recommend?"
+            ),
+            vec!["caroline"]
+        );
+        assert_eq!(
+            super::super::store::memory_query_term_variants("书架", "书架在哪?"),
+            vec!["书架"]
         );
     }
 
@@ -1611,7 +2770,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("alpha beta", "s1", Some(50), None, false, None)
+            .conversation_search("alpha beta", "s1", Some(50), None, false, None, None, None)
             .expect("search every governed hit");
         let entries = result["entries"].as_array().expect("entries array");
         assert!(
@@ -1632,132 +2791,6 @@ mod tests {
             .1
             .conversation_index_prune(&keep)
             .expect("valid retention lists are not capped by total session count");
-    }
-
-    #[test]
-    fn conversation_context_pages_chunk_zero_rows_with_a_stable_revision_snapshot() {
-        let fixture = Fixture::new();
-        let first = entry("u1", Some("u1:user"), 1, "user", "第一轮", None);
-        let second = entry("u2", Some("u2:user"), 2, "user", "第二轮", None);
-        let second_continuation = ConversationIndexEntry {
-            chunk: 1,
-            text: "第二轮续片".into(),
-            ..second.clone()
-        };
-        let third = entry("a3", Some("a3:assistant"), 3, "assistant", "第三轮", None);
-        let fourth = entry("u4", Some("u4:user"), 4, "user", "第四轮", None);
-        fixture.replace(
-            "s1",
-            "fp1",
-            None,
-            vec![first, second, second_continuation, third, fourth],
-            0,
-        );
-
-        let page_one = fixture
-            .1
-            .conversation_context("s1", "u2", None, Some(2), None)
-            .expect("first context page");
-        let page_two = fixture
-            .1
-            .conversation_context(
-                "s1",
-                "u2",
-                page_one["entries"][1]["seq"].as_i64(),
-                Some(2),
-                None,
-            )
-            .expect("second context page");
-        let first_rows = page_one["entries"].as_array().expect("first entries");
-        let second_rows = page_two["entries"].as_array().expect("second entries");
-        assert_eq!(first_rows.len(), 2);
-        assert_eq!(first_rows[0]["entryId"], "u1");
-        assert_eq!(first_rows[1]["entryId"], "u2");
-        assert!(first_rows.iter().all(|row| row["chunk"] == 0));
-        assert_eq!(second_rows.len(), 2);
-        assert_eq!(second_rows[0]["entryId"], "a3");
-        assert_eq!(second_rows[1]["entryId"], "u4");
-        for key in ["revision", "memoryRevision", "forgetEpoch"] {
-            assert_eq!(
-                page_one[key], page_two[key],
-                "revision snapshot changed: {key}"
-            );
-        }
-    }
-
-    #[test]
-    fn conversation_context_rechecks_seed_and_neighbors_against_forget_clear_and_before() {
-        let fixture = Fixture::new();
-        let rows = vec![
-            entry("u1", Some("u1:user"), 1, "user", "清除前", None),
-            entry("u2", Some("u2:user"), 2, "user", "锚点", None),
-            entry("u3", Some("u3:user"), 3, "user", "遗忘邻居", None),
-            entry("u4", Some("u4:user"), 4, "user", "时间边界后", None),
-        ];
-        fixture.replace("s1", "fp1", None, rows, 0);
-        {
-            let conn = fixture.1.lock().expect("memory lock");
-            conn.execute(
-                "INSERT INTO conversation_index_clear_fences(session_id,max_seq,created_at) VALUES (?1,?2,?3)",
-                params!["s1", 1, now_ms()],
-            )
-            .expect("install clear fence");
-            conn.execute(
-                "INSERT INTO conversation_index_suppressions(session_id,entry_id,event_id,seq,created_at) VALUES (?1,?2,?3,?4,?5)",
-                params!["s1", "u3", "u3:user", 3, now_ms()],
-            )
-            .expect("forget neighboring entry");
-        }
-
-        let expanded = fixture
-            .1
-            .conversation_context("s1", "u2", None, Some(50), None)
-            .expect("expand visible anchor");
-        let rows = expanded["entries"].as_array().expect("context entries");
-        assert_eq!(
-            rows.len(),
-            2,
-            "visible entries remain while cleared/forgotten ones stay hidden"
-        );
-        assert_eq!(rows[0]["entryId"], "u2");
-        assert_eq!(rows[1]["entryId"], "u4");
-
-        let before = 1_700_000_000_004;
-        let bounded = fixture
-            .1
-            .conversation_context("s1", "u2", None, Some(50), Some(before))
-            .expect("apply before to page entries");
-        assert_eq!(bounded["entries"].as_array().unwrap().len(), 1);
-
-        let cleared_seed = fixture
-            .1
-            .conversation_context("s1", "u1", None, Some(50), None)
-            .expect("cleared seed returns empty context");
-        assert!(cleared_seed["entries"].as_array().unwrap().is_empty());
-        let forgotten_seed = fixture
-            .1
-            .conversation_context("s1", "u3", None, Some(50), None)
-            .expect("forgotten seed returns empty context");
-        assert!(forgotten_seed["entries"].as_array().unwrap().is_empty());
-        let time_excluded_seed = fixture
-            .1
-            .conversation_context("s1", "u4", None, Some(50), Some(before))
-            .expect("before-excluded seed returns empty context");
-        assert!(time_excluded_seed["entries"].as_array().unwrap().is_empty());
-
-        {
-            let conn = fixture.1.lock().expect("memory lock");
-            conn.execute(
-                "INSERT INTO conversation_index_suppressions(session_id,entry_id,event_id,seq,created_at) VALUES (?1,?2,?3,?4,?5)",
-                params!["s1", "u2", "u2:user", 2, now_ms()],
-            )
-            .expect("forget seed entry");
-        }
-        let forgotten_anchor = fixture
-            .1
-            .conversation_context("s1", "u2", None, Some(50), None)
-            .expect("forgotten anchor returns empty context");
-        assert!(forgotten_anchor["entries"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1820,7 +2853,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("咖啡", "s1", Some(10), None, false, None)
+                .conversation_search("咖啡", "s1", Some(10), None, false, None, None, None)
                 .expect("search after forget")["entries"]
                 .as_array()
                 .unwrap()
@@ -1829,7 +2862,7 @@ mod tests {
         );
         let active = fixture
             .1
-            .conversation_search("活动提醒", "s1", Some(10), None, false, None)
+            .conversation_search("活动提醒", "s1", Some(10), None, false, None, None, None)
             .expect("unanchored active assistant survives forget");
         assert_eq!(active["entries"].as_array().unwrap().len(), 1);
         assert_eq!(active["entries"][0]["entryId"], "active-1");
@@ -1841,7 +2874,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("咖啡", "s1", Some(10), None, false, None)
+                .conversation_search("咖啡", "s1", Some(10), None, false, None, None, None)
                 .expect("search after rebuild")["entries"]
                 .as_array()
                 .unwrap()
@@ -1886,7 +2919,7 @@ mod tests {
         fixture.replace("s1", "fp2", None, vec![old], epoch);
         let result = fixture
             .1
-            .conversation_search("旧内容", "s1", Some(10), None, true, None)
+            .conversation_search("旧内容", "s1", Some(10), None, true, None, None, None)
             .expect("search after clear");
         assert!(
             result["entries"].as_array().unwrap().is_empty(),
@@ -1900,7 +2933,7 @@ mod tests {
         fixture.replace("s1", "fp3", Some("fp2"), vec![recent], epoch);
         let result = fixture
             .1
-            .conversation_search("", "s1", Some(10), None, true, None)
+            .conversation_search("", "s1", Some(10), None, true, None, None, None)
             .expect("recent fallback");
         assert_eq!(
             result["entries"].as_array().unwrap().len(),
@@ -1909,14 +2942,14 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("", "s1", Some(10), None, false, None)
+            .conversation_search("", "s1", Some(10), None, false, None, None, None)
             .expect("no fallback")["entries"]
             .as_array()
             .unwrap()
             .is_empty());
         assert!(fixture
             .1
-            .conversation_search("嗯", "s1", Some(10), None, true, None)
+            .conversation_search("嗯", "s1", Some(10), None, true, None, None, None)
             .expect("nonempty query no fallback")["entries"]
             .as_array()
             .unwrap()
@@ -1987,13 +3020,31 @@ mod tests {
 
         let no_history = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), None, false, None)
+            .conversation_search(
+                "",
+                "current-new-session",
+                Some(4),
+                None,
+                false,
+                None,
+                None,
+                None,
+            )
             .expect("empty query without fallback");
         assert!(no_history["entries"].as_array().unwrap().is_empty());
 
         let recent = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), None, true, None)
+            .conversation_search(
+                "",
+                "current-new-session",
+                Some(4),
+                None,
+                true,
+                None,
+                None,
+                None,
+            )
             .expect("explicit global fallback");
         let rows = recent["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 3);
@@ -2006,7 +3057,16 @@ mod tests {
 
         let bounded = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), Some(now - 600), true, None)
+            .conversation_search(
+                "",
+                "current-new-session",
+                Some(4),
+                Some(now - 600),
+                true,
+                None,
+                None,
+                None,
+            )
             .expect("before-bounded fallback");
         let bounded_rows = bounded["entries"].as_array().expect("bounded entries");
         assert_eq!(bounded_rows.len(), 1);
@@ -2059,7 +3119,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("旧索引", "s1", Some(10), None, false, None)
+                .conversation_search("旧索引", "s1", Some(10), None, false, None, None, None)
                 .expect("old snapshot visible")["entries"]
                 .as_array()
                 .unwrap()
@@ -2068,7 +3128,7 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("新批次", "s1", Some(10), None, false, None)
+            .conversation_search("新批次", "s1", Some(10), None, false, None, None, None)
             .expect("staging hidden")["entries"]
             .as_array()
             .unwrap()
@@ -2109,7 +3169,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("新批次", "s1", Some(10), None, false, None)
+                .conversation_search("新批次", "s1", Some(10), None, false, None, None, None)
                 .expect("new snapshot visible")["entries"]
                 .as_array()
                 .unwrap()
@@ -2118,7 +3178,7 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("旧索引", "s1", Some(10), None, false, None)
+            .conversation_search("旧索引", "s1", Some(10), None, false, None, None, None)
             .expect("old snapshot removed after final commit")["entries"]
             .as_array()
             .unwrap()
@@ -2255,19 +3315,37 @@ mod tests {
             .expect("publish new source after a clock rollback");
         let empty = fixture
             .1
-            .conversation_search("专属标记", "current", Some(5), None, false, None)
+            .conversation_search(
+                "专属标记",
+                "current",
+                Some(5),
+                None,
+                false,
+                None,
+                None,
+                None,
+            )
             .expect("new empty-session entry");
         assert_eq!(empty["entries"].as_array().unwrap().len(), 1);
         assert!(fixture
             .1
-            .conversation_search("旧未来消息", "current", Some(5), None, false, None)
+            .conversation_search(
+                "旧未来消息",
+                "current",
+                Some(5),
+                None,
+                false,
+                None,
+                None,
+                None
+            )
             .expect("forgotten future timestamp")["entries"]
             .as_array()
             .unwrap()
             .is_empty());
         let result = fixture
             .1
-            .conversation_search("挂号", "current", Some(1), None, false, None)
+            .conversation_search("挂号", "current", Some(2), None, false, None, None, None)
             .expect("new session and its anchored reply");
         assert_eq!(result["entries"][0]["entryId"], "a-new");
         assert!(result["entries"]
@@ -2278,7 +3356,7 @@ mod tests {
     }
 
     #[test]
-    fn user_hit_expands_to_bounded_anchored_assistant_chunks_and_honors_before() {
+    fn user_hit_pages_distinct_anchored_entries_and_honors_before() {
         let fixture = Fixture::new();
         let user = entry("u1", Some("u1:user"), 1, "user", "我明天要去挂号", None);
         let assistant_chunk0 = ConversationIndexEntry {
@@ -2307,24 +3385,29 @@ mod tests {
 
         let expanded = fixture
             .1
-            .conversation_search("挂号", "s1", Some(1), None, false, None)
+            .conversation_search("挂号", "s1", Some(2), None, false, None, None, None)
             .expect("user hit includes its answer window");
         let rows = expanded["entries"].as_array().expect("entries array");
-        assert_eq!(
-            rows.len(),
-            3,
-            "one matching user plus at most two anchored answer chunks"
-        );
+        assert_eq!(rows.len(), 2, "one retrieval unit per entry, not per chunk");
         assert_eq!(rows[0]["entryId"], "a1");
         assert_eq!(rows[0]["chunk"], 0);
         assert_eq!(rows[0]["role"], "assistant");
-        assert_eq!(rows[1]["chunk"], 1);
-        assert_eq!(rows[2]["entryId"], "u1");
-        assert_eq!(rows[2]["role"], "user");
+        assert_eq!(rows[1]["entryId"], "u1");
+        assert_eq!(rows[1]["role"], "user");
+        assert_eq!(expanded["complete"], true);
 
         let bounded = fixture
             .1
-            .conversation_search("挂号", "s1", Some(1), Some(1_700_000_000_002), false, None)
+            .conversation_search(
+                "挂号",
+                "s1",
+                Some(1),
+                Some(1_700_000_000_002),
+                false,
+                None,
+                None,
+                None,
+            )
             .expect("before excludes the assistant window at its timestamp");
         let bounded_rows = bounded["entries"].as_array().expect("bounded entries");
         assert_eq!(bounded_rows.len(), 1);

@@ -1,17 +1,17 @@
 // ==========================================
-// 从 bench 报告导出官方复判用的 hypotheses JSONL
+// 从 bench 报告导出官方评分用的 hypotheses JSONL
 // ==========================================
 //
-// 用途：仓内 judge 只是「基于官方模板的自适配」；需要官方脚本复判时，
-// 用本脚本把已留存报告的每题回答导成官方格式，再跑官方脚本：
+// 用途：LongMemEval / LoCoMo generation 不在仓内判主分；
+// 用本脚本把已留存报告的回答与身份哈希导出，再由锁定官方脚本评分并回填：
 //   · LongMemEval：输出 {"question_id","hypothesis"} 行，直接喂官方
 //     src/evaluation/evaluate_qa.py <metric_model> <hyp_file> <ref_file>；
-//   · LoCoMo：输出 {"sampleId","questionIndex","question","hypothesis","category"} 行（官方仓库没有消费该格式的脚本，供自建对照）；
+//   · LoCoMo：输出带身份与哈希的 hypotheses；run-official.mjs 调用锁定 Snap evaluator 并从锁定 raw data join gold；
 //   · MemoryBank：输出 {"persona","question","hypothesis"} 行（上游没有判分脚本）。
 //
 // 用法：node test/memory-bench/export-hypotheses.mjs <report.json> [--out file.jsonl]
 // 报告 = pnpm run test:memory-bench 输出的 test/reports/<stamp>.json（或 bundle 里同内容）；
-// 也可以直接使用 bundle 中的 memory-bench-outcomes.jsonl（LongMemEval 行已含 question_id/hypothesis）。
+// bundle 逐题日志仅作恢复证据；官方回填需要从完整原报告导出的全部绑定字段。
 
 import { createHash } from "node:crypto"
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
@@ -21,9 +21,11 @@ import { fileURLToPath } from "node:url"
 function hypothesisLine(dataset, outcome) {
   const ref = outcome.caseRef ?? {}
   if (dataset === "longmemeval")
-    return { question_id: ref.questionId ?? outcome.questionId ?? null, hypothesis: outcome.answer ?? null }
+    return { question_id: ref.questionId ?? outcome.questionId ?? null, question: ref.question ?? null,
+      hypothesis: outcome.answer ?? null }
   if (dataset === "locomo")
-    return { caseId: outcome.caseId, sampleId: ref.sampleId ?? outcome.groupKey, questionIndex: ref.questionIndex ?? null,
+    return { caseId: outcome.caseId, question_id: outcome.caseId,
+      sample_id: ref.sampleId ?? outcome.groupKey, question_index: ref.questionIndex ?? null,
       question: ref.question ?? null, hypothesis: outcome.answer ?? null, category: ref.category ?? null }
   if (dataset === "memorybank")
     return { caseId: outcome.caseId, persona: ref.persona ?? outcome.groupKey, question: ref.question ?? null,
@@ -53,11 +55,20 @@ export function exportHypotheses(report, { sourceReportSha256 } = {}) {
     if (rowIds.has(rowId)) throw new Error(`报告中逐题 ID 重复: ${rowId}`)
     rowIds.add(rowId)
     line.case_id = outcome.caseId
+    line.case_id_sha256 = sha256(outcome.caseId)
     line.source_report_sha256 = sourceReportSha256
     line.hypothesis_sha256 = sha256(line.hypothesis)
     if (dataset === "longmemeval") {
       if (typeof line.question_id !== "string" || !line.question_id.trim())
         throw new Error(`${outcome.caseId}: 缺少唯一 question_id，无法绑定外部判分`)
+      if (typeof line.question !== "string") throw new Error(`${outcome.caseId}: 缺少 question 文本，无法绑定外部判分`)
+      line.question_sha256 = sha256(line.question)
+    }
+    if (dataset === "locomo") {
+      if (typeof line.sample_id !== "string" || !Number.isInteger(line.question_index)
+        || typeof line.question !== "string" || !Number.isInteger(line.category))
+        throw new Error(`${outcome.caseId}: LoCoMo identity/question/category is incomplete`)
+      line.question_sha256 = sha256(line.question)
     }
     lines.push(line)
   }

@@ -4,23 +4,24 @@
 //
 // 与 test/memory-quality/live-adapter.ts 的差异（外部基准的本质不同）：
 //   · 不做 fact 金标与 fixture 指纹配对；LongMemEval 历史写完整 user/assistant JSONL，用户事实单独登记；
-//   · 提取走真实 dreaming（档位 off + 手动 sweep）；LME 保留生产 scope，其余数据集夹具归一到 user scope；
+//   · 提取走真实 dreaming（档位 off + 手动 sweep）；各数据集均保留真实 scope 与来源治理；
 //   · 每题新建会话提问；cell = 题 × 1 trial（观测证据，不套自建集的 ≥3 trial 配对纪律）；
 //   · LoCoMo / MemoryBank 按「组」灌一次库、组内多题复用（对话级/角色级分组）。
 // 证据与计量：memory_recall_rendered / memory_recall_candidates trace + summarizeMemoryQualityUsage。
 
 import { getHostBridge } from "@/services/host"
 import { sendMessage } from "@/services/agent/runner"
+import { MEMORY_LIST_TOOL, MEMORY_SEARCH_TOOL, MEMORY_READ_TOOL } from "@/services/tool"
 import {
-  applyMemoryChange, getMemoryItems, installMemoryProvider, memoryJobSources, memoryList, memoryStatus,
+  getMemoryItems, installMemoryProvider, memoryJobSources,
   registerMemorySources, runDreamingSweep, sqliteMemoryProvider,
 } from "@/services/agent/memory"
-import type { MemoryDraft, MemoryItem, MemorySource } from "@/services/agent/memory"
+import type { MemoryItem, MemorySource } from "@/services/agent/memory"
 import { aiConfig, flushConfig, memoryConfig, setOverrides } from "@/services/config"
 import { contextBudget, estimateRequestTokens, setCurrentTimeNoteAnchor } from "@/services/context"
 import { completePiText, getPiModel } from "@/services/engine/harness"
 import type { PiModel } from "@/services/engine/harness"
-import { subscribeRuntimeTrace } from "@/services/engine/runtime"
+import { createRuntimeTraceContext, subscribeRuntimeTrace } from "@/services/engine/runtime"
 import { publishedUiEventRecords } from "../host/ui-event-tap"
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
@@ -29,10 +30,12 @@ import { userInputMessage } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { standardSetup } from "../host/standard-setup"
-import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, parseJudgeVerdict, parseMemoryBankJudgeVerdict } from "./judge.mjs"
+import { getActiveCard, reloadActiveCard, saveUserCard } from "@/services/personality"
+import { buildMemoryBankJudgePrompt, judgeOutputBudget, parseMemoryBankJudgeVerdict } from "./judge.mjs"
 import { questionTimeAnchor } from "./datasets/longmemeval/importer.mjs"
-import { planScopeNormalization } from "./scope-normalize.mjs"
-import { summarizeMemoryQualityUsage } from "../memory-quality/index.mjs"
+import { formatLocomoAnswerCard, LOCOMO_ANSWER_FORMAT, renderLocomoDialogueEntry } from "./datasets/locomo/fixture.mjs"
+import { summarizeMemoryQualityUsage, summarizePiUsage } from "../memory-quality/index.mjs"
+import { compareObservedModels, summarizeTraceUsageByStage } from "./accounting.mjs"
 import { buildReaderControlPrompts, requireCompleteReaderOutput } from "./reader-control.mjs"
 
 /** 与 src/services/agent/memory/sources.ts 的 EVIDENCE_CHARS 对齐：登记证据只保留引文长度。 */
@@ -60,41 +63,86 @@ function assertReaderPromptFits(model: PiModel, systemPrompt: string, userText: 
     throw new Error(`reader-control 输入超预算：估算 ${inputTokens} tokens，normalInputTarget ${inputLimit}；完整 oracle history 保留，未截断`)
 }
 
-async function askWithFullOracleEvidence(caseDef: BenchCase, mode: ReaderControlMode, signal?: AbortSignal) {
-  if (signal?.aborted) throw new Error("reader-control cancelled before inference")
-  const model = getPiModel(aiConfig.model)
-  const prompts = buildReaderControlPrompts(caseDef, mode)
-  // Deliberately construct the prompt from only question/date and oracle evidence sessions.
-  // answer, has_answer, and answerSessionIds are never serialized into generation input.
-  const systemPrompt = prompts.systemPrompt
-  const noteSystemPrompt = prompts.noteSystemPrompt
-  const outputBudget = model.maxTokens
-  const usage = { inputTokens: 0, outputTokens: 0, calls: 0 }
-  const notes: Array<{ sessionId: string; sessionDate: string; note: string }> = []
-  if (mode === "con") {
-    for (let index = 0; index < prompts.sessions.length; index++) {
-      if (signal?.aborted) throw new Error("reader-control cancelled during CoN extraction")
-      const session = prompts.sessions[index]
-      const notePrompt = prompts.notePrompts[index]
-      assertReaderPromptFits(model, noteSystemPrompt, notePrompt, outputBudget)
-      const result = await completePiText({ purpose: "memory", model, systemPrompt: noteSystemPrompt, userText: notePrompt,
-        maxTokens: outputBudget, timeoutMs: JUDGE_TIMEOUT_MS, signal })
-      const note = requireCompleteReaderOutput(result, `CoN note extraction session=${session.sessionId}`)
-      usage.inputTokens += result.usage.input
-      usage.outputTokens += result.usage.output
-      usage.calls += 1
-      notes.push({ sessionId: session.sessionId, sessionDate: session.sessionDate, note })
-    }
+function observedResponseModel(result: unknown): string | undefined {
+  const value = (result as { responseModel?: unknown } | null)?.responseModel
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+type ReaderControlMeasurement = {
+  answer: string | undefined
+  error: string | undefined
+  usage: ReturnType<typeof summarizeMemoryQualityUsage>["usage"]
+  knownUsage: ReturnType<typeof summarizeMemoryQualityUsage>["knownUsage"]
+  unknownUsageRequests: number
+  cache: "hit" | "miss" | "unknown"
+  usageByStage: Record<string, ReturnType<typeof summarizeMemoryQualityUsage>>
+  actualResponseModel?: string
+}
+
+async function askWithFullOracleEvidence(caseDef: BenchCase, mode: ReaderControlMode, signal?: AbortSignal): Promise<ReaderControlMeasurement> {
+  const noteTrace = createRuntimeTraceContext(undefined, `reader-control-notes-${caseDef.caseId}`)
+  const answerTrace = createRuntimeTraceContext(undefined, `reader-control-answer-${caseDef.caseId}`)
+  const noteEvents: unknown[] = []
+  const answerEvents: unknown[] = []
+  const traces: unknown[] = []
+  const unsubscribe = subscribeRuntimeTrace(event => {
+    if (event.runId !== noteTrace.runId && event.runId !== answerTrace.runId) return
+    traces.push(event)
+    if (event.runId === noteTrace.runId) noteEvents.push(event)
+    else answerEvents.push(event)
+  })
+  const measuredUsage = () => {
+    const measured = summarizeMemoryQualityUsage(traces)
+    return { usage: measured.usage, knownUsage: measured.knownUsage,
+      unknownUsageRequests: measured.unknownUsageRequests, cache: measured.cache,
+      usageByStage: { ...(mode === "con" ? { readerControlNotes: summarizeMemoryQualityUsage(noteEvents) } : {}),
+        readerControlAnswer: summarizeMemoryQualityUsage(answerEvents) } }
   }
-  const userText = prompts.finalPrompt(mode === "direct" ? undefined : JSON.stringify(notes))
-  assertReaderPromptFits(model, systemPrompt, userText, outputBudget)
-  const result = await completePiText({ purpose: "memory", model, systemPrompt, userText,
-    maxTokens: outputBudget, timeoutMs: JUDGE_TIMEOUT_MS, signal })
-  const answer = requireCompleteReaderOutput(result, `${mode} answer`)
-  usage.inputTokens += result.usage.input
-  usage.outputTokens += result.usage.output
-  usage.calls += 1
-  return { answer, usage }
+  try {
+    if (signal?.aborted) throw new Error("reader-control cancelled before inference")
+    const model = getPiModel(aiConfig.model)
+    const prompts = buildReaderControlPrompts(caseDef, mode)
+    // Deliberately construct the prompt from only question/date and oracle evidence sessions.
+    // answer, has_answer, and answerSessionIds are never serialized into generation input.
+    const systemPrompt = prompts.systemPrompt
+    const noteSystemPrompt = prompts.noteSystemPrompt
+    const outputBudget = model.maxTokens
+    const notes: Array<{ sessionId: string; sessionDate: string; note: string }> = []
+    if (mode === "con") {
+      for (let index = 0; index < prompts.sessions.length; index++) {
+        if (signal?.aborted) throw new Error("reader-control cancelled during CoN extraction")
+        const session = prompts.sessions[index]
+        const notePrompt = prompts.notePrompts[index]
+        assertReaderPromptFits(model, noteSystemPrompt, notePrompt, outputBudget)
+        const result = await completePiText({ purpose: "memory", model, systemPrompt: noteSystemPrompt, userText: notePrompt,
+          maxTokens: outputBudget, timeoutMs: JUDGE_TIMEOUT_MS, signal, traceContext: noteTrace })
+        const note = requireCompleteReaderOutput(result, `CoN note extraction session=${session.sessionId}`)
+        notes.push({ sessionId: session.sessionId, sessionDate: session.sessionDate, note })
+      }
+    }
+    const userText = prompts.finalPrompt(mode === "direct" ? undefined : JSON.stringify(notes))
+    assertReaderPromptFits(model, systemPrompt, userText, outputBudget)
+    const result = await completePiText({ purpose: "memory", model, systemPrompt, userText,
+      maxTokens: outputBudget, timeoutMs: JUDGE_TIMEOUT_MS, signal, traceContext: answerTrace })
+    const answer = requireCompleteReaderOutput(result, `${mode} answer`)
+    const measured = measuredUsage()
+    const models = measuredUsageModels(traces)
+    return { answer, error: undefined, ...measured,
+      actualResponseModel: models.length === 1 ? models[0] : observedResponseModel(result) }
+  } catch (error) {
+    return { answer: undefined, error: formatError(error), ...measuredUsage(), actualResponseModel: undefined }
+  } finally {
+    unsubscribe()
+  }
+}
+
+function measuredUsageModels(events: unknown[]): string[] {
+  const models = new Set<string>()
+  for (const event of events as Array<{ kind?: string; payload?: Record<string, unknown> }>) {
+    const model = event.kind === "provider_request_end" ? event.payload?.responseModel : undefined
+    if (typeof model === "string" && model.trim()) models.add(model.trim())
+  }
+  return [...models]
 }
 
 export interface BenchEvidenceRef {
@@ -114,7 +162,7 @@ export interface BenchCellOutcome {
   answer?: string
   usedTools?: boolean
   protocolViolations?: string[]
-  tooling?: { requestedMode: "none"; observedCalls: number }
+  tooling?: { requestedMode: "memory"; observedCalls: number }
   toolCalls?: { toolName: string; status: string }[]
   fixtureCleanup?: { ok: boolean; error?: string }
   evidence: BenchEvidenceRef[]
@@ -122,12 +170,16 @@ export interface BenchCellOutcome {
   groupReused: boolean
   storeGeneration: string
   ingest?: { registeredSources: number; processedSources: number; oversizedSources: number;
-    scopeNormalized: number; sweeps: number }
+    sweeps: number }
   metrics?: { firstDeliveredTextDeltaMs?: number }
   usage?: ReturnType<typeof summarizeMemoryQualityUsage>["usage"]
-  readerUsage?: { inputTokens: number; outputTokens: number; calls: number }
-  cache?: { status: "hit" | "unknown" }
+  knownUsage?: ReturnType<typeof summarizeMemoryQualityUsage>["knownUsage"]
+  unknownUsageRequests?: number
+  usageByStage?: ReturnType<typeof summarizeTraceUsageByStage>
+  actualResponseModel?: string
+  cache?: { status: "hit" | "miss" | "unknown" }
   error?: string
+  failureKind?: "infrastructure"
 }
 
 export interface BenchJudgment {
@@ -137,7 +189,7 @@ export interface BenchJudgment {
   templateId?: string
   model?: string
   error?: string
-  usage?: { inputTokens: number; outputTokens: number }
+  usage?: NonNullable<ReturnType<typeof summarizePiUsage>["usage"]>
 }
 
 interface SourceMeta { observedAt: number; sessionId?: string; turnIndex?: number; diaId?: string; role?: "user" | "assistant" }
@@ -224,23 +276,44 @@ async function longMemEvalSources(caseDef: BenchCase): Promise<{ sources: Memory
   return { sources, meta }
 }
 
-function locomoSources(conversation: { sampleId: string;
-  sessions: Array<{ observedAt: number | null; turns: Array<{ speaker: string; diaId: string; text: string }> }> }): { sources: MemorySource[]; meta: Map<string, SourceMeta> } {
+async function locomoSources(conversation: { sampleId: string;
+  sessions: Array<{ session: number; dateText: string | null; observedAt: number | null;
+    turns: Array<{ speaker: string; diaId: string; text: string; blipCaption?: string }> }> }): Promise<{ sources: MemorySource[]; meta: Map<string, SourceMeta> }> {
   const sources: MemorySource[] = []
   const meta = new Map<string, SourceMeta>()
   let seq = 0
   for (const session of conversation.sessions) {
-    for (const turn of session.turns) {
-      seq += 1
-      const sourceId = `${conversation.sampleId}:${turn.diaId}`
-      const observedAt = session.observedAt ?? 0
-      sources.push({ sourceId, sessionId: conversation.sampleId, entryId: turn.diaId,
-        eventId: `bench-locomo-${conversation.sampleId}-${seq}`, seq, contentHash: "",
-        evidence: turn.text.slice(0, EVIDENCE_CHARS), sourceLength: turn.text.length,
-        eligibleForMemory: true, taint: "trusted_user", origin: "user",
-        observedAt: observedAt + seq * 1_000 })
-      meta.set(sourceId, { observedAt: observedAt + seq * 1_000, diaId: turn.diaId })
-    }
+    const fixture = await createPiSession(`bench-locomo-${conversation.sampleId}-session-${session.session}`)
+    const sessionSources: MemorySource[] = []
+    try {
+      const handle = await acquirePiSession(fixture.id)
+      const branch = await handle.createBranch(PI_LANE, null, BACKGROUND_CONTEXT)
+      for (const [sessionTurnIndex, turn] of session.turns.entries()) {
+        seq += 1
+        const observedAt = (session.observedAt ?? 0) + seq * 1_000
+        const eventId = `bench-locomo-${conversation.sampleId}-${turn.diaId}`
+        const content = renderLocomoDialogueEntry({ speaker: turn.speaker, dateText: session.dateText, text: turn.text,
+          blipCaption: turn.blipCaption })
+        const entryId = await branch.appendMessage({ ...userInputMessage(content, eventId, {
+          origin: "user", querySource: "chat", priority: "now", taint: "trusted_user", eligibleForMemory: true,
+        }), timestamp: observedAt }, BACKGROUND_CONTEXT)
+        const sourceId = `${fixture.id}:${entryId}`
+        const sourceMeta: SourceMeta = { observedAt, sessionId: fixture.id, turnIndex: sessionTurnIndex, diaId: turn.diaId, role: "user" }
+        meta.set(`conversation:${fixture.id}:${entryId}`, sourceMeta)
+        meta.set(sourceId, sourceMeta)
+        sessionSources.push({ sourceId, sessionId: fixture.id, entryId, eventId, seq, contentHash: "",
+          evidence: content.slice(0, EVIDENCE_CHARS), sourceLength: content.length,
+          eligibleForMemory: true, taint: "trusted_user", origin: "user", observedAt })
+      }
+      const entries = await handle.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)
+      const seqById = new Map(entries.map(entry => [entry.id, entry.seq]))
+      for (const source of sessionSources) {
+        const entrySeq = seqById.get(source.entryId)
+        if (entrySeq === undefined) throw new Error("LoCoMo JSONL 来源未提交")
+        source.seq = entrySeq
+        sources.push(source)
+      }
+    } finally { await releasePiSession(fixture.id) }
   }
   return { sources, meta }
 }
@@ -338,38 +411,11 @@ async function drainDreaming(signal: AbortSignal | undefined, traces: unknown[])
   return { processed, oversized, sweeps, pendingLeft }
 }
 
-/**
- * session-scope 候选归一为 user scope（提问发生在新建会话，否则漏召回）。
- * Rust 禁止 update/supersede 跨范围改归属，因此用 add（同内容/同来源）+ forget 原条目；
- * 这是测试夹具对产品存储的显式治理操作，不改产品代码。
- *
- * 必须两段式执行：forget 写的来源墓碑会让之后引用同一来源的 add 判「来源未登记」，
- * 逐条 add→forget 在共享来源的候选上必炸。操作顺序由 scope-normalize.mjs 规划，
- * 这里按序执行、不再自行交错。
- */
-async function normalizeSessionScope(): Promise<number> {
-  const items = await memoryList(undefined, undefined, 1_000)
-  let normalized = 0
-  for (const operation of planScopeNormalization(items)) {
-    const revision = (await memoryStatus()).revision
-    if (operation.action === "add") {
-      const draft: MemoryDraft = operation.draft
-      await applyMemoryChange({ operationId: `bench-scope-add-${crypto.randomUUID()}`, baseRevision: revision,
-        action: "add", actor: "internal", draft })
-      normalized += 1
-    } else {
-      await applyMemoryChange({ operationId: `bench-scope-forget-${crypto.randomUUID()}`, baseRevision: revision,
-        action: "forget", actor: "internal", itemId: operation.itemId })
-    }
-  }
-  return normalized
-}
-
 function evidenceFromTraceEvents(traces: unknown[], sourceMeta: Map<string, SourceMeta>,
   itemById: Map<string, MemoryItem>): BenchEvidenceRef[] {
   const refs = new Map<string, BenchEvidenceRef>()
   for (const event of traces as Array<{ kind?: string; payload?: Record<string, unknown> }>) {
-    if (event.kind !== "memory_recall_rendered") continue
+    if (event.kind !== "memory_recall_rendered" && event.kind !== "memory_navigation_rendered") continue
     const sourceIds = Array.isArray(event.payload?.sourceIds)
       ? event.payload.sourceIds.filter((id): id is string => typeof id === "string") : []
     for (const projectionId of sourceIds) {
@@ -421,7 +467,7 @@ function candidateSessionIds(traces: unknown[], itemById: Map<string, MemoryItem
  * judge 模型解析：走网关公开的按 id 解析入口（与主链路同一份 endpoint / api_key / provider
  * 与窗口推导），不用被测模型的预算冒充 judge 模型。
  * 唯一纪律：judge 模型必须不同于被测模型（不允许被测模型自评）。
- * 默认模型（deepseek-reasoner）由 e2e-main 传入；其他 Provider 用 --bench-judge-model 指定。
+ * 默认模型（deepseek-v4-pro）由 e2e-main 传入；其他 Provider 用 --bench-judge-model 指定。
  */
 function judgeModelFor(modelId: string): PiModel {
   const tested = aiConfig.model
@@ -439,7 +485,7 @@ function formatMemoryBankHistory(persona: { name: string; metaInformation: Recor
   return lines.join("\n")
 }
 
-/** 提问回合：新建会话、撤下工具、记录首文本发布延迟；答案与渲染证据映射回登记来源。
+/** 提问回合：新建会话、只保留受治理记忆读取工具、记录首文本发布延迟；答案与渲染证据映射回登记来源。
  * Native L4 不建 UI；旧字段名兼容报告 schema，但时间点是 HostBridge publish 成功，不代表原生绘制。 */
 async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequence: number; total: number;
   group: PreparedGroup; groupReused: boolean; traces: unknown[]; timeAnchor: Date | null;
@@ -456,7 +502,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
     // 相对日期题才在官方口径下被测量；其余数据集 timeAnchor 为 null，保持真实时钟。
     // 锚点只活在这个回合内，finally 复位，绝不外溢到下一题。
     setCurrentTimeNoteAnchor(timeAnchor)
-    const result = await sendMessage(String(caseDef.question), { requestId: `${groupKey}-q${sequence}-of-${total}`, toolMode: "none" })
+    const result = await sendMessage(String(caseDef.question), { requestId: `${groupKey}-q${sequence}-of-${total}`, toolMode: "memory" })
     const firstDelta = publishedUiEventRecords("deskpet-assistant-stream")
       .find(({ payload }) => payload.sessionId === questionSession.id && payload.delta.trim())
     firstDeliveredTextDeltaMs = firstDelta === undefined ? undefined : firstDelta.publishedAt - start
@@ -467,8 +513,11 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
       ? entry.message.content.filter(part => part.type === "toolCall").length : 0), 0)
     // Count attempted calls too, including an unknown name rejected before execution.
     const observedToolCalls = Math.max(result.toolCallsMade, emittedToolCalls)
+    const allowedTools = new Set([MEMORY_LIST_TOOL, MEMORY_SEARCH_TOOL, MEMORY_READ_TOOL])
+    const unexpectedTools = questionEntries.flatMap(entry => entry.type === "message" && entry.message.role === "assistant"
+      ? entry.message.content.filter(part => part.type === "toolCall").map(part => part.name).filter(name => !allowedTools.has(name)) : [])
     const projectionIds = [...new Set((traces as Array<{ kind?: string; payload?: Record<string, unknown> }>)
-      .filter(event => event.kind === "memory_recall_rendered")
+      .filter(event => (event.kind === "memory_recall_rendered" || event.kind === "memory_navigation_rendered"))
       .flatMap(event => Array.isArray(event.payload?.sourceIds)
         ? (event.payload.sourceIds as unknown[]).filter((id): id is string => typeof id === "string") : []))]
     const itemIds = projectionIds.filter(id => !id.startsWith("conversation:")).map(id => id.split("@")[0] ?? "").filter(Boolean)
@@ -476,16 +525,28 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
     const itemById = new Map(items.map(item => [item.id, item]))
     const evidence = evidenceFromTraceEvents(traces, group.sourceMeta, itemById)
     const measured = summarizeMemoryQualityUsage(traces)
+    const mainResponseModels = measured.responseModels.main ?? []
     return captured = { caseId: String(caseDef.caseId),
       questionId: typeof caseDef.questionId === "string" ? caseDef.questionId : null,
       status: "complete", answer: result.reply,
       usedTools: observedToolCalls > 0,
-      protocolViolations: observedToolCalls > 0 ? ["空工具回合出现工具调用，可比性受影响"] : [],
-      tooling: { requestedMode: "none", observedCalls: observedToolCalls },
+      protocolViolations: [...new Set(unexpectedTools)].map(name => `受限记忆回合请求了非记忆工具: ${name}`),
+      tooling: { requestedMode: "memory", observedCalls: observedToolCalls },
       toolCalls: result.toolCalls,
       evidence, candidateSessionIds: candidateSessionIds(traces, itemById, group.sourceMeta),
       groupReused, storeGeneration: group.storeGeneration, ingest: group.ingest,
-      metrics: { firstDeliveredTextDeltaMs }, usage: measured.usage, cache: { status: measured.cache } }
+      metrics: { firstDeliveredTextDeltaMs }, usage: measured.usage, knownUsage: measured.knownUsage,
+      unknownUsageRequests: measured.unknownUsageRequests, usageByStage: summarizeTraceUsageByStage(traces),
+      actualResponseModel: mainResponseModels.length === 1 ? mainResponseModels[0] : undefined,
+      cache: { status: measured.cache } }
+  } catch (error) {
+    // A failed turn still incurred its preceding requests. Keep observed usage;
+    // an aborted stream without provider usage remains explicitly unknown.
+    const measured = summarizeMemoryQualityUsage(traces)
+    return captured = { caseId: String(caseDef.caseId), status: "failed", failureKind: "infrastructure",
+      error: formatError(error), evidence: [], groupReused, storeGeneration: group.storeGeneration, ingest: group.ingest,
+      usage: measured.usage, knownUsage: measured.knownUsage, unknownUsageRequests: measured.unknownUsageRequests,
+      usageByStage: summarizeTraceUsageByStage(traces), cache: { status: measured.cache } }
   } finally {
     setCurrentTimeNoteAnchor(null)
     // A previous benchmark answer is not evidence for another question in the group.
@@ -514,8 +575,10 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
   let dataset = ""
   let file: { conversations?: unknown[]; personas?: unknown[] } = {}
   let prepared: PreparedGroup | undefined
+  let answerFormatInstalled = false
+  let answerFormatCard: { id: string; hash: string } | undefined
   /** 同一组灌库失败后组内后续题直接复用失败结论，不重复烧提取预算。 */
-  const failedGroups = new Map<string, string>()
+  const failedGroups = new Map<string, { error: string; failureKind?: "infrastructure" }>()
 
   async function prepareGroup(groupKey: string, caseDef: BenchCase, traces: unknown[], signal?: AbortSignal):
     Promise<{ ok: true; group: PreparedGroup } | { ok: false; error: string; ingest: NonNullable<BenchCellOutcome["ingest"]> }> {
@@ -529,7 +592,7 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
     else if (dataset === "locomo") {
       const conversation = (file.conversations ?? []).find(item => (item as { sampleId?: string }).sampleId === groupKey)
       if (!conversation) throw new Error(`找不到对话 ${groupKey}`)
-      built = locomoSources(conversation as Parameters<typeof locomoSources>[0])
+      built = await locomoSources(conversation as Parameters<typeof locomoSources>[0])
     } else if (dataset === "memorybank") {
       const persona = (file.personas ?? []).find(item => (item as { name?: string }).name === groupKey)
       if (!persona) throw new Error(`找不到角色 ${groupKey}`)
@@ -538,12 +601,8 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
     await registerAll(built.sources)
     const drained = await drainDreaming(signal, traces)
     const ingest = { registeredSources: built.sources.length, processedSources: drained.processed,
-      oversizedSources: drained.oversized, scopeNormalized: 0, sweeps: drained.sweeps }
+      oversizedSources: drained.oversized, sweeps: drained.sweeps }
     if (drained.incompleteOutput) return { ok: false, error: drained.incompleteOutput, ingest }
-    // Only LoCoMo's direct-source fixture changes scope. JSONL-backed datasets keep
-    // production scope rules: add+forget would tombstone real conversation anchors.
-    const scopeNormalized = dataset === "locomo" ? await normalizeSessionScope() : 0
-    ingest.scopeNormalized = scopeNormalized
     return { ok: true, group: { groupKey, storeGeneration: String(storeReset.generation), sourceMeta: built.meta, ingest } }
   }
 
@@ -567,9 +626,13 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
         fixtureStorage: "isolated-e2e-root; no product memory registration or recall" }
       return { provider: aiConfig.provider, model: aiConfig.model, entry: "production", providerMode: "real",
         storageMode: "rust-ipc", configHash: await sha256(JSON.stringify(cfg)),
-        toolIsolation: "all model tools disabled; host fixture/governance IPC remains real",
+        toolIsolation: "governed memory_list/search/read only; Plan, MCP, Skills and all other model tools disabled; host fixture/governance IPC remains real",
+        ...(dataset === "locomo" ? { answerFormat: { ...LOCOMO_ANSWER_FORMAT,
+          promptSha256: await sha256(LOCOMO_ANSWER_FORMAT.prompt),
+          card: answerFormatCard,
+          installation: "isolated active Card output rules; raw question and retrieval input unchanged; no category/answer/evidence labels used" } } : {}),
         ingestion: dataset === "locomo"
-          ? "direct MemorySource registration; dreaming manual sweep; session scope normalized to user"
+          ? "per-session JSONL dialogue fixture; each original turn is a user-role human record with speaker/date header and unchanged source text; user-only MemorySource registration points to committed entries; optional official blip caption appended as separate marked text; not a user/assistant chat transcript; dreaming manual sweep; production scope rules"
           : `${dataset === "memorybank" ? "daily" : "per-session"} user/assistant JSONL fixture; user-only fact registration; dreaming manual sweep; production scope rules`,
         questionTimeAnchoring: dataset === "longmemeval"
           ? "LongMemEval: question_date 作为提问回合的 [当前时间]（本地墙钟）；其余数据集用真实时钟"
@@ -587,28 +650,52 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
       if (signal?.aborted) throw new Error("cancelled before bench cell")
       if (options.readerControl) {
         const measured = await askWithFullOracleEvidence(caseDef, options.readerControl, signal)
+        if (measured.error) return { caseId: String(caseDef.caseId), questionId: typeof caseDef.questionId === "string" ? caseDef.questionId : null,
+          status: "failed", failureKind: "infrastructure", error: measured.error, evidence: [], candidateSessionIds: [],
+          groupReused: false, storeGeneration: "reader-control-no-product-store", usage: measured.usage,
+          knownUsage: measured.knownUsage, unknownUsageRequests: measured.unknownUsageRequests,
+          usageByStage: measured.usageByStage, actualResponseModel: measured.actualResponseModel, cache: { status: measured.cache } }
         return { caseId: String(caseDef.caseId), questionId: typeof caseDef.questionId === "string" ? caseDef.questionId : null,
           status: "complete", answer: measured.answer, evidence: [], candidateSessionIds: [], groupReused: false,
-          storeGeneration: "reader-control-no-product-store", readerUsage: measured.usage, cache: { status: "unknown" } }
+          storeGeneration: "reader-control-no-product-store", usage: measured.usage,
+          knownUsage: measured.knownUsage, unknownUsageRequests: measured.unknownUsageRequests,
+          usageByStage: measured.usageByStage, actualResponseModel: measured.actualResponseModel,
+          cache: { status: measured.cache } }
       }
       // trace 订阅覆盖灌库 + 提问整段：dreaming 的失败分类（长度上限 vs 基础设施）也依赖事件。
       const traces: unknown[] = []
       const unsubscribe = subscribeRuntimeTrace(event => { traces.push(event) })
+      let groupReused = true
       try {
         const knownFailure = failedGroups.get(groupKey)
-          ?? (prepared?.groupKey === groupKey ? prepared.cleanupFailure : undefined)
+          ?? (prepared?.groupKey === groupKey && prepared.cleanupFailure
+            ? { error: prepared.cleanupFailure, failureKind: "infrastructure" as const } : undefined)
         if (knownFailure !== undefined)
-          return { caseId: String(caseDef.caseId), status: "failed", error: knownFailure, evidence: [],
+          return { caseId: String(caseDef.caseId), status: "failed", ...knownFailure, evidence: [],
             groupReused: true, storeGeneration: prepared?.storeGeneration ?? "unprepared" }
-        let groupReused = true
         if (!prepared || prepared.groupKey !== groupKey) {
           // Reset once per group. Per-question setup would erase the reused store/history.
           await standardSetup()
+          if (dataset === "locomo" && !answerFormatInstalled) {
+            const card = getActiveCard()
+            if (!card) throw new Error("LoCoMo answer format requires an active isolated Card")
+            const saved = await saveUserCard(formatLocomoAnswerCard(card.rawContent))
+            // Reload uses the existing Card entry point without generating new stage copy.
+            await reloadActiveCard()
+            const installed = getActiveCard()
+            if (installed?.hash !== saved.hash || !installed.sections.outputRules.includes(LOCOMO_ANSWER_FORMAT.prompt))
+              throw new Error("LoCoMo answer format was not installed in the active Card")
+            answerFormatCard = { id: installed.id, hash: installed.hash }
+            answerFormatInstalled = true
+          }
           const result = await prepareGroup(groupKey, caseDef, traces, signal)
           if (!result.ok) {
-            failedGroups.set(groupKey, result.error)
+            failedGroups.set(groupKey, { error: result.error })
             return { caseId: String(caseDef.caseId), status: "failed", error: result.error, evidence: [],
-              groupReused: false, storeGeneration: "unprepared", ingest: result.ingest }
+              groupReused: false, storeGeneration: "unprepared", ingest: result.ingest,
+              usage: summarizeMemoryQualityUsage(traces).usage, knownUsage: summarizeMemoryQualityUsage(traces).knownUsage,
+              unknownUsageRequests: summarizeMemoryQualityUsage(traces).unknownUsageRequests, usageByStage: summarizeTraceUsageByStage(traces),
+              cache: { status: summarizeMemoryQualityUsage(traces).cache } }
           }
           prepared = result.group
           groupReused = false
@@ -619,22 +706,26 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
         }
         const timeAnchor = dataset === "longmemeval" ? questionTimeAnchor(caseDef.questionDate) : null
         return await askQuestion({ caseDef, groupKey, sequence, total, group: prepared, groupReused, traces, timeAnchor, signal })
+      } catch (error) {
+        const measured = summarizeMemoryQualityUsage(traces)
+        const message = formatError(error)
+        if (!prepared || prepared.groupKey !== groupKey) failedGroups.set(groupKey, { error: message, failureKind: "infrastructure" })
+        return { caseId: String(caseDef.caseId), status: "failed", failureKind: "infrastructure", error: message,
+          evidence: [], groupReused, storeGeneration: prepared?.groupKey === groupKey ? prepared.storeGeneration : "unprepared",
+          usage: measured.usage, knownUsage: measured.knownUsage, unknownUsageRequests: measured.unknownUsageRequests,
+          usageByStage: summarizeTraceUsageByStage(traces), cache: { status: measured.cache } }
       } finally {
         unsubscribe()
       }
     },
 
-    async judgeCase({ input, judgeModel }): Promise<BenchJudgment> {
+    async judgeCase({ input, judgeModel, outcome }): Promise<BenchJudgment> {
       const model = judgeModelFor(judgeModel)
       const request = input as
-        | { kind: "longmemeval"; questionType: string; question: string; answer: string; response: string; abstention: boolean }
         | { kind: "memorybank"; persona: Parameters<typeof formatMemoryBankHistory>[0]; question: string; response: string }
-      let built: { templateId: string; prompt: string }
-      if (request.kind === "longmemeval") built = buildLongMemEvalJudgePrompt(request)
-      else if (request.kind === "memorybank")
-        built = buildMemoryBankJudgePrompt({ question: request.question,
-          history: formatMemoryBankHistory(request.persona), response: request.response })
-      else throw new Error(`未知 judge 输入: ${(request as { kind?: string }).kind}`)
+      if (request.kind !== "memorybank") throw new Error(`仅 MemoryBank 保留自适配 judge；请使用官方脚本评分: ${(request as { kind?: string }).kind}`)
+      const built = buildMemoryBankJudgePrompt({ question: request.question,
+        history: formatMemoryBankHistory(request.persona), response: request.response })
       const systemPrompt = "You are an evaluation judge that follows the user's instruction exactly. Reply with a single word: yes or no."
       const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: built.prompt }])
       const modelBudget = contextBudget(model.contextWindow, model.maxTokens)
@@ -642,13 +733,23 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
       const maxTokens = judgeOutputBudget(model.maxTokens, availableOutput)
       const result = await completePiText({ purpose: "memory", model,
         systemPrompt, userText: built.prompt, maxTokens, timeoutMs: JUDGE_TIMEOUT_MS })
+      const judgeResponseModel = observedResponseModel(result)
+      const modelRelation = compareObservedModels(judgeResponseModel, outcome.actualResponseModel)
+      if (modelRelation === "judge-model-unavailable") return { adjudicated: false,
+        error: "judge response model unavailable; refusing to infer identity from configured model", templateId: built.templateId }
+      if (modelRelation === "tested-model-unavailable") return { adjudicated: false,
+        error: "tested response model unavailable; cannot verify judge heterogeneity", templateId: built.templateId,
+        model: judgeResponseModel }
+      if (modelRelation === "same-model") return { adjudicated: false,
+        error: `judge and tested response models are identical (${judgeResponseModel})`, templateId: built.templateId,
+        model: judgeResponseModel }
       const text = result.text.trim()
-      if (!text) return { adjudicated: false, error: "judge returned an empty response", templateId: built.templateId, model: judgeModel }
-      const correct = request.kind === "memorybank" ? parseMemoryBankJudgeVerdict(text) : parseJudgeVerdict(text)
+      if (!text) return { adjudicated: false, error: "judge returned an empty response", templateId: built.templateId, model: judgeResponseModel }
+      const correct = parseMemoryBankJudgeVerdict(text)
       if (correct === null) return { adjudicated: false, error: "MemoryBank judge must return a single yes or no", raw: text,
-        templateId: built.templateId, model: judgeModel }
+        templateId: built.templateId, model: judgeResponseModel }
       return { adjudicated: true, correct, raw: text, templateId: built.templateId,
-        model: judgeModel, usage: { inputTokens: result.usage.input, outputTokens: result.usage.output } }
+        model: judgeResponseModel, usage: summarizePiUsage([result.usage]).usage ?? undefined }
     },
   }
 }

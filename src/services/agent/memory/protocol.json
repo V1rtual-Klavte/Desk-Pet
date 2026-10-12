@@ -2,7 +2,20 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Desk-Pet memory IPC protocol",
   "version": 3,
-  "constants": {"conversation": {"batchChunks": 512, "maxSearchResults": 50}},
+  "$comment": "navigation constants are resource/working-set bounds, not quality-optimized thresholds.",
+  "constants": {
+    "conversation": {"batchChunks": 512, "maxSearchResults": 50},
+    "navigation": {
+      "cataloguePageDefault": 30,
+      "cataloguePageMax": 100,
+      "episodeSourcesPageDefault": 1,
+      "scopeSessionIdsMax": 100,
+      "previewMaxCharacters": 360,
+      "searchQueryMaxCharacters": 480,
+      "hostCursorMaxCharacters": 4096,
+      "providerCursorMaxCharacters": 8192
+    }
+  },
   "definitions": {
     "ConversationIndexEntry": {
       "type": "object",
@@ -185,7 +198,11 @@
         "revision",
         "memoryRevision",
         "forgetEpoch",
-        "entries"
+        "entries",
+        "nextCursor",
+        "complete",
+        "freshness",
+        "fingerprints"
       ],
       "properties": {
         "revision": {
@@ -201,6 +218,118 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/ConversationSearchEntry"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "enum": [
+            "current",
+            "stale"
+          ]
+        },
+        "fingerprints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MemoryCatalogueFingerprint"
+          }
+        }
+      }
+    },
+    "ConversationReadEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "entryId",
+        "seq",
+        "role",
+        "timestamp",
+        "eventId"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "entryId": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "user",
+            "assistant"
+          ]
+        },
+        "timestamp": {
+          "type": "integer"
+        },
+        "eventId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ConversationReadResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "memoryRevision",
+        "forgetEpoch",
+        "entries",
+        "nextCursor",
+        "complete",
+        "freshness",
+        "fingerprints"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer"
+        },
+        "memoryRevision": {
+          "type": "integer"
+        },
+        "forgetEpoch": {
+          "type": "integer"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConversationSearchEntry"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "enum": [
+            "current",
+            "stale"
+          ]
+        },
+        "fingerprints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MemoryCatalogueFingerprint"
           }
         }
       }
@@ -245,7 +374,7 @@
     "ProactiveReconcileRequest": { "type": "object", "additionalProperties": false, "required": ["attemptId", "owner", "sourceFingerprint", "localDate", "committed", "usage"], "properties": { "attemptId": { "type": "string" }, "owner": { "$ref": "#/definitions/ProactiveOwner" }, "sourceFingerprint": { "type": "string" }, "localDate": { "type": "string" }, "assistantEntryId": { "type": "string" }, "committed": { "type": "boolean" }, "usage": { "type": ["object", "null"] } } },
     "ProactiveControlRequest": { "type": "object", "additionalProperties": false, "required": ["operationId", "baseRevision", "owner"], "properties": { "operationId": { "type": "string" }, "baseRevision": { "type": "integer" }, "owner": { "$ref": "#/definitions/ProactiveOwner" }, "patch": { "type": "object", "additionalProperties": false, "properties": { "muteUntil": { "type": ["integer", "null"] }, "clearBehaviorSources": { "type": "boolean" } } }, "limits": { "$ref": "#/definitions/ProactiveLimits" } } },
     "MemoryRecallTarget": {"type": "object", "additionalProperties": false, "required": ["id", "version"], "properties": {"id": {"type": "string"}, "version": {"type": "integer"}}},
-    "MemoryRecallCandidateSnapshot": {"type": "object", "additionalProperties": false, "required": ["revision", "candidatesByScope", "candidates", "pinned", "targeted"], "properties": {"revision": {"type": "integer"}, "candidatesByScope": {"type": "object", "additionalProperties": false, "required": ["user", "card", "session"], "properties": {"user": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}, "card": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}, "session": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}}}, "candidates": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}, "pinned": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}, "targeted": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}}},
+    "MemoryRecallCandidateSnapshot": {"type": "object", "additionalProperties": false, "required": ["revision", "indexRevision", "forgetEpoch", "candidatesByScope", "candidates", "pinned", "targeted"], "properties": {"revision": {"type": "integer"}, "indexRevision": {"type": "integer"}, "forgetEpoch": {"type": "integer"}, "candidatesByScope": {"type": "object", "additionalProperties": false, "required": ["user", "card", "session"], "properties": {"user": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}, "card": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}, "session": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}}}, "candidates": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}, "pinned": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}, "targeted": {"type": "array", "items": {"$ref": "#/definitions/MemoryItem"}}}},
     "MemoryJobListItem": {"type": "object", "additionalProperties": false, "required": ["id", "phase", "status", "revision", "forgetEpoch", "leaseUntil", "processed", "createdAt", "updatedAt"], "properties": {"id": {"type": "string"}, "phase": {"type": "string", "enum": ["light", "review"]}, "status": {"type": "string", "enum": ["queued", "running", "paused", "cancelled", "completed", "failed"]}, "revision": {"type": "integer"}, "forgetEpoch": {"type": "integer"}, "leaseUntil": {"type": ["integer", "null"]}, "processed": {"type": "integer"}, "createdAt": {"type": "integer"}, "updatedAt": {"type": "integer"}}},
     "MemoryRestorePreview": {"type": "object", "additionalProperties": false, "required": ["schemaVersion", "revision", "forgetEpoch", "itemCount", "jobCount"], "properties": {"schemaVersion": {"type": "integer"}, "revision": {"type": "integer"}, "forgetEpoch": {"type": "integer"}, "itemCount": {"type": "integer"}, "jobCount": {"type": "integer"}}},
     "MemorySource": {
@@ -269,6 +398,7 @@
         "content": { "type": "string", "minLength": 1 }, "summary": { "type": "string" },
         "kind": { "$ref": "#/definitions/MemoryKind" }, "scope": { "$ref": "#/definitions/MemoryScope" },
         "scopeId": { "type": "string" }, "aliases": { "type": "array", "items": { "type": "string" } },
+        "navigation": { "$ref": "#/definitions/MemoryNavigationMetadata" },
         "pinned": { "type": "boolean" }, "importance": { "type": "number", "minimum": 0, "maximum": 10 },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 }, "observedAt": { "type": "integer" },
       "validFrom": { "type": ["integer", "null"] }, "validTo": { "type": ["integer", "null"] },
@@ -280,10 +410,314 @@
         "sourceIds": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
       }
     },
+    "MemoryNavigationPerson": {
+      "type": "object", "additionalProperties": false, "required": ["name", "aliases"],
+      "properties": { "name": { "type": "string", "minLength": 1 }, "aliases": { "type": "array", "items": { "type": "string", "minLength": 1 } } }
+    },
+    "MemoryNavigationMetadata": {
+      "type": "object", "additionalProperties": false, "required": ["people", "topics"],
+      "properties": { "people": { "type": "array", "items": { "$ref": "#/definitions/MemoryNavigationPerson" } }, "topics": { "type": "array", "items": { "type": "string", "minLength": 1 } } }
+    },
     "MemoryItem": {
       "type": "object", "additionalProperties": false,
       "required": ["id", "version", "status", "draft", "createdAt", "updatedAt", "origin"],
       "properties": { "id": { "type": "string" }, "version": { "type": "integer", "minimum": 1 }, "status": { "$ref": "#/definitions/MemoryStatus" }, "draft": { "$ref": "#/definitions/MemoryDraft" }, "createdAt": { "type": "integer" }, "updatedAt": { "type": "integer" }, "origin": { "$ref": "#/definitions/MemoryOrigin" } }
+    },
+    "MemoryCatalogueLevel": {
+      "type": "string",
+      "enum": [
+        "sessions",
+        "turns",
+        "events",
+        "facts",
+        "people",
+        "topics"
+      ]
+    },
+    "MemoryCatalogueFreshness": {
+      "type": "string",
+      "enum": [
+        "current",
+        "stale"
+      ]
+    },
+    "MemoryCatalogueScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "start": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unix 毫秒，包含起点"
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unix 毫秒，不包含终点"
+        },
+        "before": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Unix 毫秒，额外排除该时刻及之后的条目"
+        }
+      }
+    },
+    "MemoryCatalogueFactScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId"
+      ],
+      "properties": {
+        "scope": {
+          "$ref": "#/definitions/MemoryScope"
+        },
+        "scopeId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cardId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "type": "string"
+        },
+        "sessionIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "start": {
+          "type": "integer"
+        },
+        "end": {
+          "type": "integer"
+        },
+        "before": {
+          "type": "integer"
+        }
+      }
+    },
+    "MemoryCatalogueFingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "fingerprint"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        }
+      }
+    },
+    "MemoryCatalogueSessionEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sessionId",
+        "fingerprint",
+        "latestTimestamp",
+        "entryCount",
+        "turnCount",
+        "preview"
+      ],
+      "properties": {
+        "kind": {
+          "const": "session"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "latestTimestamp": {
+          "type": "integer"
+        },
+        "entryCount": {
+          "type": "integer"
+        },
+        "turnCount": {
+          "type": "integer"
+        },
+        "preview": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "受 MEMORY_LIMITS.navigation.previewMaxCharacters 限制；导航摘录，不是事实摘要"
+        }
+      }
+    },
+    "MemoryCatalogueTurnEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sessionId",
+        "turnId",
+        "eventId",
+        "seq",
+        "timestamp",
+        "preview"
+      ],
+      "properties": {
+        "kind": {
+          "const": "turn"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "eventId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "timestamp": {
+          "type": "integer"
+        },
+        "preview": {
+          "type": "string",
+          "description": "受 MEMORY_LIMITS.navigation.previewMaxCharacters 限制；user turn 与 anchored assistant 的导航摘录，不是事实摘要"
+        }
+      }
+    },
+    "MemoryCatalogueEpisodeEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "itemId", "version", "summary", "sourceCount", "sourceCoverage", "navigationOnly", "scopePartial"],
+      "properties": {
+        "kind": { "const": "episode" }, "itemId": { "type": "string" }, "version": { "type": "integer" },
+        "summary": { "type": "string", "description": "只用于导航，原文必须经sources分页回读" },
+        "sourceCount": { "type": "integer" }, "sourceCoverage": { "const": "pending" }, "navigationOnly": { "const": true }, "scopePartial": { "type": "boolean", "description": "scope有收窄时的保守标记；精确覆盖状态由memory_episode_sources返回" }
+      }
+    },
+    "MemoryCataloguePeopleEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "itemId", "version", "memoryKind", "people", "navigationOnly"],
+      "properties": { "kind": { "const": "people" }, "itemId": { "type": "string" }, "version": { "type": "integer" }, "memoryKind": { "type": "string" }, "people": { "type": "array", "items": { "$ref": "#/definitions/MemoryNavigationPerson" } }, "navigationOnly": { "const": true } }
+    },
+    "MemoryCatalogueTopicsEntry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "itemId", "version", "memoryKind", "topics", "navigationOnly"],
+      "properties": { "kind": { "const": "topics" }, "itemId": { "type": "string" }, "version": { "type": "integer" }, "memoryKind": { "type": "string" }, "topics": { "type": "array", "items": { "type": "string" } }, "navigationOnly": { "const": true } }
+    },
+    "MemoryCatalogueEntry": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/MemoryCatalogueSessionEntry"
+        },
+        {
+          "$ref": "#/definitions/MemoryCatalogueTurnEntry"
+        },
+        { "$ref": "#/definitions/MemoryCatalogueEpisodeEntry" },
+        { "$ref": "#/definitions/MemoryCataloguePeopleEntry" },
+        { "$ref": "#/definitions/MemoryCatalogueTopicsEntry" },
+        {
+          "$ref": "#/definitions/MemoryItem"
+        }
+      ]
+    },
+    "MemoryCataloguePage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "entries",
+        "nextCursor",
+        "complete",
+        "freshness",
+        "revision",
+        "memoryRevision",
+        "forgetEpoch",
+        "fingerprints"
+      ],
+      "properties": {
+        "level": {
+          "$ref": "#/definitions/MemoryCatalogueLevel"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MemoryCatalogueEntry"
+          }
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "$ref": "#/definitions/MemoryCatalogueFreshness"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "memoryRevision": {
+          "type": "integer"
+        },
+        "forgetEpoch": {
+          "type": "integer"
+        },
+        "fingerprints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MemoryCatalogueFingerprint"
+          }
+        }
+      }
+    },
+    "MemoryEpisodeSource": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceId", "sessionId", "entryId", "eventId", "seq", "timestamp", "fingerprint", "contentHash"],
+      "properties": {
+        "sourceId": { "type": "string" }, "sessionId": { "type": "string" },
+        "entryId": { "type": "string" }, "eventId": { "type": ["string", "null"] },
+        "seq": { "type": "integer" }, "timestamp": { "type": "integer" }, "fingerprint": { "type": "string" }, "contentHash": { "type": "string" }
+      }
+    },
+    "MemoryEpisodeSourcePage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["entries", "nextCursor", "complete", "scopePartial", "sourceCount", "readableSourceCount", "sourceCoverage", "freshness", "revision", "memoryRevision", "forgetEpoch"],
+      "properties": {
+        "entries": { "type": "array", "items": { "$ref": "#/definitions/MemoryEpisodeSource" } },
+        "nextCursor": { "type": ["string", "null"] }, "complete": { "type": "boolean" },
+        "scopePartial": { "type": "boolean" }, "sourceCount": { "type": "integer" },
+        "readableSourceCount": { "type": "integer" }, "sourceCoverage": { "type": "string", "enum": ["complete", "partial", "unavailable"] }, "freshness": { "$ref": "#/definitions/MemoryCatalogueFreshness" },
+        "revision": { "type": "integer" }, "memoryRevision": { "type": "integer" }, "forgetEpoch": { "type": "integer" }
+      }
     },
     "MemoryJob": {
       "type": "object", "additionalProperties": false,
@@ -297,6 +731,56 @@
     }
   },
   "commands": {
+    "memory_catalogue": {
+      "request": {
+        "level": {
+          "$ref": "#/definitions/MemoryCatalogueLevel"
+        },
+        "scope": {
+          "$ref": "#/definitions/MemoryCatalogueScope"
+        },
+        "factScope": {
+          "$ref": "#/definitions/MemoryCatalogueFactScope"
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "expectedRevision": {
+          "type": "integer"
+        },
+        "expectedMemoryRevision": {
+          "type": "integer"
+        },
+        "expectedForgetEpoch": {
+          "type": "integer"
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/MemoryCataloguePage"
+      }
+    },
+    "memory_episode_sources": {
+      "request": {
+        "itemId": { "type": "string", "minLength": 1 },
+        "version": { "type": "integer", "minimum": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "cardId": { "type": ["string", "null"] },
+        "scope": { "$ref": "#/definitions/MemoryCatalogueScope" },
+        "cursor": { "type": ["string", "null"] },
+        "limit": { "type": "integer", "minimum": 1 },
+        "expectedRevision": { "type": "integer" },
+        "expectedMemoryRevision": { "type": "integer" },
+        "expectedForgetEpoch": { "type": "integer" }
+      },
+      "response": { "$ref": "#/definitions/MemoryEpisodeSourcePage" }
+    },
     "conversation_index_status": {
       "request": {},
       "response": {
@@ -352,11 +836,22 @@
         "query": {
           "type": "string"
         },
-        "sessionId": {
-          "type": "string"
+        "scope": {
+          "$ref": "#/definitions/MemoryCatalogueScope"
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "limit": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "sessionId": {
+          "type": "string"
         },
         "before": {
           "type": "integer"
@@ -365,50 +860,43 @@
           "type": "boolean"
         },
         "recordTime": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "start": { "type": "integer", "minimum": 0, "description": "Unix 毫秒，包含此边界" },
-            "end": { "type": "integer", "minimum": 0, "description": "Unix 毫秒，不包含此边界" },
-            "calendarDate": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["month", "day"],
-              "properties": {
-                "year": { "type": "integer", "minimum": 1 },
-                "month": { "type": "integer", "minimum": 1, "maximum": 12 },
-                "day": { "type": "integer", "minimum": 1, "maximum": 31 }
-              },
-              "description": "按宿主本地日历匹配；省略 year 时匹配所有年份"
-            }
-          },
-          "description": "只按记录时间检索，不改变词法检索语义；范围为 [start,end)"
+          "type": "object"
         }
       },
       "response": {
         "$ref": "#/definitions/ConversationSearchResult"
       }
     },
-    "conversation_context": {
+    "conversation_read": {
       "request": {
         "sessionId": {
           "type": "string"
         },
-        "anchorEntryId": {
+        "entryId": {
           "type": "string"
         },
-        "afterSeq": {
+        "expectedRevision": {
           "type": "integer"
         },
-        "limit": {
+        "expectedMemoryRevision": {
           "type": "integer"
+        },
+        "expectedForgetEpoch": {
+          "type": "integer"
+        },
+        "expectedFingerprint": {
+          "type": "string"
         },
         "before": {
-          "type": "integer"
+          "type": "integer",
+          "minimum": 0
+        },
+        "turn": {
+          "type": "boolean"
         }
       },
       "response": {
-        "$ref": "#/definitions/ConversationSearchResult"
+        "$ref": "#/definitions/ConversationReadResult"
       }
     },
     "memory_recall_candidates": {"request": {"query": {"type": "string"}, "cardId": {"type": ["string", "null"]}, "sessionId": {"type": "string"}, "limit": {"type": "integer"}, "targets": {"type": "array", "items": {"$ref": "#/definitions/MemoryRecallTarget"}}, "allowExpiredTargets": {"type": "boolean"}}, "response": {"$ref": "#/definitions/MemoryRecallCandidateSnapshot"}},

@@ -18,6 +18,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import type { PiTextCallInput, PiTextCallResult } from "@/services/engine/harness"
 
 const ipc = vi.hoisted(() => ({
   // index.ts 的 barrel 会 re-export 它：替身模块必须提供该名字，否则模块链接期报缺导出。
@@ -57,7 +58,7 @@ vi.mock("@/services/agent/memory/sources", async (importOriginal) => ({
 // 默认实现故意抛错：不进入 Review 的用例一旦触达模型调用就立刻现形。
 // 只有低档记账用例会按需改成可响应的替身（见该用例）；返回类型显式标注供 mockResolvedValue 使用。
 const harness = vi.hoisted(() => ({
-  completePiText: vi.fn(async (..._args: unknown[]): Promise<{ text: string; usage: { input: number; output: number } }> => {
+  completePiText: vi.fn<(...args: [PiTextCallInput]) => Promise<PiTextCallResult>>(async (..._args) => {
     throw new Error("未进入 Review 的档位用例不应触达模型调用")
   }),
   resolvePiAuxModel: vi.fn((): { id: string; contextWindow: number; maxTokens: number } => {
@@ -186,20 +187,28 @@ describe("记忆整理档位门禁", () => {
       taint: "trusted_user", origin: "user", observedAt: 1_700_000_000_000,
     }])
     harness.resolvePiAuxModel.mockImplementation(() => ({ id: "aux-test", contextWindow: 128_000, maxTokens: 4_096 }))
-    harness.completePiText.mockResolvedValue({ text: '{"candidates":[]}', usage: { input: 100, output: 50 } })
+    harness.completePiText.mockResolvedValue({
+      text: '{"candidates":[]}',
+      usage: {
+        input: 100, cacheRead: 20, cacheWrite: 5, output: 50, totalTokens: 175,
+        cost: { input: 100, cacheRead: 20, cacheWrite: 5, output: 50, total: 175 },
+      },
+      stopReason: "stop", durationMs: 1,
+    })
 
     dreaming.startIdleDreamingScheduler()
     await advance(3_601_000)
 
     expect(ipc.startMemoryJob, "当日 token 账烧过旧上限后不再开作业（撤掉的门禁又回来了）").toHaveBeenCalledWith("review")
     expect(ipc.memoryDreamingBudget, "调度层又去读 token 账做门禁了").not.toHaveBeenCalled()
-    // 账照记：预留与结算仍逐批写入（结算量 = 模型回执的 input + output）。
+    // 账照记：预留与结算仍逐批写入，cache read/write也属于真实输入用量。
     expect(ipc.reserveMemoryDreamingBudget, "token 预留不再记账").toHaveBeenCalledTimes(1)
     const [reservationId, localDate, reserved] = ipc.reserveMemoryDreamingBudget.mock.calls[0]!
     expect(reservationId).toBe("job-review:0")
     expect(localDate).toBe("2026-10-05")
     expect(reserved).toBeGreaterThan(0)
-    expect(ipc.settleMemoryDreamingBudget, "批次没有按实际用量结算（token 账中断了批次）").toHaveBeenCalledWith("job-review:0", "2026-10-05", reserved, 150)
+    expect(ipc.settleMemoryDreamingBudget, "结算必须包含input、cache read/write与output").toHaveBeenCalledWith("job-review:0", "2026-10-05", reserved, 175)
+    expect(harness.completePiText.mock.calls[0]?.[0].memoryStage).toBe("dreaming")
     expect(ipc.commitMemoryDreamingJob, "作业没有走完提交（批次被 token 账中止了）").toHaveBeenCalledTimes(1)
   })
 

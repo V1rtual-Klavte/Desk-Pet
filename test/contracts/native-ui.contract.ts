@@ -1,3 +1,4 @@
+// 2026-10-11 按需导航影响复核：host/types.ts 仅变更记忆导航 IPC 形状（memory_catalogue/search/read），nui-* 原生窗口请求/推送的参数与回执未改，真 Rust 导航归 memory mm-08。源码 hash 在行为审查后刷新。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 src/services/host/types.ts 变化 —— memory_job_checkpoint 命令形状新增可选 coveredSourceIds（批内水位按每个覆盖会话推进，见 memory 契约同批记录）；原生 UI 面不受影响，覆盖点与 caseId 语义不变，仅按当前源码刷新 sourceHash。
 // 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：会话投影侦听同长度追加，提示音限定同会话新助手身份，既有图片与意图边界保留；未执行测试。
@@ -209,7 +210,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "d121aee4e7ab5a9f884e093b2e96fe217491b1ae8118d36bf8c05940621f58bc",
+  sourceHash: "9924b04131aec08e0ebf4481c1c0bbea9887d8f86708d2c2fa2aef965bde1196",
   coverage: [
     {
       id: "nui-34",

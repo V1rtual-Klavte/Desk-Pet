@@ -22,7 +22,7 @@
 //   模型取辅助模型（ai.auxModel，留空跟随聊天模型）。
 
 import { completePiText, resolvePiAuxModel } from "@/services/engine/harness"
-import { estimateContextTokens } from "@/services/context/budget"
+import { estimateContextTokens, totalInputTokens } from "@/services/context/budget"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
@@ -80,6 +80,8 @@ const MAX_MERGE_GROUP_ITEMS = 4
 const MERGE_INPUT_MAX_ITEMS = 24
 const MERGE_COHORT_ITEMS = 8
 const MERGE_CONTENT_MAX_CHARS = 800
+/** 草稿与导航人物别名共用的既有别名上限。 */
+const MAX_DRAFT_ALIASES = 8
 
 /** 库内整理的候选分组：同 origin 区内、同 scope、同 kind 的在库条目。 */
 export interface MergeCohort {
@@ -114,7 +116,7 @@ export interface DreamingOutcome {
 const REVIEW_SYSTEM_PROMPT = [
   "你负责把用户本人说过的话整理成长期记忆候选。",
   "只输出 JSON，不要解释，不要 markdown 代码块。",
-  '输出形如 {"candidates":[{"sourceIds":["..."],"content":"...","summary":"...","kind":"fact|preference|episode|working","scope":"user|card|session","aliases":["..."],"pinned":false,"importance":0-10,"confidence":0-1,"reason":"..."}]}。',
+  '输出形如 {"candidates":[{"sourceIds":["..."],"content":"...","summary":"...","kind":"fact|preference|episode|working","scope":"user|card|session","aliases":["..."],"navigation":{"people":[{"name":"来源明确的人名","aliases":["来源明确的别称"]}],"topics":["来源明确的主题标签"]},"pinned":false,"importance":0-10,"confidence":0-1,"reason":"..."}]}。navigation 只登记来源明确的人物及主题以供导航；不确定时留空，不从常识猜测。',
   "规则：",
   "1. 只记录用户本人的陈述。朋友的偏好、假设、举例、引用、翻译内容都不算用户事实。",
   "2. 每条候选必须带至少一个来源 id，且只能用输入里出现过的 id。",
@@ -130,6 +132,26 @@ const REVIEW_SYSTEM_PROMPT = [
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
+}
+
+function normalizeNavigationPeople(value: unknown): NonNullable<MemoryDraft["navigation"]>["people"] {
+  if (!Array.isArray(value)) return []
+  const people = new Map<string, NonNullable<MemoryDraft["navigation"]>["people"][number]>()
+  for (const valuePerson of value) {
+    const person = asRecord(valuePerson)
+    const name = typeof person?.name === "string" ? person.name.trim() : ""
+    if (!name) continue
+    const aliases = Array.isArray(person?.aliases)
+      ? person.aliases.filter((alias): alias is string => typeof alias === "string")
+        .map(alias => alias.trim()).filter(Boolean)
+      : []
+    const previous = people.get(name)
+    people.set(name, {
+      name,
+      aliases: [...new Set([...(previous?.aliases ?? []), ...aliases])].slice(0, MAX_DRAFT_ALIASES),
+    })
+  }
+  return [...people.values()]
 }
 
 async function sha256(text: string): Promise<string> {
@@ -184,7 +206,12 @@ export function parseReviewCandidates(
     if (!content || !KINDS.has(kind) || !SCOPES.has(scope)) continue
     if (sourceIds.length === 0 || sourceIds.some(id => !allowed.has(id))) continue
     const aliases = Array.isArray(record.aliases)
-      ? record.aliases.filter((alias): alias is string => typeof alias === "string").slice(0, 8)
+      ? record.aliases.filter((alias): alias is string => typeof alias === "string").slice(0, MAX_DRAFT_ALIASES)
+      : []
+    const navigationRecord = asRecord(record.navigation)
+    const navigationPeople = normalizeNavigationPeople(navigationRecord?.people)
+    const navigationTopics = Array.isArray(navigationRecord?.topics)
+      ? [...new Set(navigationRecord.topics.filter((topic): topic is string => typeof topic === "string").map(topic => topic.trim()).filter(Boolean))]
       : []
     const pinned = record.pinned === true
     // kind=working 必须带状态：模型漏写时默认 open（条目不关闭），非法值不猜测完成态。
@@ -201,6 +228,7 @@ export function parseReviewCandidates(
         scope: scope as MemoryDraft["scope"],
         ...(scope === "card" && cardId ? { scopeId: cardId } : {}),
         aliases,
+        ...(navigationRecord ? { navigation: { people: navigationPeople, topics: navigationTopics } } : {}),
         pinned: pinned && kind === "fact",
         importance: typeof record.importance === "number" ? Math.min(10, Math.max(0, record.importance)) : 5,
         confidence: typeof record.confidence === "number" ? Math.min(1, Math.max(0, record.confidence)) : 0.5,
@@ -434,7 +462,7 @@ export function mergeCohorts(items: readonly MemoryItem[], now = Date.now()): Me
 const MERGE_SYSTEM_PROMPT = [
   "你负责整理记忆库里已有的条目：把重复、同类或已被更新说法取代的旧条目合并成更少、更准的条目。",
   "只输出 JSON，不要解释，不要 markdown 代码块。",
-  '输出形如 {"merges":[{"itemIds":["...","..."],"content":"...","summary":"...","reason":"..."}]}。',
+  '输出形如 {"merges":[{"itemIds":["...","..."],"content":"...","summary":"...","navigation":{"people":[{"name":"来源明确的人名","aliases":["来源明确的别称"]}],"topics":["来源明确的主题标签"]},"reason":"..."}]}。navigation 只登记来源明确的人物及主题；合并时保留原有导航项，不确定时留空，不从常识猜测。',
   "规则：",
   "1. 每组必须用输入 groups 里出现过的条目 id，同一组内至少 2 条、最多 4 条；不同组不能共用一个 id。",
   "2. 同一组只能包含输入里同一个分组（同 scope、同类型）的条目；不要把不同分组的条目并成一组。",
@@ -504,7 +532,11 @@ export function parseMergeCandidates(raw: string, cohorts: readonly MergeCohort[
       scope: cohort.scope,
       ...(cohort.scopeId ? { scopeId: cohort.scopeId } : {}),
       // 别名取并集（有界）：旧条目的查询面不因合并断掉。
-      aliases: [...new Set(items.flatMap(item => item.draft.aliases))].slice(0, 8),
+      aliases: [...new Set(items.flatMap(item => item.draft.aliases))].slice(0, MAX_DRAFT_ALIASES),
+      navigation: {
+        people: normalizeNavigationPeople(items.flatMap(item => item.draft.navigation?.people ?? [])),
+        topics: [...new Set(items.flatMap(item => item.draft.navigation?.topics ?? []))],
+      },
       pinned: false,
       importance: Math.max(...items.map(item => item.draft.importance)),
       confidence: Math.min(...items.map(item => item.draft.confidence)),
@@ -638,6 +670,8 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
         }
         const result = await completePiText({
           purpose: "memory",
+          memoryStage: "dreaming",
+          thinkingEffort: "low",
           // 辅助模型在这里冻结（ai.auxModel；留空即聊天模型）：整理作业与子代理同款模型。
           model: auxModel,
           systemPrompt: REVIEW_SYSTEM_PROMPT,
@@ -647,7 +681,7 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
           ...(options.signal ? { signal: options.signal } : {}),
           ...(traceContext ? { traceContext } : {}),
         })
-        const actualUsage = result.usage.input + result.usage.output
+        const actualUsage = totalInputTokens(result.usage) + result.usage.output
         usedTokens += actualUsage
         if (options.automatic) {
           await settleMemoryDreamingBudget(`${jobId}:${input.resumedBatchOffset + batch}`, today, reservation, actualUsage)
@@ -766,6 +800,8 @@ async function runMergeSweep(options: ReviewJobInput["options"]): Promise<Dreami
     if (options.automatic) await reserveMemoryDreamingBudget(reservationId, today, reservation)
     const result = await completePiText({
       purpose: "memory",
+      memoryStage: "dreaming",
+      thinkingEffort: "low",
       model: auxModel,
       systemPrompt: MERGE_SYSTEM_PROMPT,
       userText,
@@ -774,7 +810,7 @@ async function runMergeSweep(options: ReviewJobInput["options"]): Promise<Dreami
       ...(options.signal ? { signal: options.signal } : {}),
     })
     if (options.automatic) {
-      await settleMemoryDreamingBudget(reservationId, today, reservation, result.usage.input + result.usage.output)
+      await settleMemoryDreamingBudget(reservationId, today, reservation, totalInputTokens(result.usage) + result.usage.output)
     }
     if (options.signal?.aborted) {
       return { status: "cancelled", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "signal_aborted" }

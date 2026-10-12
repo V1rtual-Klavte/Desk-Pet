@@ -25,7 +25,7 @@ import type {
 // engine → context 的运行时依赖必须走零依赖叶子（budget.ts）：context/builder.ts 已 import
 // `@/services/agent/memory`，若这里 import `@/services/context` 的 barrel，模块初始化顺序会成环。
 import { estimateContextTokens, estimateMessageTokens } from "@/services/context/budget"
-import { isMemoryRecallMessage, isTransientInputMessage } from "./input-identity"
+import { isMemoryRecallMessage, isTransientInputMessage, TURN_NOTE_CUSTOM_TYPE } from "./input-identity"
 
 export interface PromptSnapshotInput {
   snapshotId: string
@@ -123,8 +123,9 @@ function refreshAllocation(allocation: ContextAllocation, used: number): Context
  *
  * transcript 记请求视图的实际用量（agentMessages 减去瞬时输入），ephemeral 记「非 active 的
  * ephemeral 块 + 瞬时输入」：主动搭话是 custom 消息、投递的用户输入带 `deskpetEventId`，
- * 两类都要从 transcript 挪到 ephemeral（判定见 `isTransientInputMessage`），否则主动输入的
- * token 会被记进会话历史行，ephemeral 行看不到它。
+ * 两类都要从 transcript 挪到 ephemeral（判定见 `isTransientInputMessage`）。TURN_NOTE 搬运了
+ * 已按 dynamic/memory/ephemeral 分账的块；其内容从瞬时消息账中扣除，只把未记账的时间与消息框架
+ * 留在 ephemeral，避免同一段动态内容因块账和尾注再计一次。
  *
  * `options.transientInput` 是「这次请求含瞬时输入」的显式声明（避免没有瞬时输入时白扫一遍消息）；
  * 具体哪几条算瞬时输入仍按消息身份逐条判定 —— 整轮代传会把历史消息也标成瞬时，transcript 行就废了。
@@ -141,13 +142,25 @@ export function refreshMessageAllocations(
     ? agentMessages.filter(message => isTransientInputMessage(messageIdentityOf(message)))
         .reduce<number>((total, message) => total + estimateMessageTokens(message), 0)
     : 0
+  const hasTurnNote = options.transientInput && agentMessages.some(message => {
+    const identity = messageIdentityOf(message)
+    return identity?.role === "custom" && identity.customType === TURN_NOTE_CUSTOM_TYPE
+  })
+  // turnDynamic 是所有非 static、非 active ephemeral 块的拼接。只在真实 TURN_NOTE 存在时
+  // 扣除这些已经按逻辑层记账的块；子 run 或未投影尾注时，瞬时消息仍完整归 ephemeral。
+  const projectedBlockTokens = hasTurnNote
+    ? (options.blocks ?? [])
+        .filter(block => block.layer !== "static" && !(block.layer === "ephemeral" && block.origin === "active"))
+        .reduce((total, block) => total + estimateContextTokens(block.text), 0)
+    : 0
   const messageTokens = agentMessages.reduce<number>((total, message) => total + estimateMessageTokens(message), 0)
   const blockTokens = (options.blocks ?? [])
     .filter(block => block.layer === "ephemeral" && block.origin !== "active")
     .reduce<number>((total, block) => total + estimateContextTokens(block.text), 0)
   return allocations.map(allocation => {
     if (allocation.layer === "transcript") return refreshAllocation(allocation, messageTokens - transientTokens)
-    if (allocation.layer === "ephemeral") return refreshAllocation(allocation, blockTokens + transientTokens - memoryTokens)
+    if (allocation.layer === "ephemeral")
+      return refreshAllocation(allocation, blockTokens + transientTokens - memoryTokens - projectedBlockTokens)
     if (allocation.layer === "memory") return refreshAllocation(allocation, allocation.used + memoryTokens)
     return { ...allocation }
   })

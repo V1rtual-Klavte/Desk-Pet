@@ -29,18 +29,21 @@ function boom(message: string): never {
   throw new Error(message)
 }
 
-function fakeAdapter(mode: { fail?: (caseId: string) => boolean; judge?: (input: Record<string, unknown>) => unknown } = {},
+function fakeAdapter(mode: { fail?: (caseId: string) => boolean; cleanupFailure?: boolean;
+  judge?: (input: Record<string, unknown>) => unknown } = {},
   calls: FakeCalls = { cells: [], judges: [] }) {
   return {
     calls,
     init() { return undefined },
+    finalize() { return undefined },
     manifest() { return { model: "test-model", provider: "test" } },
     async runCell(input: Record<string, unknown>) {
       calls.cells.push(input.caseId as string)
       if (mode.fail?.(input.caseId as string)) throw new Error(`boom ${input.caseId}`)
       return { caseId: input.caseId, questionId: (input.caseDef as { questionId?: string }).questionId ?? null,
         status: "complete", answer: `a:${input.caseId}`, evidence: [],
-        candidateSessionIds: [], groupReused: false, storeGeneration: "gen-1" }
+        candidateSessionIds: [], groupReused: false, storeGeneration: "gen-1",
+        ...(mode.cleanupFailure ? { fixtureCleanup: { ok: false, error: "delete failed" } } : {}) }
     },
     async judgeCase(input: Record<string, unknown>) {
       calls.judges.push(input)
@@ -75,7 +78,7 @@ describe("bench cell 规划", () => {
     }
   })
 
-  it("limit 在分组排序之后截断：不会从组中间切开先跑一半 c2", () => {
+  it("limit 在分组排序后按题数截断，可以从组中间切开 [bench-runner-limit-truncates-group]", () => {
     const file = { cases: [locomoCase("locomo-c1-q0", "c1"), locomoCase("locomo-c1-q1", "c1"),
       locomoCase("locomo-c2-q0", "c2"), locomoCase("locomo-c2-q1", "c2")] }
     const cells = planBenchCells("locomo", file, { seed: "s", limit: 3 })
@@ -94,15 +97,58 @@ describe("bench cell 规划", () => {
 describe("bench runner 编排（fake adapter）", () => {
   const file = lmeFile([lmeCase("a"), lmeCase("b_abs", "multi-session", true), lmeCase("c", "temporal-reasoning")])
 
-  it("报告顶层标注 external / observational / 阈值 null，passed 语义 = 完整跑完 [bench-report-observational]", async () => {
+  it.each([
+    ["finalize", "bench-runner-finalize-failure"],
+    ["manifest", "bench-runner-manifest-failure"],
+  ])("收尾 %s 故障保留已采集回答、用量与失败阶段 [%s]", async (stage) => {
+    const adapter = fakeAdapter()
+    const runCell = adapter.runCell
+    const usage = { inputTokens: 120, outputTokens: 11, requests: 1 }
+    adapter.runCell = async input => ({ ...await runCell(input), usage })
+    adapter[stage as "finalize" | "manifest"] = () => boom(`${stage} failed`)
+    const report = await runMemoryBenchEvaluation({ adapter, dataset: "longmemeval", split: "oracle",
+      file: lmeFile([lmeCase("a")]), seed: "s", judge: "off" }) as Record<string, any>
+    expect(report.completedCells).toBe(1)
+    expect(report.outcomes).toHaveLength(1)
+    expect(report.outcomes[0]).toMatchObject({ caseId: "lme-oracle-a", answer: "a:lme-oracle-a", usage })
+    expect(report.failures).toEqual([{ kind: "infrastructure", stage, message: `${stage} failed` }])
+    expect(report.gates).toEqual({ complete: false, infrastructureFailures: 1 })
+    expect(report.manifest).toEqual(stage === "manifest" ? null : { model: "test-model", provider: "test" })
+  })
+
+  it("基础设施失败返回结果时仍保留已知用量并执行连续失败中止 [bench-runner-failed-outcome-usage]", async () => {
+    const called: string[] = []
+    const ended: unknown[] = []
+    const knownUsage = { inputTokens: 120, outputTokens: 11, requests: 1, uncachedInputTokens: 100,
+      cacheReadTokens: 20, cacheWriteTokens: 0, cacheUsageReported: true, accounting: "pi-input-plus-normalized-cache" }
+    const adapter = { ...fakeAdapter(), async runCell(input: { caseId: string }) {
+      called.push(input.caseId)
+      return { caseId: input.caseId, status: "failed", failureKind: "infrastructure", error: "Provider idle timeout",
+        evidence: [], usage: null, knownUsage, unknownUsageRequests: 1, fixtureCleanup: { ok: true } }
+    } }
+    const report = await runMemoryBenchEvaluation({ adapter, dataset: "longmemeval", split: "oracle",
+      file: lmeFile([lmeCase("a"), lmeCase("b"), lmeCase("c"), lmeCase("d")]), seed: "s", judge: "off",
+      onCellEnd(context) { ended.push(context.outcome) } }) as Record<string, any>
+    expect(called).toHaveLength(3)
+    expect(report.completedCells).toBe(0)
+    expect(report.gates.complete).toBe(false)
+    expect(report.failures.map((row: { kind: string }) => row.kind)).toEqual(["infrastructure", "infrastructure", "infrastructure", "aborted"])
+    expect(report.failures[3].remainingCells).toBe(1)
+    expect(report.outcomes).toHaveLength(3)
+    expect(report.outcomes[0]).toMatchObject({ status: "failed", usage: null, knownUsage, unknownUsageRequests: 1,
+      fixtureCleanup: { ok: true } })
+    expect(ended).toHaveLength(3)
+  })
+
+  it("LongMemEval 完成采集但质量分 pending_official，产品本地模板不参与主评分 [bench-lme-pending-official]", async () => {
     const adapter = fakeAdapter()
     const report = await runMemoryBenchEvaluation({ adapter, dataset: "longmemeval", split: "oracle",
-      file, seed: "s", judgeModel: "judge-model-x" }) as Record<string, any>
+      file, seed: "s" }) as Record<string, any>
     expect(report.schemaVersion).toBe("desk-pet-memory-bench/v1")
     expect(report.source).toBe("external")
     expect(report.status).toBe("observational")
     expect(report.qualityThresholds).toBe(null)
-    expect(report.judgeModel).toBe("judge-model-x")
+    expect(report.judgeModel).toBe(null)
     expect(report.upstream).toEqual({ fileSha256: "deadbeef" })
     expect(report.license).toEqual({ spdx: "MIT" })
     expect(report.plannedCells).toBe(3)
@@ -110,15 +156,26 @@ describe("bench runner 编排（fake adapter）", () => {
     expect(report.gates.complete).toBe(true)
     expect(report.failures).toEqual([])
     expect(adapter.calls.cells).toHaveLength(3)
-    expect(adapter.calls.judges).toHaveLength(3)
+    expect(adapter.calls.judges).toHaveLength(0)
+    expect(report.scores.officialScoring.status).toBe("pending_official")
   })
 
   it("outcome 携带 caseRef（导出 hypotheses 的题面来源）", async () => {
     const report = await runMemoryBenchEvaluation({ adapter: fakeAdapter(), dataset: "longmemeval",
-      split: "oracle", file, seed: "s", judgeModel: "judge-model-x" }) as Record<string, any>
+      split: "oracle", file, seed: "s" }) as Record<string, any>
     const first = report.outcomes.find((outcome: Record<string, unknown>) => outcome.caseId === "lme-oracle-a")
     expect(first.caseRef).toMatchObject({ questionId: "a", questionType: "single-session-user" })
-    expect(first.judgment).toMatchObject({ adjudicated: true, correct: true })
+    expect(first.judgment).toBe(null)
+  })
+
+  it("最后一题隔离会话清理失败仍保留回答且将整场标为不完整 [bench-runner-fixture-cleanup-failure]", async () => {
+    const one = lmeFile([lmeCase("a")])
+    const report = await runMemoryBenchEvaluation({ adapter: fakeAdapter({ cleanupFailure: true }),
+      dataset: "longmemeval", split: "oracle", file: one, seed: "s" }) as Record<string, any>
+    expect(report.outcomes[0]).toMatchObject({ status: "complete", answer: "a:lme-oracle-a",
+      fixtureCleanup: { ok: false, error: "delete failed" } })
+    expect(report.gates.complete).toBe(false)
+    expect(report.failures).toContainEqual(expect.objectContaining({ caseId: "lme-oracle-a", kind: "fixture-cleanup" }))
   })
 
   it("judge off 时不调用 judgeCase，报告 judgeModel 为 null 且只出确定性指标", async () => {
@@ -130,15 +187,6 @@ describe("bench runner 编排（fake adapter）", () => {
     expect(report.judgeModel).toBe(null)
     expect(report.scores.overall.judged).toBe(0)
     expect(report.gates.complete).toBe(true)
-  })
-
-  it("judge 抛错只记未裁决，不把已完成的采集判成基础设施失败", async () => {
-    const adapter = fakeAdapter({ judge: () => boom("judge timeout") })
-    const report = await runMemoryBenchEvaluation({ adapter, dataset: "longmemeval", split: "oracle",
-      file, seed: "s", judgeModel: "judge-model-x" }) as Record<string, any>
-    expect(report.gates.complete).toBe(true)
-    expect(report.scores.judgeFailures).toBe(3)
-    for (const outcome of report.outcomes) expect(outcome.judgment).toMatchObject({ adjudicated: false, error: "judge timeout" })
   })
 
   it("连续 3 次基础设施失败后中止剩余题，显式记录未跑的题数 [bench-runner-abort]", async () => {
@@ -162,9 +210,26 @@ describe("bench runner 编排（fake adapter）", () => {
     expect(adapter.calls.cells).toHaveLength(3)
   })
 
-  it("judge 开启但缺 judgeModel 时在开跑前抛错（不允许被测模型自评的静默降级） [bench-judge-model-required]", async () => {
-    await expect(runMemoryBenchEvaluation({ adapter: fakeAdapter(), dataset: "longmemeval", split: "oracle",
-      file, seed: "s" })).rejects.toThrow(/judgeModel/)
+  it("MemoryBank judge 开启但缺 judgeModel 时在开跑前抛错 [bench-judge-model-required]", async () => {
+    const memoryBank = { schemaVersion: "desk-pet-memory-bench-cases/v1", dataset: "memorybank", split: "cn",
+      importTransformVersion: "test/1", upstream: null, license: null, selection: { policy: "test", caseCount: 1 },
+      personas: [{ name: "P", metaInformation: {}, days: [] }],
+      cases: [{ caseId: "membank-cn-p01-q01", persona: "P", questionIndex: 0, question: "Q?" }] }
+    await expect(runMemoryBenchEvaluation({ adapter: fakeAdapter(), dataset: "memorybank", split: "cn",
+      file: memoryBank, seed: "s" })).rejects.toThrow(/judgeModel/)
+  })
+
+  it("MemoryBank judge 抛错只记未裁决，不把采集判成基础设施失败", async () => {
+    const memoryBank = { schemaVersion: "desk-pet-memory-bench-cases/v1", dataset: "memorybank", split: "cn",
+      importTransformVersion: "test/1", upstream: null, license: null, selection: { policy: "test", caseCount: 1 },
+      personas: [{ name: "P", metaInformation: {}, days: [] }],
+      cases: [{ caseId: "membank-cn-p01-q01", persona: "P", questionIndex: 0, question: "Q?" }] }
+    const adapter = fakeAdapter({ judge: () => boom("judge timeout") })
+    const report = await runMemoryBenchEvaluation({ adapter, dataset: "memorybank", split: "cn", file: memoryBank,
+      seed: "s", judgeModel: "judge-model-x" }) as Record<string, any>
+    expect(report.gates.complete).toBe(true)
+    expect(report.scores.judgeFailures).toBe(1)
+    expect(report.outcomes[0].judgment).toMatchObject({ adjudicated: false, error: "judge timeout" })
   })
 
   it("案例文件非法时在开跑前抛错", async () => {
@@ -172,7 +237,7 @@ describe("bench runner 编排（fake adapter）", () => {
       file: { ...file, cases: [{ caseId: "bad id" }] }, seed: "s", judgeModel: "j" })).rejects.toThrow(/非法/)
   })
 
-  it("LoCoMo 不做 judge（官方口径是词面 F1），即使 judge 配置为 on", async () => {
+  it("LoCoMo 不做 LLM judge（由独立官方脚本生成唯一主分），即使 judge 配置为 on", async () => {
     const locomoFile = { schemaVersion: "desk-pet-memory-bench-cases/v1", dataset: "locomo", split: "locomo10",
       importTransformVersion: "test/1", upstream: null, license: null, selection: { policy: "full", caseCount: 1 },
       conversations: [{ sampleId: "conv-00" }], cases: [locomoCase("locomo-conv-00-q0000", "conv-00")] }
@@ -181,6 +246,7 @@ describe("bench runner 编排（fake adapter）", () => {
       file: locomoFile, seed: "s", judge: "on", judgeModel: "judge-model-x" }) as Record<string, any>
     expect(adapter.calls.judges).toHaveLength(0)
     expect(report.judge.enabled).toBe(false)
+    expect(report.scores.officialScoring.status).toBe("pending_official")
     expect(report.gates.complete).toBe(true)
   })
 })

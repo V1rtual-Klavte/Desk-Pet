@@ -66,7 +66,7 @@ export interface VisibleSessionTranscript {
  */
 export async function readVisibleSessionTranscript(
   sessionId: string,
-  options: { releaseIfIdle?: boolean } = {},
+  options: { releaseIfIdle?: boolean; fileLockHeld?: boolean } = {},
 ): Promise<VisibleSessionTranscript> {
   let receiptError: string | undefined
   const wasOpen = isPiSessionOpen(sessionId)
@@ -87,7 +87,7 @@ export async function readVisibleSessionTranscript(
   } finally {
     // A user may have opened this historical session while its read was in flight.
     if (options.releaseIfIdle && !wasOpen && activeSessionId.value !== sessionId && !harnessSlots.peek(sessionId)) {
-      await releasePiSession(sessionId)
+      await releasePiSession(sessionId, { fileLockHeld: options.fileLockHeld })
     }
   }
 }

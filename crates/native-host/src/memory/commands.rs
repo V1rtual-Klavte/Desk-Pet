@@ -4,7 +4,10 @@
 //! 业务规则一律留在 `store.rs`，命令层不复制第二份判定。
 //! IPC 层只做参数提取后转发，不含业务判定。
 
-use super::conversation::{ConversationIndexEntry, ConversationRecordTime};
+use super::conversation::{
+    ConversationCatalogueRequest, ConversationCatalogueScope, ConversationIndexEntry, MemoryEpisodeSourcesRequest,
+    ConversationReadRequest, ConversationRecordTime,
+};
 use super::store::{
     JOB_LEASE_MS, JOB_LIST_LIMIT_DEFAULT, LIST_LIMIT_DEFAULT, QUERY_LIMIT_DEFAULT,
     RECALL_LIMIT_DEFAULT,
@@ -139,6 +142,18 @@ pub(crate) fn conversation_index_prune(
     state.0.conversation_index_prune(&session_ids)
 }
 
+pub(crate) fn memory_catalogue(state: &MemoryState, request: Value) -> AppResult<Value> {
+    let request: ConversationCatalogueRequest = serde_json::from_value(request)
+        .map_err(|error| AppError::Config(format!("memory_catalogue 参数无效: {error}")))?;
+    state.0.memory_catalogue(&request)
+}
+
+pub(crate) fn memory_episode_sources(state: &MemoryState, request: Value) -> AppResult<Value> {
+    let request: MemoryEpisodeSourcesRequest = serde_json::from_value(request)
+        .map_err(|error| AppError::Config(format!("memory_episode_sources 参数无效: {error}")))?;
+    state.0.memory_episode_sources(&request)
+}
+
 pub(crate) fn conversation_search(
     state: &MemoryState,
     query: String,
@@ -147,6 +162,8 @@ pub(crate) fn conversation_search(
     before: Option<i64>,
     recent_fallback: Option<bool>,
     record_time: Option<ConversationRecordTime>,
+    scope: Option<ConversationCatalogueScope>,
+    cursor: Option<String>,
 ) -> AppResult<Value> {
     state.0.conversation_search(
         &query,
@@ -155,20 +172,15 @@ pub(crate) fn conversation_search(
         before,
         recent_fallback.unwrap_or(false),
         record_time.as_ref(),
+        scope.as_ref(),
+        cursor.as_deref(),
     )
 }
 
-pub(crate) fn conversation_context(
-    state: &MemoryState,
-    session_id: String,
-    anchor_entry_id: String,
-    after_seq: Option<i64>,
-    limit: Option<i64>,
-    before: Option<i64>,
-) -> AppResult<Value> {
-    state
-        .0
-        .conversation_context(&session_id, &anchor_entry_id, after_seq, limit, before)
+pub(crate) fn conversation_read(state: &MemoryState, request: Value) -> AppResult<Value> {
+    let request: ConversationReadRequest = serde_json::from_value(request)
+        .map_err(|error| AppError::Config(format!("conversation_read 参数无效: {error}")))?;
+    state.0.conversation_read(&request)
 }
 
 #[allow(clippy::too_many_arguments)]

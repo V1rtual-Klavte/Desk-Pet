@@ -125,7 +125,7 @@
       "splits": {
         "locomo10": {
           "caseFile": "cases/locomo/locomo10.json",
-          "transformVersion": "locomo10/1",
+          "transformVersion": "locomo10/2",
           "downloads": ["locomo10"],
           "license": "locomo"
         }

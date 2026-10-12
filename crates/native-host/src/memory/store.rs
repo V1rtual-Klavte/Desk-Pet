@@ -6,10 +6,12 @@
 //! - `base_revision` 不匹配就是 `MemoryConflict`，由调用方重新读取后再决定。
 //! - prepared 候选不进 FTS、不进召回；自动 dreaming commit 是唯一把它们变成 active 的路径。
 
+use super::conversation::MemoryCatalogueFactScope;
 use super::schema;
 use super::ConversationClearFence;
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rusqlite::{
     backup, params, params_from_iter, Connection, OpenFlags, OptionalExtension, Transaction,
     TransactionBehavior,
@@ -280,7 +282,7 @@ fn escape_like(text: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// Chinese natural questions need concept n-grams in addition to whole-phrase LIKE.
+/// Natural questions need content terms rather than interrogatives and auxiliaries.
 pub(super) fn memory_query_terms(query: &str) -> Vec<String> {
     // 停用词：疑问词、指代词与功能词；切出的短词命中它们不代表内容相关。
     const QUERY_STOP_WORDS: &[&str] = &[
@@ -313,6 +315,66 @@ pub(super) fn memory_query_terms(query: &str) -> Vec<String> {
         "可以",
         "这个",
         "那个",
+        // English question scaffolding must not outrank the subject/action. These
+        // terms also feed fact search, so both recall channels use the same rule.
+        "what",
+        "which",
+        "when",
+        "where",
+        "why",
+        "how",
+        "who",
+        "whom",
+        "whose",
+        "did",
+        "do",
+        "does",
+        "have",
+        "has",
+        "had",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "am",
+        "would",
+        "could",
+        "should",
+        "the",
+        "an",
+        "and",
+        "or",
+        "but",
+        "of",
+        "to",
+        "for",
+        "from",
+        "with",
+        "at",
+        "by",
+        "on",
+        "in",
+        "it",
+        "he",
+        "she",
+        "they",
+        "you",
+        "we",
+        "my",
+        "his",
+        "her",
+        "their",
+        "our",
+        "me",
+        "him",
+        "them",
+        "this",
+        "that",
+        "these",
+        "those",
     ];
     let mut terms = Vec::new();
     let mut chinese = Vec::new();
@@ -352,11 +414,106 @@ pub(super) fn memory_query_terms(query: &str) -> Vec<String> {
     }
     flush_chinese(&mut chinese, &mut terms);
     flush_latin(&mut latin, &mut terms);
-    terms.retain(|term| !QUERY_STOP_WORDS.contains(&term.as_str()) && term.chars().count() >= 2);
-    terms.sort();
-    terms.dedup();
+    let mut seen = std::collections::HashSet::new();
+    terms.retain(|term| {
+        !QUERY_STOP_WORDS.contains(&term.as_str())
+            && term.chars().count() >= 2
+            && seen.insert(term.clone())
+    });
     terms.truncate(QUERY_TERM_LIMIT);
     terms
+}
+
+/// Surface forms for one already-filtered query term. This is deliberately a
+/// small English inflection expander rather than a language-model dependency;
+/// Chinese bigram/trigram fallback remains the original term.
+pub(super) fn memory_query_term_variants(term: &str, query: &str) -> Vec<String> {
+    if !term.is_ascii()
+        || term.len() < 4
+        || !term.bytes().all(|byte| byte.is_ascii_alphabetic())
+        || is_obvious_proper_query_term(term, query)
+    {
+        return vec![term.to_owned()];
+    }
+
+    let lower = term.to_ascii_lowercase();
+    let mut root = lower.clone();
+    if lower.ends_with("ies") && lower.len() > 5 {
+        root.truncate(lower.len() - 3);
+        root.push('y');
+    } else if lower.ends_with("ied") && lower.len() > 5 {
+        root.truncate(lower.len() - 3);
+        root.push('y');
+    } else if lower.ends_with("ing") && lower.len() > 6 {
+        root.truncate(lower.len() - 3);
+        if root.len() >= 2 {
+            let chars = root.as_bytes();
+            if chars[chars.len() - 1] == chars[chars.len() - 2]
+                && !matches!(chars[chars.len() - 1], b'a' | b'e' | b'i' | b'o' | b'u')
+            {
+                root.pop();
+            }
+        }
+    } else if lower.ends_with("ed") && lower.len() > 5 {
+        root.truncate(lower.len() - 2);
+        if root.len() >= 2 {
+            let chars = root.as_bytes();
+            if chars[chars.len() - 1] == chars[chars.len() - 2]
+                && !matches!(chars[chars.len() - 1], b'a' | b'e' | b'i' | b'o' | b'u')
+            {
+                root.pop();
+            }
+        }
+    } else if lower.ends_with('s')
+        && !lower.ends_with("ss")
+        && !lower.ends_with("us")
+        && !lower.ends_with("is")
+        && lower.len() > 4
+    {
+        root.pop();
+    }
+
+    let mut variants = vec![lower, root.clone()];
+    if root.ends_with('y') && root.len() > 2 {
+        let stem = &root[..root.len() - 1];
+        variants.push(format!("{stem}ies"));
+        variants.push(format!("{stem}ied"));
+        variants.push(format!("{root}ing"));
+    } else if root.ends_with('e') {
+        variants.push(format!("{root}s"));
+        variants.push(format!("{root}d"));
+        variants.push(format!("{}ing", &root[..root.len() - 1]));
+    } else {
+        variants.push(format!("{root}s"));
+        variants.push(format!("{root}ed"));
+        variants.push(format!("{root}ing"));
+    }
+    variants.sort();
+    variants.dedup();
+    variants
+}
+
+fn is_obvious_proper_query_term(term: &str, query: &str) -> bool {
+    let tokens = query
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    let first_lower = first.to_ascii_lowercase();
+    let question_openers = [
+        "what", "which", "who", "when", "where", "why", "how", "did", "do", "does", "is", "are",
+        "was", "were", "has", "have", "had",
+    ];
+    let start = usize::from(question_openers.contains(&first_lower.as_str()));
+    tokens.iter().skip(start).any(|token| {
+        token.eq_ignore_ascii_case(term)
+            && token
+                .chars()
+                .next()
+                .is_some_and(|first| first.is_ascii_uppercase())
+    })
 }
 
 fn query_token_clause(terms: &[String], first_param: usize) -> (String, Vec<Value>) {
@@ -365,18 +522,18 @@ fn query_token_clause(terms: &[String], first_param: usize) -> (String, Vec<Valu
     for (index, term) in terms.iter().enumerate() {
         let p = first_param + index;
         let pattern = format!("%{}%", escape_like(term));
-        clauses.push(format!("(i.content LIKE ?{p} ESCAPE '\\' OR i.summary LIKE ?{p} ESCAPE '\\' OR i.aliases_json LIKE ?{p} ESCAPE '\\')"));
+        clauses.push(format!("(i.content LIKE ?{p} ESCAPE '\\' OR i.summary LIKE ?{p} ESCAPE '\\' OR i.aliases_json LIKE ?{p} ESCAPE '\\' OR i.navigation_json LIKE ?{p} ESCAPE '\\')"));
         values.push(json!(pattern));
     }
     (clauses.join(" OR "), values)
 }
 
 fn relevance_order(terms: &[String], first_param: usize) -> String {
-    let phrase = format!("(CASE WHEN i.content LIKE ?2 ESCAPE '\\' THEN {PHRASE_CONTENT_WEIGHT} ELSE 0 END + CASE WHEN i.summary LIKE ?2 ESCAPE '\\' THEN {PHRASE_SUMMARY_WEIGHT} ELSE 0 END + CASE WHEN i.aliases_json LIKE ?2 ESCAPE '\\' THEN {PHRASE_ALIASES_WEIGHT} ELSE 0 END)");
+    let phrase = format!("(CASE WHEN i.content LIKE ?2 ESCAPE '\\' THEN {PHRASE_CONTENT_WEIGHT} ELSE 0 END + CASE WHEN i.summary LIKE ?2 ESCAPE '\\' THEN {PHRASE_SUMMARY_WEIGHT} ELSE 0 END + CASE WHEN i.aliases_json LIKE ?2 ESCAPE '\\' OR i.navigation_json LIKE ?2 ESCAPE '\\' THEN {PHRASE_ALIASES_WEIGHT} ELSE 0 END)");
     let token_scores = terms.iter().enumerate().map(|(index, _)| {
         let p = first_param + index;
         format!(
-            "(CASE WHEN i.content LIKE ?{p} ESCAPE '\\' THEN {TERM_CONTENT_WEIGHT} WHEN i.summary LIKE ?{p} ESCAPE '\\' THEN {TERM_SUMMARY_WEIGHT} WHEN i.aliases_json LIKE ?{p} ESCAPE '\\' THEN {TERM_ALIASES_WEIGHT} ELSE 0 END)"
+            "(CASE WHEN i.content LIKE ?{p} ESCAPE '\\' THEN {TERM_CONTENT_WEIGHT} WHEN i.summary LIKE ?{p} ESCAPE '\\' THEN {TERM_SUMMARY_WEIGHT} WHEN i.aliases_json LIKE ?{p} ESCAPE '\\' OR i.navigation_json LIKE ?{p} ESCAPE '\\' THEN {TERM_ALIASES_WEIGHT} ELSE 0 END)"
         )
     }).collect::<Vec<_>>();
     if token_scores.is_empty() {
@@ -395,6 +552,11 @@ fn relevance_score(item: &Value, query: &str) -> i64 {
         .map(Value::to_string)
         .unwrap_or_default()
         .to_lowercase();
+    let navigation = draft
+        .get("navigation")
+        .map(Value::to_string)
+        .unwrap_or_default()
+        .to_lowercase();
     let phrase = query.trim().to_lowercase();
     let mut score = (if content.contains(&phrase) {
         PHRASE_CONTENT_WEIGHT
@@ -404,7 +566,7 @@ fn relevance_score(item: &Value, query: &str) -> i64 {
         PHRASE_SUMMARY_WEIGHT
     } else {
         0
-    }) + (if aliases.contains(&phrase) {
+    }) + (if aliases.contains(&phrase) || navigation.contains(&phrase) {
         PHRASE_ALIASES_WEIGHT
     } else {
         0
@@ -414,7 +576,7 @@ fn relevance_score(item: &Value, query: &str) -> i64 {
             TERM_CONTENT_WEIGHT
         } else if summary.contains(&term) {
             TERM_SUMMARY_WEIGHT
-        } else if aliases.contains(&term) {
+        } else if aliases.contains(&term) || navigation.contains(&term) {
             TERM_ALIASES_WEIGHT
         } else {
             0
@@ -461,6 +623,40 @@ fn validate_draft(draft: &Value) -> AppResult<()> {
     }
     if strings(draft, "sourceIds").is_empty() {
         return Err(AppError::Memory("记忆条目必须带来源".into()));
+    }
+    if let Some(navigation) = draft.get("navigation") {
+        let people = navigation
+            .get("people")
+            .and_then(Value::as_array)
+            .ok_or_else(|| AppError::Memory("navigation.people 必须是数组".into()))?;
+        let topics = navigation
+            .get("topics")
+            .and_then(Value::as_array)
+            .ok_or_else(|| AppError::Memory("navigation.topics 必须是数组".into()))?;
+        if navigation
+            .as_object()
+            .map_or(true, |object| object.len() != 2)
+            || people.iter().any(|person| {
+                person.as_object().map_or(true, |object| object.len() != 2)
+                    || person
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map_or(true, |name| name.trim().is_empty())
+                    || person
+                        .get("aliases")
+                        .and_then(Value::as_array)
+                        .map_or(true, |aliases| {
+                            aliases.iter().any(|alias| {
+                                alias.as_str().map_or(true, |value| value.trim().is_empty())
+                            })
+                        })
+            })
+            || topics
+                .iter()
+                .any(|topic| topic.as_str().map_or(true, |value| value.trim().is_empty()))
+        {
+            return Err(AppError::Memory("navigation 元数据格式无效".into()));
+        }
     }
     if kind == "working"
         && !matches!(
@@ -564,7 +760,315 @@ pub struct MemoryStore {
     pub(crate) conn: Mutex<Connection>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MemoryFactsCatalogueCursor {
+    scope_hash: String,
+    revision: i64,
+    memory_revision: i64,
+    forget_epoch: i64,
+    after_pinned: i64,
+    after_updated_at: i64,
+    after_id: String,
+}
+
+fn encode_facts_catalogue_cursor(cursor: MemoryFactsCatalogueCursor) -> AppResult<String> {
+    let bytes = serde_json::to_vec(&cursor)
+        .map_err(|error| AppError::Config(format!("编码 facts cursor 失败: {error}")))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn decode_facts_catalogue_cursor(value: &str) -> AppResult<MemoryFactsCatalogueCursor> {
+    if value.len() > super::protocol::MEMORY_NAVIGATION_HOST_CURSOR_MAX_CHARACTERS as usize {
+        return Err(AppError::Memory("facts catalogue cursor 超出范围".into()));
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| AppError::Memory("facts catalogue cursor 无效".into()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::Memory("facts catalogue cursor 无效".into()))
+}
+
 impl MemoryStore {
+    /// Enumerate all currently visible accepted facts for a run, using the same
+    /// user/card/session, active, validity-window, and expiry gates as recall.
+    pub(super) fn memory_catalogue_facts(
+        &self,
+        fact_scope: &MemoryCatalogueFactScope,
+        catalogue_level: &str,
+        cursor: Option<&str>,
+        limit: Option<i64>,
+        expected_revision: Option<i64>,
+        expected_memory_revision: Option<i64>,
+        expected_forget_epoch: Option<i64>,
+    ) -> AppResult<Value> {
+        if fact_scope.session_id.is_empty() {
+            return Err(AppError::Memory("facts catalogue 缺少 sessionId".into()));
+        }
+        if let Some(scope) = fact_scope.scope.as_deref() {
+            if !matches!(scope, "user" | "card" | "session") {
+                return Err(AppError::Memory("facts catalogue scope 无效".into()));
+            }
+            match scope {
+                "user" if fact_scope.scope_id.is_some() => {
+                    return Err(AppError::Memory("user facts 不接受 scopeId".into()))
+                }
+                "card" if fact_scope.card_id.is_none() => {
+                    return Err(AppError::Memory("card facts catalogue 缺少 cardId".into()))
+                }
+                "card"
+                    if fact_scope
+                        .scope_id
+                        .as_deref()
+                        .is_some_and(|id| Some(id) != fact_scope.card_id.as_deref()) =>
+                {
+                    return Err(AppError::Memory("card facts scopeId 超出当前 Card".into()))
+                }
+                "session"
+                    if fact_scope
+                        .scope_id
+                        .as_deref()
+                        .is_some_and(|id| id != fact_scope.session_id) =>
+                {
+                    return Err(AppError::Memory(
+                        "session facts scopeId 超出当前 session".into(),
+                    ))
+                }
+                _ => {}
+            }
+        } else if fact_scope.scope_id.is_some() {
+            return Err(AppError::Memory(
+                "facts catalogue scopeId 需要同时指定 scope".into(),
+            ));
+        }
+        if fact_scope.session_ids.len()
+            > super::protocol::MEMORY_NAVIGATION_SCOPE_SESSION_IDS_MAX as usize
+            || fact_scope
+                .session_ids
+                .iter()
+                .any(|id| id.is_empty() || id.len() > 512)
+            || fact_scope.start.is_some_and(|v| v < 0)
+            || fact_scope.end.is_some_and(|v| v < 0)
+            || fact_scope.before.is_some_and(|v| v < 0)
+            || matches!((fact_scope.start, fact_scope.end), (Some(start), Some(end)) if start >= end)
+            || fact_scope.query.as_ref().is_some_and(|q| {
+                q.trim().is_empty()
+                    || q.chars().count()
+                        > super::protocol::MEMORY_NAVIGATION_SEARCH_QUERY_MAX_CHARACTERS as usize
+            })
+        {
+            return Err(AppError::Memory("facts catalogue 查询范围无效".into()));
+        }
+        let limit = limit.unwrap_or(super::protocol::MEMORY_NAVIGATION_CATALOGUE_PAGE_DEFAULT);
+        if !(1..=super::protocol::MEMORY_NAVIGATION_CATALOGUE_PAGE_MAX).contains(&limit) {
+            return Err(AppError::Memory(format!(
+                "facts catalogue limit 必须在 1..={}",
+                super::protocol::MEMORY_NAVIGATION_CATALOGUE_PAGE_MAX
+            )));
+        }
+        let scope_json = json!({"scope": fact_scope, "level": catalogue_level});
+        let scope_hash = format!("{:x}", Sha256::digest(stable_json(&scope_json).as_bytes()));
+        let conn = self.lock()?;
+        let tx = conn.unchecked_transaction().map_err(db_err)?;
+        let (index_revision, clear_cutoff): (i64, i64) = tx
+            .query_row(
+                "SELECT revision,clear_cutoff FROM conversation_index_meta WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(db_err)?;
+        let memory_revision = Self::meta(&tx, "revision")?;
+        let forget_epoch = Self::meta(&tx, "forget_epoch")?;
+        let decoded = cursor.map(decode_facts_catalogue_cursor).transpose()?;
+        let stale = expected_revision.is_some_and(|v| v != index_revision)
+            || expected_memory_revision.is_some_and(|v| v != memory_revision)
+            || expected_forget_epoch.is_some_and(|v| v != forget_epoch)
+            || decoded.as_ref().is_some_and(|value| {
+                value.scope_hash != scope_hash
+                    || value.revision != index_revision
+                    || value.memory_revision != memory_revision
+                    || value.forget_epoch != forget_epoch
+            });
+        if stale {
+            tx.commit().map_err(db_err)?;
+            return Ok(json!({
+                "level": catalogue_level, "entries": [], "nextCursor": null, "complete": false,
+                "freshness": "stale", "revision": index_revision,
+                "memoryRevision": memory_revision, "forgetEpoch": forget_epoch,
+                "fingerprints": [],
+            }));
+        }
+
+        let now = now_ms();
+        let mut sql = format!(
+            "SELECT {} FROM memory_items i WHERE i.status='active'
+             AND (i.valid_from IS NULL OR i.valid_from<=?1)
+             AND (i.valid_to IS NULL OR i.valid_to>?1)
+             AND (i.expires_at IS NULL OR i.expires_at>?1)
+             AND (i.scope='user' OR (i.scope='card' AND i.scope_id=?2)
+                  OR (i.scope='session' AND i.scope_id=?3))",
+            Self::ITEM_COLUMNS
+        );
+        match catalogue_level {
+            "facts" => {}
+            "events" => sql.push_str(" AND i.kind='episode'"),
+            "people" => sql.push_str(" AND json_array_length(i.navigation_json,'$.people')>0"),
+            "topics" => sql.push_str(" AND json_array_length(i.navigation_json,'$.topics')>0"),
+            _ => return Err(AppError::Memory("memory catalogue fact level 无效".into())),
+        }
+        let mut args = vec![
+            json!(now),
+            json!(fact_scope.card_id),
+            json!(fact_scope.session_id),
+        ];
+        if matches!(catalogue_level, "events" | "people" | "topics") {
+            let mut source_filters = vec![
+                "l.item_id=i.id".to_owned(),
+                "l.item_version=i.version".to_owned(),
+                "((s.origin='user' AND s.taint='trusted_user') OR (s.origin='derived_behavior' AND s.taint='derived'))".to_owned(),
+                "NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash AND t.effect='block_extraction')".to_owned(),
+                "e.role='user' AND e.entry_id=s.entry_id AND e.seq=s.seq AND (s.event_id IS NULL OR e.event_id=s.event_id)".to_owned(),
+                "NOT EXISTS(SELECT 1 FROM conversation_index_suppressions x WHERE x.session_id=e.session_id AND (x.entry_id=e.entry_id OR (e.event_id IS NOT NULL AND x.event_id=e.event_id)))".to_owned(),
+            ];
+            if !fact_scope.session_ids.is_empty() {
+                let mut ids = Vec::new();
+                for id in &fact_scope.session_ids {
+                    args.push(json!(id));
+                    ids.push(format!("?{}", args.len()));
+                }
+                source_filters.push(format!("s.session_id IN ({})", ids.join(",")));
+            }
+            for (time, op) in [
+                (fact_scope.start, ">="),
+                (fact_scope.end, "<"),
+                (fact_scope.before, "<"),
+            ] {
+                if let Some(time) = time {
+                    args.push(json!(time));
+                    source_filters.push(format!("e.timestamp{op}?{}", args.len()));
+                }
+            }
+            let cutoff_parameter = args.len() + 1;
+            args.push(json!(clear_cutoff));
+            source_filters.push(super::conversation::clear_eligibility(cutoff_parameter));
+            let eligible_episode_sources = format!("EXISTS(SELECT 1 FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id JOIN conversation_index_entries e ON e.session_id=s.session_id AND e.entry_id=s.entry_id AND e.chunk=0 JOIN conversation_index_sessions cs ON cs.session_id=s.session_id WHERE {})", source_filters.join(" AND "));
+            if catalogue_level == "events" {
+                sql.push_str(&format!(" AND {eligible_episode_sources}"));
+            } else {
+                sql.push_str(&format!(" AND (i.kind<>'episode' OR {eligible_episode_sources})"));
+            }
+        }
+        if catalogue_level != "events" {
+            // Episode scope is checked against original source records above. Other
+            // items use their accepted observation time and source-session links,
+            // including when reached through people/topics navigation.
+            let episode_exemption = if matches!(catalogue_level, "people" | "topics") {
+                "i.kind='episode' OR "
+            } else {
+                ""
+            };
+            for (time, op) in [
+                (fact_scope.start, ">="),
+                (fact_scope.end, "<"),
+                (fact_scope.before, "<"),
+            ] {
+                if let Some(time) = time {
+                    args.push(json!(time));
+                    sql.push_str(&format!(" AND ({episode_exemption}i.observed_at{op}?{})", args.len()));
+                }
+            }
+            if !fact_scope.session_ids.is_empty() {
+                let mut ids = Vec::new();
+                for id in &fact_scope.session_ids {
+                    args.push(json!(id));
+                    ids.push(format!("?{}", args.len()));
+                }
+                sql.push_str(&format!(" AND ({episode_exemption}EXISTS(SELECT 1 FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id WHERE l.item_id=i.id AND l.item_version=i.version AND s.session_id IN ({})))",ids.join(",")));
+            }
+        }
+        if let Some(query) = fact_scope.query.as_deref() {
+            let mut matches = Vec::new();
+            for term in memory_query_terms(query) {
+                for variant in memory_query_term_variants(&term, query) {
+                    let escaped = variant
+                        .replace('\\', "\\\\")
+                        .replace('%', "\\%")
+                        .replace('_', "\\_");
+                    args.push(json!(format!("%{escaped}%")));
+                    let parameter = args.len();
+                    // Search metadata values only: JSON keys such as "aliases"
+                    // are schema, not evidence that every item matches a query.
+                    matches.push(format!("(i.content LIKE ?{parameter} ESCAPE '\\' OR i.summary LIKE ?{parameter} ESCAPE '\\' OR i.aliases_json LIKE ?{parameter} ESCAPE '\\' OR EXISTS(SELECT 1 FROM json_each(i.navigation_json,'$.people') person WHERE json_extract(person.value,'$.name') LIKE ?{parameter} ESCAPE '\\' OR EXISTS(SELECT 1 FROM json_each(person.value,'$.aliases') alias WHERE alias.value LIKE ?{parameter} ESCAPE '\\')) OR EXISTS(SELECT 1 FROM json_each(i.navigation_json,'$.topics') topic WHERE topic.value LIKE ?{parameter} ESCAPE '\\'))"));
+                }
+            }
+            if matches.is_empty() {
+                sql.push_str(" AND 0");
+            } else {
+                sql.push_str(&format!(" AND ({})", matches.join(" OR ")));
+            }
+        }
+        if let Some(scope) = fact_scope.scope.as_deref() {
+            args.push(json!(scope));
+            sql.push_str(&format!(" AND i.scope=?{}", args.len()));
+        }
+        if let Some(scope_id) = fact_scope.scope_id.as_deref() {
+            args.push(json!(scope_id));
+            sql.push_str(&format!(" AND i.scope_id=?{}", args.len()));
+        }
+        if let Some(cursor) = &decoded {
+            args.push(json!(cursor.after_pinned));
+            let pinned = args.len();
+            args.push(json!(cursor.after_updated_at));
+            let updated = args.len();
+            args.push(json!(cursor.after_id));
+            let id = args.len();
+            sql.push_str(&format!(
+                " AND (i.pinned<?{pinned} OR (i.pinned=?{pinned} AND
+                   (i.updated_at<?{updated} OR (i.updated_at=?{updated} AND i.id>?{id}))))"
+            ));
+        }
+        sql.push_str(" ORDER BY i.pinned DESC,i.updated_at DESC,i.id ASC LIMIT ?");
+        args.push(json!(limit + 1));
+        let mut items = {
+            let mut statement = tx.prepare(&sql).map_err(db_err)?;
+            let items = statement
+                .query_map(params_from_iter(params_of(&args)), Self::row_to_item)
+                .map_err(db_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            items
+        };
+        let has_more = items.len() > limit as usize;
+        if has_more {
+            items.pop();
+        }
+        let next_cursor = if has_more {
+            let item = items.last().expect("has_more facts page is non-empty");
+            Some(encode_facts_catalogue_cursor(MemoryFactsCatalogueCursor {
+                scope_hash,
+                revision: index_revision,
+                memory_revision,
+                forget_epoch,
+                after_pinned: if item["draft"]["pinned"].as_bool().unwrap_or(false) {
+                    1
+                } else {
+                    0
+                },
+                after_updated_at: item["updatedAt"].as_i64().unwrap_or_default(),
+                after_id: item["id"].as_str().unwrap_or_default().to_owned(),
+            })?)
+        } else {
+            None
+        };
+        let items = Self::attach_sources(&tx, items)?;
+        tx.commit().map_err(db_err)?;
+        Ok(json!({
+            "level": catalogue_level, "entries": items, "nextCursor": next_cursor,
+            "complete": !has_more, "freshness": "current", "revision": index_revision,
+            "memoryRevision": memory_revision, "forgetEpoch": forget_epoch, "fingerprints": [],
+        }))
+    }
+
     /// 登记一笔 dreaming token 预留 —— **纯记账，不做日 token 总量准入**。
     ///
     /// 2026-10-06 用户裁决（与主动链同批口径：「一天最多几次」保留、「一天最多烧多少
@@ -875,7 +1379,7 @@ impl MemoryStore {
                 "kind": row.get::<_, String>(5)?,
                 "scope": row.get::<_, String>(6)?,
                 "scopeId": row.get::<_, Option<String>>(7)?,
-                "aliases": serde_json::from_str::<Value>(&aliases).unwrap_or_else(|_| json!([])),
+          "aliases": serde_json::from_str::<Value>(&aliases).unwrap_or_else(|_| json!([])),
                 "pinned": row.get::<_, i64>(9)? != 0,
                 "importance": row.get::<_, f64>(10)?,
                 "confidence": row.get::<_, f64>(11)?,
@@ -888,6 +1392,7 @@ impl MemoryStore {
                 "eventAt": row.get::<_, Option<String>>(19)?.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
                 "dueAt": row.get::<_, Option<String>>(20)?.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
                 "workingState": row.get::<_, Option<String>>(21)?,
+                "navigation": serde_json::from_str::<Value>(&row.get::<_, String>(22)?).unwrap_or_else(|_| json!({"people":[],"topics":[]})),
             },
             "createdAt": row.get::<_, i64>(17)?,
             "updatedAt": row.get::<_, i64>(18)?,
@@ -896,7 +1401,7 @@ impl MemoryStore {
 
     const ITEM_COLUMNS: &'static str = "i.id,i.version,i.status,i.content,i.summary,i.kind,i.scope,i.scope_id,\
         i.aliases_json,i.pinned,i.importance,i.confidence,i.observed_at,i.valid_from,i.valid_to,i.expires_at,\
-        i.supersedes_id,i.created_at,i.updated_at,i.event_at_json,i.due_at_json,i.working_state";
+        i.supersedes_id,i.created_at,i.updated_at,i.event_at_json,i.due_at_json,i.working_state,i.navigation_json";
 
     /// 条目来源类别：全部来源都是系统观察结论 → `derived_behavior`，否则 `user`。
     /// 混用（两类同一条目）在写入处已被拒绝，这里取保守值不掩盖问题。
@@ -1283,7 +1788,7 @@ impl MemoryStore {
              AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
              AND (i.valid_to IS NULL OR i.valid_to > ?1) \
              AND (i.expires_at IS NULL OR i.expires_at > ?1) \
-             AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\' \
+             AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\' OR i.navigation_json LIKE ?2 ESCAPE '\\' \
                   OR (i.id,i.version) IN (SELECT item_id,item_version FROM memory_fts WHERE memory_fts MATCH ?3){term_sql})",
             Self::ITEM_COLUMNS
         );
@@ -1334,7 +1839,7 @@ impl MemoryStore {
                          AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
              AND (i.valid_to IS NULL OR i.valid_to > ?1) \
              AND (i.expires_at IS NULL OR i.expires_at > ?1) \
-                         AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\'{fallback_terms})",
+                         AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\' OR i.navigation_json LIKE ?2 ESCAPE '\\'{fallback_terms})",
                         Self::ITEM_COLUMNS
                     );
                     let mut fallback_args: Vec<Value> = vec![json!(now_ms()), json!(like)];
@@ -1391,6 +1896,14 @@ impl MemoryStore {
         let revision: i64 = tx
             .query_row(
                 "SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(db_err)?;
+        let forget_epoch = Self::meta(&tx, "forget_epoch")?;
+        let index_revision: i64 = tx
+            .query_row(
+                "SELECT revision FROM conversation_index_meta WHERE id=1",
                 [],
                 |row| row.get(0),
             )
@@ -1486,7 +1999,7 @@ impl MemoryStore {
         let pinned = Self::pinned_on(&tx, card_id, session_id, QUERY_LIMIT_MAX)?;
         tx.commit().map_err(db_err)?;
         Ok(
-            json!({ "revision": revision, "candidatesByScope": { "user": user, "card": card, "session": session }, "candidates": candidates, "pinned": pinned, "targeted": targeted }),
+            json!({ "revision": revision, "indexRevision": index_revision, "forgetEpoch": forget_epoch, "candidatesByScope": { "user": user, "card": card, "session": session }, "candidates": candidates, "pinned": pinned, "targeted": targeted }),
         )
     }
 
@@ -1862,8 +2375,8 @@ impl MemoryStore {
                     .map_err(|e| AppError::Memory(e.to_string()))?;
                 transaction
                     .execute(
-                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state) \
-                         VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17,?18,?19,?20)",
+                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state,navigation_json) \
+                         VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17,?18,?19,?20,?21)",
                         params![
                             id,
                             version,
@@ -1885,6 +2398,8 @@ impl MemoryStore {
                             draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
                             draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
                             opt_s(draft, "workingState"),
+                            serde_json::to_string(draft.get("navigation").unwrap_or(&json!({"people":[],"topics":[]})))
+                                .map_err(|error| AppError::Memory(error.to_string()))?,
                         ],
                     )
                     .map_err(db_err)?;
@@ -2366,8 +2881,8 @@ impl MemoryStore {
                 .map_err(|e| AppError::Memory(e.to_string()))?;
             transaction
                 .execute(
-                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state) \
-                     VALUES (?1,1,'active',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16,?17,?18,?19)",
+                "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state,navigation_json) \
+                     VALUES (?1,1,'active',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16,?17,?18,?19,?20)",
                     params![
                         id,
                         s(&draft, "content"),
@@ -2388,6 +2903,8 @@ impl MemoryStore {
                         draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
                         draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
                         opt_s(&draft, "workingState"),
+                        serde_json::to_string(draft.get("navigation").unwrap_or(&json!({"people":[],"topics":[]})))
+                            .map_err(|error| AppError::Memory(error.to_string()))?,
                     ],
                 )
                 .map_err(db_err)?;

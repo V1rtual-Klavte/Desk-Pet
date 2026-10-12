@@ -19,6 +19,7 @@ import { formatError } from "@/services/error"
 import { FrameBufferingFileSystem } from "./session-frame-buffer"
 import { FOLD_POLICY, foldSessionFile } from "./session-fold"
 import type { FoldOutcome } from "./session-fold"
+import { notifySessionFileChanged } from "@/services/session/change-signal"
 
 const log = createLogger("PiSessionRepo")
 
@@ -61,7 +62,10 @@ class DataRootSessionRepo implements PiSessionRepo {
     readonly sessionsRoot: string, readonly cwd: string) {}
 
   create(options: SessionCreateOptions, context: Context): Promise<Session<JsonlSessionMetadata>> {
-    return this.repo.create({ ...options, cwd: this.cwd }, context)
+    return this.repo.create({ ...options, cwd: this.cwd }, context).then(session => {
+      notifySessionFileChanged(session.metadata.path)
+      return session
+    })
   }
 
   /**
@@ -119,11 +123,14 @@ class DataRootSessionRepo implements PiSessionRepo {
   }
 
   delete(metadata: JsonlSessionMetadata, context: Context): Promise<void> {
-    return this.repo.delete(metadata, context)
+    return this.repo.delete(metadata, context).then(() => notifySessionFileChanged(metadata.path))
   }
 
   fork(source: JsonlSessionMetadata, options: ForkOptions, context: Context): Promise<Session<JsonlSessionMetadata>> {
-    return this.repo.fork(source, options, context)
+    return this.repo.fork(source, options, context).then(session => {
+      notifySessionFileChanged(session.metadata.path)
+      return session
+    })
   }
 
   close(context: Context): Promise<void> {

@@ -26,6 +26,8 @@ function toolingClass(outcome) {
   if (!outcome) return "incomplete"
   const violations = outcome.protocolViolations
   const observedCalls = outcome.tooling?.observedCalls
+  if (outcome.tooling?.requestedMode === "memory" && Array.isArray(violations) && violations.length === 0
+    && Number.isInteger(observedCalls) && observedCalls >= 0) return outcome.status === "complete" ? "productMemory" : "incomplete"
   if (outcome.usedTools === true || violations?.length > 0 || observedCalls > 0) return "contaminated"
   if (outcome.status !== "complete") return "incomplete"
   if (outcome.usedTools !== false || !Array.isArray(violations) || violations.length !== 0
@@ -35,9 +37,10 @@ function toolingClass(outcome) {
 
 /**
  * `cases` 是本次计划选择的题集；缺失 outcome 也计入题型/总题数，但不计入判分分母。
- * judgments 可由本地 judge 或外部逐题回填提供，内容只接受 adjudicated/correct。
+ * judgments 仅用于显式提供的外部逐题判分；generation outcomes 的 local judgment 不进入主分。
  */
 export function scoreLongMemEval(cases, outcomes, judgments = {}, plan = {}) {
+  const scoringStatus = plan.scoringStatus ?? "pending_official"
   const plannedCountsByType = plan.plannedCountsByType ?? null
   const hasPlannedTypeCounts = plannedCountsByType !== null
   const abstentionCount = Number.isInteger(plan.abstentionCount) ? plan.abstentionCount : null
@@ -54,10 +57,10 @@ export function scoreLongMemEval(cases, outcomes, judgments = {}, plan = {}) {
   }
   const unmappedType = emptyBucket()
   const unmappedAbstention = emptyBucket()
-  const strict = { cases: cases.length, eligible: 0, judged: 0, correct: 0, contaminated: 0, unknown: 0,
+  const strict = { cases: cases.length, eligible: 0, judged: 0, correct: 0, contaminated: 0, productMemory: 0, unknown: 0,
     incomplete: 0, notCompleted: 0, unmappedTypeCases: 0 }
   const strictByType = new Map([...byType.entries()].map(([questionType, bucket]) => [questionType,
-    { questionType, cases: bucket.cases, eligible: 0, judged: 0, correct: 0, contaminated: 0, unknown: 0, incomplete: 0, notCompleted: 0 }]))
+    { questionType, cases: bucket.cases, eligible: 0, judged: 0, correct: 0, contaminated: 0, productMemory: 0, unknown: 0, incomplete: 0, notCompleted: 0 }]))
   const rows = []
   const retrieval = { sessionRecalls: [], turnRecalls: [], assistantTurnRecalls: [], candidateSessionRecalls: [],
     withEvidence: 0, withGoldTurns: 0, withGoldAssistantTurns: 0 }
@@ -66,7 +69,7 @@ export function scoreLongMemEval(cases, outcomes, judgments = {}, plan = {}) {
 
   for (const item of cases) {
     const outcome = outcomesById.get(item.caseId) ?? null
-    const judgment = judgments[item.caseId] ?? outcome?.externalJudgment ?? outcome?.judgment ?? null
+    const judgment = judgments[item.caseId] ?? outcome?.externalJudgment ?? null
     const judged = judgment?.adjudicated === true && typeof judgment.correct === "boolean"
     const correct = judged && judgment.correct === true
     const questionType = typeof item.questionType === "string" ? item.questionType : null
@@ -93,7 +96,7 @@ export function scoreLongMemEval(cases, outcomes, judgments = {}, plan = {}) {
     let typeStrict = questionType === null ? null : strictByType.get(questionType) ?? null
     if (questionType !== null && !typeStrict && !hasPlannedTypeCounts) {
       typeStrict = { questionType, cases: 0, eligible: 0, judged: 0, correct: 0,
-        contaminated: 0, unknown: 0, incomplete: 0, notCompleted: 0 }
+        contaminated: 0, productMemory: 0, unknown: 0, incomplete: 0, notCompleted: 0 }
       strictByType.set(questionType, typeStrict)
     }
     if (!typeStrict) strict.unmappedTypeCases += 1
@@ -180,6 +183,8 @@ export function scoreLongMemEval(cases, outcomes, judgments = {}, plan = {}) {
     cases: cases.length,
     completed: rows.filter(row => row.status === "complete").length,
     judgeFailures,
+    officialScoring: { status: scoringStatus,
+      metric: scoringStatus === "official" ? "LongMemEval src/evaluation/evaluate_qa.py autoeval_label" : null },
     overall: withAccuracy(overall),
     abstention: withAccuracy(abstention),
     regular: withAccuracy(regular),
@@ -193,7 +198,7 @@ export function scoreLongMemEval(cases, outcomes, judgments = {}, plan = {}) {
     unmappedAbstention: { ...unmappedAbstention, note: "所选题集中的逐题 abstention 映射未知；cases 的总体分母可由报告 aggregate 计数提供" },
     strictEmptyTool: { ...strict, accuracy: strict.judged > 0 ? strict.correct / strict.judged : null,
       byType: strictByTypeRows,
-      note: "仅 complete 且显式 usedTools=false、protocolViolations=[]、requestedMode=none、observedCalls=0 的题进入严格空工具基线；污染、未知与未完成题分别计数，notCompleted 是全选中题集里的未完成数" },
+      note: "仅 complete 且显式 usedTools=false、protocolViolations=[]、requestedMode=none、observedCalls=0 的题进入严格空工具基线；正常 memory 工具模式单列 productMemory，污染、未知与未完成题分别计数，notCompleted 是全选中题集里的未完成数" },
     retrieval: {
       sessionRecallMean: mean(retrieval.sessionRecalls), caseCount: retrieval.sessionRecalls.length,
       turnRecallMean: mean(retrieval.turnRecalls), turnCaseCount: retrieval.withGoldTurns,

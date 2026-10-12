@@ -3,7 +3,7 @@
 // ==========================================
 //
 // 事实存储归 Rust（memory.sqlite3），会话正文归 sessions/ 的 JSONL。
-// 这里组装类型化 IPC 客户端、召回与临时阅读端口、dreaming 编排。
+// 这里组装类型化 IPC 客户端、召回与受治理的读取端口、dreaming 编排。
 // 不再有第二份内存数组，也不再有 Markdown 注册表。
 
 import { initPaths } from "@/services/paths"
@@ -13,18 +13,15 @@ import { errorCode, formatError } from "@/services/error"
 import { installMemoryProvider, sqliteMemoryProvider, recallMemory } from "./provider"
 import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
 
-export type { TemporalAnchor, ProactiveRecurrence, ProactiveOwner, ProactiveTask, ProactiveSourceRef } from "./protocol"
+export type { MemoryEpisodeSourcePage, MemoryCatalogueFactScope, MemoryCataloguePage, MemoryCatalogueScope, TemporalAnchor, ProactiveRecurrence, ProactiveOwner, ProactiveTask, ProactiveSourceRef } from "./protocol"
 
 export { deriveMemoryRecallBudget } from "./budget"
 export type { MemoryRecallBudget } from "./budget"
-export { renderMemoryRecall } from "./projection"
-export { focusMemoryEvidence } from "./reader"
-export { completeMemoryEvidence } from "./coverage"
+export { renderMemoryRecall, MEMORY_READING_POLICY } from "./projection"
 export { deriveMemoryQueryPlan } from "./query"
-export type { FocusedMemoryEvidence } from "./reader"
 
 export { parseRerankIds } from "./rerank"
-export { invalidateConversationSession, recallConversation, validateConversationProjections } from "./conversation"
+export { acquireConversationIndexSnapshot, flushConversationIndex, invalidateConversationSession, recallConversation, validateConversationProjections } from "./conversation"
 export type { ConversationRecallRequest, ConversationSourceRef } from "./conversation"
 export type {
   MemoryQueryPlan,
@@ -42,6 +39,24 @@ export {
   sqliteMemoryProvider,
 } from "./provider"
 export type { MemoryProvider, MemoryProjection, MemoryRecallRequest } from "./provider"
+export { createMemoryNavigation } from "./navigation"
+export type {
+  MemoryCatalogueEntry,
+  MemoryCatalogueLevel,
+  MemoryNavigation,
+  MemoryNavigationCatalogueRequest,
+  MemoryNavigationContext,
+  MemoryNavigationPage,
+  MemoryNavigationReadRequest,
+  MemoryNavigationReadResult,
+  MemoryNavigationProviderReadResult,
+  MemoryNavigationVisibleRead,
+  MemoryNavigationRenderedRead,
+  MemoryNavigationScope,
+  MemoryNavigationSearchHit,
+  MemoryNavigationSearchRequest,
+  MemoryNavigationProvider,
+} from "./navigation"
 export {
   addMemoryCandidates, applyMemoryChange, backupMemory, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob,
   exportMemory, getMemoryItems, getMemoryRecallCandidates, memoryDetail, memoryHistory, memoryJobSources, memorySourceEvidence, memoryList, memoryStatus,

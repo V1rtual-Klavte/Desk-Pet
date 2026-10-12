@@ -1280,11 +1280,20 @@ export class HarnessSlot {
 
   /** 宿主显式停止：取消当前操作并归还未消费消息。 */
   async abort(reason: HarnessAbortReason = ABORT_REASON_USER): Promise<{ steer: string[]; followUp: string[] } | undefined> {
-    const aborted = await this.abortSelf(reason)
+    return this.abortTree(reason, false)
+  }
+
+  /** 操作内部失效：只等待持久取消被接受，原驱动负责收尾，避免工具等待自身退出。 */
+  async requestAbort(reason: HarnessAbortReason = ABORT_REASON_USER): Promise<{ steer: string[]; followUp: string[] } | undefined> {
+    return this.abortTree(reason, true)
+  }
+
+  private async abortTree(reason: HarnessAbortReason, requestOnly: boolean): Promise<{ steer: string[]; followUp: string[] } | undefined> {
+    const aborted = await this.abortSelf(reason, requestOnly)
     // 取消域级联：父槽停止后子运行不能继续跑（计划步骤的子代理就挂在父槽下）。
     // 一条失败不阻断其余，也仍然如实返回父槽自己的归还清单。
     const children = [...this.children]
-    const settled = await Promise.allSettled(children.map(child => child.abort(reason)))
+    const settled = await Promise.allSettled(children.map(child => child.abortTree(reason, requestOnly)))
     settled.forEach((result, index) => {
       if (result.status === "rejected") log.warn("子运行停止失败:", { sessionId: children[index]!.sessionId }, formatError(result.reason))
     })
@@ -1292,9 +1301,13 @@ export class HarnessSlot {
   }
 
   /** 停止自身 lane 上的在飞操作；返回归还清单（无操作或未被接受时为 undefined）。 */
-  private async abortSelf(reason: HarnessAbortReason): Promise<{ steer: string[]; followUp: string[] } | undefined> {
+  private async abortSelf(reason: HarnessAbortReason, requestOnly: boolean): Promise<{ steer: string[]; followUp: string[] } | undefined> {
     if (!this.lane) return undefined
-    const aborted = await this.lane.abort(TODO_CONTEXT)
+    const operationId = requestOnly ? (await this.lane.inspectExecution(TODO_CONTEXT)).current?.id : undefined
+    if (requestOnly && !operationId) return undefined
+    const aborted = requestOnly
+      ? await this.lane.requestAbort(operationId!, TODO_CONTEXT)
+      : await this.lane.abort(TODO_CONTEXT)
     if (!aborted.ok) {
       // 不能伪装成「停止成功但无归还项」：abort 未被接受时中断状态与归还列表都必须如实缺省。
       // 停止来源同样缺省 —— 先记 abortReason 再等结果会把槽钉死在「非当前」（isCurrent 恒 false）。

@@ -103,7 +103,7 @@ describe("提示文案", () => {
       v1rtualInstructions: "",
       skillsPromptBlock: "",
     }, null, POOL)
-    expect(built.systemPrompt, "buildPrompt 的系统提示没有消费 CHAT_THINKING_HINTS.high").toContain(CHAT_THINKING_HINTS.high)
+    expect(built.turnDynamic, "buildPrompt 的回合动态投影没有消费 CHAT_THINKING_HINTS.high").toContain(CHAT_THINKING_HINTS.high)
     expect(built.blocks.some(block => block.blockId === "dynamic:runtime"), "buildPrompt 没有产出 dynamic:runtime 块").toBe(true)
     for (const block of built.blocks) {
       expect(block.text, `时间片段进了块 ${block.blockId}（它只能作为尾随瞬时消息出现）`).not.toContain(TIME_MARKER)
@@ -111,6 +111,10 @@ describe("提示文案", () => {
     expect(built.staticPrefix, "时间片段进了 staticPrefix（静态前缀是缓存身份的一部分，不能每回合变化）").not.toContain(TIME_MARKER)
     expect(built.systemPrompt, "时间片段仍留在 system prompt 里：前缀缓存会断在会话正文上游").not.toContain(TIME_MARKER)
     expect(built.turnDynamic).not.toContain(TIME_MARKER)
+    expect(built.systemPrompt).toContain("用户明确指定的语言、格式、篇幅和弃权规则")
+    expect(built.systemPrompt).toContain("事实问题先给核心答案")
+    expect(built.blocks.find(block => block.blockId === "static:product-output-policy")?.priority)
+      .toBeGreaterThan(built.blocks.find(block => block.blockId === "static:card")?.priority ?? 0)
   })
 
   // 外部基准（LongMemEval）要求「今天」= 题目 question_date；E2E 夹具经这个锚点把注记锚到

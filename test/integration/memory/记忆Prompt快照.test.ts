@@ -15,13 +15,20 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { fauxProvider, type Context, type FauxResponseStep, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai"
+import type { StreamFn } from "@earendil-works/pi-agent-core"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { captureRuntimeTrace } from "../../host/trace-observer"
-import { runRuntimeTurn } from "./回合夹具"
-import { createPromptRewrite, createPromptSnapshot, serializePromptSnapshot } from "@/services/engine/runtime"
+import { ensureSession, runRuntimeTurn } from "./回合夹具"
+import { createPromptRewrite, createPromptSnapshot, serializePromptSnapshot, TURN_NOTE_CUSTOM_TYPE, userInputMessage } from "@/services/engine/runtime"
+import { installPiRuntimeProviderForTest, runPiAgentTurn } from "@/services/engine/harness"
+import { buildPrompt } from "@/services/context"
 import { initPaths } from "@/services/paths"
+import { createNewSession, pushAssistantMessage, pushUserMessage } from "@/services/session"
+import { sessionEntries } from "../../host/session-entries"
+import type { ProactiveTurnContext } from "@/services/proactive"
 
 let root = ""
 
@@ -35,9 +42,48 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
+interface CapturedPrompt {
+  systemPrompt: string
+  messages: Context["messages"]
+}
+
+function installPromptCapturingProvider(responses: FauxResponseStep[]) {
+  const fake = fauxProvider({ api: "faux", provider: "deskpet-fake",
+    models: [{ id: "deskpet-fake", name: "Desk-Pet Fake" }] })
+  fake.setResponses(responses)
+  const model = fake.getModel()
+  if (!model) throw new Error("fake provider 未创建 model")
+  const requests: CapturedPrompt[] = []
+  const restore = installPiRuntimeProviderForTest({ model,
+    streamFn: ((requestModel: Model<any>, context: Context, options?: SimpleStreamOptions) => {
+      requests.push({ systemPrompt: context.systemPrompt ?? "", messages: structuredClone(context.messages) })
+      return fake.provider.streamSimple(requestModel, context, options)
+    }) as StreamFn,
+  })
+  return { requests, restore }
+}
+
+function messageText(message: Context["messages"][number] | undefined): string {
+  if (!message) return ""
+  if (typeof message.content === "string") return message.content
+  return message.content.filter(part => part.type === "text").map(part => part.text).join("")
+}
+
+function turnContext(revision: "one" | "two"): ProactiveTurnContext {
+  return {
+    text: [
+      `变量当前值=${revision}`,
+      `计划步骤=${revision}`,
+      `runtime reminder=${revision}`,
+      `session-summary=${revision}`,
+    ].join("\n"),
+    taskRefs: [], memoryRefs: [], recurrenceProposals: [],
+  }
+}
+
 describe("记忆Prompt快照", () => {
   it("PromptSnapshot 保留顺序、hash 和 usage 区分 [memory-prompt-snapshot]", async () => {
-    installFakeProvider([fakeText("快照测试完成")])
+    const provider = installFakeProvider([fakeText("快照测试完成")])
     const trace = captureRuntimeTrace()
     try {
       await runRuntimeTurn("请简短回复。")
@@ -99,6 +145,77 @@ describe("记忆Prompt快照", () => {
       ).toEqual([])
     } finally {
       trace.unsubscribe()
+      provider.restore()
+    }
+  })
+
+  it("变化的回合数据只投影到请求末尾且不进入持久 transcript [memory-prompt-tail-projection]", async () => {
+    const firstDynamic = ["变量当前值=one", "计划步骤=one", "runtime reminder=one", "session-summary=one"]
+    const secondDynamic = ["变量当前值=two", "计划步骤=two", "runtime reminder=two", "session-summary=two"]
+    const builtOne = buildPrompt({ thinkingEffort: "medium", tools: [], contextMaxTokens: 131_072,
+      v1rtualInstructions: "稳定规则", dynamicPrompt: firstDynamic[0], sessionSummary: firstDynamic[3],
+      ephemeralText: `${firstDynamic[1]}\n${firstDynamic[2]}`, ephemeralOrigin: "plan" }, null,
+    { system: {}, card: {}, interaction: {} })
+    const builtTwo = buildPrompt({ thinkingEffort: "medium", tools: [], contextMaxTokens: 131_072,
+      v1rtualInstructions: "稳定规则", dynamicPrompt: secondDynamic[0], sessionSummary: secondDynamic[3],
+      ephemeralText: `${secondDynamic[1]}\n${secondDynamic[2]}`, ephemeralOrigin: "plan" }, null,
+    { system: {}, card: {}, interaction: {} })
+    expect(builtOne.systemPrompt, "改变量、计划、提醒或摘要改变了稳定 system prefix").toBe(builtTwo.systemPrompt)
+    for (const marker of [...firstDynamic, ...secondDynamic]) {
+      expect(builtOne.systemPrompt, `动态内容 ${marker} 泄漏进 system prompt`).not.toContain(marker)
+    }
+    expect(builtOne.turnDynamic, "预算后的动态块没有保留当前变量/计划/提醒/摘要").toContain(firstDynamic[0])
+    expect(builtOne.turnDynamic).toContain(firstDynamic[1])
+    expect(builtOne.turnDynamic).toContain(firstDynamic[2])
+    expect(builtOne.turnDynamic).toContain(firstDynamic[3])
+
+    await ensureSession()
+    const sessionId = (await createNewSession()).id
+    const provider = installPromptCapturingProvider([fakeText("第一轮持久回复"), fakeText("第二轮持久回复")])
+    const prompts = [turnContext("one"), turnContext("two")]
+    const userTexts = ["第一轮用户正文", "第二轮用户正文"]
+    try {
+      for (const [index, userText] of userTexts.entries()) {
+        pushUserMessage(userText, sessionId)
+        const result = await runPiAgentTurn({ sessionId, userText, userPrompt: userInputMessage(userText, ""),
+          unansweredCount: 0, isActiveMessage: false, turnContext: prompts[index] })
+        pushAssistantMessage(result.reply, sessionId)
+        expect(result.failure, `第 ${index + 1} 回合失败: ${result.failure?.message ?? "unknown"}`).toBeUndefined()
+      }
+
+      expect(provider.requests.length, "两个回合应分别只产生一次模型请求").toBe(2)
+      const first = provider.requests[0]!
+      const second = provider.requests[1]!
+      expect(second.systemPrompt, "动态数据变化造成 system prefix 改变").toBe(first.systemPrompt)
+      for (const marker of [...firstDynamic, ...secondDynamic]) {
+        expect(first.systemPrompt, `动态内容 ${marker} 泄漏进实际 system prompt`).not.toContain(marker)
+      }
+      const firstTail = messageText(first.messages[first.messages.length - 1])
+      const secondTail = messageText(second.messages[second.messages.length - 1])
+      for (const marker of firstDynamic) expect(firstTail, `第一回合尾注缺少 ${marker}`).toContain(marker)
+      for (const marker of secondDynamic) expect(secondTail, `第二回合尾注缺少 ${marker}`).toContain(marker)
+      expect(first.messages[first.messages.length - 1]?.role, "回合注记没有投影成 Provider 可消费的末尾 user message").toBe("user")
+      expect(second.messages[second.messages.length - 1]?.role, "回合注记没有投影成 Provider 可消费的末尾 user message").toBe("user")
+      const secondRequestText = second.messages.map(message => messageText(message)).join("\n")
+      expect(secondRequestText, "前一回合的动态值被错误保留在 transcript").not.toContain("=one")
+      const secondTextMessages = second.messages.map(message => messageText(message))
+      const firstUserIndex = secondTextMessages.findIndex(text => text.includes(userTexts[0]))
+      const firstAssistantIndex = secondTextMessages.findIndex(text => text.includes("第一轮持久回复"))
+      const secondUserIndex = secondTextMessages.findIndex(text => text.includes(userTexts[1]))
+      expect(firstUserIndex, "第二回合请求未复用上一回合 user transcript").toBeGreaterThanOrEqual(0)
+      expect(firstAssistantIndex, "第二回合请求未复用上一回合 assistant transcript").toBeGreaterThan(firstUserIndex)
+      expect(secondUserIndex, "当前 user transcript 未排在已复用历史之后").toBeGreaterThan(firstAssistantIndex)
+
+      const entries = await sessionEntries(sessionId)
+      const serializedEntries = JSON.stringify(entries)
+      expect(entries.some(entry => entry.type === "custom" && entry.customType === TURN_NOTE_CUSTOM_TYPE),
+        "TURN_NOTE 注记不应形成 durable custom entry").toBe(false)
+      expect(serializedEntries, "动态回合值进入了 durable JSONL transcript").not.toContain("变量当前值=")
+      expect(serializedEntries, "计划状态进入了 durable JSONL transcript").not.toContain("计划步骤=")
+      expect(serializedEntries, "runtime reminder 进入了 durable JSONL transcript").not.toContain("runtime reminder=")
+      expect(serializedEntries, "session summary 进入了 durable JSONL transcript").not.toContain("session-summary=")
+    } finally {
+      provider.restore()
     }
   })
 })

@@ -7,7 +7,7 @@
 //   绝不让释放抛出。挂点与 hs-07 描述里「未由本点场景断言」的两处之一对应 —— 本文件是
 //   它的直接出口（现有折叠用例直接驱动 `repo.foldSession`，或只在 open 前兜底里撞到它）。
 //
-// 两条用例：
+// 用例：
 //   ① [harness-session-fold-close-path] 真折叠：会话层创建 + 真帧写入（缓冲里还有尾巴）
 //      + list/delete 造出可回收量，**只**调 `releasePiSession` —— 不手动 flush、不手动
 //      foldSession。断言：释放后全部帧行（含最后写进缓冲的那批）都被回收、真实条目逐字保留、
@@ -26,7 +26,7 @@
 // FileSystem，没有构造注入缝；原型级注入与折叠链的子类注入等价，其余 I/O 全走真实命令）。
 //
 // L3：IPC 由 test/host/node-ipc.ts 顶替（真实 Rust 命令的 Node 等价实现）；会话/折叠路径
-// 同一份产品代码。**未运行**：按实施期纪律只写不跑，断言对错留验收环节。
+// 同一份产品代码。并发关闭/重开通过受控 Promise 固定交错，不依赖随机延时。
 // ==========================================
 
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
@@ -42,18 +42,22 @@ import { logByteMark, readLogLines, setTestDataRoot } from "../../host/node-ipc"
 import { initConfig } from "@/services/config"
 import { flushLogs } from "@/services/logger"
 import { setHostBridge } from "@/services/host"
+import type { HostBridge, HostCommandMap } from "@/services/host"
 import { FOLD_POLICY } from "@/services/engine/harness"
 import { initPaths } from "@/services/paths"
 import {
   PI_LANE,
   acquirePiSession,
   createPiSession,
+  getPiSessionRepo,
   initSessions,
   persistPiSessionName,
   readPiSessionEntriesOnce,
   releasePiSession,
   resetPiSessionLayerForTest,
 } from "@/services/session"
+import { flushConversationIndex, refreshConversationIndex } from "@/services/agent/memory/conversation"
+import { userInputMessage } from "@/services/engine/runtime"
 import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 /** 最小合法 CONFIG（四根齐全）：与 会话活动时间.test.ts 同款，只影响本文件要走的路径。 */
@@ -157,6 +161,153 @@ async function buildFramedFixture(): Promise<{ sessionId: string; path: string; 
 }
 
 describe("关闭后折叠挂点（releasePiSession 的真实 release 路径）", () => {
+  it("索引全源读取期间关闭等待，正文完整且关闭后可重新索引 [harness-session-index-close-lock-race]", async () => {
+    const created = await createPiSession("索引关闭竞态")
+    const appendUser = async (text: string, eventId: string) => {
+      const session = await acquirePiSession(created.id)
+      const branch = (await session.branch(PI_LANE, BACKGROUND_CONTEXT))
+        ?? (await session.createBranch(PI_LANE, null, BACKGROUND_CONTEXT))
+      await branch.appendMessage(userInputMessage(text, eventId), BACKGROUND_CONTEXT)
+    }
+    const firstText = "索引读取期间必须完整保留的第一段正文"
+    const secondText = "关闭重开后新增并重新索引的第二段正文"
+    await appendUser(firstText, "index-close-race-first")
+
+    const base = new NodeHostBridge()
+    const nodeRequest = base.request.bind(base) as
+      (method: string, args: unknown, options?: { signal?: AbortSignal; scope?: import("@/services/host").RunScope }) => Promise<unknown>
+    let revision = 0
+    let indexed: Array<{ sessionId: string; fingerprint: string }> = []
+    const rowsBySession = new Map<string, Array<{ entryId: string; text: string }>>()
+    const pendingRows = new Map<string, Array<{ entryId: string; text: string }>>()
+    let fileInfoGateUsed = false
+    let enterFileInfo!: () => void
+    let unblockFileInfo!: () => void
+    const fileInfoEntered = new Promise<void>(resolve => { enterFileInfo = resolve })
+    const fileInfoGate = new Promise<void>(resolve => { unblockFileInfo = resolve })
+    const bridge: HostBridge = {
+      async request<K extends keyof HostCommandMap>(method: K, args: HostCommandMap[K]["args"], options?: { signal?: AbortSignal; scope?: import("@/services/host").RunScope }) {
+        const command = String(method)
+        const payload = args as Record<string, unknown>
+        if (command === "conversation_index_status") {
+          return { sessions: indexed, stagedSessionIds: [], revision, forgetEpoch: 0 } as HostCommandMap[K]["result"]
+        }
+        if (command === "conversation_index_prune") {
+          const keep = new Set(payload.sessionIds as string[])
+          indexed = indexed.filter(item => keep.has(item.sessionId))
+          for (const sessionId of rowsBySession.keys()) if (!keep.has(sessionId)) rowsBySession.delete(sessionId)
+          return indexed.length as HostCommandMap[K]["result"]
+        }
+        if (command === "conversation_index_replace") {
+          const sessionId = payload.sessionId as string
+          const batch = payload.batch as { offset: number; complete: boolean }
+          const rows = payload.entries as Array<{ entryId: string; text: string }>
+          const target = batch.offset === 0 ? [] : (pendingRows.get(sessionId) ?? [])
+          target.push(...rows)
+          pendingRows.set(sessionId, target)
+          if (batch.complete) {
+            indexed = indexed.filter(item => item.sessionId !== sessionId)
+            indexed.push({ sessionId, fingerprint: payload.fingerprint as string })
+            rowsBySession.set(sessionId, target)
+            pendingRows.delete(sessionId)
+            revision += 1
+          }
+          return revision as HostCommandMap[K]["result"]
+        }
+        if (command === "file_info" && payload.path === created.path && !fileInfoGateUsed) {
+          fileInfoGateUsed = true
+          enterFileInfo()
+          await fileInfoGate
+        }
+        return await nodeRequest(command, args, options) as HostCommandMap[K]["result"]
+      },
+      subscribe: base.subscribe.bind(base),
+      readBlob: base.readBlob.bind(base),
+      releaseBlob: base.releaseBlob.bind(base),
+    }
+    setHostBridge(bridge)
+
+    const logMark = logByteMark()
+    const indexing = refreshConversationIndex(new AbortController().signal)
+    let released = false
+    const closing = releasePiSession(created.id).then(() => { released = true })
+    try {
+      await fileInfoEntered
+      expect(released, "索引持锁读取时 close 不应越过文件锁").toBe(false)
+      unblockFileInfo()
+      await indexing
+      await closing
+      await flushConversationIndex()
+      expect(released, "释放在索引快照完成后应收敛").toBe(true)
+      expect(rowsBySession.get(created.id)?.some(row => row.text.includes(firstText)), "索引未包含完整首段正文").toBe(true)
+
+      await appendUser(secondText, "index-close-race-second")
+      await releasePiSession(created.id)
+      await flushConversationIndex()
+      const indexedRows = rowsBySession.get(created.id) ?? []
+      expect(indexedRows.some(row => row.text.includes(firstText)), "重新索引丢失原有正文").toBe(true)
+      expect(indexedRows.some(row => row.text.includes(secondText)), "关闭重开后的正文没有重新索引").toBe(true)
+
+      await flushLogs()
+      const lines = readLogLines(logMark)
+      expect(lines.some(line => line.includes("Session is closed")), "并发关闭期间出现会话句柄已关闭读取错误").toBe(false)
+    } finally {
+      unblockFileInfo()
+      await Promise.allSettled([indexing, closing])
+      setHostBridge(new NodeHostBridge())
+    }
+  }, 30_000)
+
+  it("并发重开等待close、flush和fold全部退出，多次release共用关闭屏障 [harness-session-reopen-close-barrier]", async () => {
+    const created = await createPiSession("并发重开")
+    const original = await acquirePiSession(created.id)
+    const repo = await getPiSessionRepo()
+    let unblockClose!: () => void
+    let enteredClose!: () => void
+    const closeGate = new Promise<void>(resolve => { unblockClose = resolve })
+    const closeStarted = new Promise<void>(resolve => { enteredClose = resolve })
+    const realClose = original.close.bind(original)
+    vi.spyOn(original, "close").mockImplementation(async context => {
+      enteredClose()
+      await closeGate
+      return realClose(context)
+    })
+    let unblockFold!: () => void
+    let enteredFold!: () => void
+    const foldGate = new Promise<void>(resolve => { unblockFold = resolve })
+    const foldStarted = new Promise<void>(resolve => { enteredFold = resolve })
+    const realFold = repo.foldSession.bind(repo)
+    vi.spyOn(repo, "foldSession").mockImplementation(async (metadata, context) => {
+      enteredFold()
+      await foldGate
+      return realFold(metadata, context)
+    })
+    const open = vi.spyOn(repo, "open")
+    const closing = releasePiSession(created.id)
+    await closeStarted
+    expect(releasePiSession(created.id)).toBe(closing)
+    const reopening = acquirePiSession(created.id)
+    const another = acquirePiSession(created.id)
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(open).not.toHaveBeenCalled()
+      unblockClose()
+      await foldStarted
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(open).not.toHaveBeenCalled()
+      unblockFold()
+      const [first, second] = await Promise.all([reopening, another])
+      expect(first).toBe(second)
+      expect(first).not.toBe(original)
+      expect(open).toHaveBeenCalledOnce()
+      await closing
+    } finally {
+      unblockClose()
+      unblockFold()
+      await Promise.allSettled([closing, reopening, another])
+    }
+  })
+
   it("release 关闭后真折叠：缓冲里的帧先落盘再被回收、真条目逐字保留、重开重放读回一致 [harness-session-fold-close-path]", async () => {
     const fixture = await buildFramedFixture()
 

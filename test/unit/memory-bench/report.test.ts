@@ -17,7 +17,7 @@ function outcome(overrides: Record<string, unknown> = {}) {
     caseRef: { question: "问题", questionType: "knowledge-update" },
     usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 0, uncachedInputTokens: 70, requests: 1 },
     metrics: { firstDeliveredTextDeltaMs: 500 },
-    ingest: { registeredSources: 2, processedSources: 2, oversizedSources: 0, sweeps: 1, scopeNormalized: 1 },
+    ingest: { registeredSources: 2, processedSources: 2, oversizedSources: 0, sweeps: 1 },
     judgment: { adjudicated: true, correct: true, raw: "yes", usage: { inputTokens: 10, outputTokens: 2 } },
     ...overrides,
   }
@@ -60,21 +60,36 @@ function longMemEvalReport() {
 }
 
 describe("记忆基准报告呈现", () => {
+  it("失败与重试流缺用量时只汇总已知请求，并标明不是完整成本 [bench-report-partial-cost]", () => {
+    const report = longMemEvalReport()
+    const knownUsage = { inputTokens: 120, outputTokens: 11, requests: 1, uncachedInputTokens: 100,
+      cacheReadTokens: 20, cacheWriteTokens: 0, cacheUsageReported: true, accounting: "pi-input-plus-normalized-cache" }
+    report.outcomes = [outcome({ status: "failed", usage: null, knownUsage, unknownUsageRequests: 1,
+      usageByStage: { main: { usage: null, knownUsage, unknownUsageRequests: 1, cacheRequests: { hit: 1, miss: 0, unknown: 1 } } } })]
+    const summary = summarizeBenchReport(report)
+    expect(summary.agentUsage).toEqual({ inputTokens: 120, outputTokens: 11, requests: 1,
+      uncachedInputTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 0 })
+    expect(summary.missingUsage).toBe(1)
+    expect(summary.unknownUsageRequests).toBe(1)
+    expect(summary.usageByStage.main.inputTokens).toBe(120)
+    expect(formatBenchSummary(summary)).toContain("仅已知小计")
+    expect(renderBenchHtmlReport(report)).toContain("成本（仅已知小计）")
+  })
   it("从带 PASS/FAIL 前缀的报告文件里解析 JSON", () => {
     const parsed = parseBenchReportPayload("FAIL\n{\"dataset\":\"longmemeval\"}\n")
     expect(parsed.dataset).toBe("longmemeval")
     expect(() => parseBenchReportPayload("no json here")).toThrow()
   })
 
-  it("汇总 LongMemEval 质量、成本、灌库与失败，且不把观测指标说成门禁", () => {
+  it("汇总 LongMemEval 的 pending 主分、成本、灌库与失败，且不把观测指标说成门禁 [bench-report-observational]", () => {
     const summary = summarizeBenchReport(longMemEvalReport())
-    expect(summary.quality.overall).toMatchObject({ judged: 1, correct: 1, accuracy: 1 })
+    expect(summary.quality.overall).toMatchObject({ cases: 2, judged: 0, correct: 0, accuracy: null, pending: true })
     expect(summary.quality.buckets.map(bucket => bucket.name)).toContain("助手题型（原报告未声明纳入总计）")
     expect(summary.agentUsage.inputTokens).toBe(100)
     expect(summary.agentUsage.cacheReadTokens).toBe(30)
-    expect(summary.judgeUsage).toMatchObject({ adjudicated: 1, inputTokens: 10, outputTokens: 2 })
-    // 缺 usage 只统计「已完成但没有用量」的样本；失败 cell 本来就没有用量。
-    expect(summary.missingUsage).toBe(0)
+    expect(summary.judgeUsage).toMatchObject({ adjudicated: 0, inputTokens: 0, outputTokens: 0 })
+    // A failed cell may have already incurred requests; missing usage cannot imply zero cost.
+    expect(summary.missingUsage).toBe(1)
     const missingUsageReport = longMemEvalReport()
     missingUsageReport.outcomes = [outcome({ usage: undefined, judgment: null })]
     expect(summarizeBenchReport(missingUsageReport).missingUsage).toBe(1)
@@ -85,12 +100,27 @@ describe("记忆基准报告呈现", () => {
 
     const text = formatBenchSummary(summary, { reportPath: "/tmp/r.json", htmlPath: "/tmp/r.html" })
     expect(text).toContain("质量参考（观测指标，非门禁阈值）")
-    expect(text).toContain("正确率 100.0%")
+    expect(text).toContain("pending_official")
+    expect(text).toContain("LongMemEval evaluate_qa.py")
+    expect(text).not.toContain("Snap LoCoMo")
+    expect(text).not.toContain("正确率 100.0%")
     expect(text).toContain("成本：输入 100")
     expect(text).toContain("报告：/tmp/r.json")
   })
 
-  it("MemoryBank 用单一 accuracy，LoCoMo 用平均 F1", () => {
+  it("旧报告里的本地 LME verdict 不出现在官方主评分视图 [bench-report-lme-pending-official]", () => {
+    const report = longMemEvalReport() as Record<string, any>
+    report.scores.officialScoring = { status: "pending_official" }
+    const summary = summarizeBenchReport(report)
+    expect(summary.quality.overall).toMatchObject({ cases: 2, judged: 0, correct: 0, accuracy: null, pending: true })
+    expect(summary.quality.breakdown[0]).toMatchObject({ judged: 0, accuracy: null })
+    expect(summary.judgeUsage.adjudicated).toBe(0)
+    expect(summary.rows[0]).toMatchObject({ judged: false, correct: null, raw: null })
+    expect(formatBenchSummary(summary)).toContain("pending_official")
+    expect(formatBenchSummary(summary)).toContain("LongMemEval evaluate_qa.py")
+  })
+
+  it("MemoryBank 用单一 accuracy，LoCoMo 在无官方结果时显示 pending_official [bench-report-pending-official]", () => {
     const memorybank = summarizeBenchReport({
       dataset: "memorybank", split: "cn", splitLabel: "MemoryBank/cn", status: "observational",
       plannedCells: 1, completedCells: 1, failures: [], outcomes: [outcome({ caseRef: { question: "q", persona: "p" } })],
@@ -101,10 +131,24 @@ describe("记忆基准报告呈现", () => {
     const locomo = summarizeBenchReport({
       dataset: "locomo", split: "locomo10", splitLabel: "LoCoMo/locomo10", status: "observational",
       plannedCells: 2, completedCells: 2, failures: [], outcomes: [outcome({ score: 0.5 })],
-      scores: { cases: 2, scored: 2, meanScore: 0.5, byCategory: [{ category: 1, count: 2, meanScore: 0.5 }], ingest: { registeredSources: 3, processedSources: 3, sweeps: 1 } },
+      scores: { cases: 2, scored: 0, meanScore: null, byCategory: [],
+        officialScoring: { status: "pending_official" }, ingest: { registeredSources: 3, processedSources: 3, sweeps: 1 } },
     })
-    expect(locomo.quality.overall).toMatchObject({ judged: 2, accuracy: 0.5, metric: "F1" })
-    expect(formatBenchSummary(locomo)).toContain("平均 F1 50.0%")
+    expect(locomo.quality.overall).toMatchObject({ judged: 0, accuracy: null, pending: true })
+    expect(formatBenchSummary(locomo)).toContain("Snap LoCoMo")
+    expect(formatBenchSummary(locomo)).not.toContain("LongMemEval evaluate_qa.py")
+  })
+
+  it("按逐请求证据汇总混合缓存状态", () => {
+    const report = longMemEvalReport()
+    report.outcomes = [outcome({ usageByStage: { rerank: {
+      usage: { inputTokens: 24, outputTokens: 3, requests: 3, uncachedInputTokens: 21, cacheReadTokens: 3, cacheWriteTokens: 0 },
+      cache: "hit", cacheRequests: { hit: 1, miss: 1, unknown: 1 },
+    } } })]
+    const summary = summarizeBenchReport(report)
+    expect(summary.usageByStage.rerank).toMatchObject({
+      requests: 3, cacheKnownRequests: 2, cacheUnknownRequests: 1,
+    })
   })
 
   it("HTML 报告自包含、可读且转义题面与回答", () => {

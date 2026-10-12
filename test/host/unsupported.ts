@@ -30,6 +30,7 @@ export const RUST_ONLY_COMMANDS = [
   // 桌面副作用
   "app_open", "export_profile_zip", "restore_default_resources",
   // MemoryStore/FTS/transactions are Rust-owned; Node must not fake them.
+  "memory_catalogue", "conversation_read", "conversation_search", "conversation_index_status", "conversation_index_replace", "conversation_index_prune",
   "memory_status", "memory_list", "memory_detail", "memory_register_sources", "memory_query", "memory_recall_candidates", "memory_get_items",
   "memory_apply_change", "memory_job_start", "memory_job_checkpoint", "memory_job_cancel", "memory_job_resume",
   "memory_job_sources", "memory_job_list", "memory_source_evidence", "memory_pending_source_count", "memory_candidates_add", "memory_dreaming_commit", "memory_dreaming_budget_reserve",
