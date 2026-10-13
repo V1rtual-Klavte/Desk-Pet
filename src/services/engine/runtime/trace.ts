@@ -165,9 +165,9 @@ const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
   tool_execution_end: ["toolName", "isError", "resultTextChars", "resultPartCount", "durationMs", "detailPrefix"],
   retry_start: ["attempt", "step"], retry_end: ["attempt", "step", "success"],
   compaction_start: ["reason"], compaction_end: ["reason", "status"], compaction_requested: ["reason"],
-  provider_request_start: ["purpose", "step", "attempt", "model", "api"], provider_request_end: ["purpose", "step", "attempt", "model", "api", "status", "durationMs", "inputTokens", "outputTokens", "cacheRead", "cacheWrite"],
+  provider_request_start: ["purpose", "memoryStage", "step", "attempt", "model", "api"], provider_request_end: ["purpose", "memoryStage", "step", "attempt", "model", "responseModel", "api", "status", "durationMs", "inputTokens", "outputTokens", "cacheRead", "cacheWrite", "cacheUsageReported", "reasoningEffort", "thinkingMode", "idleTimeout"],
   provider_payload: ["model", "api", "payloadHash", "redactions"], provider_response: ["model", "api", "status", "headerNames"], humanizer_transform: ["flow", "status", "split", "silent", "partCount"], provider_usage: ["inputTokens", "outputTokens", "cacheRead", "cacheWrite", "driftRatio"], prompt_snapshot: ["captureStage", "contentHash", "snapshotId", "requestId", "turnId"],
-  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "readingNoteSourceIds", "readingNoteSourceIdsOmitted", "questionCheckCount", "guideStatus", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount"],
+  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "readingNoteSourceIds", "readingNoteSourceIdsOmitted", "questionCheckCount", "guideStatus", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount", "optionalFailures", "error"],
   memory_extraction_start: ["jobId", "revision", "phase"], memory_extraction_end: ["jobId", "revision", "status", "candidateCount", "sourceIds", "sourceCount", "durationMs", "reason"],
   memory_reading_end: ["status", "noteCount", "sourceCount", "durationMs", "noteSourceIds", "noteSourceIdsOmitted", "noteStatus", "guideStatus", "errorCounts", "checkCounts"],
   memory_coverage_end: ["status", "retrievalCount", "sourceCount"],
@@ -244,6 +244,15 @@ function safePayload(kind: RuntimeTraceKind, payload: Record<string, unknown>): 
           role: record.role, timestamp: typeof record.timestamp === "number" ? record.timestamp : null,
           chunk: typeof record.chunk === "number" ? record.chunk : null,
         })]
+      }))
+    }
+    else if (field === "optionalFailures" && Array.isArray(value)) {
+      // 通道失败明细：只保留 channel/reason 两个短字符串，绝不透传任意嵌套数据。
+      safe[field] = Object.freeze(value.slice(0, maxArrayItems).flatMap(item => {
+        if (!item || typeof item !== "object") return []
+        const record = item as Record<string, unknown>
+        if (typeof record.channel !== "string" || typeof record.reason !== "string") return []
+        return [Object.freeze({ channel: runtimeTracePreview(record.channel), reason: runtimeTracePreview(record.reason) })]
       }))
     }
     else if (Array.isArray(value)) {

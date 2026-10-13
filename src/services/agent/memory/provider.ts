@@ -865,12 +865,14 @@ export async function recallMemory(
         queryRewriteStatus: providerRequest.queryPlan?.rewriteStatus ?? "unknown",
         queryCount: providerRequest.queryPlan?.queries.length ?? 0,
         optionalFailureCount: providerRequest.optionalFailures?.length ?? 0,
+        // 通道失败明细：此前只有计数进 trace，跑批后无法归因；channel/reason 必须可审计。
+        optionalFailures: (providerRequest.optionalFailures ?? []).map(failure => ({ channel: failure.channel, reason: failure.reason })),
         durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - started,
       }))
     }
     return projections
   } catch (error) {
-    if (traceContext) publishRuntimeTrace(traceContext, "memory_recall_end", () => ({ status: "failed", fallback: true }))
+    if (traceContext) publishRuntimeTrace(traceContext, "memory_recall_end", () => ({ status: "failed", fallback: true, error: formatError(error) }))
     throw error
   } finally {
     clearTimeout(timer)

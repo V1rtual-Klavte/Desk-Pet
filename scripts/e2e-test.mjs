@@ -15,6 +15,7 @@ import { execFileSync } from "node:child_process"
 import { extname, join, relative } from "node:path"
 import { pathToFileURL } from "node:url"
 import { checkContractHashes } from "./check-contract-hashes.mjs"
+import { parseBenchDeadlineMinutes } from "./e2e-deadline.mjs"
 import { inspectTraceEvidence, retainTraceBundle, salvageTempTrace } from "./trace-evidence.mjs"
 import { pruneReportArtifacts } from "./report-retention.mjs"
 import { compareCaseIdLayers, extractContractCaseIds, formatCaseIdLayerIssues } from "./contract-layers.mjs"
@@ -26,6 +27,7 @@ import { buildSyntheticConfig, writeSyntheticConfig } from "../test/host/native/
 const REPORTS_DIR = join(process.cwd(), "test", "reports")
 
 const args = process.argv.slice(2).filter(arg => arg !== "--")
+const benchDeadlineMinutes = parseBenchDeadlineMinutes(args)
 // 这两份选项清单必须与 test/e2e/cli.ts 的 parseArgs 同步：漏一个 valueOption，
 // 参数会被这里吞掉、Scene runner 收不到；漏一个 flagOption，模式不会进通道。
 // 两边各有一行互指注释；不做机制化共享（cli.ts 经 esbuild 进 Node bundle，
@@ -526,7 +528,7 @@ process.once("SIGTERM", () => requestStop(143, "收到 SIGTERM，停止后留存
 child = launchNativeHost({ binary: hostBinary, env: childEnv, cwd: process.cwd() })
 timeout = setTimeout(() => {
   requestStop(1, "超过本次评测截止时间，停止后留存现场")
-}, (env.DESKPET_E2E_QUALITY === "1" ? 480 : env.DESKPET_E2E_BENCH === "1" ? 480 : env.DESKPET_E2E_PERFORMANCE === "1" ? 30 : Math.max(30, Number(env.DESKPET_E2E_REPEAT ?? 1) * 10)) * 60 * 1000)
+}, (env.DESKPET_E2E_QUALITY === "1" ? 480 : env.DESKPET_E2E_BENCH === "1" ? benchDeadlineMinutes : env.DESKPET_E2E_PERFORMANCE === "1" ? 30 : Math.max(30, Number(env.DESKPET_E2E_REPEAT ?? 1) * 10)) * 60 * 1000)
 
 child.on("error", error => finalize(1, `无法启动原生宿主: ${error.message}`))
 child.on("exit", (code, signal) => {

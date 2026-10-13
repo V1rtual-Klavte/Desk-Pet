@@ -15,6 +15,12 @@ export const RETENTION_MAX_BYTES = 200 * 1024 * 1024
 const REPORT_NAME = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+)\.(?:json|txt|html)$/
 /** 日期戳报告的派生卫星与外部判分输入快照均跟随父报告淘汰。 */
 const REPORT_SATELLITE = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+\.(?:json|txt|html))\.(?:review|scored(?:-[a-z0-9-]+)?|hypotheses(?:-[a-z0-9-]+)?|verdicts-[a-z0-9-]+)\.(?:json|html|jsonl)$/
+/** Upstream outputs keep the exported hypotheses filename, followed by their evaluator suffix. */
+const OFFICIAL_RESULT = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+\.(?:json|txt|html))\.hypotheses(?:-[a-z0-9-]+)?\.jsonl\.(?:official-(?:locomo|longmemeval)\.jsonl|eval-results-[a-z0-9.-]+(?:\.official-longmemeval\.jsonl)?)$/
+
+function satelliteParent(name) {
+  return name.match(REPORT_SATELLITE)?.[1] ?? name.match(OFFICIAL_RESULT)?.[1] ?? null
+}
 
 /**
  * 报告保留体系的组键：本体取自身；两类卫星归到父报告名下；其余（caseids / flaky /
@@ -24,8 +30,7 @@ export function reportRetentionGroupKey(name) {
   // 同一场的 json/html/txt 是同一保留单元（先写 json 再补 html 不能被拆开淘汰）。
   const report = name.match(REPORT_NAME)
   if (report) return report[1]
-  const satellite = name.match(REPORT_SATELLITE)
-  return satellite ? satellite[1].replace(/\.(?:json|txt|html)$/, "") : null
+  return satelliteParent(name)?.replace(/\.(?:json|txt|html)$/, "") ?? null
 }
 
 /**
@@ -74,8 +79,8 @@ export function pruneRetainedGroups(dir, { groupKey, maxGroups = RETENTION_MAX_G
 export function pruneReportArtifacts(reportsDir) {
   const present = new Set(readdirSync(reportsDir))
   for (const name of present) {
-    const satellite = name.match(REPORT_SATELLITE)
-    if (satellite && !present.has(satellite[1])) rmSync(join(reportsDir, name), { force: true })
+    const parent = satelliteParent(name)
+    if (parent && !present.has(parent)) rmSync(join(reportsDir, name), { force: true })
   }
   return pruneRetainedGroups(reportsDir, { groupKey: reportRetentionGroupKey })
 }
