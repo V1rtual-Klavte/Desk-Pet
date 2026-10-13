@@ -452,7 +452,7 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     }
     const caseFilter = raw.benchCase ? raw.benchCase.split(",").map(value => value.trim()).filter(Boolean) : undefined
     const judgeMode = raw.benchJudge === "off" ? "off" : "on"
-    const judgeModel = raw.benchJudgeModel ?? resolvedModels.judgeModel ?? "deepseek-reasoner"
+    const judgeModel = raw.benchJudgeModel ?? resolvedModels.judgeModel ?? "deepseek-v4-pro"
     const readerControlValue = raw.benchReaderControl ?? undefined
     if (readerControlValue && (dataset !== "longmemeval" || info.split !== "oracle" || !["direct", "con"].includes(readerControlValue))) {
       throw new Error("--bench-reader-control 仅支持 longmemeval oracle 的 direct|con")

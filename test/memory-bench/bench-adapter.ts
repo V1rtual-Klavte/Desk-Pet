@@ -421,7 +421,7 @@ function candidateSessionIds(traces: unknown[], itemById: Map<string, MemoryItem
  * judge 模型解析：走网关公开的按 id 解析入口（与主链路同一份 endpoint / api_key / provider
  * 与窗口推导），不用被测模型的预算冒充 judge 模型。
  * 唯一纪律：judge 模型必须不同于被测模型（不允许被测模型自评）。
- * 默认模型（deepseek-reasoner）由 e2e-main 传入；其他 Provider 用 --bench-judge-model 指定。
+ * 默认模型（deepseek-v4-pro，2026-10-13 起）由 e2e-main 传入；其他 Provider 用 --bench-judge-model 指定。
  */
 function judgeModelFor(modelId: string): PiModel {
   const tested = aiConfig.model

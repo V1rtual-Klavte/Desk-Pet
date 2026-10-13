@@ -638,6 +638,9 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
         }
         const result = await completePiText({
           purpose: "memory",
+          // 2026-10-13 定档：整理入口显式低档思考——不传参等于拿服务端默认（实测默认高于 low 一档），
+          // 与业界整理侧低档/小模型口径对齐。
+          thinkingEffort: "low",
           // 辅助模型在这里冻结（ai.auxModel；留空即聊天模型）：整理作业与子代理同款模型。
           model: auxModel,
           systemPrompt: REVIEW_SYSTEM_PROMPT,
@@ -766,6 +769,7 @@ async function runMergeSweep(options: ReviewJobInput["options"]): Promise<Dreami
     if (options.automatic) await reserveMemoryDreamingBudget(reservationId, today, reservation)
     const result = await completePiText({
       purpose: "memory",
+      thinkingEffort: "low", // 与 Review 同档（2026-10-13 定档）
       model: auxModel,
       systemPrompt: MERGE_SYSTEM_PROMPT,
       userText,

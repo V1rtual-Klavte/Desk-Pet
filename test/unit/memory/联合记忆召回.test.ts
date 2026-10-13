@@ -164,7 +164,8 @@ describe("联合记忆召回", () => {
 
     expect(plan.queries).toEqual([request.query, "备用钥匙位置"])
     expect(fake.complete.mock.calls[0]?.[0].maxTokens).toBeGreaterThanOrEqual(1_000)
-    expect(fake.complete.mock.calls[0]?.[0].thinkingEffort).toBe("low")
+    // 2026-10-13 定档：改写为词面扩展辅助件，思考显式关闭（此前 low）。
+    expect(fake.complete.mock.calls[0]?.[0].thinkingEffort).toBe("off")
     expect(fake.complete.mock.calls[0]?.[0].timeoutMs).toBe(memoryConfig.recallTimeoutMs)
     const rewrite = JSON.parse(String(fake.complete.mock.calls[0]?.[0].userText)) as {
       originalQuery: string

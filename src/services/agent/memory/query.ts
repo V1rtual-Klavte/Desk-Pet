@@ -119,7 +119,9 @@ export async function planMemoryQueries(request: MemoryQueryPlanningRequest): Pr
       systemPrompt,
       userText,
       maxTokens: memorySelectionOutputBudget({ queries: ["字".repeat(MAX_MODEL_PLAN_CHARS)] }),
-      thinkingEffort: "low",
+      // 2026-10-13 定档：改写是词面扩展辅助件，产出须过 isGroundedMemorySearch 校验；
+      // 实测思考占其输出大头且曾顶穿信封致 23% 报废，显式关闭思考。
+      thinkingEffort: "off",
       // The provider's recall signal owns the total deadline. Query planning is not
       // a rerank call and must not inherit that unrelated, shorter per-rerank cap.
       timeoutMs: memoryConfig.recallTimeoutMs,

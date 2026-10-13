@@ -73,7 +73,7 @@ node test/memory-bench/prepare.mjs --verify [--data-dir …] [--offline]
 
 ```bash
 pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
-  --bench-limit 10 --bench-judge-model deepseek-reasoner --report json
+  --bench-limit 10 --bench-judge-model deepseek-v4-pro --report json
 
 # privileged same-model upper-bound controls; run separately from the production reader score
 pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
@@ -91,7 +91,7 @@ pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
 | `--bench-case id1,id2` | 精确题号过滤（调试用） |
 | `--bench-seed` | 组内洗牌种子，默认 `memory-bench-2026-10-03` |
 | `--bench-judge on/off` | 默认 `on`；`off` 只出确定性检索指标 |
-| `--bench-judge-model` | 默认取 [test/eval-models.json](../eval-models.json)（或本地 `eval-models.local.json`）的 `judge.model`（当前 `deepseek-reasoner`）；**必须不同于被测模型** |
+| `--bench-judge-model` | 默认取 [test/eval-models.json](../eval-models.json)（或本地 `eval-models.local.json`）的 `judge.model`（当前 `deepseek-v4-pro`）；**必须不同于被测模型** |
 | `--bench-reader-control direct|con` | **仅 LongMemEval oracle** 的 eval-only 上限控制；省略时运行正常产品 reader。`direct` 把 oracle case 中所有证据会话（完整角色/时间）直接交给被测模型；`con` 按官方 LongMemEval 方式逐会话提取 notes，再由同一被测模型回答。控制模式绕过产品记忆登记/召回，使用同一 scorer/judge，报告 manifest 标注 `privileged`、`productScore: false` 并使用独立 namespace；不得与正常产品分数混读。输入超出模型上下文预算会失败，不截断。note 与最终回答均使用已解析被测模型的完整 `maxTokens` 输出预算，为 reasoning 留空间；官方 CoN reference 的每条 note 固定上限是 500 tokens，所以这里是同方法结构、不同输出预算的 reader 上限对照。若模型返回非 stop `stopReason` 或空文本，该题记为失败，不当作普通答错。 |
 | `--report json` | 报告落 `test/reports/bench/<stamp>.json`（建议始终带；同名 `.html` 由启动器自动生成质量摘要页） |
 
@@ -143,7 +143,7 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
   temporal 免 off-by-one、knowledge-update 允新旧并述、preference rubric、abstention）。
   判定解析保持官方语义（`'yes' in response.lower()`），原始回答落盘可复判。
 - judge 走测试侧网关的端点与 api_key（同 key 异构；本地 `eval-models.local.json` 可覆盖网关端点与凭据；默认 judge 模型由
-  [test/eval-models.json](../eval-models.json) 提供——当前 `deepseek-reasoner`，可用
+  [test/eval-models.json](../eval-models.json) 提供——当前 `deepseek-v4-pro`，可用
   `--bench-judge-model` 或 `DESKPET_EVAL_JUDGE_MODEL` 覆盖；被测模型以本机配置为准，也可在
   同一文件或 `DESKPET_EVAL_MODEL` 覆盖）。judge 模型经网关按 id 解析（不借用被测模型的预算），
   单次输出预算 `judgeOutputBudget` 取已解析模型输出上限与扣除本次输入/协议开销后的窗口剩余量中的较小值，不另设 4096-token 硬顶；模型上限无效或没有输出空间按判分失败处理 ——
@@ -254,6 +254,13 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 （必要时用 `underTest.reviewMaxTokens` 覆盖）并用冒烟层验证提取链路。每轮报告都记录实际
 usage，用来校准这里的量级。
 **默认节奏 = 冒烟 → 常规**；中文 / 难度 / 对外只在对应触发条件下跑，不随每次改动全量执行。
+
+**token 口径（2026-10-13 定，与业界对齐）**：对外可比数字只取**检索侧**——改写 / 重排 / 阅读器 / 作答，
+即「问一次」的往返成本，与 Mem0 的 mean tokens per query、Zep 的 context tokens per query 同口径；
+**灌库（dreaming 提取/合并）是一次性写成本，单独列账**，不并入检索侧（业界亦如此：第三方实测
+Zep 的 LongMemEval 灌库量级远高于其 per-query 数字，Mem0 架构文档也把写期与读期分列）。
+输入统一按「未缓存 + 缓存读 + 缓存写」计；报告与终态条目两侧分列，
+引用数字必须带口径（检索侧 per 题 / 灌库一次性 per 语料）。
 
 ## 9. 测试与验证
 

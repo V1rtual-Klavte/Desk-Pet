@@ -5,10 +5,16 @@ import { contextBudget } from "@/services/context/budget"
 
 describe("分层召回预算", () => {
   it("结构化选择输出容纳合法最长中文查询并为思考预留空间 [memory-selector-output-budget]", () => {
-    const maximumReply = { queries: ["中".repeat(240), "文".repeat(240)] }
-    const budget = memorySelectionOutputBudget(maximumReply)
-    expect(budget).toBeGreaterThanOrEqual(1_000)
-    expect(budget).toBeLessThanOrEqual(2_048)
+    // 2026-10-13 定尺：思考与 JSON 共用完成预算，低档实测曾 21/90 次在旧尺（JSON+512）上顶穿截断；
+    // 最长计划（改写调用真实上界 2400 字汉语）加思考余量必须放得下，总尺不失控。
+    const longestReply = { queries: ["字".repeat(2_400)] }
+    const longest = memorySelectionOutputBudget(longestReply)
+    expect(longest).toBeGreaterThanOrEqual(6_000)
+    expect(longest).toBeLessThanOrEqual(8_192)
+    const smallReply = { queries: ["中".repeat(240), "文".repeat(240)] }
+    const small = memorySelectionOutputBudget(smallReply)
+    expect(small).toBeGreaterThanOrEqual(4_000)
+    expect(small).toBeLessThanOrEqual(6_000)
   })
 
   it("主回合两层共用真实 headroom，不随窗口比例变化 [memory-recall-layered-budget]", () => {

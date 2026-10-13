@@ -167,9 +167,11 @@ export function toPiAgentThinkingLevel(effort: ThinkingEffort | undefined): "off
 
 /**
  * V1rtual-Desk-Pet 的思考强度 → pi-ai 的 `reasoning` 档位。
- * `auto` 返回 undefined：不指定档位，由模型自己决定（对齐旧 provider 不传 reasoning_effort 的行为）。
+ * `auto`（以及一次性调用的显式 `off`）返回 undefined：不指定档位，由模型自己决定。
+ * 一次性调用的"关"不在这里表达——由 completePiText 克隆模型放开 `thinkingLevelMap.off`，
+ * 让 pi 的 provider 分支发 thinking:{type:"disabled"}。
  */
-export function toPiReasoningLevel(effort: ThinkingEffort | undefined): ThinkingLevel | undefined {
+export function toPiReasoningLevel(effort: ThinkingEffort | "off" | undefined): ThinkingLevel | undefined {
   switch (effort) {
     case "low": return "low"
     case "medium": return "medium"
@@ -470,7 +472,8 @@ export interface PiTextCallInput {
   userText: string
   /** In-memory visual inputs for one-shot calls. Prompt snapshots record only their count. */
   images?: readonly ImageContent[]
-  thinkingEffort?: ThinkingEffort
+  /** 一次性调用的思考档；"off" 走显式 disabled（不传档 = 服务端默认，不等于关）。 */
+  thinkingEffort?: ThinkingEffort | "off"
   /** 上游取消会与总超时合并，任何一个触发都终止请求。 */
   signal?: AbortSignal
   /** 调用方在 preflight 冻结的模型；提供后不得重新读取运行时配置。 */
@@ -553,7 +556,17 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   const startedAt = Date.now()
   const timeoutMs = input.timeoutMs ?? PROVIDER_TIMEOUT_MS
   const override = piRuntimeProviderOverride
-  const model = input.model ?? override?.model ?? getPiModel()
+  const baseModel = input.model ?? override?.model ?? getPiModel()
+  // 显式关闭思考（thinkingEffort: "off"）：pi 的 deepseek 分支只在模型 thinkingLevelMap.off 非空时
+  // 发 thinking:{type:"disabled"}；本仓目录把 off 记为 null（保留「不传档 = 服务端默认」），
+  // 所以按需克隆一份模型放开该档，并把克隆登记回网关表（piStream 按对象查表）。
+  const model = input.thinkingEffort === "off" && (baseModel.thinkingLevelMap?.off ?? null) === null
+    ? { ...baseModel, thinkingLevelMap: { ...baseModel.thinkingLevelMap, off: "off" } }
+    : baseModel
+  if (model !== baseModel) {
+    const gateway = modelGateways.get(baseModel)
+    if (gateway) modelGateways.set(model, gateway)
+  }
   const streamFn = override?.streamFn ?? piStream
   const outputBudget = contextBudget(model.contextWindow, model.maxTokens).outputReserve
   if (input.maxTokens !== undefined && (!Number.isSafeInteger(input.maxTokens) || input.maxTokens < 1)) {

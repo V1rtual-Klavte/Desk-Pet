@@ -1,3 +1,6 @@
+// 2026-10-13 一次性调用显式关闭思考通路（本批刷新）：sourceFiles 中 src/services/engine/harness/model-gateway.ts 变化——
+// PiTextCallInput.thinkingEffort 增加 "off"，completePiText 按需克隆模型放开 thinkingLevelMap.off（pi 的 deepseek 分支
+// 据此发 thinking:{type:"disabled"}）并登记网关表；其余档位与主回合路径不变，未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：空工具回合与准入去重已沿生产调用链复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新（含保存会话动态导入改指名 harness-slot，行为不变）。
 // 2026-10-06 验收批次：声明更新，sourceHash 批量刷新（主会话统一复算）。
@@ -229,7 +232,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "d3d30f5a7652386fe6e620d9587cc7c694e53891a6910931f99b703a642b9e05",
+  sourceHash: "ec6cd5b259b1468200c9b97666700939ca105394a6eca46e993446a1b7502c5f",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

@@ -7,9 +7,18 @@ export interface MemoryRecallBudget {
   readonly total: number
 }
 
+/**
+ * Reasoning room shares the completion budget with the JSON (deepseek counts reasoning tokens in
+ * completion_tokens). Measured 2026-10-13 on the MemoryBank final trace: at low effort 21/90
+ * rewrite selections burned the whole (JSON + 512) budget on reasoning alone, ended status=length
+ * and fell back locally — 61k output wasted. Size this above the observed low-effort reasoning
+ * (~2.9k) with margin.
+ */
+const SELECTION_REASONING_ALLOWANCE = 4_096
+
 /** A short selector still needs room for its allowed JSON and provider reasoning. */
 export function memorySelectionOutputBudget(maximumReply: unknown): number {
-  return Math.max(1_024, estimateValueTokens(maximumReply) + 512)
+  return Math.max(1_024, estimateValueTokens(maximumReply) + SELECTION_REASONING_ALLOWANCE)
 }
 
 /**

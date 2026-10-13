@@ -1,3 +1,11 @@
+// 2026-10-13 改写关闭思考（本批刷新，承上一条）：sourceFiles 中 agent/memory/query.ts（改写调用 thinkingEffort low→off，
+// 信封仍走 memorySelectionOutputBudget）与 test/unit/memory/联合记忆召回.test.ts（断言同步为新定档）变化；改写产出
+// 仍过落地校验，mm-* 逐点复核未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-13 记忆侧 token 优化（本批刷新）：sourceFiles 中 agent/memory/dreaming.ts（review/merge 一次性调用显式
+// thinkingEffort=low，原为不传参=服务端默认；与业界整理侧低档口径对齐）与 agent/memory/budget.ts
+// （memorySelectionOutputBudget 思考余量 512→4096：MemoryBank 终态实测低档思考顶穿旧尺，21/90 次改写
+// status=length 截断回退，白烧 61k 输出）变化；召回/投影/排序语义不变，mm-* 逐点复核实现点仍在，
+// 仅按当前源码刷新 sourceHash。
 // 2026-10-10 整理水位推进修复（本批刷新，定向复核）：sourceFiles 内容变化 —— memory/store.rs 的
 // job_checkpoint 新增 coveredSourceIds，批内水位按「批内每个会话」各自推进（旧实现只推游标所在
 // 会话，批中段会话的来源留在水位之后、下个作业整段重读；LongMemEval S 实测头部来源被处理 10/10 次）；
@@ -330,7 +338,7 @@ export const memoryContract: ModuleContract = {
   ],
   // 2026-10-10：预算/结构化证据归 mm-54..61，阅读器网关、缓存与取消组合归 mm-62；
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
-  sourceHash: "8950f4b4d9d6fc997dfc585fef68b70e0f79640f8cb97c863e539fa39fc7d4f6",
+  sourceHash: "ec4b91e93ae5cc6aa7fbdf6b66f7a91731061a0260571c7beb5cd1a984d965f9",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },
