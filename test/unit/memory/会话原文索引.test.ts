@@ -13,6 +13,7 @@ const fixture = vi.hoisted(() => ({
   transcriptReadsUnderLock: [] as string[],
   lockedSessions: new Set<string>(),
   root: "/data/sessions",
+  statMtimeMs: 10,
   onMetadataRead: undefined as undefined | (() => Promise<void>),
   onTranscriptRead: undefined as undefined | ((sessionId: string) => void),
 }))
@@ -87,7 +88,7 @@ function installBridge() {
         return { sessions: [...fixture.indexed], stagedSessionIds: [], revision, forgetEpoch: 0 }
       }
       if (method === "file_info") {
-        return { name: "session.jsonl", path: args.path, kind: "file", size: 1024, mtimeMs: 10 }
+        return { name: "session.jsonl", path: args.path, kind: "file", size: 1024, mtimeMs: fixture.statMtimeMs }
       }
       if (method === "conversation_index_replace") {
         fixture.onReplace?.(args)
@@ -131,6 +132,7 @@ function resetFixtures(): void {
   fixture.transcriptReadsUnderLock = []
   fixture.lockedSessions.clear()
   fixture.root = "/data/sessions"
+  fixture.statMtimeMs = 10
   fixture.onMetadataRead = undefined
   fixture.onTranscriptRead = undefined
 }
@@ -730,6 +732,85 @@ describe("会话原文索引", () => {
 })
 
 describe("全源原文内容指纹", () => {
+  it("冻结前缀双读允许并发追加并让后续刷新纳入新增原文 [conversation-index-live-suffix-append]", async () => {
+    const current = session("live-suffix-append")
+    fixture.root = "/data/sessions/live-suffix-append"
+    current.path = `${fixture.root}/${current.id}.jsonl`
+    fixture.metadata = [current]
+    const first = messageEntry("user-before", 1, "user", 100, "event-before")
+    const initial = { entries: [first], messages: [
+      { id: first.id, eventId: "event-before", role: "user", text: "original user", timestamp: 100, isUserInput: true },
+    ] }
+    fixture.transcripts.set(current.id, initial)
+    let appended = 0
+    fixture.onTranscriptRead = id => {
+      const readCount = fixture.transcriptReads.filter(read => read === id).length
+      // Reads 3, 5 and 7 are the confirmation reads for the three old retry slots.
+      // Model a live writer appending after each primary read; every appended seq is
+      // outside the discovery-frozen prefix and has a real source/watch change.
+      if (id !== current.id || ![3, 5, 7].includes(readCount)) return
+      appended += 1
+      const entry = messageEntry(`assistant-after-${appended}`, appended + 1, "assistant", 200 + appended)
+      fixture.transcripts.set(id, {
+        entries: [...fixture.transcripts.get(id)!.entries, entry],
+        messages: [...fixture.transcripts.get(id)!.messages,
+          { id: entry.id, role: "assistant", text: `later assistant ${appended}`, timestamp: 200 + appended }],
+      })
+      fixture.statMtimeMs += 1
+      notifySessionFileChanged(current.path)
+    }
+    installBridge()
+
+    await refreshConversationIndex(new AbortController().signal)
+
+    const firstReplace = fixture.calls.find(call => call.method === "conversation_index_replace")!
+    const firstSnapshotId = (firstReplace.args.batch as { id: string }).id
+    const firstSnapshot = fixture.calls.filter(call => call.method === "conversation_index_replace"
+      && (call.args.batch as { id: string }).id === firstSnapshotId)
+      .flatMap(call => call.args.entries as Array<{ entryId: string; text: string }>)
+    expect(firstSnapshot.map(entry => entry.entryId)).toEqual(["user-before"])
+    expect(appended).toBe(1)
+
+    fixture.onTranscriptRead = undefined
+    await flushConversationIndex(new AbortController().signal)
+    const completeSnapshots = new Map<string, string[]>()
+    for (const call of fixture.calls.filter(call => call.method === "conversation_index_replace")) {
+      const batch = call.args.batch as { id: string }
+      const entries = completeSnapshots.get(batch.id) ?? []
+      entries.push(...(call.args.entries as Array<{ entryId: string }>).map(entry => entry.entryId))
+      completeSnapshots.set(batch.id, entries)
+    }
+    expect([...completeSnapshots.values()]).toContainEqual(["user-before", "assistant-after-1"])
+  })
+
+  it("冻结前缀在二次读取期间持续修订时拒绝发布 [conversation-index-live-prefix-mutation]", async () => {
+    const current = session("live-prefix-mutation")
+    fixture.root = "/data/sessions/live-prefix-mutation"
+    current.path = `${fixture.root}/${current.id}.jsonl`
+    fixture.metadata = [current]
+    const user = messageEntry("user-before", 1, "user", 100, "event-before")
+    fixture.transcripts.set(current.id, { entries: [user], messages: [
+      { id: user.id, eventId: "event-before", role: "user", text: "version 0", timestamp: 100, isUserInput: true },
+    ] })
+    let revision = 0
+    fixture.onTranscriptRead = id => {
+      const readCount = fixture.transcriptReads.filter(read => read === id).length
+      if (id !== current.id || ![3, 5, 7].includes(readCount)) return
+      revision += 1
+      fixture.transcripts.set(id, { entries: [user], messages: [
+        { id: user.id, eventId: "event-before", role: "user", text: `version ${revision}`, timestamp: 100, isUserInput: true },
+      ] })
+      fixture.statMtimeMs += 1
+      notifySessionFileChanged(current.path)
+    }
+    installBridge()
+
+    await expect(refreshConversationIndex(new AbortController().signal)).rejects.toThrow("持续变化")
+
+    expect(revision).toBe(3)
+    expect(fixture.calls.some(call => call.method === "conversation_index_replace")).toBe(false)
+  })
+
   it("发现后追加使用冻结seq前缀发布且后续dirty刷新纳入新原话 [conversation-index-append-after-discovery]", async () => {
     const current = session("append-during-index")
     fixture.root = "/data/sessions/append-during-index"

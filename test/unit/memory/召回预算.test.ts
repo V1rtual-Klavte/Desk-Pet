@@ -106,4 +106,20 @@ describe("召回预算", () => {
       expect(events.find(event => event.kind === "memory_recall_end")?.payload.fallback).toBe(true)
     } finally { fallbackProvider(); stopTrace() }
   })
+
+  it("可选通道失败明细进 trace：channel/reason 必须可审计 [memory-recall-failure-detail]", async () => {
+    const events: Array<{kind: string; payload: Record<string,unknown>}> = []
+    const stopTrace = subscribeRuntimeTrace(event => { events.push(event) })
+    const failingProvider = installMemoryProvider({ recall: async req => {
+      (req.optionalFailures ??= []).push({ channel: "conversation", reason: "timeout" })
+      return [projectionOf("可用事实", BUDGET)]
+    }})
+    try {
+      await recallMemory({ ...request(BUDGET), traceContext: createRuntimeTraceContext("recall-failure-detail", "recall-failure-detail") })
+      const end = events.find(event => event.kind === "memory_recall_end")
+      expect(end?.payload.optionalFailures,
+        "通道失败明细未进 trace（此前只有计数，跑批无法归因）").toEqual([{ channel: "conversation", reason: "timeout" }])
+      expect(end?.payload.optionalFailureCount, "计数与明细必须同源一致").toBe(1)
+    } finally { failingProvider(); stopTrace() }
+  })
 })

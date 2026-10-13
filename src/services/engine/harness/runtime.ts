@@ -3,6 +3,7 @@
 // variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
+import { createHash } from "node:crypto"
 import { createCompactionSummaryMessage } from "@earendil-works/pi-agent-core"
 import type { AgentMessage, CompactResult, CompactionPreparation, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
@@ -10,8 +11,8 @@ import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, CompactionDeclineKind, CompactionDeclineRecord, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, getMemoryProvider, createMemoryNavigation, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
-import type { MemoryProjection, MemoryRecallRequest, MemoryNavigation, MemoryNavigationRenderedRead } from "@/services/agent/memory"
+import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, getMemoryProvider, createMemoryNavigation, renderMemoryRecall, reconcileMemoryHistoryCoverage, validateConversationProjections, memoryStatus, subscribeMemoryRevision, focusMemoryEvidence, applyMemoryReadingNotes } from "@/services/agent/memory"
+import type { MemoryProjection, MemoryRecallRequest, MemoryNavigation, MemoryNavigationRenderedRead, MemoryRecallOutcome, MemoryRecallRetrievalStatus, FocusMemoryEvidenceResult } from "@/services/agent/memory"
 import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import { createPlanSettlement } from "@/services/engine/plan/settlement"
@@ -1008,7 +1009,7 @@ function createRequestViewHook(args: {
    * 落位由前缀缓存决定：记忆每回合都可能不同，留在 system prompt 里会把缓存断在会话正文之前。
    * hook 将当前视图剩余 headroom 传给 recall，由 runtime 按本轮查询与配置派生 tier 预算。
    */
-  memory?: { recall: (availableTokens: number) => Promise<MemoryProjection[]>; traceContext: RuntimeTraceContext }
+  memory?: { recall: (availableTokens: number) => Promise<MemoryRecallOutcome>; traceContext: RuntimeTraceContext }
   memoryNavigation?: MemoryNavigation
   activeAdmission?: { owner: ProactiveOwner; beforeGenerate: NonNullable<ActiveMessageRequest["beforeGenerate"]>; maxOutputTokens: number }
   providerAdmission?: { beforeProvider: (reservation: ProviderReservation) => Promise<boolean>; maxOutputTokens: number }
@@ -1077,8 +1078,8 @@ function createRequestViewHook(args: {
               - used
               - estimateMessageTokens(createMemoryRecallMessage("")),
           )
-          const projections = await args.memory.recall(memoryBudget)
-          const rendered = renderMemoryRecall(projections, memoryBudget)
+          const recall = await args.memory.recall(memoryBudget)
+          const rendered = renderMemoryRecall(recall.projections, Math.min(memoryBudget, recall.tokenBudget ?? memoryBudget), recall.retrieval, recall.history)
           if (rendered.text) {
             // Insert at the same input boundary throughout a tool loop. Appending it
             // after each new tool result would break the otherwise stable prefix.
@@ -1093,11 +1094,13 @@ function createRequestViewHook(args: {
           }
           publishRuntimeTrace(args.memory.traceContext, "memory_recall_rendered", () => ({
             sourceIds: rendered.sourceIds,
-            conversationRefs: projections.filter(item => item.conversation && rendered.sourceIds.includes(item.sourceId))
+            conversationRefs: recall.projections.filter(item => item.conversation && rendered.sourceIds.includes(item.sourceId))
               .map(item => ({ sourceId: item.sourceId, ...item.conversation })),
-            projectedCount: projections.length,
+            projectedCount: recall.projections.length,
             usedTokens: rendered.usedTokens,
             droppedIds: rendered.droppedIds,
+            retrieval: recall.retrieval ?? null,
+            history: rendered.history ?? null,
             status: memoryBudget <= 0 ? "skipped_budget" : rendered.text ? "inserted" : "empty",
           }))
         } catch (error) {
@@ -1316,7 +1319,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
    */
   addressRefs?: () => Promise<ReadonlyMap<string, string>>
   /** 记忆召回块（只有主回合传）：headroom-aware 取数 thunk 与渲染在投影 hook 同处完成。 */
-  memory?: { recall: (availableTokens: number) => Promise<MemoryProjection[]>; traceContext: RuntimeTraceContext }
+  memory?: { recall: (availableTokens: number) => Promise<MemoryRecallOutcome>; traceContext: RuntimeTraceContext }
   memoryNavigation?: MemoryNavigation
   /**
    * 子运行（规划 / 计划步骤 / 子代理）对聊天界面**不可见**：过程消息、工具结果与流式
@@ -1780,6 +1783,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const traceContext = createRuntimeTraceContext(turnSessionId, requestId, input.turnId)
   const model = resolvePiTurnModel()
   const windowTokens = model.contextWindow
+  const frozenTurnTimeoutMs = loopConfig.turnTimeoutMs
   // 代际：runner 已 begin 时复用其代际；Live Test 直连路径由本函数自持。
   let generation = input.runGeneration
   let ownedGeneration = false
@@ -1987,7 +1991,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     }
 
     // 记忆召回延迟到 transform_context：只有那里知道投影后的正文、理解块与工具结果实际占用，
-    // 才能按当前请求剩余 headroom 派生预算。首次小证据在同轮复用；后续读源由主模型工具决定。
+    // 才能按当前请求剩余 headroom 派生预算。召回后阅读只附加短暂注释，后续读源由主模型工具决定。
     const memoryPurpose = input.activeRequest ? "proactive" as const : "conversation" as const
     // recall 走槽级取消信号：回合被停止时这次读取随之结束，旧代际的结果不会写进新投影。
     const memoryRequest: MemoryRecallRequest = {
@@ -2002,6 +2006,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         : input.turnContext?.memoryRefs.length ? { targets: input.turnContext.memoryRefs.map(ref => ({ id: ref.id, version: ref.version })), allowExpiredTargets: true } : {}),
     }
     let memoryProjections: MemoryProjection[] = []
+    // Source-bound, turn-local notes: changing request headroom re-admits annotations
+    // without another model pass; changed or revoked original evidence invalidates them.
+    let memoryReadingCache: { key: string; result: FocusMemoryEvidenceResult } | undefined
     const recordedRecallFailures = new Set<string>()
     const auditOptionalFailures = () => {
       for (const failure of memoryRequest.optionalFailures ?? []) {
@@ -2025,7 +2032,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       await slot.requestAbort("user")
     })
     /** Reuse only a current DB revision; write-after-read refresh is local and does not repeat reranking. */
-    const memoryRecallForRequest = async (availableTokens: number): Promise<MemoryProjection[]> => {
+    const memoryRecallForRequest = async (availableTokens: number): Promise<MemoryRecallOutcome> => {
       const nextBudget = memoryConfig.enabled
         ? deriveMemoryRecallBudget(windowTokens, memoryPurpose, availableTokens,
           memoryRequest.targets?.length || memoryPurpose === "proactive" ? "standard" : "initial_evidence")
@@ -2039,25 +2046,36 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
             ? "skipped_no_targets" : "skipped_budget",
           fallback: false,
         }))
-        return []
+        return { projections: [], retrieval: undefined }
       }
+      // 检索完整性以数据形式随参考块下发（跳过或非会话回合不下发）；失败明细同时进 trace。
+      const recallRetrieval = (failed: boolean): MemoryRecallRetrievalStatus | undefined => {
+        if (input.activeRequest) return undefined
+        const failures = memoryRequest.optionalFailures ?? []
+        return {
+          complete: !failed && failures.length === 0 && memoryRequest.fallbackReason === undefined,
+          missingChannels: [...new Set(failures.map(failure => failure.channel))],
+        }
+      }
+      let recallFailed = false
       try {
         if (recalled) {
           // Injected providers without a Rust revision stay cached as isolated L3 probes.
-          if (memoryRequest.readRevision === undefined && !memoryProjections.some(item => item.conversation)) {
-            return memoryProjections
-          }
-          if (memoryProjections.some(item => item.conversation)) {
+          const isolatedProvider = memoryRequest.readRevision === undefined && !memoryProjections.some(item => item.conversation)
+          if (!isolatedProvider && memoryProjections.some(item => item.conversation)) {
             memoryProjections = await validateConversationProjections(memoryProjections, slot.runSignal)
+            memoryRequest.historyCoverage = reconcileMemoryHistoryCoverage(memoryProjections, memoryRequest.historyCoverage, "revision_changed")
           }
-          const currentRevision = (await memoryStatus()).revision
-          if (currentRevision !== memoryRequest.readRevision
-            || memoryProjections.some(item => item.memoryRevision !== undefined && item.memoryRevision !== currentRevision)) {
+          const currentRevision = isolatedProvider ? undefined : (await memoryStatus()).revision
+          if (!isolatedProvider && (currentRevision !== memoryRequest.readRevision
+            || memoryProjections.some(item => item.memoryRevision !== undefined && item.memoryRevision !== currentRevision))) {
             const refreshRequest = { ...memoryRequest, skipRerank: true }
             memoryProjections = await recallMemory(refreshRequest)
             memoryRequest.readRevision = refreshRequest.readRevision
             memoryRequest.queryPlan = refreshRequest.queryPlan
             memoryRequest.optionalFailures = refreshRequest.optionalFailures
+            memoryRequest.fallbackReason = refreshRequest.fallbackReason
+            memoryRequest.historyCoverage = refreshRequest.historyCoverage
             auditOptionalFailures()
           }
         } else {
@@ -2068,13 +2086,17 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           memoryRequest.optionalFailures = freshRequest.optionalFailures
           memoryRequest.fallbackReason = freshRequest.fallbackReason
           memoryRequest.droppedCandidateIds = freshRequest.droppedCandidateIds
+          memoryRequest.historyCoverage = freshRequest.historyCoverage
           auditOptionalFailures()
           recalled = true
         }
       } catch (error) {
+        recallFailed = true
         // An unavailable DB cannot prove the eligibility of old facts: fail closed for this optional block.
         memoryProjections = []
         memoryRequest.readRevision = undefined
+        memoryRequest.historyCoverage = { mode: "navigation", scope: "selected_evidence", complete: false,
+          sessionCount: 0, entryCount: 0, reason: "channel_failed" }
         const phase = recalled ? "revision_recheck" : "initial_recall"
         const formatted = formatError(error)
         log.warn(phase === "revision_recheck"
@@ -2088,7 +2110,66 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         } as unknown as JsonValue)
       }
       assertCurrent()
-      return memoryProjections
+      let retrieval = recallRetrieval(recallFailed)
+      let projections = memoryProjections
+      if (memoryPurpose === "conversation" && !memoryRequest.targets?.length) {
+        const queryPlan = memoryRequest.queryPlan ?? deriveMemoryQueryPlan(userText, memoryRequest.timeAnchor)
+        const key = createHash("sha256").update(JSON.stringify([
+          userText, queryPlan.recallIntent, memoryRequest.timeAnchor, memoryProjections,
+        ])).digest("hex")
+        const cached = memoryReadingCache?.key === key
+        const started = performance.now()
+        if (!cached) {
+          const result = await focusMemoryEvidence({
+            query: userText, queryPlan, projections: memoryProjections,
+            model, contextWindow: windowTokens, tokenBudget: nextBudget.total,
+            signal: slot.runSignal, traceContext, requestId, sessionId: turnSessionId,
+            timeAnchor: memoryRequest.timeAnchor, turnTimeoutMs: frozenTurnTimeoutMs,
+            retrieval, history: memoryRequest.historyCoverage,
+          })
+          assertCurrent()
+          // A model pass can outlive a source edit. Re-prove raw eligibility after
+          // the await; annotations never keep a now-stale quote alive.
+          if (result.status !== "skipped" && result.status !== "input_over_budget") {
+            try {
+              if (memoryProjections.some(projection => projection.conversation)) {
+                memoryProjections = await validateConversationProjections(memoryProjections, slot.runSignal)
+                memoryRequest.historyCoverage = reconcileMemoryHistoryCoverage(memoryProjections,
+                  memoryRequest.historyCoverage, "revision_changed")
+              }
+              if (memoryRequest.readRevision !== undefined
+                && (await memoryStatus()).revision !== memoryRequest.readRevision) {
+                memoryProjections = []
+                if (memoryRequest.historyCoverage) memoryRequest.historyCoverage = {
+                  ...memoryRequest.historyCoverage, complete: false, reason: "revision_changed",
+                }
+                retrieval = { complete: false, missingChannels: ["conversation"] }
+              }
+            } catch (error) {
+              memoryProjections = []
+              memoryRequest.historyCoverage = { mode: "navigation", scope: "selected_evidence", complete: false,
+                sessionCount: 0, entryCount: 0, reason: "channel_failed" }
+              retrieval = { complete: false, missingChannels: ["conversation"] }
+              log.warn("记忆阅读后的来源复核失败，本请求放弃记忆投影:",
+                { sessionId: turnSessionId, requestId, phase: "reading_recheck" }, formatError(error))
+              slot.queueAuditEntry(RECALL_FAILED_ENTRY, { requestId, phase: "reading_recheck", at: Date.now() } as unknown as JsonValue)
+            }
+            assertCurrent()
+          }
+          memoryReadingCache = { key, result }
+        }
+        const result = memoryReadingCache!.result
+        projections = applyMemoryReadingNotes(memoryProjections, result.notes ?? [], nextBudget.total,
+          retrieval, memoryRequest.historyCoverage)
+        publishRuntimeTrace(traceContext, "memory_reading_end", () => ({
+          status: result.status, reason: result.reason, cached,
+          sourceCount: memoryProjections.length,
+          noteCount: projections.filter(projection => projection.readingNote).length,
+          durationMs: Math.round(performance.now() - started),
+        }))
+      }
+      return { projections, retrieval, history: memoryRequest.historyCoverage,
+        tokenBudget: memoryRequest.tokenBudget }
     }
     assertCurrent()
     const frozenContext = { ...frozenUserContext, skillsPromptBlock: capabilitiesRestricted ? "" : getSkillsPromptBlock() }
@@ -2150,7 +2231,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       prompt: promptInput,
       turnContext: context.turnDynamic,
       activeToolNames,
-      timeoutMs: loopConfig.turnTimeoutMs,
+      timeoutMs: frozenTurnTimeoutMs,
       // 主聊天回合不传 maxToolCalls：自然出口 = 模型不再调工具，兜底走循环病理检测（契约 Part 1）。
       projectToolResults: true,
       humanizerEnabled: frozenHumanizerEnabled,

@@ -546,6 +546,7 @@ export interface MemoryCatalogueSessionEntry {
   latestTimestamp: number
   entryCount: number
   turnCount: number
+  indexedTextBytes: number
   preview: string | null
 }
 

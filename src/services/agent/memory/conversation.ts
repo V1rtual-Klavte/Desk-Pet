@@ -8,7 +8,7 @@ import { watch, type FSWatcher } from "node:fs"
 import { extname, resolve } from "node:path"
 import { getHostBridge } from "@/services/host"
 import { MEMORY_LIMITS } from "./protocol"
-import type { ConversationClearFence, ConversationIndexBatch, ConversationIndexEntry, ConversationSearchEntry, ConversationSearchResult } from "@/services/agent/memory/protocol"
+import type { ConversationClearFence, ConversationIndexBatch, ConversationIndexEntry, ConversationSearchEntry, ConversationSearchResult, MemoryCatalogueSessionEntry } from "@/services/agent/memory/protocol"
 import type { FileInfoPayload } from "@/services/tool/pi/native-execution-env"
 import { estimateContextTokens } from "@/services/context/budget"
 import { BaseDirs, relativeWithinRoot } from "@/services/paths"
@@ -17,6 +17,7 @@ import { errorCode } from "@/services/error"
 import { messageEventId } from "@/services/engine/runtime"
 import { getPiSessionRepo, listPiSessionMetadata, readPiSessionEntriesOnce, readVisibleSessionTranscript, withPiSessionFileLock } from "@/services/session"
 import type { MemoryProjection } from "./provider"
+import type { MemoryRecallHistoryCoverage } from "./projection"
 import { deriveMemoryQueryPlan } from "./query"
 import type { MemoryQueryPlan } from "./query"
 import { subscribeSessionFileChanges } from "@/services/session/change-signal"
@@ -64,6 +65,7 @@ export type ConversationEvidenceEntry = ConversationSearchEntry & {
 export type ConversationEvidenceResult = Pick<ConversationSearchResult, "revision" | "memoryRevision" | "forgetEpoch"> & {
   entries: ConversationEvidenceEntry[]
   revisionChanged?: boolean
+  historyCoverage?: MemoryRecallHistoryCoverage
 }
 
 class SessionChangedDuringIndexError extends Error {}
@@ -592,6 +594,127 @@ export async function searchConversationCandidates(request: ConversationCandidat
   return { ...result, entries, ...(revisionChanged ? { revisionChanged: true } : {}) }
 }
 
+/**
+ * Choose from the governed catalogue, never from a truncated lexical candidate count.
+ * Byte totals are conservative bounds (overlapping chunks count twice). Only bounded
+ * scopes are expanded; final admission still measures the complete rendered JSON.
+ */
+export async function expandConversationRecallScope(
+  request: ConversationCandidateRequest & { tokenBudget: number },
+  evidence: ConversationEvidenceResult,
+): Promise<ConversationEvidenceResult> {
+  const coverage = (mode: MemoryRecallHistoryCoverage["mode"], scope: MemoryRecallHistoryCoverage["scope"],
+    complete: boolean, sessions: readonly MemoryCatalogueSessionEntry[], reason?: MemoryRecallHistoryCoverage["reason"]): MemoryRecallHistoryCoverage => ({
+    mode, scope, complete, sessionCount: sessions.length,
+    entryCount: sessions.reduce((sum, session) => sum + session.entryCount, 0), ...(reason ? { reason } : {}),
+  })
+  const fallback = (reason: MemoryRecallHistoryCoverage["reason"]): ConversationEvidenceResult => ({
+    ...evidence, historyCoverage: coverage("navigation", "selected_evidence", false, [], reason),
+  })
+  if (request.queryPlan?.recallIntent === "none" || !request.queryPlan) return {
+    ...evidence, historyCoverage: coverage("none", "selected_evidence", false, [], "not_requested"),
+  }
+  if (request.signal.aborted || evidence.revisionChanged) return fallback("revision_changed")
+  const host = getHostBridge()
+  const sourceGeneration = sourceChangeGeneration
+  const rootGeneration = indexedRootGeneration
+  const sameRevision = (value: { revision: number; memoryRevision: number; forgetEpoch: number; freshness?: string }) =>
+    value.revision === evidence.revision && value.memoryRevision === evidence.memoryRevision
+    && value.forgetEpoch === evidence.forgetEpoch && value.freshness !== "stale"
+  const stale = (): ConversationEvidenceResult => ({
+    ...evidence, entries: [], revisionChanged: true,
+    historyCoverage: coverage("navigation", "selected_evidence", false, [], "revision_changed"),
+  })
+  // Missing/invalid statistics cannot prove that a scope is small, including old test
+  // fixtures or malformed host results. Never infer completeness from the first 50 hits.
+  const fits = (sessions: readonly MemoryCatalogueSessionEntry[]) => sessions.every(session =>
+    Number.isSafeInteger(session.indexedTextBytes) && session.indexedTextBytes >= 0)
+    && sessions.reduce((sum, session) => sum + session.indexedTextBytes, 0) <= Math.max(0, request.tokenBudget)
+  const readCatalogue = async (sessionIds?: string[]) => {
+    const sessions = new Map<string, MemoryCatalogueSessionEntry>()
+    const cursors = new Set<string>()
+    let cursor: string | undefined
+    do {
+      request.signal.throwIfAborted()
+      const page = await host.request("memory_catalogue", {
+        level: "sessions", scope: { ...(sessionIds ? { sessionIds } : {}),
+          ...(request.before === undefined ? {} : { before: request.before }) },
+        limit: MEMORY_LIMITS.navigation.cataloguePageDefault, ...(cursor ? { cursor } : {}),
+      }, { signal: request.signal })
+      if (!sameRevision(page)) return { sessions: [], complete: false, stale: true }
+      const previousSize = sessions.size
+      for (const item of page.entries) {
+        if ("kind" in item && item.kind === "session") sessions.set(item.sessionId, item)
+      }
+      const rows = [...sessions.values()]
+      if (!fits(rows) || rows.length > MEMORY_LIMITS.navigation.scopeSessionIdsMax) return { sessions: rows, complete: false, stale: false }
+      if (page.complete && !page.nextCursor) return { sessions: rows, complete: true, stale: false }
+      if (!page.nextCursor || cursors.has(page.nextCursor) || previousSize === sessions.size) return { sessions: rows, complete: false, stale: false }
+      cursor = page.nextCursor
+      cursors.add(cursor)
+    } while (true)
+  }
+  const catalogue = await readCatalogue()
+  if (catalogue.stale) return stale()
+  let sessions = catalogue.sessions
+  let mode: MemoryRecallHistoryCoverage["mode"] = "direct"
+  let scope: MemoryRecallHistoryCoverage["scope"] = "visible_history"
+  if (!catalogue.complete || !fits(sessions)) {
+    mode = "focused"
+    scope = "matched_sessions"
+    const matchedIds = [...new Set(evidence.entries.map(entry => entry.sessionId))]
+    if (!matchedIds.length || matchedIds.length > MEMORY_LIMITS.navigation.scopeSessionIdsMax) return fallback(catalogue.complete ? "budget" : "catalogue_incomplete")
+    const matched = await readCatalogue(matchedIds)
+    if (matched.stale) return stale()
+    sessions = matched.sessions
+    if (!matched.complete || sessions.length !== matchedIds.length || !fits(sessions)) return fallback("budget")
+  }
+  if (sessions.length > MEMORY_LIMITS.navigation.scopeSessionIdsMax) return fallback("budget")
+  const indexed = new Map<string, ConversationSearchEntry>()
+  let cursor: string | undefined
+  const cursors = new Set<string>()
+  // Read only the scope whose complete catalogue byte upper bound fits. Every page
+  // must exhaust its real cursor under the same privacy snapshot before claiming coverage.
+  do {
+    request.signal.throwIfAborted()
+    if (!sessions.length) break
+    const page = await host.request("conversation_search", {
+      query: "", sessionId: request.sessionId, recentFallback: true,
+      scope: { sessionIds: sessions.map(session => session.sessionId), ...(request.before === undefined ? {} : { before: request.before }) },
+      ...(request.before === undefined ? {} : { before: request.before }),
+      limit: MEMORY_LIMITS.conversation.maxSearchResults, ...(cursor ? { cursor } : {}),
+    }, { signal: request.signal })
+    if (!sameRevision(page)) return stale()
+    for (const entry of page.entries) indexed.set(`${entry.sessionId}:${entry.entryId}:${entry.chunk}`, entry)
+    // Independently bound malformed/non-progressing providers, even if their directory
+    // claimed a small scope. A valid page's full chunk text cannot exceed its byte count.
+    if ([...indexed.values()].reduce((sum, entry) => sum + estimateContextTokens(entry.text), 0) > request.tokenBudget) return fallback("budget")
+    if (page.complete && !page.nextCursor) break
+    if (!page.nextCursor || cursors.has(page.nextCursor) || !page.entries.length) return fallback("catalogue_incomplete")
+    cursor = page.nextCursor
+    cursors.add(cursor)
+  } while (true)
+  const entries = await expandSearchEntriesFromJsonl([...indexed.values()], request.signal, request.before)
+  request.signal.throwIfAborted()
+  const expectedEntries = sessions.reduce((sum, session) => sum + session.entryCount, 0)
+  if (entries.length !== expectedEntries) return stale()
+  for (const session of sessions) {
+    if (await conversationFingerprint(session.sessionId, request.signal, session.fingerprint) !== session.fingerprint) return stale()
+  }
+  const [index, memory] = await Promise.all([
+    host.request("conversation_index_status", {}, { signal: request.signal }),
+    host.request("memory_status", {}, { signal: request.signal }),
+  ])
+  if (index.revision !== evidence.revision || memory.revision !== evidence.memoryRevision
+    || index.forgetEpoch !== evidence.forgetEpoch || memory.forgetEpoch !== evidence.forgetEpoch
+    || sourceGeneration !== sourceChangeGeneration || rootGeneration !== indexedRootGeneration) return stale()
+  if (index.stagedSessionIds.length) return fallback("index_updating")
+  const ranked = new Map(evidence.entries.map((entry, rank) => [`${entry.sessionId}:${entry.entryId}`, rank]))
+  entries.sort((left, right) => (ranked.get(`${left.sessionId}:${left.entryId}`) ?? Number.MAX_SAFE_INTEGER)
+    - (ranked.get(`${right.sessionId}:${right.entryId}`) ?? Number.MAX_SAFE_INTEGER))
+  return { ...evidence, entries, historyCoverage: coverage(mode, scope, true, sessions) }
+}
+
 async function expandSearchEntriesFromJsonl(
   entries: readonly ConversationSearchEntry[],
   signal: AbortSignal,
@@ -875,14 +998,13 @@ async function replaceStableSessionIndex(
     for (let attempt = 0; attempt <= MAX_INDEX_RETRIES; attempt += 1) {
       if (signal.aborted) return 0
       const sourcePath = resolve(session.metadata.path)
-      const sourceVersion = sourceChangeVersions.get(sourcePath) ?? 0
-      const before = await statSession(session.metadata, signal)
+      // The discovery pass froze a throughSeq boundary. A live session may append
+      // beyond it while the full transcript is being read; those bytes do not alter
+      // this snapshot and must not make the same prefix appear unstable.
       const transcript = await readVisibleSessionTranscript(session.metadata.id, { releaseIfIdle: true, fileLockHeld: true })
       if (transcript.error) {
         throw new Error(`会话索引源读取不完整 (${session.metadata.id}): ${transcript.error}`)
       }
-      const after = await statSession(session.metadata, signal)
-      assertCurrent()
       // Discovery froze the seq boundary. Later appends belong to the next dirty
       // refresh; publication and its confirmation must fingerprint the same prefix.
       const prefix = transcriptThroughSeq(transcript, session.throughSeq)
@@ -892,8 +1014,12 @@ async function replaceStableSessionIndex(
       assertCurrent()
       if (confirmation.error) throw new Error(`会话索引源二次读取不完整 (${session.metadata.id}): ${confirmation.error}`)
       const confirmationFingerprint = fingerprintTranscript(session, confirmation, signal)
-      if (before.mtimeMs !== after.mtimeMs || afterFingerprint !== confirmationFingerprint
-        || (sourceChangeVersions.get(sourcePath) ?? 0) !== sourceVersion) {
+      if (afterFingerprint !== confirmationFingerprint) {
+        log.warn("会话索引冻结前缀在双读期间变化，重试:", {
+          sessionId: session.metadata.id,
+          attempt,
+          prefixChanged: true,
+        })
         if (attempt === MAX_INDEX_RETRIES) {
           throw new Error(`会话在索引读取期间持续变化，索引未更新: ${session.metadata.id}`)
         }
@@ -901,14 +1027,21 @@ async function replaceStableSessionIndex(
         continue
       }
 
+      // Capture publication guards after the confirming prefix read. Whole-file
+      // mtime/watch changes before this point may be suffix appends beyond throughSeq;
+      // any later write is still rejected by replaceIndexBatches' final stat/CAS.
+      const stable = await statSession(session.metadata, signal)
+      const sourceChangeVersion = sourceChangeVersions.get(sourcePath) ?? 0
+      assertCurrent()
+
       const batches = buildIndexEntryBatches(prefix.entries, prefix.messages, signal)
       if (signal.aborted) return 0
       try {
         return await replaceIndexBatches({
           session,
           fingerprint: afterFingerprint,
-          sourceMtimeMs: after.mtimeMs,
-          sourceChangeVersion: sourceVersion,
+          sourceMtimeMs: stable.mtimeMs,
+          sourceChangeVersion,
           expectedFingerprint,
           expectedForgetEpoch,
           batches,
@@ -932,7 +1065,7 @@ async function replaceStableSessionIndex(
         if (attempt === MAX_INDEX_RETRIES) throw error
 
         const stillStable = await statSession(session.metadata, signal)
-        if (stillStable.mtimeMs !== after.mtimeMs) {
+        if (stillStable.mtimeMs !== stable.mtimeMs) {
           session = { ...session, fingerprint: afterFingerprint }
           continue
         }

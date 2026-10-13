@@ -465,7 +465,7 @@ export interface PiTextCallAudit {
 export interface PiTextCallInput {
   /** 调用用途：进入按 purpose 分列的用量统计，也用于日志。 */
   purpose: PiTextPurpose
-  memoryStage?: "rewrite" | "rerank" | "dreaming"
+  memoryStage?: "rewrite" | "rerank" | "reading" | "dreaming"
   systemPrompt: string
   userText: string
   /** In-memory visual inputs for one-shot calls. Prompt snapshots record only their count. */

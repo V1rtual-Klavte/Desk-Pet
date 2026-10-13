@@ -1,3 +1,4 @@
+// 2026-10-13 定向复核：conversation.ts 仅新增记忆首包范围选择，索引锁/JSONL持久化定义未变；新增行为归memory mm-75/76。
 // 2026-10-12 首次证据跨通道复用定向复核：conversation 保留既有 JSONL 分片与索引 wire 格式，内部生成器补出绝对 UTF16 坐标；会话存储、关闭和压缩边界未变。
 // 2026-10-11 按需导航影响复核：harness-slot.ts 新增 requestAbort 与既有 abort 共用归还和级联；工具内持久取消由 memory mm-72 覆盖，hs-* 文件系统、帧缓存与折叠读写分支未改。源码 hash 在行为审查后刷新。
 // 2026-10-12 会话索引/关闭竞态：消费端 conversation.ts 全源扫描持锁读取、session/repo.ts 释放屏障；L3验证关闭等待、完整首段索引及重开追加后重索引。未验证崩溃恢复与真实Rust锁行为。
@@ -77,7 +78,7 @@ export const harnessStorageContract: ModuleContract = {
     // 索引刷新扫描会话正文时持有文件锁；hs-11验证扫描消费者与会话释放屏障的交互。
     "src/services/agent/memory/conversation.ts",
   ],
-  sourceHash: "de783701de41fccd20740d0dc5f35bf28b37f07495e9ac2ee66ece8b604dcadc",
+  sourceHash: "10c618969dd5c50d8f6fecb07a8be30c3fc3725bb1853b2376b9d9e601e3079b",
   coverage: [
     {
       id: "hs-01",

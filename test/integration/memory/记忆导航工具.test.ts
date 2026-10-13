@@ -105,7 +105,7 @@ function fixtureNavigation(overrides: Partial<MemoryNavigationProvider> = {}): M
     async catalogue(_context, request) {
       return { ...REVISION, status: "ok", complete: true, entries: request.level === "sessions" ? [{
         kind: "session", sessionId: "session-a", fingerprint: "fingerprint-a", latestTimestamp: 1_704_067_200_000,
-        entryCount: 2, turnCount: 1, preview: "路线选择",
+        entryCount: 2, turnCount: 1, indexedTextBytes: 16, preview: "路线选择",
       }] : [] }
     },
     async search(_context, request) {
@@ -548,7 +548,13 @@ describe("真实主回合按需读取记忆", () => {
 
     const output = await runRuntimeTurn(QUESTION)
     expect(output.reply).toBe("The main road had a signal failure.")
-    expect(provider.payloads[0]!.messages.some(message => messageText(message).includes("[记忆与会话参考]"))).toBe(false)
+    // A status-only reference is visible even when every candidate was budget-dropped;
+    // only admitted evidence may grant read reuse.
+    const firstReference = provider.payloads[0]!.messages.map(messageText)
+      .find(text => text.startsWith("[记忆与会话参考]\n"))!
+    expect(JSON.parse(firstReference.slice("[记忆与会话参考]\n".length))).toEqual({
+      coverage: "no_evidence", retrieval: { complete: true, missingChannels: [] }, evidence: [],
+    })
     expect(provider.payloads[0]!.messages.map(messageText).join("\n")).not.toContain(budgetMarker)
     expect(provider.payloads[0]!.messages.map(messageText).join("\n")).not.toContain(recalledText.slice(0, 100))
     expect(read).toHaveBeenCalledTimes(1)

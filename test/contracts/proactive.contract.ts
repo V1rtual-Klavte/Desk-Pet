@@ -1,3 +1,4 @@
+// 2026-10-13 定向复核：共享memory协议仅为sessions目录增加indexedTextBytes；主动精确目标调度、状态和预算行为未变。
 // 2026-10-12 首次证据跨通道复用定向复核：记忆协议生成物同步 recall snapshot 的 indexRevision/forgetEpoch 与现有导航定义；主动机会协议、常量和状态分支未变。
 // 2026-10-12 定向复核：仅显式 memory 回合收窄到治理读取工具；默认回合和主动 tools=[] 不变。真实 payload 工具名、进入请求的原文来源与 bench 分账同步；跨域旧行为不变。
 // 2026-10-11 按需导航影响复核：planner.ts 仅更新精确 targets 的注释，protocol 仅增删导航形状；pa-* 机会、目标版本和主动投影口径未改，开放式导航只在普通主回合启用。源码 hash 在行为审查后刷新。
@@ -263,7 +264,7 @@ import type { ModuleContract } from "../host/types"
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "4d8aa07f1e488f54bb44638948ebd032dcd9f1f6a1dfcdda96f09d05917dfde5",
+  module:"proactive",sourceHash: "2b605dd31ca62a1aa72df01bf6be66daab31e56e596e17827eb18f62b8efc750",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

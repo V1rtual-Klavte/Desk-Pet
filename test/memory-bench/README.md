@@ -13,9 +13,9 @@
 - LoCoMo 与 LongMemEval 质量分只来自各自锁定 revision 的官方评分脚本；原始 generation 报告在官方结果导入前显示
   `pending_official`，不提供本地近似主分。MemoryBank 正确性仍使用本仓自适配 judge 口径。
 
-预算对比读取 manifest 的 `memoryConfig.budgetPolicy=request-headroom` 与逐题 `memory_recall_start`（总预算、core/recall 额度、实际窗口），并以 `memory_recall_rendered` 与 `memory_navigation_rendered` 核对首包及真正进入后续请求的原文页；搜索片段与目录只作定位，不冒充已读原文。bench 提问经正式 `sendMessage` 路径执行并设 `toolMode: "memory"`，仅开放 `memory_list/search/read`；Plan、MCP、Skill 和其他工具在该隔离测量模式下不可用，`provider_payload.toolNames` 留存真实请求工具名。产品普通回合仍使用默认完整工具集合。普通首包最多选择一个核心条目和一个动态证据组后停止；容量上限来自 ContextKernel 实际 headroom 与工具结果预算，不是经验上限或最优预算声明。记忆管线消耗还须计入主模型工具轮、重复输入、缓存读写及灌库/整理成本；缓存收益仍未实测。准确率与成本优势都须经同题、同模型、同生成协议的配对对照验证。
+预算对比读取 manifest 的 `memoryConfig.budgetPolicy=request-headroom` 与逐题 `memory_recall_start`（总预算、core/recall 额度、实际窗口），并以 `memory_recall_rendered` 与 `memory_navigation_rendered` 核对首包及真正进入后续请求的原文页；搜索片段与目录只作定位，不冒充已读原文。bench 提问经正式 `sendMessage` 路径执行并设 `toolMode: "memory"`，仅开放 `memory_list/search/read`；Plan、MCP、Skill 和其他工具在该隔离测量模式下不可用，`provider_payload.toolNames` 留存真实请求工具名。产品普通回合仍使用默认完整工具集合。普通首包预算上限来自 ContextKernel 实际 headroom 与 `toolResultTokenBudget(window)` 安全限制；首包选择按受治理 sessions 目录完整性与 `indexedTextBytes` 保守规模上界决定小范围枚举、命中会话聚焦或跨会话候选导航，不再固定限制为一个核心条目加一个动态组。计量包含最终完整 JSON 的状态与引用 metadata；预算淘汰时 history 覆盖会降级。范围辅助枚举只增加本地 IPC/JSONL 读取，不增加模型 pass；符合条件的 R1′ reader 是单独计量的一次性模型请求。机制门禁不证明准确率或成本收益；答案质量、主模型工具轮、重复输入、缓存读写及灌库/整理成本都须经同题、同模型、同生成协议的配对对照验证，缓存收益仍未实测。
 
-逐题 outcome 分开记录完整 `usage`、已知请求用量小计 `knownUsage` 与未知请求数 `unknownUsageRequests`。计量从 `provider_request_start` 建立请求占位，并以同一 span 的结束事件回填，重复事件按 span 去重；只有 start、没有 end 的请求也计为未知，不能按零成本处理。只要该题有请求缺少可用 usage，完整 `usage` 就保持未知；失败题也保留此前采集到的已知小计和未知请求数。报告汇总只累加已知用量并单独保留未知请求数，不将部分小计标成整题或整场总成本。
+逐题 outcome 分开记录完整 `usage`、已知请求用量小计 `knownUsage` 与未知请求数 `unknownUsageRequests`；按 memoryStage 分账时，reading 单列且包含在读侧总计与逐题总量内，缓存输入按网关 usage 口径只计一次，dreaming 灌库/整理成本单列。计量从 `provider_request_start` 建立请求占位，并以同一 span 的结束事件回填，重复事件按 span 去重；只有 start、没有 end 的请求也计为未知，不能按零成本处理。只要该题有请求缺少可用 usage，完整 `usage` 就保持未知；失败题也保留此前采集到的已知小计和未知请求数。报告汇总只累加已知用量并单独保留未知请求数，不将部分小计标成整题或整场总成本。
 
 ## 1. 数据集与许可
 
@@ -340,7 +340,7 @@ LoCoMo 的统一英文短答规则见本节，历史导入与召回超时差异�
 
 别名只是固定最常见口径；其它参数组合仍走 `pnpm run test:memory-bench -- <参数>`。
 
-成本大头在 dreaming 提取（每题 1~5 次 sweep），judge 占比小；推理模型先确认自动输出预算
+成本按读侧与灌库侧拆分：reading 请求单列且纳入读侧总计，dreaming 提取/整理单列；缓存读写不重复累计，judge 占比另列。推理模型先确认自动输出预算
 （必要时用 `underTest.reviewMaxTokens` 覆盖）并用冒烟层验证提取链路。每轮报告都记录实际
 usage，用来校准这里的量级。
 **默认节奏 = 冒烟 → 常规**；中文 / 难度 / 对外只在对应触发条件下跑，不随每次改动全量执行。
@@ -363,6 +363,6 @@ usage，用来校准这里的量级。
 
 ## 当前产品记忆读取与版本比较
 
-主回合首次本地召回采用小证据选择：最多一个最高优先级核心条目，加一个本地排序动态证据组后停止。容量上限复用 ContextKernel 真实 headroom 与 `toolResultTokenBudget(window)`，首包和每页工具结果都按完整 JSON 计量；不宣称特定数值最优。之后由同一被测模型调用 `memory_list`、`memory_search`、`memory_read` 按需读取；目录是确定性有界预览，原文仍由 SQLite 治理资格与 JSONL 内容核验。独立 reader、自动覆盖清单补查和整会话自动展开已移除，主回合不再调用模型改写/重排。深查产生的主模型工具轮、重复输入及缓存读写必须全部计费；Provider 缓存收益尚未实测。机制门禁不证明质量或 token 收益；需冻结协议后再做配对准确率与全请求成本对照，并将灌库/整理摊销单列。
+普通主回合首包依查询意图、治理 sessions 目录完整性及 `indexedTextBytes` 保守规模上界决定原文范围：完整且可容纳的小范围用空词分页枚举并逐条校验 JSONL；较大范围尝试完整展开命中的会话，整体超预算时保留跨会话候选供同一被测模型调用 `memory_list`、`memory_search`、`memory_read` 按需导航。无个人回忆意图时不枚举全范围。容量上限复用 ContextKernel 真实 headroom 与 `toolResultTokenBudget(window)`，最终完整 JSON 的 metadata 也计量；预算淘汰会降低 history 的结构覆盖声明。不宣称特定数值最优。目录是定位线索，原文仍由 SQLite 治理资格与 JSONL 内容核验。R1′ 独立 reader 在 recall 后、主回答前按条件触发：`recallIntent != none`、至少 4 个不同历史 entries，且非 proactive / 无 exact targets；它使用冻结 PiModel、low thinking、共享 signal 与 turnTimeout，按严格 JSON source ID + 连续原文 quote + 短 derived relevance 注释证据。无效输出整批丢弃，失败保留 raw；包预算不够时先丢 notes，不牺牲原文，同回合缓存按预算重裁。首包仍受 10% tool-budget ceiling 限制。深查产生的主模型工具轮、重复输入及缓存读写必须全部计费；Provider 缓存收益尚未实测。机制门禁不证明质量或 token 收益；需冻结协议后再做真实模型配对和大历史验证，并将灌库/整理摊销单列。
 
-停止的 LoCoMo 部分批次保留旧版本标签，不与本次重构结果拼接。本次开发验收使用 fake Provider 与真实 Rust IPC，未自动重启付费基准。后续须冻结源码与生成协议，先作代表性核对，再开展同模型、同协议的配对完整历史直读对照；准确率、全请求 token、缓存命中与灌库/整理摊销分开报告。判分继续以本文锁定的官方脚本导出/回填链路为准，不以项目词面脚本或人工抽判替代官方得分。
+停止的 LoCoMo 部分批次保留旧版本标签，不与本次重构结果拼接。后续验收须冻结源码与生成协议，先做真实模型同模板复判和大历史场景验证，再开展同模型、同协议的配对完整历史直读对照；准确率、全请求 token、缓存命中与灌库/整理摊销分开报告。判分继续以本文锁定的官方脚本导出/回填链路为准，不以项目词面脚本或人工抽判替代官方得分。结果未完成前不宣称质量恢复或 token 节省。

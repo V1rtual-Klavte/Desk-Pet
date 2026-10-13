@@ -44,6 +44,7 @@ export type RuntimeTraceKind =
   | "memory_recall_rendered"
   | "memory_navigation_rendered"
   | "memory_recall_end"
+  | "memory_reading_end"
   | "memory_extraction_start"
   | "memory_extraction_end"
   | "input_accepted"
@@ -154,6 +155,7 @@ export function subscribeRuntimeTrace(listener: RuntimeTraceListener): () => voi
 export function hasRuntimeTraceSubscribers(): boolean { return listeners.size > 0 }
 
 const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
+  memory_reading_end: ["status", "reason", "cached", "sourceCount", "noteCount", "durationMs"],
   agent_start: ["status"], agent_end: ["status", "reason"], turn_start: ["turnNumber"], turn_end: ["hasToolCalls", "status"],
   message_start: ["role"], message_update: ["frameType"], message_end: ["role", "entryId"],
   first_text_generated: ["length"], first_visible_text: ["delivery"], entry_added: ["entryType", "role", "customType"], run_linked: ["sessionId"],
@@ -165,7 +167,7 @@ const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
   compaction_start: ["reason"], compaction_end: ["reason", "status"], compaction_requested: ["reason"],
   provider_request_start: ["purpose", "memoryStage", "step", "attempt", "model", "api"], provider_request_end: ["purpose", "memoryStage", "step", "attempt", "model", "responseModel", "api", "status", "durationMs", "inputTokens", "outputTokens", "cacheRead", "cacheWrite", "cacheUsageReported", "reasoningEffort", "thinkingMode", "idleTimeout"],
   provider_payload: ["model", "api", "payloadHash", "redactions", "toolNames"], provider_response: ["model", "api", "status", "headerNames"], humanizer_transform: ["flow", "status", "split", "silent", "partCount"], provider_usage: ["inputTokens", "outputTokens", "cacheRead", "cacheWrite", "driftRatio"], prompt_snapshot: ["captureStage", "contentHash", "snapshotId", "requestId", "turnId"],
-  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount"],
+  memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "status", "retrieval", "history"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount", "optionalFailures", "error", "history"],
   memory_navigation_rendered: ["sourceIds", "conversationRefs", "readRefs", "usedTokens"],
   memory_extraction_start: ["jobId", "revision", "phase"], memory_extraction_end: ["jobId", "revision", "status", "candidateCount", "sourceIds", "sourceCount", "durationMs", "reason"],
   input_accepted: ["requestId", "status", "source", "priority"], input_consumed: ["requestId"], input_cancelled: ["requestId", "reason"],
@@ -252,6 +254,40 @@ function safePayload(kind: RuntimeTraceKind, payload: Record<string, unknown>): 
           range: Object.freeze({ start: range.start, end: range.end }),
         })]
       }))
+    }
+    else if (field === "optionalFailures" && Array.isArray(value)) {
+      // 通道失败明细：只保留 channel/reason 两个短字符串，绝不透传任意嵌套数据。
+      safe[field] = Object.freeze(value.slice(0, maxArrayItems).flatMap(item => {
+        if (!item || typeof item !== "object") return []
+        const record = item as Record<string, unknown>
+        if (typeof record.channel !== "string" || typeof record.reason !== "string") return []
+        return [Object.freeze({ channel: runtimeTracePreview(record.channel), reason: runtimeTracePreview(record.reason) })]
+      }))
+    }
+    else if (field === "history") {
+      // Structural coverage metadata only; never retain source text or session bodies.
+      if (value === null) safe[field] = null
+      else if (value && typeof value === "object" && !Array.isArray(value)) {
+        const record = value as Record<string, unknown>
+        safe[field] = Object.freeze({
+          mode: runtimeTracePreview(record.mode), scope: runtimeTracePreview(record.scope), complete: record.complete === true,
+          sessionCount: typeof record.sessionCount === "number" && Number.isSafeInteger(record.sessionCount) ? record.sessionCount : 0,
+          entryCount: typeof record.entryCount === "number" && Number.isSafeInteger(record.entryCount) ? record.entryCount : 0,
+          ...(typeof record.reason === "string" ? { reason: runtimeTracePreview(record.reason) } : {}),
+        })
+      }
+    }
+    else if (field === "retrieval") {
+      // 检索完整性：布尔 + 通道名列表；缺省写 null。
+      if (value === null) safe[field] = null
+      else if (value && typeof value === "object" && !Array.isArray(value)) {
+        const record = value as Record<string, unknown>
+        const channels = Object.freeze(Array.isArray(record.missingChannels)
+          ? record.missingChannels.slice(0, maxArrayItems)
+            .filter((item): item is string => typeof item === "string").map(item => runtimeTracePreview(item))
+          : [])
+        safe[field] = Object.freeze({ complete: record.complete === true, missingChannels: channels })
+      }
     }
     else if (Array.isArray(value)) {
       safe[field] = Object.freeze(value.slice(0, maxArrayItems).filter(item => typeof item === "string" || typeof item === "number" || typeof item === "boolean"))

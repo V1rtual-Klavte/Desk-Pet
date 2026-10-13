@@ -6,7 +6,7 @@ export interface MemoryRecallBudget {
   readonly recall: number
   /** Shared ceiling for the complete rendered reference block, including labels and header. */
   readonly total: number
-  /** Initial conversational evidence is intentionally one bounded evidence packet. */
+  /** Enable scope-aware initial evidence assembly under the shared packet ceiling. */
   readonly initialEvidence?: true
 }
 
@@ -22,7 +22,7 @@ export function memorySelectorInputBudget(window: number, replyTokens: number): 
 
 /**
  * Headroom is a safety ceiling, not a target to fill. Ordinary conversation has
- * a single tool-result-sized initial packet; exact targets/proactive retain their
+ * a bounded, scope-aware initial packet; exact targets/proactive retain their
  * caller's explicit allowance by using the standard mode.
  */
 export function deriveMemoryRecallBudget(

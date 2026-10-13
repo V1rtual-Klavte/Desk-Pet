@@ -47,6 +47,8 @@ export interface MemorySessionCatalogueEntry {
   latestTimestamp: number
   entryCount: number
   turnCount: number
+  /** UTF-8 bytes across visible indexed chunks; overlap is counted, so this is a conservative size bound, not deduplicated source text, token count, or semantic coverage. */
+  indexedTextBytes: number
   /** Navigation-only preview; never evidence for a factual answer. */
   preview: string
 }

@@ -90,7 +90,7 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "5c37ffb502b2c7cc16f74e6e67043e3a9045b67209f02365467dd576c543aeee",
+  sourceHash: "fa0b8e6f1a3f7df6f77036e628e4abf6cb10722dc0fd5a71a61b5e7432c7deb6",
   coverage: [
     {
       id: "hz-01",

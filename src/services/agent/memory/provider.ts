@@ -24,14 +24,15 @@ import { DERIVED_BEHAVIOR_ORIGIN } from "./sources"
 import { parseRerankSelection } from "./rerank"
 import { deriveMemoryQueryPlan, freezeMemoryModel, planMemoryQueries, recordOptionalFailure } from "./query"
 import type { MemoryQueryPlan, MemoryRecallFailureChannel, MemoryRecallOptionalFailure, MemoryRerankMode, QueryRewriteMode } from "./query"
-import { CONVERSATION_RRF_RANK_CONSTANT, conversationProjection, searchConversationCandidates } from "./conversation"
+import { CONVERSATION_RRF_RANK_CONSTANT, conversationProjection, searchConversationCandidates, expandConversationRecallScope } from "./conversation"
 import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "./conversation"
 import { MEMORY_LIMITS } from "./protocol"
 import { reconcileDerivedMemoryEvidence } from "./evidence"
 
 import { deriveMemoryRecallBudget, memorySelectorInputBudget, memoryStructuredReplyTokenBudget } from "./budget"
 import type { MemoryRecallBudget } from "./budget"
-import { memoryRecallTokens } from "./projection"
+import { memoryRecallTokens, reconcileMemoryHistoryCoverage } from "./projection"
+import type { MemoryRecallHistoryCoverage } from "./projection"
 import type { MemoryNavigationProvider, MemoryNavigationVisibleRead } from "./navigation"
 import { sqliteMemoryNavigation } from "./sqlite-navigation"
 
@@ -78,6 +79,8 @@ export interface MemoryRecallRequest {
   traceContext?: RuntimeTraceContext
   fallbackReason?: string
   droppedCandidateIds?: string[]
+  /** Structural coverage of the original-history scope, never a semantic answer verdict. */
+  historyCoverage?: MemoryRecallHistoryCoverage
 }
 
 export interface MemoryProjection {
@@ -96,6 +99,8 @@ export interface MemoryProjection {
   memoryRevision?: number
   /** Exact original range and governance proof; never inferred from rendered text. */
   readSource?: Omit<MemoryNavigationVisibleRead, "readId">
+  /** Transient derived annotation of this exact source; never a stored fact or read grant. */
+  readingNote?: { quote: string; relevance: string }
   /** A quoted conversation fragment, never an accepted user fact. */
   conversation?: {
     sessionId: string
@@ -556,9 +561,7 @@ function projectCandidateSet(
   const targetedIds = new Set(targeted.map(item => item.id))
   const initialEvidence = request.budget?.initialEvidence === true && !proactive && !request.targets?.length
   const availableCore = proactive ? [] : uniqueMemoryItems(snapshot.pinned).filter(item => !targetedIds.has(item.id))
-  // Pinned rows arrive in the provider's priority order. Initial context receives only
-  // the first eligible core item; further core facts remain available through navigation.
-  const core = initialEvidence ? availableCore.slice(0, 1) : availableCore
+  const core = availableCore
   const byId = new Map<string, MemoryProjection>()
   for (const item of [...core, ...targeted]) {
     byId.set(item.id, projection(item, estimateContextTokens(item.draft.content), snapshot, conversation))
@@ -645,23 +648,13 @@ function projectCandidateSet(
     return false
   }
 
-  if (initialEvidence) {
-    // Dynamic candidates already carry the local retrieval order. A conversation unit
-    // groups its user anchor with any assistant reply anchored to that same turn.
-    // Stop after the first unit that fits; never use spare allowance to add more evidence.
-    for (const unit of units) {
-      if (acceptUnit(unit)) break
-    }
-    return result
-  }
-
   // Reserve indexed evidence for later sessions before expanding the first session's
   // full turn. A large but individually fitting turn must not consume their admission room.
   const reserved = new Map<string, MemoryProjection>()
   let reservedBody = 0
   // Single-fact lookup follows relevance order. Cross-session reservation is
   // useful only when the question actually asks for coverage across records.
-  const needsDiversity = request.queryPlan?.recallIntent === "count" || request.queryPlan?.recallIntent === "overview"
+  const needsDiversity = initialEvidence || request.queryPlan?.recallIntent === "count" || request.queryPlan?.recallIntent === "overview"
   for (const [sessionId, group] of needsDiversity ? sessions : []) {
     const representative = group.flatMap(fragmentsFor).find(item => {
       const cost = estimateContextTokens(item.text)
@@ -690,6 +683,9 @@ function projectCandidateSet(
     if (acceptedUnits.has(unit.id)) continue
     acceptUnit(unit)
   }
+  // Each assembly starts from the independently verified scope. A fact-only or
+  // smaller fallback must not permanently downgrade a later complete assembly.
+  request.historyCoverage = reconcileMemoryHistoryCoverage(result, conversation?.historyCoverage)
   return result
 }
 
@@ -752,16 +748,35 @@ async function searchConversationChannel(
   try {
     const hasRecordTime = queryPlan.timeConstraint?.basis === "record"
     if (!queries.some(query => query.trim()) && !hasRecordTime) return undefined
-    const result = await searchConversationCandidates({
+    const candidateRequest = {
       sessionId: request.sessionId,
       queries,
       signal: request.signal,
       before: request.before,
       queryPlan,
       limit: MEMORY_LIMITS.conversation.maxSearchResults,
-    })
+    }
+    let result: ConversationEvidenceResult
+    // A committed ingress or delayed file notification can invalidate the first
+    // snapshot during expansion. Re-read once under the same recall deadline;
+    // persistent changes still fail closed rather than admitting stale evidence.
+    for (let attempt = 0; ; attempt += 1) {
+      result = await searchConversationCandidates(candidateRequest)
+      if (request.budget?.initialEvidence) {
+        try {
+          result = await expandConversationRecallScope({ ...candidateRequest, tokenBudget: request.tokenBudget }, result)
+        } catch (error) {
+          if (request.signal.aborted) return undefined
+          recordOptionalFailure(request, "conversation", "failed")
+          log.warn("自适应原文范围读取失败，保留已验证的本地命中:", formatError(error))
+          result = { ...result, historyCoverage: { mode: "navigation", scope: "selected_evidence", complete: false,
+            sessionCount: 0, entryCount: 0, reason: "channel_failed" } }
+        }
+      }
+      if (!request.budget?.initialEvidence || !result.revisionChanged || attempt > 0 || request.signal.aborted) break
+    }
     if (result.revisionChanged) recordOptionalFailure(request, "conversation", "revision_changed")
-    return result.entries.length > 0 ? result : undefined
+    return result.entries.length > 0 || request.budget?.initialEvidence ? result : undefined
   } catch (error) {
     if (request.signal.aborted) return undefined
     recordOptionalFailure(request, "conversation", "failed")
@@ -830,6 +845,8 @@ export async function recallMemory(
       const pendingChannel = providerRequest.localFallbackFailureChannel
       if (pendingChannel) recordOptionalFailure(request, pendingChannel, "timeout")
       request.fallbackReason = "recall_deadline_fallback"
+      request.historyCoverage = { mode: "navigation", scope: "selected_evidence", complete: false,
+        sessionCount: 0, entryCount: 0, reason: "channel_failed" }
     }
     // A late, aborted provider may finish internally, but its query plan and failure notes never
     // mutate the caller's turn cache after the deadline has already won the race.
@@ -839,6 +856,7 @@ export async function recallMemory(
       request.optionalFailures = providerRequest.optionalFailures
       request.fallbackReason = providerRequest.fallbackReason
       request.droppedCandidateIds = providerRequest.droppedCandidateIds
+      request.historyCoverage = providerRequest.historyCoverage
     }
     // 预算裁决留在端口这一层：provider 可以有自己的取舍，但「声明的预算」必须真的是
     // 「实际占用的 token」—— 单条取「请求剩余」与「该条声明」的严格者，逐条扣减。
@@ -862,6 +880,7 @@ export async function recallMemory(
       if (projection.tier === "core") coreRemaining -= usedTokens
       else recallRemaining -= usedTokens
     }
+    request.historyCoverage = reconcileMemoryHistoryCoverage(projections, request.historyCoverage)
     if (traceContext) {
       publishRuntimeTrace(traceContext, "memory_recall_projected", () => ({
         sourceIds: projections.map(item => item.sourceId),
@@ -875,12 +894,15 @@ export async function recallMemory(
         queryRewriteStatus: providerRequest.queryPlan?.rewriteStatus ?? "unknown",
         queryCount: providerRequest.queryPlan?.queries.length ?? 0,
         optionalFailureCount: providerRequest.optionalFailures?.length ?? 0,
+        // 通道失败明细：此前只有计数进 trace，跑批后无法归因；channel/reason 必须可审计。
+        optionalFailures: (providerRequest.optionalFailures ?? []).map(failure => ({ channel: failure.channel, reason: failure.reason })),
+        history: request.historyCoverage ?? null,
         durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - started,
       }))
     }
     return projections
   } catch (error) {
-    if (traceContext) publishRuntimeTrace(traceContext, "memory_recall_end", () => ({ status: "failed", fallback: true }))
+    if (traceContext) publishRuntimeTrace(traceContext, "memory_recall_end", () => ({ status: "failed", fallback: true, error: formatError(error) }))
     throw error
   } finally {
     clearTimeout(timer)

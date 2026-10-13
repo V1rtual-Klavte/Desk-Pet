@@ -164,7 +164,7 @@
         "forgetEpoch"
       ],
       "properties": {
-        "stagedSessionIds": {"type":"array","items":{"type":"string"}},
+        "stagedSessionIds": {"type":"array","items":{"type":"string"},"description":"Session IDs with unpublished staging batches; committed retry receipts are excluded."},
         "sessions": {
           "type": "array",
           "items": {
@@ -541,6 +541,7 @@
         "latestTimestamp",
         "entryCount",
         "turnCount",
+        "indexedTextBytes",
         "preview"
       ],
       "properties": {
@@ -561,6 +562,11 @@
         },
         "turnCount": {
           "type": "integer"
+        },
+        "indexedTextBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "可见索引片段正文的 UTF-8 字节总量；chunk overlap 会重复计入，是保守规模上界，不代表去重原文 token 数或完整语义覆盖"
         },
         "preview": {
           "type": [

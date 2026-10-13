@@ -820,12 +820,13 @@ impl MemoryStore {
                    SELECT v.session_id,s.fingerprint,MAX(v.timestamp) AS latest_timestamp,
                      COUNT(DISTINCT v.entry_id) AS entry_count,
                      SUM(CASE WHEN v.role='user' AND v.chunk=0 THEN 1 ELSE 0 END) AS turn_count,
+                     SUM(length(CAST(v.text AS BLOB))) AS indexed_text_bytes,
                      (SELECT p.text FROM visible p WHERE p.session_id=v.session_id AND p.role='user' AND p.chunk=0
                        ORDER BY p.timestamp DESC,p.seq DESC,p.entry_id ASC LIMIT 1) AS preview
                    FROM visible v JOIN conversation_index_sessions s ON s.session_id=v.session_id
                    GROUP BY v.session_id,s.fingerprint
                  )
-                 SELECT session_id,fingerprint,latest_timestamp,entry_count,turn_count,preview
+                 SELECT session_id,fingerprint,latest_timestamp,entry_count,turn_count,indexed_text_bytes,preview
                  FROM session_rows{cursor_filter}
                  ORDER BY latest_timestamp DESC,session_id ASC LIMIT ?{limit_parameter}"
             );
@@ -879,7 +880,9 @@ impl MemoryStore {
                         "latestTimestamp": row.get::<_, i64>(2)?,
                         "entryCount": row.get::<_, i64>(3)?,
                         "turnCount": row.get::<_, i64>(4)?,
-                        "preview": row.get::<_, Option<String>>(5)?.map(|s| catalogue_preview(&s)),
+                        // UTF-8 bytes of visible indexed chunks; overlap is counted conservatively.
+                        "indexedTextBytes": row.get::<_, i64>(5)?,
+                        "preview": row.get::<_, Option<String>>(6)?.map(|s| catalogue_preview(&s)),
                     }))
                 } else {
                     let user_text: String = row.get(5)?;
@@ -975,7 +978,9 @@ impl MemoryStore {
         let staged_session_ids = {
             let mut statement = conn
                 .prepare(
-                    "SELECT session_id FROM conversation_index_staging_batches ORDER BY session_id",
+                    // Committed receipts remain for idempotent final-batch retries;
+                    // only unpublished batches mean an index update is in progress.
+                    "SELECT session_id FROM conversation_index_staging_batches WHERE state='staging' ORDER BY session_id",
                 )
                 .map_err(db_err)?;
             let rows = statement
@@ -2271,6 +2276,77 @@ mod tests {
     }
 
     #[test]
+    fn catalogue_session_bytes_count_utf8_chunks_and_apply_before_scope() {
+        let f = Fixture::new();
+        let mut overlap = entry("overlap", None, 1, "user", "😀重叠", None);
+        overlap.chunk = 1;
+        let long = entry("long", None, 2, "assistant", &"长".repeat(4_000), None);
+        f.replace(
+            "s1",
+            "fp1",
+            None,
+            vec![entry("unicode", None, 0, "user", "中文😀", None), overlap, long],
+            0,
+        );
+
+        let all = f
+            .1
+            .memory_catalogue(&catalogue_request("sessions", json!({"sessionIds":["s1"]}), None))
+            .unwrap();
+        // UTF-8: 中文😀 = 10 bytes; 😀重叠 = 10 bytes; 长 × 4,000 = 12,000 bytes.
+        // The overlapping chunk is intentionally counted again, yielding a conservative 12,020-byte bound.
+        assert_eq!(all["entries"][0]["indexedTextBytes"], 12_020);
+
+        let before = f
+            .1
+            .memory_catalogue(
+                &catalogue_request(
+                    "sessions",
+                    json!({"sessionIds":["s1"],"before":1_700_000_000_002_i64}),
+                    None,
+                ),
+            )
+            .unwrap();
+        assert_eq!(before["entries"][0]["indexedTextBytes"], 20);
+    }
+
+    #[test]
+    fn catalogue_session_bytes_exclude_forgotten_and_cleared_rows() {
+        let f = Fixture::new();
+        f.replace(
+            "s1",
+            "fp1",
+            None,
+            vec![
+                entry("cleared", None, 1, "user", "cleared", None),
+                entry("forgotten", Some("forgotten-event"), 2, "user", "forgotten", None),
+                entry("visible", None, 3, "user", "保留😀", None),
+            ],
+            0,
+        );
+        {
+            let conn = f.1.lock().expect("memory lock");
+            conn.execute(
+                "INSERT INTO conversation_index_clear_fences(session_id,max_seq,created_at) VALUES ('s1',1,0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversation_index_suppressions(session_id,entry_id,event_id,seq,created_at) VALUES ('s1','forgotten','forgotten-event',2,0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let page = f
+            .1
+            .memory_catalogue(&catalogue_request("sessions", json!({"sessionIds":["s1"]}), None))
+            .unwrap();
+        assert_eq!(page["entries"][0]["entryCount"], 1);
+        assert_eq!(page["entries"][0]["indexedTextBytes"], 10);
+    }
+
+    #[test]
     fn read_admits_only_exact_entry_or_anchored_turn_and_rejects_stale_source() {
         let f = Fixture::new();
         let revision = f.replace(
@@ -3117,6 +3193,10 @@ mod tests {
             revision
         );
         assert_eq!(
+            fixture.1.conversation_index_status().expect("staging status")["stagedSessionIds"],
+            json!(["s1"])
+        );
+        assert_eq!(
             fixture
                 .1
                 .conversation_search("旧索引", "s1", Some(10), None, false, None, None, None)
@@ -3166,6 +3246,9 @@ mod tests {
                 .expect("idempotent final retry"),
             committed
         );
+        let status = fixture.1.conversation_index_status().expect("committed status");
+        assert_eq!(status["stagedSessionIds"], json!([]));
+        assert_eq!(status["sessions"], json!([{ "sessionId": "s1", "fingerprint": "fp2" }]));
         assert_eq!(
             fixture
                 .1

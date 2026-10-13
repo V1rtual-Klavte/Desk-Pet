@@ -15,6 +15,16 @@ afterEach(() => {
 })
 
 describe("Runtime trace [trace-runtime]", () => {
+  it("阅读器 trace 只保留结果与计数，不记录引文和笔记 [trace-memory-reading-schema]", () => {
+    const context = createRuntimeTraceContext("reader-session", "reader-request")
+    let observed: RuntimeTraceEvent | undefined
+    unsubscribes.push(subscribeRuntimeTrace(event => { observed = event }))
+    publishRuntimeTrace(context, "memory_reading_end", () => ({
+      status: "completed", cached: false, sourceCount: 4, noteCount: 2, durationMs: 17,
+      quote: "private source", notes: [{ relevance: "private derived interpretation" }],
+    }))
+    expect(observed?.payload).toEqual({ status: "completed", cached: false, sourceCount: 4, noteCount: 2, durationMs: 17 })
+  })
   it("does not evaluate payload factories or allocate event IDs without subscribers [trace-lazy-off]", () => {
     expect(hasRuntimeTraceSubscribers(), "测试开始时有泄漏的 trace observer").toBe(false)
     const context = createRuntimeTraceContext("session-test", "request-test", "turn-test")
@@ -88,11 +98,26 @@ describe("Runtime trace [trace-runtime]", () => {
     publishRuntimeTrace(context, "memory_recall_rendered", () => ({
       sourceIds: ["kept-id@1"], droppedIds: ["budget-dropped-id@1"], projectedCount: 2,
       usedTokens: 88, status: "inserted", rawMemoryText: "private memory content",
+      retrieval: { complete: true, missingChannels: [], text: "private memory content" },
+      history: { mode: "focused", scope: "matched_sessions", complete: false, sessionCount: 2,
+        entryCount: 8, reason: "budget", text: "private memory content", sessionIds: ["private-session"] },
     }))
 
     expect(observed?.payload.sourceIds, "render evidence must distinguish admitted IDs from budget drops").toEqual(["kept-id@1"])
     expect(observed?.payload.droppedIds).toEqual(["budget-dropped-id@1"])
+    expect(observed?.payload.retrieval).toEqual({ complete: true, missingChannels: [] })
+    expect(observed?.payload.history).toEqual({ mode: "focused", scope: "matched_sessions", complete: false,
+      sessionCount: 2, entryCount: 8, reason: "budget" })
+    expect(Object.isFrozen(observed?.payload.history)).toBe(true)
     expect(JSON.stringify(observed), "memory正文进入 trace").not.toContain("private memory content")
+    expect(JSON.stringify(observed), "未准入的会话列表进入 trace").not.toContain("private-session")
+
+    publishRuntimeTrace(context, "memory_recall_end", () => ({ status: "complete", fallback: false,
+      history: { mode: "direct", scope: "visible_history", complete: true, sessionCount: 1, entryCount: 4,
+        text: "private memory content" } }))
+    expect(observed?.payload.history).toEqual({ mode: "direct", scope: "visible_history", complete: true,
+      sessionCount: 1, entryCount: 4 })
+    expect(JSON.stringify(observed)).not.toContain("private memory content")
   })
 
   it("limits behavior and proactive governance events to structural fields [trace-proactive-behavior-schema]", () => {

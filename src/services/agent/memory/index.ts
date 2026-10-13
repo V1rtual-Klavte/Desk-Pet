@@ -17,8 +17,11 @@ export type { MemoryEpisodeSourcePage, MemoryCatalogueFactScope, MemoryCatalogue
 
 export { deriveMemoryRecallBudget } from "./budget"
 export type { MemoryRecallBudget } from "./budget"
-export { renderMemoryRecall, MEMORY_READING_POLICY } from "./projection"
+export { renderMemoryRecall, reconcileMemoryHistoryCoverage, MEMORY_READING_POLICY } from "./projection"
+export type { MemoryRecallRetrievalStatus, MemoryRecallOutcome, MemoryRecallHistoryCoverage } from "./projection"
 export { deriveMemoryQueryPlan } from "./query"
+export { focusMemoryEvidence, applyMemoryReadingNotes } from "./reader"
+export type { ParsedMemoryReadingNote, FocusMemoryEvidenceResult } from "./reader"
 
 export { parseRerankIds } from "./rerank"
 export { acquireConversationIndexSnapshot, flushConversationIndex, invalidateConversationSession, recallConversation, validateConversationProjections } from "./conversation"

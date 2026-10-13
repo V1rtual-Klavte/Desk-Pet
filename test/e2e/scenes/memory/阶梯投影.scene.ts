@@ -193,6 +193,23 @@ function textOfContent(content: unknown): string {
   }).filter(Boolean).join("\n")
 }
 
+/**
+ * Provider payload adapters can serialize request-only custom blocks as user messages.
+ * The production ladder computes protection before those blocks are appended, so replay
+ * preserves indexes while restoring their custom identity only for the protection count.
+ * Scene userText values intentionally do not use either reserved prefix.
+ */
+function protectionView(messages: Context["messages"]): Array<{ role: string }> {
+  return messages.map(message => {
+    if (message.role !== "user") return message
+    const text = textOfContent(message.content)
+    if (text.startsWith("[记忆与会话参考]") || text.startsWith("[系统变量 - 只读]")) {
+      return { role: "custom" }
+    }
+    return message
+  })
+}
+
 /** 逐 text 块复算投影（`applyLevels` 的同形实现）：字符串正文直接投影，其它块原样留在原位。 */
 function projectTextBlocks(content: unknown, project: (text: string) => string): unknown {
   if (typeof content === "string") return project(content)
@@ -415,7 +432,7 @@ function replayPlan(request: RecordedRequest, stored: readonly StoredResult[]): 
     measure,
     window: WINDOW_TOKENS,
     preserveToolNames: preservedToolNames(listAll()),
-    protectedIndexes: protectedMessageIndexes(view),
+    protectedIndexes: protectedMessageIndexes(protectionView(view)),
   })
 }
 
@@ -656,7 +673,7 @@ export const 阶梯投影: SceneDef = {
         const last = requests[requests.length - 1]!
         const ids = stored.map(entry => entry.id)
         // 保护区（口径 B）：只挡级 2，超阈候选照样缩短。
-        const protectedIndexes = protectedMessageIndexes(last.messages)
+        const protectedIndexes = protectedMessageIndexes(protectionView(last.messages))
         const viewIndexes = last.messages.flatMap((message, index) => (message.role === "toolResult" ? [index] : []))
         if (viewIndexes.length !== stored.length) throw new Error(`第 2 轮视图与存档的条目数不一致｜${sizing()}`)
         for (const index of viewIndexes) {
@@ -768,7 +785,7 @@ export const 阶梯投影: SceneDef = {
           }
           if (plan.level !== 2) throw new Error(`计划应为级 2（有清空），实际级 ${plan.level}｜${sizing()}`)
 
-          const protectedIndexes = protectedMessageIndexes(last.messages)
+          const protectedIndexes = protectedMessageIndexes(protectionView(last.messages))
           // 视图下标 → 探针身份：配对与 `replayPlan` 同源（视图序 = 存档序，配对自检在那里）。
           const indexOf = (toolName: string): number[] => viewIndexes.filter((_index, at) => stored[at]?.toolName === toolName)
           // 保护区外 + 有地址 ⇒ 级 2；保护区内 + 有地址 ⇒ 级 1（口径 B：保护区只挡级 2）。
