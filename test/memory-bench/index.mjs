@@ -71,7 +71,7 @@ function groupKeyOf(dataset, item) {
 
 /**
  * cell 规划：按组连续性排序（LoCoMo 一段对话只灌一次库），组内用 seed 洗牌，
- * 再截断 limit —— limit 语义是「本次最多跑几题」，且不会从组中间切开。
+ * 再在打平后的顺序截断 limit —— limit 语义是「本次最多跑几题」，可能在组中间结束。
  */
 export function planBenchCells(dataset, file, { limit, caseFilter, seed } = {}) {
   let cases = file.cases
@@ -105,9 +105,6 @@ function caseRefOf(dataset, caseDef) {
 }
 
 function judgeInputFor(dataset, file, caseDef, outcome) {
-  if (dataset === "longmemeval")
-    return { kind: "longmemeval", questionType: caseDef.questionType, question: caseDef.question,
-      answer: caseDef.answer, response: outcome.answer ?? "", abstention: caseDef.abstention === true }
   if (dataset === "memorybank") {
     const persona = file.personas.find(item => item.name === caseDef.persona)
     if (!persona) throw new Error(`${caseDef.caseId}: 找不到角色 ${caseDef.persona}`)
@@ -118,7 +115,7 @@ function judgeInputFor(dataset, file, caseDef, outcome) {
 
 /** 同一数据集的判分调度；judgments 缺省时只出检索确定性指标。 */
 export function scoreBenchDataset(dataset, file, outcomes, judgments = {}, cases = file.cases) {
-  if (dataset === "longmemeval") return scoreLongMemEval(cases, outcomes, judgments)
+  if (dataset === "longmemeval") return scoreLongMemEval(cases, outcomes, {})
   if (dataset === "locomo") return scoreLocomo(cases, outcomes)
   if (dataset === "memorybank") return scoreMemoryBank(cases, outcomes, judgments)
   throw new Error(`未登记的判分数据集: ${dataset}`)
@@ -132,7 +129,7 @@ export async function runMemoryBenchEvaluation({
   if (seed === undefined || seed === null || String(seed).length === 0) throw new TypeError("seed is required")
   const errors = validateBenchCaseFile(dataset, file)
   if (errors.length) throw new Error(`memory bench 案例文件非法: ${errors.join("; ")}`)
-  const judgeEnabled = judge !== "off" && judge !== false && dataset !== "locomo"
+  const judgeEnabled = judge !== "off" && judge !== false && dataset === "memorybank"
   if (judgeEnabled && (typeof judgeModel !== "string" || !judgeModel.trim()))
     throw new TypeError("judge 开启时必须提供 judgeModel")
   const cells = planBenchCells(dataset, file, { limit, caseFilter, seed })
@@ -171,8 +168,15 @@ export async function runMemoryBenchEvaluation({
           judgment = { adjudicated: false, error: String(error?.message ?? error) }
         }
       }
-      consecutiveInfrastructureFailures = 0
+      if (outcome.status === "failed" && outcome.failureKind === "infrastructure") {
+        failures.push({ caseId: cell.caseId, groupKey: cell.groupKey, kind: "infrastructure", message: outcome.error ?? "cell failed" })
+        consecutiveInfrastructureFailures += 1
+      } else consecutiveInfrastructureFailures = 0
       outcomes.push({ ...outcome, groupKey: cell.groupKey, caseRef: caseRefOf(dataset, cell.caseDef), judgment })
+      if (outcome.fixtureCleanup?.ok === false) {
+        failures.push({ caseId: cell.caseId, groupKey: cell.groupKey, kind: "fixture-cleanup",
+          message: outcome.fixtureCleanup.error ?? "isolated question session cleanup failed" })
+      }
       await onCellEnd?.({ ...context, status: outcome.status, outcome, judgment })
     } catch (error) {
       const failure = { caseId: cell.caseId, groupKey: cell.groupKey, kind: "infrastructure",
@@ -186,7 +190,19 @@ export async function runMemoryBenchEvaluation({
       }
     }
   }
-  await adapter.finalize?.()
+  // Cleanup/manifest failures must not erase paid requests and completed answers.
+  // Retain the evidence and fail the collection gate with the failing stage.
+  try {
+    await adapter.finalize?.()
+  } catch (error) {
+    failures.push({ kind: "infrastructure", stage: "finalize", message: String(error?.message ?? error) })
+  }
+  let manifest = null
+  try {
+    manifest = await adapter.manifest?.() ?? null
+  } catch (error) {
+    failures.push({ kind: "infrastructure", stage: "manifest", message: String(error?.message ?? error) })
+  }
   const judgments = {}
   for (const outcome of outcomes) if (outcome.judgment) judgments[outcome.caseId] = outcome.judgment
   const complete = outcomes.length === cells.length && failures.length === 0
@@ -219,7 +235,7 @@ export async function runMemoryBenchEvaluation({
     // 外部基准是观测证据：不设质量阈值，字段显式为 null（区别于自建 80 题的门禁）。
     qualityThresholds: null,
     gates: { complete, infrastructureFailures: failures.filter(failure => failure.kind !== "cancelled").length },
-    manifest: await adapter.manifest?.() ?? null,
+    manifest,
     plannedCells: cells.length,
     // attempted = 实际进入执行的 cell（包括抛错而未产生 outcome 的基础设施失败）。
     attemptedCells: attempted,

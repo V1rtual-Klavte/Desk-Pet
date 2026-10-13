@@ -44,18 +44,21 @@ export interface BenchSummary {
   completedCells: number | null
   quality: {
     kind: string
-    overall: { cases?: number; judged?: number | null; correct?: number | null; accuracy?: number | null; metric?: string } | null
+    overall: { cases?: number; judged?: number | null; correct?: number | null; accuracy?: number | null; metric?: string; pending?: boolean } | null
     buckets: BenchQualityRow[]
     breakdown: BenchQualityRow[]
     breakdownLabel: string
   }
   agentUsage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; uncachedInputTokens: number; requests: number }
+  usageByStage: Record<string, { inputTokens: number; outputTokens: number; requests: number; uncachedInputTokens: number;
+    cacheReadTokens: number; cacheWriteTokens: number; cacheKnownRequests: number; cacheUnknownRequests: number }>
   judgeUsage: { inputTokens: number; outputTokens: number; adjudicated: number }
   missingUsage: number
+  unknownUsageRequests: number
   durationMs: number | null
   firstTextMeanMs: number | null
   firstTextSamples: number
-  ingest: { registeredSources: number; processedSources: number; oversizedSources: number; sweeps: number; scopeNormalized: number }
+  ingest: { registeredSources: number; processedSources: number; oversizedSources: number; sweeps: number }
   retrieval: Record<string, unknown> | null
   externalAdjudication: {
     judge: string

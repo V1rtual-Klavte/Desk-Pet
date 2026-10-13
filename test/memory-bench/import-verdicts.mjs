@@ -5,10 +5,17 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { scoreLongMemEval } from "./datasets/longmemeval/scorer.mjs"
+import { scoreLocomo } from "./datasets/locomo/scorer.mjs"
+const upstreamLock = JSON.parse(readFileSync(new URL("./upstream-lock.json", import.meta.url), "utf8"))
 import { exportHypotheses } from "./export-hypotheses.mjs"
 import { formatBenchSummary, parseBenchReportPayload, renderBenchHtmlReport, summarizeBenchReport } from "./report.mjs"
 
 const sha256 = value => createHash("sha256").update(value).digest("hex")
+const LONGMEMEVAL_OFFICIAL_JUDGES = new Map([
+  ["gpt-4o-mini", "gpt-4o-mini-2024-07-18"],
+  ["gpt-4o", "gpt-4o-2024-08-06"],
+  ["llama-3.1-70b-instruct", "meta-llama/Meta-Llama-3.1-70B-Instruct"],
+])
 
 function plannedCasesOf(report) {
   const subset = report.subsetDescription ?? {}
@@ -97,17 +104,25 @@ function parseVerdictLog(text) {
 export function importExternalVerdicts(report, verdictRows, {
   sourceReportSha256, verdictLogSha256, judge, scope, judgedAt,
 } = {}) {
+  if (report?.schemaVersion === "desk-pet-memory-bench/v1" && report.dataset === "locomo")
+    return importOfficialLocomoScores(report, verdictRows, { sourceReportSha256, verdictLogSha256, scope, judgedAt })
   if (report?.schemaVersion !== "desk-pet-memory-bench/v1" || report.dataset !== "longmemeval")
-    throw new Error("外部 autoeval_label 回填仅支持 LongMemEval memory-bench 原始报告")
+    throw new Error("外部官方结果回填仅支持 LongMemEval 或 LoCoMo memory-bench 原始报告")
   if (!Array.isArray(verdictRows) || verdictRows.length === 0) throw new Error("判分日志没有逐题 verdict")
   if (!/^[a-f0-9]{64}$/.test(sourceReportSha256 ?? "")) throw new TypeError("缺少原始报告 SHA-256")
   if (!/^[a-f0-9]{64}$/.test(verdictLogSha256 ?? "")) throw new TypeError("缺少判分日志 SHA-256")
+  if (!["oracle", "s"].includes(report.split)) throw new Error(`不支持的 LongMemEval split: ${report.split}`)
   if (typeof scope !== "string" || !scope.trim()) throw new TypeError("必须写明判分 scope")
   if (typeof judgedAt !== "string"
     || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(judgedAt)
     || !Number.isFinite(Date.parse(judgedAt)))
     throw new TypeError("judgedAt 必须是含时区的 ISO 8601 时间")
   const planned = plannedCasesOf(report)
+  const expectedDataForSplit = report.split === "s"
+    ? upstreamLock.downloads.longmemeval_s_cleaned : upstreamLock.downloads.longmemeval_oracle
+  if (report.upstream?.revision !== expectedDataForSplit.revision
+    || report.upstream?.fileSha256 !== expectedDataForSplit.sha256)
+    throw new Error("原始 LongMemEval 报告未绑定当前锁定 split 数据")
   const selectedCases = planned.cases
   const selectedCaseIds = new Set(selectedCases.map(item => item.caseId))
   const outcomes = Array.isArray(report.outcomes) ? report.outcomes : []
@@ -122,8 +137,9 @@ export function importExternalVerdicts(report, verdictRows, {
     if (expectedCaseIds.has(outcome.caseId)) throw new Error(`原始报告 case_id 重复: ${outcome.caseId}`)
     expectedCaseIds.add(outcome.caseId)
     if (expectedByQuestionId.has(questionId)) throw new Error(`原始报告 question_id 重复: ${questionId}`)
-    const expected = { caseId: outcome.caseId, questionId, hypothesis: outcome.answer,
-      hypothesisSha256: sha256(outcome.answer) }
+    const question = outcome.caseRef?.question ?? null
+    const expected = { caseId: outcome.caseId, questionId, question, questionSha256: typeof question === "string" ? sha256(question) : null,
+      hypothesis: outcome.answer, hypothesisSha256: sha256(outcome.answer) }
     expectedByQuestionId.set(questionId, expected)
   }
   if (expectedByQuestionId.size === 0) throw new Error("原始报告没有可回填的已完成回答")
@@ -132,6 +148,7 @@ export function importExternalVerdicts(report, verdictRows, {
   const imported = new Map()
   const sourceKinds = new Set()
   const officialIdentities = new Set()
+  const officialRunMetadata = new Set()
   for (const row of verdictRows) {
     const questionId = row?.question_id
     if (typeof questionId !== "string" || !questionId.trim()) throw new Error("判分行缺少 question_id")
@@ -144,12 +161,29 @@ export function importExternalVerdicts(report, verdictRows, {
     if (row.source_report_sha256 !== sourceReportSha256)
       throw new Error(`${questionId}: source_report_sha256 与原始报告不匹配`)
     if (row.case_id !== expected.caseId) throw new Error(`${questionId}: case_id 与导出 hypotheses 不匹配`)
+    if (row.case_id_sha256 !== sha256(expected.caseId)) throw new Error(`${questionId}: case_id_sha256 与原始报告不匹配`)
+    if (row.question !== expected.question || row.question_sha256 !== expected.questionSha256)
+      throw new Error(`${questionId}: question text/hash 与原始报告不匹配`)
     if (row.hypothesis_sha256 !== expected.hypothesisSha256)
       throw new Error(`${questionId}: hypothesis_sha256 与原始回答不匹配`)
     if (row.hypothesis !== expected.hypothesis) throw new Error(`${questionId}: hypothesis 文本与原始回答不匹配`)
     const verdict = verdictOf(row)
     sourceKinds.add(verdict.method)
-    if (verdict.identity) officialIdentities.add(verdict.identity)
+    if (verdict.identity) {
+      officialIdentities.add(verdict.identity)
+      const officialRun = row.official_run
+      const requested = [...LONGMEMEVAL_OFFICIAL_JUDGES].find(([, canonical]) => canonical === verdict.identity)?.[0]
+      const expectedData = report.split === "s" ? upstreamLock.downloads.longmemeval_s_cleaned : upstreamLock.downloads.longmemeval_oracle
+      const expectedEvaluator = upstreamLock.downloads.longmemeval_evaluate_qa
+      if (!requested || !officialRun || officialRun.dataset !== "longmemeval"
+        || officialRun.split !== report.split
+        || officialRun.evaluator?.revision !== expectedEvaluator.revision
+        || officialRun.evaluator?.sha256 !== expectedEvaluator.sha256
+        || officialRun.data?.revision !== expectedData.revision || officialRun.data?.sha256 !== expectedData.sha256
+        || officialRun.metricModel?.requested !== requested || officialRun.metricModel?.canonical !== verdict.identity)
+        throw new Error(`${questionId}: 缺少或不匹配的锁定 official runner/evaluator/data metadata`)
+      officialRunMetadata.add(JSON.stringify(officialRun))
+    }
     imported.set(expected.caseId, { adjudicated: true, correct: verdict.correct,
       raw: verdict.correct ? "yes" : "no", source: "external",
       judge: verdict.identity ?? (typeof judge === "string" ? judge.trim() : null),
@@ -158,9 +192,15 @@ export function importExternalVerdicts(report, verdictRows, {
   }
   if (sourceKinds.size !== 1) throw new Error("同一份回填日志不能混用官方 autoeval_label 与手工 verdict")
   if (officialIdentities.size > 1) throw new Error("判分日志包含多个 autoeval_label model")
+  if (officialRunMetadata.size > 1) throw new Error("判分日志包含多个 official runner/evaluator/data identity")
   const method = [...sourceKinds][0]
   const officialIdentity = [...officialIdentities][0] ?? null
-  if (officialIdentity && judge && judge !== officialIdentity)
+  if (officialIdentity && ![...LONGMEMEVAL_OFFICIAL_JUDGES.values()].includes(officialIdentity))
+    throw new Error(`autoeval_label.model 不是锁定官方 evaluator 支持的 identity: ${officialIdentity}`)
+  if (method === "LongMemEval official evaluate_qa.py autoeval_label" && imported.size !== expectedByQuestionId.size)
+    throw new Error(`官方 LongMemEval 结果缺题: ${imported.size}/${expectedByQuestionId.size}`)
+  const judgeCanonical = LONGMEMEVAL_OFFICIAL_JUDGES.get(judge) ?? judge
+  if (officialIdentity && judge && judgeCanonical !== officialIdentity)
     throw new Error(`--judge=${judge} 与 autoeval_label.model=${officialIdentity} 不一致`)
   if (officialIdentity && report.manifest?.model && officialIdentity === report.manifest.model)
     throw new Error("外部 judge 必须异构于报告中的被测模型")
@@ -177,6 +217,7 @@ export function importExternalVerdicts(report, verdictRows, {
     Object.fromEntries([...imported].map(([caseId, judgment]) => [caseId, judgment])), {
       plannedCountsByType: planned.plannedCountsByType,
       abstentionCount: planned.abstentionCount,
+      scoringStatus: method === "LongMemEval official evaluate_qa.py autoeval_label" ? "official" : "manual",
     })
   // 外部回填只替换答案结论；原 run 的确定性检索与 ingest 证据不动。
   recomputed.retrieval = report.scores?.retrieval ?? recomputed.retrieval
@@ -205,6 +246,78 @@ export function importExternalVerdicts(report, verdictRows, {
       mappedAbstentionCount: selectedCases.filter(item => typeof item.abstention === "boolean").length,
       unknownAbstentionCount: selectedCases.filter(item => typeof item.abstention !== "boolean").length },
     note: "仅有逐题且通过 report/case/question/hypothesis 哈希绑定的 yes/no 进入判分；无题级数据的汇总比例不推造逐题 verdict",
+  }
+  return derived
+}
+
+function importOfficialLocomoScores(report, rows, { sourceReportSha256, verdictLogSha256, scope, judgedAt }) {
+  const lock = upstreamLock.downloads
+  const revision = lock.locomo_evaluation.revision
+  if (report.upstream?.revision !== lock.locomo10.revision || report.upstream?.fileSha256 !== lock.locomo10.sha256)
+    throw new Error("原始 LoCoMo 报告未绑定当前锁定数据集")
+  if (!Array.isArray(rows) || !rows.length) throw new Error("LoCoMo 官方评分日志为空")
+  if (!/^[a-f0-9]{64}$/.test(sourceReportSha256 ?? "") || !/^[a-f0-9]{64}$/.test(verdictLogSha256 ?? ""))
+    throw new TypeError("缺少原始报告/官方结果 SHA-256")
+  if (typeof scope !== "string" || !scope.trim()) throw new TypeError("必须写明判分 scope")
+  if (typeof judgedAt !== "string" || !Number.isFinite(Date.parse(judgedAt)))
+    throw new TypeError("judgedAt 必须是有效 ISO 时间")
+  const selectedIds = report.subsetDescription?.requestedCaseIds
+  if (!Array.isArray(selectedIds) || new Set(selectedIds).size !== selectedIds.length)
+    throw new Error("原始 LoCoMo 报告所选题 ID 缺失或重复")
+  const scoreCases = report.scores?.rows
+  if (!Array.isArray(scoreCases)) throw new Error("原始 LoCoMo 报告缺少确定性逐题 score rows")
+  const selected = new Set(selectedIds)
+  const expected = new Map()
+  for (const outcome of report.outcomes ?? []) {
+    if (outcome.status !== "complete" || typeof outcome.answer !== "string") continue
+    const ref = outcome.caseRef ?? {}
+    if (expected.has(outcome.caseId)) throw new Error(`原始报告 case_id 重复: ${outcome.caseId}`)
+    if (!selected.has(outcome.caseId) || typeof ref.sampleId !== "string" || !Number.isInteger(ref.questionIndex)
+      || typeof ref.question !== "string" || !Number.isInteger(ref.category))
+      throw new Error(`${outcome.caseId}: 完成题缺少可验证的 LoCoMo identity/question/category`)
+    expected.set(outcome.caseId, { outcome, ref, hypothesisSha256: sha256(outcome.answer) })
+  }
+  if (!expected.size) throw new Error("原始报告没有已完成的 LoCoMo 回答")
+  const seen = new Set()
+  const scores = []
+  for (const row of rows) {
+    const id = row?.question_id
+    const exp = expected.get(id)
+    if (typeof id !== "string" || seen.has(id)) throw new Error("LoCoMo official question_id 缺失或重复")
+    seen.add(id)
+    if (!exp) throw new Error(`未知或未完成的 LoCoMo question_id: ${id}`)
+    const { outcome, ref, hypothesisSha256 } = exp
+    if (row.source_report_sha256 !== sourceReportSha256 || row.case_id !== id || id !== outcome.caseId
+      || row.case_id_sha256 !== sha256(id))
+      throw new Error(`${id}: source report/case identity mismatch`)
+    if (row.hypothesis !== outcome.answer || row.hypothesis_sha256 !== hypothesisSha256)
+      throw new Error(`${id}: hypothesis tampered or does not match source report`)
+    if (row.sample_id !== ref.sampleId || row.question_index !== ref.questionIndex || row.question !== ref.question
+      || row.question_sha256 !== sha256(ref.question) || row.category !== ref.category)
+      throw new Error(`${id}: question identity/category mismatch`)
+    if (row.official_revision !== revision || row.official_script_sha256 !== lock.locomo_evaluation.sha256
+      || row.official_data_sha256 !== lock.locomo10.sha256 || row.official_metric !== "locomo-category-score")
+      throw new Error(`${id}: official script/data identity mismatch`)
+    if (!Number.isFinite(row.official_score) || row.official_score < 0 || row.official_score > 1)
+      throw new Error(`${id}: invalid official score`)
+    scores.push({ caseId: id, category: ref.category, score: row.official_score })
+  }
+  if (seen.size !== expected.size) throw new Error(`LoCoMo official results incomplete: ${seen.size}/${expected.size}`)
+  const derived = structuredClone(report)
+  const recomputed = scoreLocomo(scoreCases, report.outcomes, scores)
+  recomputed.evidenceRecallMean = report.scores.evidenceRecallMean
+  recomputed.ingest = report.scores.ingest
+  const oldRows = new Map(scoreCases.map(row => [row.caseId, row]))
+  recomputed.rows = recomputed.rows.map(row => ({ ...oldRows.get(row.caseId), ...row,
+    evidenceRecall: oldRows.get(row.caseId)?.evidenceRecall ?? null }))
+  derived.scores = recomputed
+  derived.externalAdjudication = {
+    judge: "official-script", method: "Snap LoCoMo task_eval/evaluation.py::eval_question_answering",
+    scope: scope.trim(), judgedAt, importedAt: new Date().toISOString(), sourceReportSha256, verdictLogSha256,
+    coverage: { selectedCases: selectedIds.length, hypothesesExported: expected.size, scoresAccepted: scores.length,
+      missingHypotheses: selectedIds.length - expected.size, missingScores: 0 },
+    official: { revision, scriptSha256: lock.locomo_evaluation.sha256, dataSha256: lock.locomo10.sha256,
+      metric: "official category score (1-5)" },
   }
   return derived
 }

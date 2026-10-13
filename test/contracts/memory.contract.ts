@@ -330,7 +330,7 @@ export const memoryContract: ModuleContract = {
   ],
   // 2026-10-10：预算/结构化证据归 mm-54..61，阅读器网关、缓存与取消组合归 mm-62；
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
-  sourceHash: "44f83d485eae277180779c0e26a9fedf7f6d6855bee4544050685184e6e0eec1",
+  sourceHash: "8950f4b4d9d6fc997dfc585fef68b70e0f79640f8cb97c863e539fa39fc7d4f6",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },

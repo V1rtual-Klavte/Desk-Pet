@@ -126,7 +126,7 @@ export interface BenchCellOutcome {
   metrics?: { firstDeliveredTextDeltaMs?: number }
   usage?: ReturnType<typeof summarizeMemoryQualityUsage>["usage"]
   readerUsage?: { inputTokens: number; outputTokens: number; calls: number }
-  cache?: { status: "hit" | "unknown" }
+  cache?: { status: "hit" | "miss" | "unknown" }
   error?: string
 }
 

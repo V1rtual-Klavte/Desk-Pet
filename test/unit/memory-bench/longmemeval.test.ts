@@ -249,5 +249,8 @@ describe("LongMemEval 计分", () => {
     expect(score.byType.find((row: any) => row.questionType === "temporal-reasoning"))
       .toMatchObject({ cases: 1, judged: 0, correct: 0, accuracy: null })
     expect(score.strictEmptyTool).toMatchObject({ eligible: 1, judged: 1, correct: 1, contaminated: 1, incomplete: 2 })
+    const memoryScore = scoreLongMemEval(cases as never, [{ ...outcomes[0], status: "complete", usedTools: true,
+      protocolViolations: [], tooling: { requestedMode: "memory", observedCalls: 2 } }] as never) as Record<string, any>
+    expect(memoryScore.strictEmptyTool).toMatchObject({ eligible: 0, productMemory: 1, contaminated: 0 })
   })
 })

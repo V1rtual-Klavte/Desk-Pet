@@ -72,9 +72,25 @@ export const MEMORY_QUALITY_CASES: readonly MemoryQualityCase[]
 export function validateMemoryQualityDataset(cases?: readonly MemoryQualityCase[]): string[]
 export function shuffled<T>(values: readonly T[], seed: string | number): T[]
 export function scoreMemoryQualityOutcomes(cases: readonly MemoryQualityCase[], outcomes: readonly (MemoryQualityCellOutcome & { trial?: number })[]): Record<string, unknown>
+export interface PiUsageSummary {
+  inputTokens: number; outputTokens: number; requests: number; uncachedInputTokens: number;
+    cacheReadTokens: number | null; cacheWriteTokens: number | null; cacheUsageReported: boolean;
+    accounting: "pi-input-plus-normalized-cache"
+}
+export function summarizePiUsage(usages: readonly { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown; cacheUsageReported?: unknown }[]): {
+  usage: PiUsageSummary | null
+  knownUsage: PiUsageSummary | null
+  unknownUsageRequests: number
+  cache: "hit" | "miss" | "unknown"
+  cacheRequests: { hit: number; miss: number; unknown: number }
+}
 export function summarizeMemoryQualityUsage(events: readonly unknown[]): {
-  usage: NonNullable<MemoryQualityCellOutcome["usage"]> | null
-  cache: "hit" | "unknown"
+  usage: PiUsageSummary | null
+  knownUsage: PiUsageSummary | null
+  unknownUsageRequests: number
+  cache: "hit" | "miss" | "unknown"
+  cacheRequests: { hit: number; miss: number; unknown: number }
+  responseModels: Record<string, string[]>
 }
 export function runMemoryQualityEvaluation(options: {
   adapter: {
