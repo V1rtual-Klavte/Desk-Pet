@@ -3,6 +3,17 @@ import { deriveMemoryQueryPlan } from "@/services/agent/memory/query"
 import { hasAdaptiveQueryShape, hasPersonalRecallIntent } from "@/services/agent/memory/query-shape"
 
 describe("记忆检索意图", () => {
+  it("第三人称经历和明确对话任务进入召回，一般知识仍跳过 [memory-query-plan-third-person-history]", () => {
+    for (const question of ["What book did Nora recommend to Eli?", "When is Eli planning on going camping?",
+      "How did she feel after the accident?", "她上次说过什么？", "林晓之前推荐什么书？"])
+      expect(deriveMemoryQueryPlan(question).recallIntent, question).toBe("lookup")
+    expect(deriveMemoryQueryPlan("Why did Nora choose the blue route?").recallIntent).toBe("explanation")
+    expect(deriveMemoryQueryPlan("Answer using our conversation history:\nWould Eli enjoy classical music?"))
+      .toMatchObject({ recallIntent: "lookup", entities: ["Would", "Eli", "enjoy", "classical", "music"] })
+    for (const question of ["Who is Ed Sheeran?", "When is Christmas?", "What did the telescope discover?",
+      "How many planets are in the solar system?", "为什么地球是圆的？"])
+      expect(deriveMemoryQueryPlan(question).recallIntent, question).toBe("none")
+  })
   it("个人历史和建议均需要过去的证据，一般问答不触发 [memory-query-personal-intent]", () => {
     for (const query of [
       "How many projects have I led?", "How long had I lived in my last apartment?",

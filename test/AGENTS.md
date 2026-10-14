@@ -20,7 +20,7 @@
 | 契约 | 模块行为覆盖门禁（sourceHash + caseId 三层记账） | README「Contract 与 sourceHash」；`test/contracts/` | 预检 attestation；caseids-*.json |
 | trace 证据 | 运行线路完整落盘、完整性核对、理想稿审阅 | README「Trace、记忆质量与性能门禁」；`test:trace-review` | `test/reports/traces/trace-bundle-*`（bench / quality 在各自子目录的 `traces/`） |
 | 理想稿 | 用户手写的"期望线路"，审阅对照基准（只由用户写） | [ideal-traces/README.md](ideal-traces/README.md) | 审阅 JSON（与报告配对、连带淘汰） |
-| 外部记忆基准（权威对照） | 质量主口径：LongMemEval / MemoryBank cn / LoCoMo（基于官方判分移植；按消耗分层跑，不进 CI／发布门禁）；LongMemEval oracle 另有 privileged eval-only direct/CoN reader upper-bound control，报告不得当产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
+| 外部记忆基准（权威对照） | 质量主口径：LongMemEval / MemoryBank cn / LoCoMo（基于官方判分移植；按消耗分层跑，不进 CI／发布门禁）；LoCoMo 固定真人角色适配与统一任务规则、LongMemEval oracle 的 privileged reader control 均显式标记非产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
 | 记忆质量（自建兜底） | 兜底冒烟与治理语义回归：外部集未覆盖的来源/scope 反例、纠正、遗忘、称呼/偏好（真实 Provider，烧 token） | README 记忆质量段；`test:memory-quality` | 报告 + review/scored 包（组保留） |
 | 记忆性能 | release 存储 + debug IPC 的资源账（1k/10k 库、P95） | README 性能段；`test:memory-performance` | `test/reports/performance/`（3 份滚动） |
 | 缺陷注入 | 快层的区分力观测（植入缺陷看抓不抓得到） | README「缺陷注入」；`test:mutation` | 控制台（不设阈值） |

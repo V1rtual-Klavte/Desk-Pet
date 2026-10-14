@@ -11,6 +11,11 @@ export const LOCOMO_ANSWER_FORMAT = {
   prompt: "For this evaluation, the visible answer must be a concise English phrase, without greetings or explanations. These task-specific language and length requirements take precedence over the Card's general conversational style. Use exact words from the conversation whenever possible. Include all items, dates, numbers and qualifications needed to answer the question completely; do not omit required information merely to be brief. If the available evidence is insufficient to answer, reply exactly: No information available. Do not invent missing facts. Keep following the system's reply-metadata protocol; that metadata is not part of the visible answer.",
 }
 
+/** Uniform task context, independent of answer/category/evidence labels. */
+export function formatLocomoQuestion(question) {
+  return `Answer using our conversation history:\n${question}`
+}
+
 export function formatLocomoAnswerCard(rawCard) {
   if (rawCard.includes(LOCOMO_ANSWER_FORMAT.prompt)) return rawCard
   const heading = /^# 输出规则\s*$/mu

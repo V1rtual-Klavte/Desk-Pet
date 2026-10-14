@@ -24,7 +24,19 @@ export interface DerivedMemoryQueryPlan extends LocalMemoryQueryShape {
 }
 
 export function hasExplicitRewriteHint(query: string): boolean {
-  return /(?:刚才|刚刚|之前|以前|上次|前面|提过|说过|我们聊过|某天聊了什么|那天聊了什么|你还记得|那个(?:偏好|习惯|东西|人|事情)?|那件事|那位|这件事|我喜欢|我的偏好|用户偏好|我的习惯|个人资料|画像|remember|previous|earlier|what did i (?:say|tell you)|my preference|about me)/iu.test(query)
+  return hasConversationHistoryContext(query) || hasThirdPersonHistoryIntent(query)
+    || /(?:刚才|刚刚|之前|以前|上次|前面|提过|说过|我们聊过|某天聊了什么|那天聊了什么|你还记得|那个(?:偏好|习惯|东西|人|事情)?|那件事|那位|这件事|我喜欢|我的偏好|用户偏好|我的习惯|个人资料|画像|remember|previous|earlier|what did i (?:say|tell you)|my preference|about me)/iu.test(query)
+}
+
+function hasConversationHistoryContext(query: string): boolean {
+  return /\b(?:using|from|according to|based on) (?:our |the |previous |past )?(?:conversation|chat) (?:history|records)\b|根据(?:我们(?:的)?|之前的|过去的)?(?:聊天|对话)(?:记录|历史)/iu.test(query)
+}
+
+/** Personal actions and plans, not every third-person/general-knowledge question. */
+export function hasThirdPersonHistoryIntent(query: string): boolean {
+  return /\b(?:[Ww]hat|[Ww]hich|[Ww]hen|[Ww]here|[Ww]hy|[Hh]ow)\b.{0,70}\b(?:did|has|had) (?:[\p{Lu}][\p{L}'’-]*|he|she|they)\b.{0,100}\b(?:recommend|suggest|say|tell|mention|share|paint|see|seen|feel|felt|attend|buy|bought|choose|chosen|visit|travel|start|finish)\b/u.test(query)
+    || /\b(?:[Ww]hen|[Ww]here|[Ww]hat)\b.{0,70}\b(?:is|was|are|were) (?:[\p{Lu}][\p{L}'’-]*|he|she|they)\b.{0,80}\b(?:planning|going|hoping)\b/u.test(query)
+    || /(?:他|她|他们|她们|[\p{Script=Han}]{2,4})(?:之前|以前|上次|曾经|当时|过去)[^。？！?！]{0,60}(?:什么|哪|何时|怎么|如何|为什么|多少)/u.test(query)
 }
 
 const SOCIAL_ACKNOWLEDGEMENT = /^(?:你好|嗨|哈喽|hello|hi|谢谢|感谢|好的|好|收到|明白|知道了|嗯|ok|okay|got it|thanks|thank you)[!！?？。，,.\s]*$/iu
@@ -45,7 +57,8 @@ export function hasPersonalRecallIntent(query: string): boolean {
 export function deriveLocalMemoryQueryShape(query: string, before?: number): LocalMemoryQueryShape {
   const text = query.trim()
   const datedConversationOverview = isDatedConversationOverview(text)
-  const explicitRecall = datedConversationOverview || /(?:曾经分享过|分享过|推(?:过|荐过)|推过荐|推荐过|建议过|提过|说过|告诉过|记录|聊过|某天聊了什么|那天聊了什么|之前聊了什么|上次聊了什么|记得|回忆|我(?:之前|以前|上次|曾经)|我们(?:之前|以前|上次|曾经)|what did (?:you|we|i)|did you (?:recommend|suggest|mention|say)|have we discussed|previously shared)/iu.test(text)
+  const explicitRecall = datedConversationOverview || hasConversationHistoryContext(text) || hasThirdPersonHistoryIntent(text)
+    || /(?:曾经分享过|分享过|推(?:过|荐过)|推过荐|推荐过|建议过|提过|说过|告诉过|记录|聊过|某天聊了什么|那天聊了什么|之前聊了什么|上次聊了什么|记得|回忆|我(?:之前|以前|上次|曾经)|我们(?:之前|以前|上次|曾经)|what did (?:you|we|i)|did you (?:recommend|suggest|mention|say)|have we discussed|previously shared)/iu.test(text)
   const personal = hasPersonalRecallIntent(text)
   const personalEvent = PERSONAL_EVENT_QUESTION.test(text)
   const personalQuestionText = text.replace(/(?:帮|告诉|给|发|问|提醒|替)我/gu, " ")
@@ -96,7 +109,7 @@ function extractEntities(query: string): string[] {
     .replace(/[？?！!，,。；;：:“”"'‘’()（）\[\]【】]/gu, " ")
     .replace(/(?:放在哪里|放哪儿|在哪里|哪儿|是什么|哪些|哪类|怎么做|怎么用|如何做|为什么|原因|几(?:本|个|次|件|条|种|项)|多少).*$/u, " ")
     .replace(/(?:我(?:们)?|你|曾经|之前|以前|上次|某天|什么|怎么|如何|为什么|原因|推荐过|推荐|建议过|建议|分享过|分享|告诉过|告诉|说过|说|提过|聊过|记得|回忆|总结|概括|所有|全部|有哪些|多少|几个|几次|的|了|吗|呢|啊|嘛)/gu, " ")
-  const normalized = chineseNormalized.replace(/\b(?:how|what|when|where|why|did|you|we|i|my|me|previously|recommend(?:ed)?|suggest(?:ed)?|share(?:d)?|tell|told|say|said|discuss(?:ed)?|remember|all|list|summari[sz]e|please|about|for|the|a|an|is|are|was|were|do|does|have|has|had|many|much|steps?|process|reason|advice|tips)\b/giu, " ")
+  const normalized = chineseNormalized.replace(/\b(?:answer|using|from|according|based|on|our|conversation|chat|history|records|how|what|when|where|why|did|you|we|i|my|me|previously|recommend(?:ed)?|suggest(?:ed)?|share(?:d)?|tell|told|say|said|discuss(?:ed)?|remember|all|list|summari[sz]e|please|about|for|the|a|an|is|are|was|were|do|does|have|has|had|many|much|steps?|process|reason|advice|tips)\b/giu, " ")
     .split(/\s+/u)
     .map(value => value.trim())
     .filter(value => [...value].length >= 2)

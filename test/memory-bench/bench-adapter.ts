@@ -4,7 +4,7 @@
 //
 // 与 test/memory-quality/live-adapter.ts 的差异（外部基准的本质不同）：
 //   · 不做 fact 金标与 fixture 指纹配对；LongMemEval 历史写完整 user/assistant JSONL，用户事实单独登记；
-//   · 提取走真实 dreaming（档位 off + 手动 sweep）；LME 保留生产 scope，其余数据集夹具归一到 user scope；
+//   · 提取走真实 dreaming（档位 off + 手动 sweep）；所有数据集保留生产 scope 与真实 JSONL；
 //   · 每题新建会话提问；cell = 题 × 1 trial（观测证据，不套自建集的 ≥3 trial 配对纪律）；
 //   · LoCoMo / MemoryBank 按「组」灌一次库、组内多题复用（对话级/角色级分组）。
 // 证据与计量：memory_recall_rendered / memory_recall_candidates trace + summarizeMemoryQualityUsage。
@@ -12,10 +12,10 @@
 import { getHostBridge } from "@/services/host"
 import { sendMessage } from "@/services/agent/runner"
 import {
-  applyMemoryChange, getMemoryItems, installMemoryProvider, memoryJobSources, memoryList, memoryStatus,
+  getMemoryItems, installMemoryProvider, memoryJobSources,
   registerMemorySources, runDreamingSweep, sqliteMemoryProvider,
 } from "@/services/agent/memory"
-import type { MemoryDraft, MemoryItem, MemorySource } from "@/services/agent/memory"
+import type { MemoryItem, MemorySource } from "@/services/agent/memory"
 import { aiConfig, flushConfig, memoryConfig, setOverrides } from "@/services/config"
 import { contextBudget, estimateRequestTokens, setCurrentTimeNoteAnchor } from "@/services/context"
 import { completePiText, getPiModel } from "@/services/engine/harness"
@@ -31,9 +31,10 @@ import { formatError } from "@/services/error"
 import { standardSetup } from "../host/standard-setup"
 import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, parseJudgeVerdict, parseMemoryBankJudgeVerdict } from "./judge.mjs"
 import { questionTimeAnchor } from "./datasets/longmemeval/importer.mjs"
-import { planScopeNormalization } from "./scope-normalize.mjs"
 import { summarizeMemoryQualityUsage } from "../memory-quality/index.mjs"
 import { buildReaderControlPrompts, requireCompleteReaderOutput } from "./reader-control.mjs"
+import { formatLocomoQuestion, LOCOMO_ANSWER_FORMAT } from "./datasets/locomo/fixture.mjs"
+import { buildLocomoHistory, installLocomoAnswerPolicy } from "./datasets/locomo/live-fixture"
 
 /** 与 src/services/agent/memory/sources.ts 的 EVIDENCE_CHARS 对齐：登记证据只保留引文长度。 */
 const EVIDENCE_CHARS = 2_000
@@ -159,6 +160,7 @@ interface PreparedGroup {
   sourceMeta: Map<string, SourceMeta>
   ingest: NonNullable<BenchCellOutcome["ingest"]>
   cleanupFailure?: string
+  answerPolicyCleanup?: () => Promise<void>
 }
 
 async function sha256(text: string): Promise<string> {
@@ -220,27 +222,6 @@ async function longMemEvalSources(caseDef: BenchCase): Promise<{ sources: Memory
       sources.push(source)
     }
     } finally { await releasePiSession(fixture.id) }
-  }
-  return { sources, meta }
-}
-
-function locomoSources(conversation: { sampleId: string;
-  sessions: Array<{ observedAt: number | null; turns: Array<{ speaker: string; diaId: string; text: string }> }> }): { sources: MemorySource[]; meta: Map<string, SourceMeta> } {
-  const sources: MemorySource[] = []
-  const meta = new Map<string, SourceMeta>()
-  let seq = 0
-  for (const session of conversation.sessions) {
-    for (const turn of session.turns) {
-      seq += 1
-      const sourceId = `${conversation.sampleId}:${turn.diaId}`
-      const observedAt = session.observedAt ?? 0
-      sources.push({ sourceId, sessionId: conversation.sampleId, entryId: turn.diaId,
-        eventId: `bench-locomo-${conversation.sampleId}-${seq}`, seq, contentHash: "",
-        evidence: turn.text.slice(0, EVIDENCE_CHARS), sourceLength: turn.text.length,
-        eligibleForMemory: true, taint: "trusted_user", origin: "user",
-        observedAt: observedAt + seq * 1_000 })
-      meta.set(sourceId, { observedAt: observedAt + seq * 1_000, diaId: turn.diaId })
-    }
   }
   return { sources, meta }
 }
@@ -338,33 +319,6 @@ async function drainDreaming(signal: AbortSignal | undefined, traces: unknown[])
   return { processed, oversized, sweeps, pendingLeft }
 }
 
-/**
- * session-scope 候选归一为 user scope（提问发生在新建会话，否则漏召回）。
- * Rust 禁止 update/supersede 跨范围改归属，因此用 add（同内容/同来源）+ forget 原条目；
- * 这是测试夹具对产品存储的显式治理操作，不改产品代码。
- *
- * 必须两段式执行：forget 写的来源墓碑会让之后引用同一来源的 add 判「来源未登记」，
- * 逐条 add→forget 在共享来源的候选上必炸。操作顺序由 scope-normalize.mjs 规划，
- * 这里按序执行、不再自行交错。
- */
-async function normalizeSessionScope(): Promise<number> {
-  const items = await memoryList(undefined, undefined, 1_000)
-  let normalized = 0
-  for (const operation of planScopeNormalization(items)) {
-    const revision = (await memoryStatus()).revision
-    if (operation.action === "add") {
-      const draft: MemoryDraft = operation.draft
-      await applyMemoryChange({ operationId: `bench-scope-add-${crypto.randomUUID()}`, baseRevision: revision,
-        action: "add", actor: "internal", draft })
-      normalized += 1
-    } else {
-      await applyMemoryChange({ operationId: `bench-scope-forget-${crypto.randomUUID()}`, baseRevision: revision,
-        action: "forget", actor: "internal", itemId: operation.itemId })
-    }
-  }
-  return normalized
-}
-
 function evidenceFromTraceEvents(traces: unknown[], sourceMeta: Map<string, SourceMeta>,
   itemById: Map<string, MemoryItem>): BenchEvidenceRef[] {
   const refs = new Map<string, BenchEvidenceRef>()
@@ -443,6 +397,7 @@ function formatMemoryBankHistory(persona: { name: string; metaInformation: Recor
  * Native L4 不建 UI；旧字段名兼容报告 schema，但时间点是 HostBridge publish 成功，不代表原生绘制。 */
 async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequence: number; total: number;
   group: PreparedGroup; groupReused: boolean; traces: unknown[]; timeAnchor: Date | null;
+  questionText?: string;
   signal?: AbortSignal }): Promise<BenchCellOutcome> {
   const { caseDef, groupKey, sequence, total, group, groupReused, traces, timeAnchor } = input
   installMemoryProvider(sqliteMemoryProvider)
@@ -456,7 +411,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
     // 相对日期题才在官方口径下被测量；其余数据集 timeAnchor 为 null，保持真实时钟。
     // 锚点只活在这个回合内，finally 复位，绝不外溢到下一题。
     setCurrentTimeNoteAnchor(timeAnchor)
-    const result = await sendMessage(String(caseDef.question), { requestId: `${groupKey}-q${sequence}-of-${total}`, toolMode: "none" })
+    const result = await sendMessage(input.questionText ?? String(caseDef.question), { requestId: `${groupKey}-q${sequence}-of-${total}`, toolMode: "none" })
     const firstDelta = publishedUiEventRecords("deskpet-assistant-stream")
       .find(({ payload }) => payload.sessionId === questionSession.id && payload.delta.trim())
     firstDeliveredTextDeltaMs = firstDelta === undefined ? undefined : firstDelta.publishedAt - start
@@ -505,6 +460,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
 export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderControlMode } = {}): {
   init(input: { dataset: string; split: string; file: unknown; evalRunId: string }): Promise<void> | void
   manifest(): Promise<Record<string, unknown>>
+  finalize(): Promise<void>
   reportNamespace(): string | undefined
   runCell(input: { caseId: string; groupKey: string; sequence: number; total: number; dataset: string;
     caseDef: BenchCase; seed: string; signal?: AbortSignal }): Promise<BenchCellOutcome>
@@ -529,7 +485,7 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
     else if (dataset === "locomo") {
       const conversation = (file.conversations ?? []).find(item => (item as { sampleId?: string }).sampleId === groupKey)
       if (!conversation) throw new Error(`找不到对话 ${groupKey}`)
-      built = locomoSources(conversation as Parameters<typeof locomoSources>[0])
+      built = await buildLocomoHistory(conversation as Parameters<typeof buildLocomoHistory>[0], EVIDENCE_CHARS)
     } else if (dataset === "memorybank") {
       const persona = (file.personas ?? []).find(item => (item as { name?: string }).name === groupKey)
       if (!persona) throw new Error(`找不到角色 ${groupKey}`)
@@ -540,11 +496,10 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
     const ingest = { registeredSources: built.sources.length, processedSources: drained.processed,
       oversizedSources: drained.oversized, scopeNormalized: 0, sweeps: drained.sweeps }
     if (drained.incompleteOutput) return { ok: false, error: drained.incompleteOutput, ingest }
-    // Only LoCoMo's direct-source fixture changes scope. JSONL-backed datasets keep
-    // production scope rules: add+forget would tombstone real conversation anchors.
-    const scopeNormalized = dataset === "locomo" ? await normalizeSessionScope() : 0
-    ingest.scopeNormalized = scopeNormalized
-    return { ok: true, group: { groupKey, storeGeneration: String(storeReset.generation), sourceMeta: built.meta, ingest } }
+    // All datasets keep production scope. Forgetting a fact's sources would also revoke
+    // their original conversation anchors; cross-session details stay in JSONL.
+    const answerPolicyCleanup = dataset === "locomo" ? await installLocomoAnswerPolicy() : undefined
+    return { ok: true, group: { groupKey, storeGeneration: String(storeReset.generation), sourceMeta: built.meta, ingest, answerPolicyCleanup } }
   }
 
   return {
@@ -569,7 +524,7 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
         storageMode: "rust-ipc", configHash: await sha256(JSON.stringify(cfg)),
         toolIsolation: "all model tools disabled; host fixture/governance IPC remains real",
         ingestion: dataset === "locomo"
-          ? "direct MemorySource registration; dreaming manual sweep; session scope normalized to user"
+          ? "complete per-session JSONL dialogue; speaker_a user-fact admission, speaker_b conversation-only; dreaming manual sweep; production scope rules"
           : `${dataset === "memorybank" ? "daily" : "per-session"} user/assistant JSONL fixture; user-only fact registration; dreaming manual sweep; production scope rules`,
         questionTimeAnchoring: dataset === "longmemeval"
           ? "LongMemEval: question_date 作为提问回合的 [当前时间]（本地墙钟）；其余数据集用真实时钟"
@@ -578,10 +533,18 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
           recallTimeoutMs: memoryConfig.recallTimeoutMs,
           rerankTimeoutMs: memoryConfig.rerankTimeoutMs },
         evidenceCapChars: EVIDENCE_CHARS, oversizedSourceChars: OVERSIZED_SOURCE_CHARS,
-        fixtureStorage: "isolated-e2e-root" }
+        fixtureStorage: "isolated-e2e-root",
+        scoreProvenance: dataset === "locomo" ? "official-locomo-deterministic-adapter-score; not product score" : "dataset-specific benchmark adapter",
+        ...(dataset === "locomo" ? { productScore: false } : {}),
+        answerPolicy: dataset === "locomo" ? LOCOMO_ANSWER_FORMAT : undefined,
+        questionInputPolicy: dataset === "locomo" ? "uniform conversation-history task prefix plus unchanged question; no QA gold/category/evidence in generation input" : undefined,
+        fixtureRoles: dataset === "locomo" ? { speakerA: "user-fact-eligible", speakerB: "conversation-only", dialogue: "complete-original-turns" } : undefined,
+      }
     },
 
     reportNamespace() { return options.readerControl ? `lme-oracle-reader-${options.readerControl}` : undefined },
+
+    async finalize() { await prepared?.answerPolicyCleanup?.() },
 
     async runCell({ caseDef, groupKey, sequence, total, signal }): Promise<BenchCellOutcome> {
       if (signal?.aborted) throw new Error("cancelled before bench cell")
@@ -603,6 +566,8 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
         let groupReused = true
         if (!prepared || prepared.groupKey !== groupKey) {
           // Reset once per group. Per-question setup would erase the reused store/history.
+          await prepared?.answerPolicyCleanup?.()
+          prepared = undefined
           await standardSetup()
           const result = await prepareGroup(groupKey, caseDef, traces, signal)
           if (!result.ok) {
@@ -618,7 +583,8 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
           await flushConfig()
         }
         const timeAnchor = dataset === "longmemeval" ? questionTimeAnchor(caseDef.questionDate) : null
-        return await askQuestion({ caseDef, groupKey, sequence, total, group: prepared, groupReused, traces, timeAnchor, signal })
+        return await askQuestion({ caseDef, groupKey, sequence, total, group: prepared, groupReused, traces, timeAnchor, signal,
+          questionText: dataset === "locomo" ? formatLocomoQuestion(String(caseDef.question)) : undefined })
       } finally {
         unsubscribe()
       }

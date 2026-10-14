@@ -189,21 +189,11 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 
 ## 6. 采集管线（与自建集的差异）
 
-- LongMemEval 每个原始会话、MemoryBank 每个历史日期建立隔离 JSONL 夹具，按顺序保留 user/assistant 角色与原始时间；不逐轮调用
-  `sendMessage` 重放。所有角色消息进入对话检索，只有 user 轮另登记为用户事实 `MemorySource`，assistant
-  轮不会伪装成用户记忆；MemoryBank 的 `query/response` 对应 user/assistant，只有 `query` 登记事实来源。
-  这两集的 `sessionId/entryId/seq` 均指向已提交的真实夹具条目；MemoryBank 的 `日期#轮下标` 仅作来源标签。
-  LoCoMo 仍为两个说话人的全部轮次直登记来源，标签为 `样本id:dia_id`。
-  `evidence` 截 2000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留原文长度（产品 dreaming
-  对 >4800 字符的整条来源丢弃，次数如实计入报告）。
-- 提取走**真实 dreaming**（`manual` 模式，绕开每日预算；循环 sweep 直至无待处理来源）。
-- 仅 LoCoMo 的直接事实夹具将 **session-scope 候选归一为 user scope**：Rust 禁止跨范围改归属，用 `add`（同内容/来源）+ `forget`
-  原条目实现；否则提问发生在新建会话会漏召回。次数记入 `ingest.scopeNormalized`。
-  **必须两段式**（先全部 `add`、再全部 `forget`，规划在 `scope-normalize.mjs`）：Rust 的遗忘
-  按来源事件写 `block_extraction` 墓碑，之后任何引用该来源的 `add` 都会判「来源未登记」；
-  逐条 `add→forget` 在共享来源的候选上会把整题打成基础设施失败（2026-10-03 LME oracle
-  `lme-oracle-e01b8e2f` 的故障），而不是被测能力问题。LongMemEval 与 MemoryBank 保持生产 scope 规则，不做 add+forget
-  归一；完整对话由会话检索读取，user-origin 事实仍按产品的来源与 scope 语义治理。
+- LongMemEval 每个原始会话、MemoryBank 每个历史日期建立隔离 JSONL 夹具，按顺序保留 user/assistant 角色与原始时间；不逐轮调用 `sendMessage` 重放。所有角色消息进入对话检索，只有 user 轮另登记为用户事实 `MemorySource`；MemoryBank 的 query/response 对应 user/assistant。
+- LoCoMo 每个上游 session 建真实 JSONL，正文保留原始 speaker、日期、文本和独立标记的 blip_caption。固定 speaker_a → user（可登记事实）、speaker_b → assistant（仅对话引用）；双方都是上游真人，此模型角色映射是适配器选择，不能同时将两人的经历登记为用户本人事实。来源坐标指向已提交的 sessionId/entryId/seq，样本id:dia_id 仅作评测映射标签。
+- `evidence` 截 2000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留完整渲染正文长度；dreaming 对 >4800 字符来源的整条丢弃按实计数。原话 JSONL 完整保留，不跟随摘要截断。
+- 提取走真实 dreaming（manual 模式，循环 sweep 直至无待处理来源）；全部数据集保留生产 scope，不做 session→user 或 add/forget 归一，`ingest.scopeNormalized` 恒为 0。跨会话细节通过受治理的对话检索读取，不撤销其引用锚。
+- LoCoMo 所有题加同一 `Answer using our conversation history:` 前缀，原题不改；该明确任务上下文驱动生产查询计划和阅读器，普通知识问答的跳过路径仍保留。活动 Card 的输出规则统一要求英文完整短答、保留全部必需信息、证据不足时 `No information available.`，经公共保存入口刷新并在收尾恢复。生成输入不使用 answer/category/evidence 金标；这些字段只供判分及诊断。报告 manifest 留存完整规则、角色映射和 `productScore: false`：结果是官方确定性判分的 **LoCoMo 适配器分数**，不直接宣称产品分数。
 - 提问：每题新建会话；cell = 题 × 1 trial（外部集是观测证据，不套自建集的 ≥3 trial 配对纪律）。
 - 组复用：LoCoMo 一段对话灌一次库、组内多题提问；MemoryBank 一个角色同理；LongMemEval 每题一组。
 - 每个提问回合通过 `toolMode: "none"` 请求禁用模型工具，并记录实际调用数与协议违规；不改全局工具注册表。

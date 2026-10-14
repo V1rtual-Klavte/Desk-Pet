@@ -7,3 +7,4 @@ export function renderLocomoDialogueEntry(input: {
 
 export const LOCOMO_ANSWER_FORMAT: Readonly<{ id: string; prompt: string }>
 export function formatLocomoAnswerCard(rawCard: string): string
+export function formatLocomoQuestion(question: string): string
