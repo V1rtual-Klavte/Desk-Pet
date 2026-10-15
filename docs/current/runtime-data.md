@@ -2,6 +2,8 @@
 
 本文维护配置、路径、文件布局和资源所有权。会话事件与压缩协议见[当前记忆](memory.md)，运行代际与恢复见[运行时契约](runtime-contract.md)。
 
+设置窗两平台共用 `ui/settings/layout.rs` 的逻辑网格，Windows 负责 DPI 与系统滚动条占宽转换。设置保存只确认本次提交的值，写盘期间的新编辑继续保留为待保存；字体应用在原生 UI 主线程执行。Windows 多行编辑控件在显示边界将 LF 转为 CRLF，读回时还原 LF，CONFIG 与 Card 文档的格式不随平台改变。Windows 的长路径命名空间前缀仅在会话 cwd 归属标识处转为普通盘符/UNC 表达，实际会话根与 Rust 路径裁决保持原路径。
+
 ## 配置与环境
 
 Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_assertions)` 决定路径环境；Node 通过 [paths.ts](../../src/services/paths.ts) 的 `getRuntimeMode()` 获取（值来自 `get_runtime_paths` 回执，与 `ServerWelcome.runtimeMode` 同源），不以任何前端构建模式推断。

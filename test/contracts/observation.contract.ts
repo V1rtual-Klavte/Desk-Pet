@@ -1,3 +1,4 @@
+// 2026-10-15 Windows UI 验收 analyze -> generate：schema.rs 只修正主题帮助文案（三选一改为主题预设），观察档位字段、静默了解资格与钟点调度未改；ob-* 的描述、消费者与 caseId 不变。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 host/dispatch.rs（memory_job_checkpoint 分派臂加可选 coveredSourceIds）与 agent/memory/ipc.ts（按批内已处理来源传参）变化；观察、画像与 presence 路径不受影响，ob-01..07 逐点复核未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 最终静态复核：稳定artifact与输入证据分离、去重和话题立场透传已复核，覆盖声明同步；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
@@ -301,7 +302,7 @@ export const observationContract: ModuleContract = {
     "test/unit/observation/证据身份稳定.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "f886858b82a917e8c5e48662ef8b072b8e4494e54f886725cff109a742add1fc",
+  sourceHash: "19cd60d14e00f87917e02e9cea6b1a9fd5077334e7c255e62e704e47bf678f16",
   coverage: [
     {
       id: "ob-01",

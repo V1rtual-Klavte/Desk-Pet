@@ -2,14 +2,10 @@
 // 宿主唯一事件出口：生产者事件的组合路由
 // ==========================================
 //
-// 两条宿主侧事件生产者（`monitor::spawn_monitor_thread` 的 `window-observed` 与
-// `commands::cursor::spawn_cursor_tracker` 的 `deskpet-cursor-move`）只依赖
-// [`EventSink`]。本模块是出口的实现，按 原生宿主迁移过程记录 §9.4 的冻结裁定路由：
+// 窗口观察与后台命令共用此出口。光标由原生 UI 在可见期直接采样，
+// 不启动常驻后台线程，也不经事件或 IPC 中转。
 //
-// 1. `CursorMoved`：**只**直投原生 UI（原生宿主迁移过程记录 §9.4 第 1 条：该事件不进 Node 侧
-//    `HostEventMap`；60fps 经 Node + IPC 转发没有意义）。原生 UI 的消费口是
-//    [`NativeEventSink`]，由 UI 域实现（当前实现见 `ui/stage.rs`）。
-// 2. `WindowObserved`：**双投** —— 原生 UI 与 Node（原生宿主迁移过程记录 §9.4 第 2 条）。Node 侧的
+// `WindowObserved`：**双投** —— 原生 UI 与 Node（原生宿主迁移过程记录 §9.4 第 2 条）。Node 侧的
 //    负载适配复用 W2 的 [`BridgeEventSink`]（线载荷形状唯一），但桥必须**按当前
 //    代际即时解析**：Node 崩溃重启换代际时监督器会丢弃旧桥（`rotate_epoch`），
 //    缓存住某个 `BridgeEventSink`/`HostBridge` 只会把事件投给死桥。这里每次
@@ -22,14 +18,12 @@
 use std::sync::Arc;
 
 use crate::host::supervisor::NodeSupervisor;
-use crate::host::{CursorPosition, EventSink, HostEvent, WindowObservation};
+use crate::host::{EventSink, HostEvent, WindowObservation};
 use crate::ipc::bridge::BridgeEventSink;
 use crate::rust_debug;
 
 /// 原生 UI 侧的事件直投口（进程内同线程语义由实现决定；出口不关心 UI 结构）。
 pub trait NativeEventSink: Send + Sync {
-    /// 全局光标位置变化（`deskpet-cursor-move` 的直连消费者：主窗舞台渲染器）。
-    fn cursor_moved(&self, cursor: CursorPosition);
     /// 窗口观察采样（与 Node 双投；原生 UI 一侧按自身需要消费）。
     fn window_observed(&self, observation: &WindowObservation);
 }
@@ -66,17 +60,13 @@ impl HostEventRouter {
 impl EventSink for HostEventRouter {
     fn emit(&self, event: HostEvent) {
         match event {
-            // 原生宿主迁移过程记录 §9.4 第 1 条：光标事件只直投原生 UI，不经 Node。
-            HostEvent::CursorMoved(cursor) => self.native.cursor_moved(cursor),
             // 原生宿主迁移过程记录 §9.4 第 2 条：窗口观察双投（原生 UI + 当前代际 Node）。
             HostEvent::WindowObserved(observation) => {
                 self.native.window_observed(&observation);
                 self.forward_to_node(HostEvent::WindowObserved(observation));
             }
             // 后台命令结束只有 Node 侧消费者（完成通知走聊天系统消息），单投。
-            finished @ HostEvent::BackgroundCommandFinished(_) => {
-                self.forward_to_node(finished)
-            }
+            finished @ HostEvent::BackgroundCommandFinished(_) => self.forward_to_node(finished),
         }
     }
 }
@@ -91,18 +81,10 @@ mod tests {
     /// 记录原生 UI 实际收到的事件（断言路由，不触碰真实 UI）。
     #[derive(Default)]
     struct RecordingNative {
-        cursors: Mutex<Vec<CursorPosition>>,
         observations: Mutex<Vec<WindowObservation>>,
     }
 
     impl NativeEventSink for RecordingNative {
-        fn cursor_moved(&self, cursor: CursorPosition) {
-            self.cursors
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(cursor);
-        }
-
         fn window_observed(&self, observation: &WindowObservation) {
             self.observations
                 .lock()
@@ -144,29 +126,12 @@ mod tests {
     }
 
     #[test]
-    fn 光标只直投原生ui_观察双投且无桥时如实跳过node() {
+    fn 观察双投且无桥时如实跳过node() {
         let native = Arc::new(RecordingNative::default());
         let router = HostEventRouter::new(idle_supervisor(), native.clone());
 
-        router.emit(HostEvent::CursorMoved(CursorPosition {
-            x: 3,
-            y: 4,
-            screen_x: 0,
-            screen_y: 0,
-            screen_w: 100,
-            screen_h: 100,
-        }));
         router.emit(HostEvent::WindowObserved(observation()));
 
-        assert_eq!(
-            native
-                .cursors
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .len(),
-            1,
-            "光标事件必须直投原生 UI"
-        );
         assert_eq!(
             native
                 .observations

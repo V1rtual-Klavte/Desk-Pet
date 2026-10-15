@@ -1,3 +1,4 @@
+// 2026-10-15 Windows 路径验收 analyze -> generate：新增 hs-11 / harness-session-windows-cwd：盘符及 UNC 命名空间前缀在会话 cwd 单点规范化，create/list/reopen 实际 JSONL 往返；hs-01..hs-10 的文件格式、事务、折叠与保留语义未改。
 // 2026-10-09 最终静态复核：会话文件锁新增检索与删除消费者，JSONL帧和折叠语义保留；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
 // 2026-10-06 聊天图片与折叠守卫批次（analyze→generate）：sourceFiles 变化 ——
 // `src/services/engine/harness/session-fold.ts`：FOLD_POLICY 新增第四个阈值 maxFileBytes
@@ -72,8 +73,17 @@ export const harnessStorageContract: ModuleContract = {
     // 该文件同时在 agent-runtime 契约在列，共享文件多契约并列是既有形态。
     "src/services/engine/harness/harness-slot.ts",
   ],
-  sourceHash: "a547cca52fa3fe27a3c23e2bbc51f29bd68c5f05d8585dd344ff936027a46a3c",
+  sourceHash: "c2a93b99b436dd1c5c7942951b18031427e2374b542fb960d22d458eeb726d6e",
   coverage: [
+    {
+      id: "hs-11",
+      feature: "Windows 会话 cwd 命名空间",
+      description: "盘符与 UNC 的 Windows 长路径前缀在会话归属标识处规范化；真实 JSONL 创建与重开成功，原始长路径 cwd 过滤仍列出同一会话",
+      why: "Rust canonicalize 返回的命名空间前缀不能变成包含非法问号的会话目录名",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["harness-session-windows-cwd"],
+    },
     {
       id: "hs-01",
       feature: "JsonlSessionRepo 官方一致性",

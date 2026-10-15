@@ -127,20 +127,21 @@ use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, CreateCompatibleDC, CreateFontW, CreateRoundRectRgn, DeleteDC, DeleteObject,
-    DrawFocusRect, DrawTextW, EndPaint, InvalidateRect, ScreenToClient, SelectObject, SetBkColor,
-    SetBkMode, SetTextColor, SetWindowRgn, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DT_CALCRECT,
-    DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK,
-    FW_BOLD, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE,
-    RDW_INVALIDATE, RedrawWindow,
+    BeginPaint, CreateCompatibleDC, CreateRoundRectRgn, DeleteDC, DeleteObject,
+    DrawFocusRect, DrawTextW, EndPaint, InvalidateRect, RedrawWindow, ScreenToClient, SelectObject,
+    SetBkColor, SetBkMode, SetTextColor, SetWindowRgn,
+    DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+    DT_WORDBREAK, FW_BOLD, FW_NORMAL, HDC, HFONT, PAINTSTRUCT, RDW_ALLCHILDREN,
+    RDW_ERASE, RDW_INVALIDATE,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 // `SS_CENTER`（STATIC 水平居中样式）：windows-sys 0.52 把 `SS_*` 放在
 // `Win32::System::SystemServices`（该 feature 已为本文件的其它符号开启）。
 use windows_sys::Win32::System::SystemServices::SS_CENTER;
 use windows_sys::Win32::UI::Controls::{
-    SetScrollInfo, EM_GETPASSWORDCHAR, EM_GETSEL, EM_SETPASSWORDCHAR, EM_SETSEL, MEASUREITEMSTRUCT,
-    ODS_COMBOBOXEDIT, ODS_DISABLED, ODS_FOCUS, ODS_GRAYED, ODS_SELECTED, ODT_BUTTON, ODT_COMBOBOX,
+    GetComboBoxInfo, SetScrollInfo, COMBOBOXINFO, EM_GETPASSWORDCHAR, EM_GETSEL,
+    EM_SETPASSWORDCHAR, EM_SETSEL, MEASUREITEMSTRUCT, ODS_COMBOBOXEDIT, ODS_DISABLED, ODS_FOCUS,
+    ODS_GRAYED, ODS_SELECTED, ODT_BUTTON, ODT_COMBOBOX,
 };
 // 父窗子类（comctl32）已删除（2026-10-06）：WM_CTLCOLOREDIT / WM_CTLCOLORLISTBOX
 // 的转发路由归位到 `windows.rs` 的 `aux_wndproc`（见该处注释与 `edit_ctlcolor`）。
@@ -149,27 +150,28 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetAsyncKeyState, GetFocus, IsWindowEnabled, SetFocus, VK_CONTROL, VK_ESCAPE,
     VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetClassNameW, GetClientRect, GetCursorPos, GetDlgItem, GetForegroundWindow, GetMessageW,
-    GetParent, GetScrollInfo, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    IsDialogMessageW, IsWindow, KillTimer, MessageBoxW, MoveWindow, PeekMessageW, PostQuitMessage,
-    RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    SetWindowTextW, ShowWindow, TranslateMessage, BN_CLICKED, BS_DEFPUSHBUTTON, BS_OWNERDRAW,
-    BS_TYPEMASK, CBN_SELCHANGE, CBN_SELENDOK, CBS_DROPDOWNLIST, CBS_HASSTRINGS, CBS_OWNERDRAWFIXED,
-    CB_ADDSTRING, CB_GETCURSEL, CB_GETDROPPEDSTATE, CB_SETCURSEL, CB_SETITEMHEIGHT, CW_USEDEFAULT,
-    ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_PASSWORD, ES_READONLY, ES_WANTRETURN,
-    GWLP_USERDATA, GWL_STYLE, HTTRANSPARENT, HWND_TOP, IDCANCEL, IDOK, IDYES, MB_DEFBUTTON2,
-    MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_YESNO, MSG, PM_REMOVE, SB_BOTTOM, SB_LINEDOWN,
-    SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT,
-    SCROLLINFO, SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNA,
-    WM_CLOSE,
-    WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY,
-    WM_DRAWITEM, WM_ERASEBKGND, WM_GETFONT, WM_MEASUREITEM, WM_MOUSEWHEEL, WM_NCHITTEST, WM_PAINT,
-    WM_SETFONT, WM_VSCROLL, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-    WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_POPUP,
-    WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    GetParent, GetScrollInfo, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, IsDialogMessageW, IsWindow, KillTimer, MessageBoxW, MoveWindow, PeekMessageW,
+    PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, BN_CLICKED,
+    BS_DEFPUSHBUTTON, BS_OWNERDRAW, BS_TYPEMASK, CBN_SELCHANGE, CBN_SELENDOK, CBS_DROPDOWNLIST,
+    CBS_HASSTRINGS, CBS_OWNERDRAWFIXED, CB_ADDSTRING, CB_GETCURSEL, CB_GETDROPPEDSTATE,
+    CB_SETCURSEL, CB_SETITEMHEIGHT, CW_USEDEFAULT, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
+    ES_PASSWORD, ES_READONLY, ES_WANTRETURN, GWLP_USERDATA, GWL_STYLE, HTTRANSPARENT, HWND_TOP,
+    IDCANCEL, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_YESNO, MSG,
+    PM_REMOVE, SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION,
+    SB_THUMBTRACK, SB_TOP, SB_VERT, SCROLLINFO, SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE,
+    SIF_TRACKPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE,
+    SWP_NOZORDER, SW_HIDE, SW_SHOW, SW_SHOWNA, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
+    WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND,
+    WM_GETFONT, WM_MEASUREITEM, WM_MOUSEWHEEL, WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_VSCROLL,
+    WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE,
+    WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    WS_VSCROLL,
 };
 
 use crate::ui::settings::panels::{
@@ -228,7 +230,7 @@ const SECRET_ID_BASE: i32 = 13_000;
 // ── 左竖栏（设计稿 `.srail`；与 macOS 侧同值）──
 
 /// 竖栏宽（内容坐标以竖栏右缘为 0 点，`layout` 是唯一的 RAIL_W 转换点）。
-const RAIL_W: i32 = 104;
+const RAIL_W: i32 = crate::ui::settings::layout::RAIL_W as i32;
 /// 行按钮的左右内边距（设计稿 `padding: 9px 6px` 的横向值）。
 const RAIL_PAD_X: i32 = 6;
 /// 首行顶距（设计稿纵向 padding 9px）。
@@ -237,14 +239,11 @@ const RAIL_TOP: i32 = 9;
 const RAIL_ITEM_H: i32 = 26;
 const RAIL_ITEM_GAP: i32 = 1;
 
-/// 内容区顶偏移（原顶部 Tab 带随竖栏改造删除；对齐设计稿 `.spane` 的 11px 上内边距）。
-const CONTENT_TOP: i32 = 11;
 
 /// Bool 开关尺寸（设计稿 `.sw`：32×17；圆角 = 半高）。
 const SWITCH_W: i32 = 32;
 const SWITCH_H: i32 = 17;
 
-const BOTTOM_H: i32 = 46;
 const ROW_H: i32 = 24;
 const ROW_GAP: i32 = 6;
 const HELP_H: i32 = 15;
@@ -261,7 +260,7 @@ const CTRL_W_INFO: i32 = 180;
 const CTRL_W_MULTILINE: i32 = 220;
 const CTRL_W_SHORTCUT: i32 = 180;
 /// 多行输入框高度（沿用本侧旧值；macOS `MULTILINE_H` 为 84，高度差不影响行结构）。
-const MULTILINE_H: i32 = 80;
+const MULTILINE_H: i32 = 84;
 /// 密钥揭示按钮宽（编辑框右移让位）。
 const SECRET_BTN_W: i32 = 52;
 /// 组合框条目文本的左右内边距（逻辑像素；自绘条目用）。
@@ -271,7 +270,7 @@ const NUMBER_CHOICE_GAP: i32 = 2;
 const NUMBER_CHOICE_SEG_MIN: i32 = 48;
 const NUMBER_CHOICE_SEG_MAX: i32 = 96;
 const NUMBER_CHOICE_SEG_PAD: i32 = 24;
-const MARGIN: i32 = 14;
+const MARGIN: i32 = crate::ui::settings::layout::MARGIN as i32;
 const SCROLL_STEP: i32 = 24;
 /// 原生滚动裁剪面：字段属于此子窗，竖栏与页脚属于根窗（与 macOS NSScrollView 同边界）。
 const CONTENT_CLASS: &str = "DeskPetSettingsContent";
@@ -356,7 +355,26 @@ const REFRESH_SOUNDS: i32 = 2;
 const TRANSPARENT: i32 = 1;
 
 fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
+    // Win32 多行 EDIT 只把 CRLF 视为换行；域内文本统一为 LF。
+    // 在显示边界补 CR，已有 CRLF 不重复补，UTF-16 的代理对原样保留。
+    let mut output = Vec::with_capacity(value.len() + 1);
+    let mut previous = 0;
+    for unit in value.encode_utf16() {
+        if unit == 10 && previous != 13 { output.push(13); }
+        output.push(unit);
+        previous = unit;
+    }
+    output.push(0);
+    output
+}
+
+fn text_from_windows(units: &[u16]) -> String {
+    String::from_utf16_lossy(units).replace("\r\n", "\n")
+}
+
+fn row_background(tokens: &theme::Tokens) -> theme::Rgba {
+    // STATIC 的实色刷没有 alpha；与父内容面使用同一预合成色，避免白/黑标签板。
+    paint_win::composite_over(tokens.strip_bg, tokens.panel_bg.base_color())
 }
 
 fn dpi_scale(hwnd: HWND) -> f64 {
@@ -529,6 +547,8 @@ struct SettingsState {
     fonts: Vec<HFONT>,
     scroll: i32,
     content_height: i32,
+    section_rules: Vec<i32>,
+    row_backgrounds: Vec<paint_win::Rect>,
     /// 密钥揭示按钮的控件组（随 Tab 重建整体清空）。
     secret_pairs: Vec<WinSecretPair>,
     /// 动态帮助行（字段键 → STATIC 控件；如 Bash 白名单的「N 个命令」）。
@@ -576,6 +596,9 @@ struct SettingsState {
 }
 
 thread_local! {
+    // 绘制镜像独立于 STATE：Win32 绘制会在排布借用期间同步重入。
+    static CONTENT_DECORATIONS: RefCell<Vec<(paint_win::Rect, bool)>> = const { RefCell::new(Vec::new()) };
+    static ROW_LABELS: RefCell<HashSet<HWND>> = RefCell::new(HashSet::new());
     static STATE: RefCell<Option<SettingsState>> = const { RefCell::new(None) };
     /// 开关控件的开/关状态镜像（绘制 / 读值 / 回写三处共用；类型与测试见
     /// `ui/settings::SwitchStates`）。独立于 `STATE`：`WM_DRAWITEM` 在绘制期同步到达，
@@ -633,29 +656,8 @@ fn make_font(scale: f64, base: i32, bold: bool) -> HFONT {
     let face = snapshot
         .family
         .clone()
-        .unwrap_or_else(|| "Microsoft YaHei UI".to_string());
-    unsafe {
-        CreateFontW(
-            -scaled(logical, scale),
-            0,
-            0,
-            0,
-            if bold {
-                FW_BOLD as i32
-            } else {
-                FW_NORMAL as i32
-            },
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET as u32,
-            OUT_DEFAULT_PRECIS as u32,
-            CLIP_DEFAULT_PRECIS as u32,
-            0,
-            0,
-            wide(&face).as_ptr(),
-        )
-    }
+        .unwrap_or_else(paint_win::resolve_ui_font_family);
+    paint_win::create_ui_font(-scaled(logical, scale), if bold { FW_BOLD as i32 } else { FW_NORMAL as i32 }, &face)
 }
 
 /// 内容面只画工作表底色，不画根窗的竖栏/页脚；全部控件通知仍走现有设置入口。
@@ -716,6 +718,16 @@ fn paint_content_background(hwnd: HWND, hdc: HDC) {
         paint_win::Rect::new(0, 0, width, height),
         &theme::tokens().panel_bg,
     );
+    CONTENT_DECORATIONS.with(|mirror| {
+        for (rect, rule) in mirror.borrow().iter() {
+            let tokens = theme::tokens();
+            if *rule {
+                paint_win::fill_color(hdc, *rect, tokens.rule);
+            } else {
+                paint_win::fill_color(hdc, *rect, row_background(tokens));
+            }
+        }
+    });
 }
 
 fn create_content_viewport(owner: HWND) -> HWND {
@@ -770,13 +782,15 @@ fn create_content_viewport(owner: HWND) -> HWND {
 fn place_content_viewport(owner: HWND, viewport: HWND) {
     let scale = dpi_scale(owner);
     let (width, height) = client_size(owner);
+    let grid = crate::ui::settings::layout::settings_layout(f64::from(width) / scale, f64::from(height) / scale);
+    let rect = grid.scroll;
     unsafe {
         MoveWindow(
             viewport,
-            scaled(RAIL_W, scale),
-            scaled(CONTENT_TOP, scale),
-            (width - scaled(RAIL_W, scale)).max(1),
-            (height - scaled(CONTENT_TOP + BOTTOM_H, scale)).max(1),
+            (rect.x * scale).round() as i32,
+            (rect.y * scale).round() as i32,
+            (rect.w * scale).round() as i32,
+            (rect.h * scale).round() as i32,
             1,
         );
     }
@@ -785,6 +799,12 @@ fn place_content_viewport(owner: HWND, viewport: HWND) {
 fn set_combo_heights(hwnd: HWND, height: i32, scale: f64) {
     // 字段区 (-1) 和固定高度列表 (0) 是独立设置，不能只设前者。
     unsafe {
+        if SetWindowSubclass(hwnd, Some(combo_chrome_proc), COMBO_CHROME_ID, 0) == 0 {
+            rust_warn!(
+                "设置下拉主题绘制接线失败（GetLastError={}）",
+                GetLastError()
+            );
+        }
         SendMessageW(
             hwnd,
             CB_SETITEMHEIGHT,
@@ -793,6 +813,52 @@ fn set_combo_heights(hwnd: HWND, height: i32, scale: f64) {
         );
         SendMessageW(hwnd, CB_SETITEMHEIGHT, 0, scaled(height, scale) as LPARAM);
     }
+}
+
+const COMBO_CHROME_ID: usize = 0x5343;
+
+/// 系统仍负责展开、键盘与选项语义；这里只覆盖系统白色箭头和边框。
+unsafe extern "system" fn combo_chrome_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+    if msg == WM_PAINT || msg == windows_sys::Win32::UI::WindowsAndMessaging::WM_NCPAINT {
+        let mut info: COMBOBOXINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<COMBOBOXINFO>() as u32;
+        if GetComboBoxInfo(hwnd, &mut info) != 0 {
+            let dc = windows_sys::Win32::Graphics::Gdi::GetDC(hwnd);
+            if dc != 0 {
+                let t = theme::tokens();
+                let r = info.rcButton;
+                let rect = paint_win::Rect::new(r.left, r.top, r.right - r.left, r.bottom - r.top);
+                paint_win::fill_rect(dc, rect, &t.field_bg);
+                let cx = r.left + (r.right - r.left) / 2;
+                let cy = r.top + (r.bottom - r.top) / 2;
+                let d = scaled(3, dpi_scale(hwnd)).max(2);
+                paint_win::fill_triangle(
+                    dc,
+                    [(cx - d, cy - 1), (cx + d, cy - 1), (cx, cy + d)],
+                    t.dim,
+                );
+                let (w, h) = client_size(hwnd);
+                paint_win::draw_frame(
+                    dc,
+                    paint_win::Rect::new(0, 0, w, h),
+                    t.field_edge,
+                    &t.field_bevel,
+                );
+                windows_sys::Win32::Graphics::Gdi::ReleaseDC(hwnd, dc);
+            }
+        }
+    } else if msg == windows_sys::Win32::UI::WindowsAndMessaging::WM_NCDESTROY {
+        RemoveWindowSubclass(hwnd, Some(combo_chrome_proc), COMBO_CHROME_ID);
+    }
+    result
 }
 
 /// 用最终 GDI 字体量换行高度，不能用固定 11px 字宽猜测不同字体/字号的行数。
@@ -948,6 +1014,8 @@ pub(crate) fn install_settings_content(hwnd: HWND) {
             fonts,
             scroll: 0,
             content_height: 0,
+            section_rules: Vec::new(),
+            row_backgrounds: Vec::new(),
             secret_pairs: Vec::new(),
             dynamic_hints: Vec::new(),
             panel_slots: Vec::new(),
@@ -1001,13 +1069,14 @@ pub(crate) fn paint_background(hwnd: HWND, hdc: HDC) {
     }
     let tokens = theme::tokens();
     let scale = dpi_scale(hwnd);
+    let grid = crate::ui::settings::layout::settings_layout(f64::from(width) / scale, f64::from(height) / scale);
     paint_win::fill_rect(
         hdc,
         paint_win::Rect::new(0, 0, width, height),
         &tokens.panel_bg,
     );
     // 竖栏底：右缘分界线是 1px 独立矩形（主题 `Fill` 的 EdgeSide 只有上下边）。
-    let rail_h = (height - scaled(BOTTOM_H, scale)).max(0);
+    let rail_h = (grid.rail.h * scale).round() as i32;
     paint_win::fill_rect(
         hdc,
         paint_win::Rect::new(0, 0, scaled(RAIL_W, scale), rail_h),
@@ -1021,7 +1090,7 @@ pub(crate) fn paint_background(hwnd: HWND, hdc: HDC) {
     // 操作条上缘 1px `bar_edge` 分隔线（设计稿 `.sfoot` 的 border-top；与 macOS
     // `SettingsLayout.separator` 同款）：滚动内容与操作条之间有明确分界，不再出现
     // 「内容半行贴在操作条上」的观感。
-    let bottom_rule_y = (height - scaled(BOTTOM_H, scale)).max(0);
+    let bottom_rule_y = (grid.separator.y * scale).round() as i32;
     paint_win::fill_color(
         hdc,
         paint_win::Rect::new(0, bottom_rule_y, width, 1),
@@ -1046,7 +1115,17 @@ pub(crate) fn on_ctlcolor(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, paint_win::colorref(color));
     }
-    paint_win::solid_brush(tokens.field_bg.base_color()) as LRESULT
+    let background = if window_class_name(control) == "EDIT" {
+        tokens.field_bg.base_color()
+    } else if ROW_LABELS.with(|labels| labels.borrow().contains(&control)) {
+        row_background(tokens)
+    } else {
+        tokens.panel_bg.base_color()
+    };
+    unsafe {
+        SetBkColor(hdc, paint_win::colorref(background));
+    }
+    paint_win::solid_brush(background) as LRESULT
 }
 
 /// `WM_CTLCOLOREDIT` / `WM_CTLCOLORLISTBOX`（②「全面自绘」）：可编辑输入框与下拉清单
@@ -1716,9 +1795,14 @@ fn rebuild_tab() {
         let body = *state.fonts.first().unwrap_or(&0);
         let small = *state.fonts.get(1).unwrap_or(&body);
 
-        let mut y = 0i32;
+        let mut y = 6i32;
+        state.section_rules.clear();
         let mut slots: Vec<WinSlot> = Vec::new();
-        for section in tab.sections {
+        for (section_index, section) in tab.sections.iter().enumerate() {
+            if section_index > 0 {
+                state.section_rules.push(y);
+                y += 1 + SECTION_GAP;
+            }
             // 小节标题。
             let title_h = measured_text_height(
                 *state.fonts.get(2).unwrap_or(&body),
@@ -2165,6 +2249,8 @@ fn destroy_panel_area(state: &mut SettingsState) {
         unsafe { DestroyWindow(slot.hwnd) };
     }
     state.row_slots.clear();
+    state.row_backgrounds.clear();
+    ROW_LABELS.with(|labels| labels.borrow_mut().clear());
     state.detail_content = 0;
     // 文档编辑弹窗（②）是独立顶层窗，不登记进面板槽，随模态循环整体开合，
     // 不参与页面面板区的重建/销毁，这里不动它。
@@ -3888,7 +3974,13 @@ fn build_panel_row(
         main_w
     };
     let text_w = (content_w - buttons_w - 8).max(120);
-    create_panel_control(
+    state.row_backgrounds.push(paint_win::Rect::new(
+        MARGIN,
+        y,
+        content_w,
+        panel_row_advance(&row.subtitle) - 6,
+    ));
+    let title = create_panel_control(
         state,
         "STATIC",
         &row.title,
@@ -3902,12 +3994,11 @@ fn build_panel_row(
         0,
         0,
     );
+    ROW_LABELS.with(|labels| labels.borrow_mut().insert(title));
     if !row.subtitle.is_empty() {
         // 副标题最多两行（框高 30 = 2×行高；STATIC 自动换行，超高裁切）——
         // 与 macOS `build_panel_row` 的 `wrapped_label(..., 2)` 同规格（2026-10-06 收紧）。
-        // 该平台的**行底色**待补：需镜像表 + 实机迭代（macOS 已用 `strip_bg` 上底色，
-        // 本侧绘制期不能进 `with_state`，不盲修，见未完成总表）。
-        create_panel_control(
+        let subtitle = create_panel_control(
             state,
             "STATIC",
             &row.subtitle,
@@ -3921,6 +4012,7 @@ fn build_panel_row(
             0,
             0,
         );
+        ROW_LABELS.with(|labels| labels.borrow_mut().insert(subtitle));
     }
     let scale = dpi_scale(state.hwnd);
     let mut button_x = MARGIN + content_w - main_w;
@@ -4383,6 +4475,15 @@ fn layout(hwnd: HWND) {
     with_state(|state| {
         let scale = dpi_scale(hwnd);
         let (width, height) = client_size(hwnd);
+        let mut viewport_rect: RECT = unsafe { std::mem::zeroed() };
+        unsafe { GetWindowRect(state.viewport, &mut viewport_rect); }
+        let (viewport_width, _) = client_size(state.viewport);
+        let gutter = (viewport_rect.right - viewport_rect.left - viewport_width).max(0);
+        // Windows 标准滚动条占用客户区宽度；页脚同样扣掉该槽，与内容右缘共线。
+        let grid = crate::ui::settings::layout::settings_layout(
+            f64::from(width - gutter) / scale,
+            f64::from(height) / scale,
+        );
         let (_, view_height) = client_size(state.viewport);
         let view_height = ((f64::from(view_height) / scale).round() as i32).max(1);
         state.scroll = state
@@ -4428,33 +4529,21 @@ fn layout(hwnd: HWND) {
                 set_combo_heights(slot.hwnd, slot.h, scale);
             }
         }
-        // 固定控件：状态行在底部、两个按钮靠右、Tab 按钮只调宽度。
-        if state.fixed.status != 0 {
+        // 页脚与 macOS 读取同一网格，按本窗 DPI 转为物理像素。
+        for (control, rect) in [
+            (state.fixed.status, grid.status),
+            (state.fixed.refresh, grid.refresh),
+            (state.fixed.save, grid.save),
+        ] {
             unsafe {
                 move_batched(
-                    state.fixed.status,
-                    scaled(MARGIN, scale),
-                    height - scaled(30, scale),
-                    (width - scaled(220, scale)).max(60),
-                    scaled(18, scale),
-                )
-            };
-        }
-        unsafe {
-            move_batched(
-                state.fixed.refresh,
-                width - scaled(196, scale),
-                height - scaled(36, scale),
-                scaled(80, scale),
-                scaled(26, scale),
-            );
-            move_batched(
-                state.fixed.save,
-                width - scaled(100, scale),
-                height - scaled(36, scale),
-                scaled(80, scale),
-                scaled(26, scale),
-            );
+                    control,
+                    (rect.x * scale).round() as i32,
+                    (rect.y * scale).round() as i32,
+                    (rect.w * scale).round() as i32,
+                    (rect.h * scale).round() as i32,
+                );
+            }
         }
         // 左竖栏行按钮：竖排（顶距 9、行距 26+1），不随滚动位移。
         for (index, button) in state.fixed.tab_buttons.iter().enumerate() {
@@ -4489,6 +4578,29 @@ fn layout(hwnd: HWND) {
                 );
             }
         }
+        let decorations = state
+            .section_rules
+            .iter()
+            .map(|y| {
+                (
+                    paint_win::Rect::new(MARGIN, *y, state.content_width - MARGIN * 2, 1),
+                    true,
+                )
+            })
+            .chain(state.row_backgrounds.iter().map(|rect| (*rect, false)))
+            .map(|(rect, rule)| {
+                (
+                    paint_win::Rect::new(
+                        scaled(rect.x, scale),
+                        scaled(rect.y - state.scroll, scale),
+                        scaled(rect.w, scale),
+                        scaled(rect.h, scale),
+                    ),
+                    rule,
+                )
+            })
+            .collect();
+        CONTENT_DECORATIONS.with(|mirror| *mirror.borrow_mut() = decorations);
         // 滚动/重排的绘制收口：控件在上面的批里用 `SWP_NOREDRAW` 挪位，这里
         // **一次**失效整片内容面并带全部子控件重画 —— 旧实现每只控件
         // `MoveWindow(重绘=1)`，滚一格就是一轮「每控件自绘 + 交错擦底」的风暴
@@ -6087,7 +6199,7 @@ unsafe fn combo_item_text(hwnd: HWND, index: i32) -> String {
         index as usize,
         buf.as_mut_ptr() as isize,
     );
-    String::from_utf16_lossy(&buf[..len as usize])
+    text_from_windows(&buf[..len as usize])
 }
 
 /// 下拉框条目与期望标题不一致（数量或内容）→ 需重建。
@@ -6282,7 +6394,7 @@ fn window_text(hwnd: HWND) -> String {
     }
     let mut buffer = vec![0u16; (len + 1) as usize];
     let read = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
-    String::from_utf16_lossy(&buffer[..read as usize])
+    text_from_windows(&buffer[..read as usize])
 }
 
 fn format_number(number: f64) -> String {
@@ -6362,6 +6474,15 @@ pub(crate) fn apply_font() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 多行文本显示补crlf_读取恢复lf且保留空行与unicode() {
+        let source = "白名单\n\n角色🙂\r\n最后一行\n";
+        let native = wide(source);
+        let expected: Vec<u16> = "白名单\r\n\r\n角色🙂\r\n最后一行\r\n\0".encode_utf16().collect();
+        assert_eq!(native, expected);
+        assert_eq!(text_from_windows(&native[..native.len() - 1]), "白名单\n\n角色🙂\n最后一行\n");
+    }
     use crate::ui::settings::panels::{McpTransport, MCP_FIELD_ARGS};
 
     #[test]

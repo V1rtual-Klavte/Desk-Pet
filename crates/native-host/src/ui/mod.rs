@@ -43,6 +43,15 @@ pub mod ports;
 /// W9a 原生设置窗域（schema/草稿/提交 + 设置端口）。
 pub mod settings;
 pub mod shortcut;
+/// 原生 UI 当前没有窗口观察的显示消费者；Node 仍经统一事件出口接收观察。
+pub struct NativeUiEvents;
+
+impl crate::host::events::NativeEventSink for NativeUiEvents {
+    fn window_observed(&self, _observation: &crate::host::WindowObservation) {
+        // 有意不显示观察；诊断由 Node ProactiveTrace 的 behavior_observed 统一留痕。
+    }
+}
+
 /// W9a 主窗角色舞台（W6a 渲染器的接入点与预览覆盖）。
 pub mod stage;
 pub mod state;

@@ -242,17 +242,11 @@ fn run(mode: Mode) -> AppResult<i32> {
     );
     let supervisor = Arc::new(NodeSupervisor::new(config)?);
 
-    // W4 缺口：宿主事件生产者。两条线程共用唯一事件出口（`EventSink`）：
-    // - monitor：`set_monitor_enabled` 的开闸/关闸现在真的驱动这条线程（同一
-    //   `MonitorState`）；平台事件源注册必须在 UI 主线程（macOS 的 NSWorkspace
-    //   通知只在主线程投递），本函数在 `ui::start_service` 之前仍在主线程上执行；
-    // - cursor：16ms 轮询、仅坐标变化时派发（含首帧）的既有语义原样保留。
-    // 出口按 原生宿主迁移过程记录 §9.4 路由：光标只直投原生 UI（不进 Node），窗口观察双投
-    // （原生 UI + 当前代际 Node），后台命令结束只投 Node（完成通知）。
-    // 装配提前到分派器之前：Bash 池的后台完成事件经同一出口投递（`BashPool::with_events`）。
+    // 窗口观察与后台命令共用唯一事件出口。光标采样归原生 UI 可见期所有，
+    // 收回时随窗口计时器停止，不再启动第二条常驻光标线程。
     let events: Arc<dyn EventSink> = Arc::new(HostEventRouter::new(
         supervisor.clone(),
-        Arc::new(native_host::ui::stage::StageNativeEvents),
+        Arc::new(native_host::ui::NativeUiEvents),
     ));
     let bash_pool = Arc::new(BashPool::with_events(events.clone()));
 
@@ -440,9 +434,8 @@ fn run_service_mode(
         dialogs,
     )));
 
-    // 事件出口已在本函数前段装配（Bash 池的后台完成事件与两条生产者线程共用同一实例）。
-    native_host::monitor::spawn_monitor_thread(events.clone(), windows, monitor);
-    native_host::commands::cursor::spawn_cursor_tracker(events);
+    // 事件出口已在本函数前段装配（Bash 池的后台完成事件与观察线程共用同一实例）。
+    native_host::monitor::spawn_monitor_thread(events, windows, monitor);
 
     let request = ServiceRequest {
         queue: ui_queue,
@@ -667,14 +660,16 @@ fn app_local_data_dir(exe: &Path) -> AppResult<PathBuf> {
         // 数据跟着安装位置走最符合预期。卸载时由卸载器询问是否连数据一起删。
         //
         // 装在只读位置时建目录会失败：如实留痕并回落系统目录，不把用户挡在启动之外。
-        let install = native_host::paths::installation_side_dir(exe).ok_or_else(|| {
-            AppError::Config("解析安装目录失败（可执行文件没有父目录）".into())
-        })?;
+        let install = native_host::paths::installation_side_dir(exe)
+            .ok_or_else(|| AppError::Config("解析安装目录失败（可执行文件没有父目录）".into()))?;
         let portable = native_host::paths::side_data_root(install);
         if std::fs::create_dir_all(&portable).is_ok() {
             return Ok(portable);
         }
-        rust_warn!("安装目录不可写（{}），数据根回落系统目录", install.display());
+        rust_warn!(
+            "安装目录不可写（{}），数据根回落系统目录",
+            install.display()
+        );
         let base = std::env::var_os("LOCALAPPDATA")
             .ok_or_else(|| AppError::Config("缺少 LOCALAPPDATA 环境变量".into()))?;
         Ok(PathBuf::from(base).join(APP_IDENTIFIER))
@@ -964,7 +959,7 @@ fn run_e2e() -> AppResult<i32> {
     // E2E 的 Node（场景可观测完成通知）；E2E 不建原生 UI，事件的原生腿不会被触发。
     let events: Arc<dyn EventSink> = Arc::new(HostEventRouter::new(
         supervisor.clone(),
-        Arc::new(native_host::ui::stage::StageNativeEvents),
+        Arc::new(native_host::ui::NativeUiEvents),
     ));
     let bash_pool = Arc::new(BashPool::with_events(events));
     let exit_once = Arc::new(ExitOnceHook::new(Arc::new(ServiceExitHook {

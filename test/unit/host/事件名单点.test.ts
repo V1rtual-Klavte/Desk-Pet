@@ -18,7 +18,6 @@ import {
   HOST_EVENT_BASH_BACKGROUND_FINISHED,
   HOST_EVENT_CHOICE_END,
   HOST_EVENT_CHOICE_START,
-  HOST_EVENT_CURSOR_MOVE,
   HOST_EVENT_PERMISSION_CONFIRM,
   HOST_EVENT_PLAN_END,
   HOST_EVENT_PLAN_PROGRESS,
@@ -43,7 +42,6 @@ const WIRE_NAMES: Array<[string, string]> = [
   // HostEventMap（宿主/Node → UI）
   [HOST_EVENT_WINDOW_OBSERVED, "window-observed"],
   [HOST_EVENT_BASH_BACKGROUND_FINISHED, "bash-background-finished"],
-  [HOST_EVENT_CURSOR_MOVE, "deskpet-cursor-move"],
   [HOST_EVENT_ASSISTANT_STREAM, "deskpet-assistant-stream"],
   [HOST_EVENT_ASSISTANT_STREAM_END, "deskpet-assistant-stream-end"],
   [HOST_EVENT_STAGE_HINT, "deskpet-stage-hint"],

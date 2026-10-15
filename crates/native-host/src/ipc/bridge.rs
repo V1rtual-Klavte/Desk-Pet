@@ -1648,10 +1648,6 @@ impl BridgeEventSink {
 impl crate::host::EventSink for BridgeEventSink {
     fn emit(&self, event: crate::host::HostEvent) {
         let (name, payload) = match event {
-            crate::host::HostEvent::CursorMoved(position) => (
-                "deskpet-cursor-move",
-                serde_json::to_value(position).unwrap_or(Value::Null),
-            ),
             crate::host::HostEvent::WindowObserved(observation) => {
                 let payload = WindowObservedWire {
                     app_id: unknown_to_null(observation.app_id),

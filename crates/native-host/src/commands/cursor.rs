@@ -1,22 +1,17 @@
 // ==========================================
-// 光标位置 & 弹窗位置计算 & 光标追踪
+// 光标位置 & 弹窗位置计算
 // 共享光标/屏幕检测辅助函数
 //
-// transport 无关的普通函数：事件出口经 [`EventSink`]、窗口增强与聚焦经
+// transport 无关的普通函数：窗口增强与聚焦经
 // [`WindowPort`] 显式注入；几何常量与平台增强在 `crate::window`（单一真相源），
 // 本文件不复制第二份。
 // ==========================================
 
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-
 use serde::Serialize;
 
 use crate::error::{err, AppResult};
-use crate::host::{CursorPosition, EventSink, HostEvent, WindowId, WindowPort};
+use crate::host::{CursorPosition, WindowId, WindowPort};
 use crate::rust_debug;
-use crate::rust_info;
 use crate::ui::state::{clamp_window_origin, ScreenRect};
 #[cfg(target_os = "windows")]
 use crate::window::{DPI_BASELINE, FALLBACK_SCREEN_HEIGHT, FALLBACK_SCREEN_WIDTH};
@@ -52,10 +47,10 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
             return err("无法获取光标位置");
         }
         let monitor = MonitorFromPoint(pt, 2); // MONITOR_DEFAULTTONEAREST
-        // 显示器几何 + DPI **按句柄缓存**：`GetMonitorInfoW` / `GetDpiForMonitor`
-        // 在本机实测每次约 10ms，16ms 的光标轮询里每拍都调会把推送频率压到 ~38Hz
-        // （2026-10-07 实机：灵动图层跟随因此一顿一顿，而同帧率是 62fps）。
-        // 句柄不变就复用上次结果；跨显示器时句柄变化，自然重算。
+                                               // 显示器几何 + DPI **按句柄缓存**：`GetMonitorInfoW` / `GetDpiForMonitor`
+                                               // 在本机实测每次约 10ms，16ms 的光标轮询里每拍都调会把推送频率压到 ~38Hz
+                                               // （2026-10-07 实机：灵动图层跟随因此一顿一顿，而同帧率是 62fps）。
+                                               // 句柄不变就复用上次结果；跨显示器时句柄变化，自然重算。
         let cached = MONITOR_METRICS.with(|cell| {
             cell.borrow()
                 .filter(|(handle, _)| *handle == monitor as isize)
@@ -307,60 +302,6 @@ fn popup_origin(
         screen,
     );
     (x as i32, y as i32)
-}
-
-// ==========================================
-// 光标追踪 — 后台线程 ~60fps 推送光标坐标
-// ==========================================
-
-/// 轮询间隔：光标静止时也按这个节奏醒来，用来发现「开始移动」。
-///
-/// 2026-09-20 实测空闲成本（macOS，release，复刻程序 90s × 2 轮）：
-/// 线程总 CPU ≈ 0.13% 单核（~1.2 ms/s、52 次唤醒/秒）；其中循环体（取光标 + 枚举屏幕）
-/// 线程 CPU ~11 µs/tick，纯 sleep 对照 13.5 µs/次 —— 成本主要是唤醒节奏本身，
-/// 而热态背靠背微基准整次取用仅 175 ns，乘法/取值本身可以忽略。
-/// 60s 运行 RSS 持平（线程无 autorelease pool 也不累积），光标静止时不 emit（零前端流量）。
-/// 结论：维持 16ms —— 降频等于按比例砍跟随刷新率（useParallax 零惯性直接映射，会看出台阶），
-/// 换 0.1% 单核不划算；条件启停需在 Rust 侧新增 effectMode / 可见性门控与唤醒路径，
-/// 漏唤醒会让跟随失效到重启，风险大于收益。
-const CURSOR_POLL_INTERVAL: Duration = Duration::from_millis(16);
-
-/// 启动光标追踪线程，光标位置**发生变化时**派发 [`HostEvent::CursorMoved`]。
-///
-/// 早先每 16ms 无条件 emit 一次并逐帧写 debug 日志：日志在 dev 下约 23MB/小时，
-/// 而日志轮转上限只有 15MB，大约 12 分钟就把整个有效日志窗口冲掉。
-/// 现在去掉了逐帧日志，并且只在坐标真的变了（或首帧）时才发事件 ——
-/// 光标不动时前端本来也不需要收到通知。
-pub fn spawn_cursor_tracker(sink: Arc<dyn EventSink>) {
-    thread::spawn(move || {
-        rust_info!("光标追踪线程已启动 (~60fps 轮询，仅变化时派发)");
-        let mut last: Option<(i32, i32, i32, i32, i32, i32)> = None;
-        loop {
-            // 获取光标位置（复用已有逻辑）
-            let pos = get_cursor_and_screen();
-            if let Ok((cx, cy, _sx, _sy, _sw, _sh, _scx, _scy)) = pos {
-                #[cfg(target_os = "macos")]
-                let web_y = cocoa_to_web_y(cy, _sy, _sh);
-                #[cfg(target_os = "windows")]
-                let web_y = cy;
-
-                let current = (cx, web_y, _sx, _sy, _sw, _sh);
-                // 首帧必须派发：否则应用启动后光标一直不动，前端永远收不到初始位置
-                if last != Some(current) {
-                    last = Some(current);
-                    sink.emit(HostEvent::CursorMoved(CursorPosition {
-                        x: cx,
-                        y: web_y,
-                        screen_x: _sx,
-                        screen_y: _sy,
-                        screen_w: _sw,
-                        screen_h: _sh,
-                    }));
-                }
-            }
-            thread::sleep(CURSOR_POLL_INTERVAL);
-        }
-    });
 }
 
 #[cfg(test)]

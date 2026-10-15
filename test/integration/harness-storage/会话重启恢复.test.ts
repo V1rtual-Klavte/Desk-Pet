@@ -43,6 +43,39 @@ afterAll(() => {
 })
 
 describe("会话重启恢复", () => {
+  it("Windows 长路径与 UNC 前缀不进入会话目录编码，原始 cwd 列举仍能恢复同一会话 [harness-session-windows-cwd]", async () => {
+    // cwd 只参与归属标识；JSONL 真正写入仓库 test/.tmp，不访问这些示例盘或网络共享。
+    const root = mkdtempSync(join(process.cwd(), "test", ".tmp", "windows-cwd-"))
+    try {
+      for (const [source, expected] of [
+        [String.raw`\\?\C:\deskpet\角色`, String.raw`C:\deskpet\角色`],
+        [String.raw`\\?\UNC\server\share\deskpet`, String.raw`\\server\share\deskpet`],
+      ]) {
+        const sessionsRoot = join(root, crypto.randomUUID())
+        const repo = await createPiSessionRepo({ sessionsRoot, cwd: source })
+        const session = await repo.create({ id: "windows-cwd" }, BACKGROUND_CONTEXT)
+        await session.setName("窗口测试会话", BACKGROUND_CONTEXT)
+        const path = session.metadata.path
+        expect(session.metadata.cwd).toBe(expected)
+        expect(relativePath(sessionsRoot, path)).not.toContain("?")
+        await session.close(BACKGROUND_CONTEXT)
+        await repo.close(BACKGROUND_CONTEXT)
+        const reopenedRepo = await createPiSessionRepo({ sessionsRoot, cwd: source })
+        try {
+          const listed = await reopenedRepo.list({ cwd: source }, BACKGROUND_CONTEXT)
+          expect(listed.map(item => item.id)).toEqual(["windows-cwd"])
+          const reopened = await reopenedRepo.open(listed[0], BACKGROUND_CONTEXT)
+          expect(await reopened.getName(BACKGROUND_CONTEXT)).toBe("窗口测试会话")
+          await reopened.close(BACKGROUND_CONTEXT)
+        } finally {
+          await reopenedRepo.close(BACKGROUND_CONTEXT)
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("换一个仓库实例后会话可从磁盘恢复；会话文件落在数据根 sessions/ 下，与同根的 UI 状态文件互不干扰 [harness-session-restart-recovery]", async () => {
     const context = BACKGROUND_CONTEXT
     const env = new NativeExecutionEnv(await runtimePath("data"))

@@ -51,7 +51,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_PAINT,
     WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW, WS_CLIPCHILDREN,
     WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_THICKFRAME,
-    WS_VISIBLE, WS_VSCROLL,
+    WS_VISIBLE,
 };
 
 use crate::audio::AudioCue;
@@ -777,15 +777,19 @@ fn open_aux(window: WindowId) -> AppResult<()> {
     // 编辑器只有预览子窗口走逐像素合成；顶层保持普通窗口，
     // 否则 UpdateLayeredWindow 会用预览位图替代整窗，覆盖参数和按钮。
     let ex_style = WS_EX_TOPMOST;
-    // 设置窗内容可能高于窗口：带上 WS_VSCROLL，滚动由 `windows_settings::on_vscroll`
-    // 按行位移处理（W9a；其它附属窗不加）。
     // WS_CLIPCHILDREN：设置/编辑器窗自绘主题窗底（WM_ERASEBKGND/WM_PAINT），
     // 必须把子控件区域排除在父窗绘制之外，否则整块填充会盖住控件（系统不会替我们重绘）。
-    let style = if window == WindowId::Settings {
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL
-    } else {
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN
-    };
+    let style = WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN;
+    // macOS 的尺寸是内容区尺寸。Win32 创建尺寸包含标题栏/边框，须先补足非客户区。
+    // 设置的滚动条由内容 viewport 持有，根窗不预留第二份滚动条宽度。
+    let mut bounds = RECT { left: 0, top: 0, right: width_phys, bottom: height_phys };
+    if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::AdjustWindowRectEx(&mut bounds, style, 0, ex_style) } == 0 {
+        return Err(AppError::Other(format!("附属窗口客户区尺寸计算失败: {}", std::io::Error::last_os_error())));
+    }
+    let width_phys = bounds.right - bounds.left;
+    let height_phys = bounds.bottom - bounds.top;
+    let x = x - (width_phys - (width * scale).round() as i32) / 2;
+    let y = y - (height_phys - (height * scale).round() as i32) / 2;
     let hwnd = unsafe {
         CreateWindowExW(
             ex_style,
@@ -1454,6 +1458,10 @@ unsafe extern "system" fn aux_wndproc(
 /// 舞台表面的每帧 `pre_tick` 钩子（`windows_main::install` 接线，保证帧内采样）。
 pub(super) fn track_tick() {
     with_ui(|ui| {
+        // KillTimer 后队列中可能仍有一条旧 WM_TIMER；收回动画也不能重新采样。
+        if !ui.track_timer_active || !ui.machine.stage().tracks_cursor() {
+            return;
+        }
         if let Some(layout) = ui.main_layout.as_mut() {
             super::windows_main::track(layout);
         }

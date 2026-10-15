@@ -41,6 +41,13 @@ pub enum Stage {
     Revealing,
 }
 
+impl Stage {
+    /// 收回动画固定其起点，隐藏期不采样；呼出与正常显示期间接受光标输入。
+    pub const fn tracks_cursor(self) -> bool {
+        matches!(self, Self::Visible | Self::Revealing)
+    }
+}
+
 /// 一帧视觉参数（层级缩放的 0..1 进度经曲线求值后的结果）。
 ///
 /// 曲线带预备/越冲，数值可能短暂越出 `[0, 1]`（这正是旧 CSS 动画的表现）；
@@ -447,6 +454,21 @@ impl CommittedAssistantTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 收回和隐藏期间拒绝光标采样_呼出恢复() {
+        let mut machine = ShowHideMachine::new();
+        assert!(machine.stage().tracks_cursor());
+        assert!(machine.begin_retract(1_000));
+        assert!(!machine.stage().tracks_cursor());
+        assert_eq!(machine.tick(1_000 + RETRACT_DURATION_MS), Tick::RetractFinished);
+        assert!(!machine.stage().tracks_cursor());
+        let reveal_at = 1_000 + RETRACT_DURATION_MS + TOGGLE_TAIL_MS;
+        assert!(machine.begin_reveal(reveal_at, (0.0, 0.0)));
+        assert!(machine.stage().tracks_cursor());
+        assert_eq!(machine.tick(reveal_at + REVEAL_DURATION_MS), Tick::RevealFinished);
+        assert!(machine.stage().tracks_cursor());
+    }
 
     fn frame_at(machine: &mut ShowHideMachine, now: u64) -> FrameVisual {
         match machine.tick(now) {

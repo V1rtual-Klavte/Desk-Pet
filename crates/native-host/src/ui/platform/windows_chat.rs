@@ -1248,34 +1248,16 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
                 }
             }
         }
-        // 上拉箭头（▴ 合着 / ▾ 开着）：画的是三角而不是字形 —— 字体对 U+25B4/25BE
-        // 的覆盖不可靠（2026-10-07 实机：▴ 被画成一根竖条），且子按钮的面会盖住
-        // composer 渐变。字形框仍来自共享 `handle_arrow_frame`（10×10 居中）。
+        // 与 macOS 同用 ▴/▾ 字形。符号单独取 Segoe UI Symbol，避免正文字体缺字。
         if !rect_is_empty(&state.paint.handle_arrow) {
-            let glyph = win_rect_of(&state.paint.handle_arrow);
-            let up = handle_arrow_up(state.inspector_open);
-            // 三角按 mac 录制的**实测量级**收小：录制帧里 ▴ 的 bbox 只有
-            // 5×4px（藏在共享 `handle_arrow_frame` 的 10×10 字形框里居中），
-            // 颜色是对应的 `dim`（实测 (99,108,121) ≈ dim 预合成在 composer 上）。
-            // 旧实现按整框铺满 + `ink` 72% 预合成，实机明显比 mac 大一倍、黑一档。
-            let half_w = (glyph.w / 5).max(2);
-            let half_h = (glyph.h / 5).max(2);
-            let cx = glyph.x + glyph.w / 2;
-            let cy = glyph.y + glyph.h / 2;
-            let (a, b, c) = if up {
-                (
-                    (cx, cy - half_h),
-                    (cx - half_w, cy + half_h),
-                    (cx + half_w, cy + half_h),
-                )
-            } else {
-                (
-                    (cx, cy + half_h),
-                    (cx - half_w, cy - half_h),
-                    (cx + half_w, cy - half_h),
-                )
-            };
-            paint_win::fill_triangle(hdc, [a, b, c], t.dim);
+            let font = state.fonts.get(4).copied().unwrap_or(0);
+            let old = SelectObject(hdc, font);
+            let mut rect = state.paint.handle_arrow;
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, paint_win::colorref(t.dim));
+            let glyph = if handle_arrow_up(state.inspector_open) { "▴" } else { "▾" };
+            DrawTextW(hdc, wide(glyph).as_ptr(), -1, &mut rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(hdc, old);
         }
         if !rect_is_empty(&state.paint.input_field) {
             let field = win_rect_of(&state.paint.input_field);
@@ -2811,7 +2793,8 @@ pub(crate) fn apply_chat_font() {
                 unsafe { DeleteObject(font) };
             }
         }
-        state.fonts = vec![body, small, bold, mono];
+        let symbol = make(snapshot.scaled_size(11.0, 13.5), FW_NORMAL as i32, "Segoe UI Symbol");
+        state.fonts = vec![body, small, bold, mono, symbol];
         unsafe {
             SendMessageW(state.input, WM_SETFONT, body as WPARAM, 1);
             SendMessageW(state.input_placeholder, WM_SETFONT, body as WPARAM, 1);
@@ -4618,6 +4601,7 @@ unsafe fn build_children(hwnd: HWND) {
     let small = make_font(small_size, FW_NORMAL as i32, &ui_face);
     let bold = make_font(body_size, FW_BOLD as i32, &ui_face);
     let mono = make_font(mono_size, FW_NORMAL as i32, "Consolas");
+    let symbol = make_font(small_size, FW_NORMAL as i32, "Segoe UI Symbol");
 
     unsafe {
         SendMessageW(input, WM_SETFONT, body as WPARAM, 1);
@@ -4648,7 +4632,7 @@ unsafe fn build_children(hwnd: HWND) {
             input,
             input_placeholder,
             stop,
-            fonts: vec![body, small, bold, mono],
+            fonts: vec![body, small, bold, mono, symbol],
             content_height: 0,
             scroll_y: 0,
             viewport_height: 0,
@@ -8335,8 +8319,7 @@ mod tests {
     }
 
     /// 把手箭头：朝向随浮层开合翻面（收着 = 上拉 ▴、开着 = 可往下收 ▾）。
-    /// Windows 画的是**几何三角**（字体对这些字形的覆盖不可靠，实机把 ▴ 画成
-    /// 竖条），所以这里钉的是朝向布尔，不是文案。
+    /// 两平台都用字形；Windows 的符号字体与正文字体独立，朝向随模型翻转。
     #[test]
     fn 把手箭头_朝向随开合翻面() {
         assert!(handle_arrow_up(false), "浮层收着 = 上拉 ▴");
@@ -8344,7 +8327,7 @@ mod tests {
     }
 
     /// 把手箭头字形框由**共享** `handle_arrow_frame` 给出：水平+垂直居中
-    /// （用户规则「上拉栏的箭头居中」）；绘制端在框内画三角，命中区是整条带。
+    /// （用户规则「上拉栏的箭头居中」）；绘制端在框内画字形，命中区是整条带。
     #[test]
     fn 把手箭头_共享字形框居中() {
         for logical_width in [200.0, 360.0, 460.0, 800.0] {
@@ -8438,8 +8421,9 @@ mod tests {
             "把手带不许再挂子按钮（一次点击进两条开合通道 = 开完又关）"
         );
         assert!(
-            production.contains("paint.handle_arrow") && production.contains("fill_triangle"),
-            "上拉箭头必须由聊天窗单面绘制（几何三角 + 共享字形框）"
+            production.contains("paint.handle_arrow") && production.contains("wide(glyph)")
+                && production.contains("Segoe UI Symbol"),
+            "上拉箭头必须由聊天窗单面绘制（符号字体 + 共享字形框）"
         );
     }
 

@@ -120,7 +120,6 @@ import {
   HOST_EVENT_BASH_BACKGROUND_FINISHED,
   HOST_EVENT_CHOICE_END,
   HOST_EVENT_CHOICE_START,
-  HOST_EVENT_CURSOR_MOVE,
   HOST_EVENT_PERMISSION_CONFIRM,
   HOST_EVENT_PLAN_END,
   HOST_EVENT_PLAN_PROGRESS,
@@ -572,7 +571,7 @@ export interface HostRequestResultPayload {
 // 消费方标注（迁移时决定命令归 Node 还是原生 UI 直接调用；签名不变）：
 // - 「Node 工具/业务」：工具执行、会话/记忆/主动、文件/进程类命令。
 // - 「原生 UI」：窗口/光标/显示器/devtools 等桌面域；W5 决定 UI 是否直连宿主而不经 Node
-//   转发（60fps 的光标事件尤其不能绕 Node）。
+//   转发；光标采样完全归原生 UI 可见期，不经过事件或 Node。
 
 export type HostCommandMap = {
   /** Native 音频输出：TS声音定义生成的完整RIFF PCM，不在Native复制预设。 */
@@ -1801,21 +1800,6 @@ export type HostEventMap = {
    * 载荷类型逐字镜像 Rust `crates/native-host/src/host/mod.rs::BackgroundCommandFinished`。
    */
   [HOST_EVENT_BASH_BACKGROUND_FINISHED]: BashBackgroundFinishedPayload
-  /**
-   * 光标位置推送（Rust commands/cursor.rs，仅坐标变化时发；~60fps）。
-   * 消费方是原生 UI 的灵动图层渲染。**不应经 Node 转发** —— 60fps 穿 Node 只会
-   * 加延迟；宿主侧只直投原生 UI（crates/native-host/src/host/events.rs），
-   * 列入本矩阵只为保住契约形状。
-   * 载荷与 get_cursor_position 的 result 同形（Rust CursorPosition，snake_case）。
-   */
-  [HOST_EVENT_CURSOR_MOVE]: {
-    x: number
-    y: number
-    screen_x: number
-    screen_y: number
-    screen_w: number
-    screen_h: number
-  }
 
   // ── 聊天流式与运行状态（Node → UI）──
   // 生产者：src/services/engine/harness/runtime.ts 的 emitUiEvent（best-effort；

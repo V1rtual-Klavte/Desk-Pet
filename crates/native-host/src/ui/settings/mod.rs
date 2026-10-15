@@ -17,6 +17,7 @@
 //! 线程纪律：控件动作都在 UI 主线程；`fetch`/`commit`/`check_update` 是可能阻塞的
 //! IO（IPC/文件），一律在工作线程执行，结果经主线程队列回投。
 
+pub(crate) mod layout;
 pub mod panels;
 pub mod schema;
 pub mod updates;
@@ -725,10 +726,15 @@ impl SettingsDraft {
         self.dirty.len()
     }
 
-    /// 提交成功：当前编辑值成为新基线。
-    pub fn mark_saved(&mut self) {
-        self.committed = self.current.clone();
-        self.dirty.clear();
+    /// 只确认本次真正提交的值；等待写盘期间的新编辑仍保留为 dirty。
+    pub fn mark_saved(&mut self, changes: &[SettingEdit]) {
+        for edit in changes {
+            self.committed.values.insert(edit.key.clone(), edit.value.clone());
+        }
+        self.dirty = self.current.values.iter()
+            .filter(|(key, value)| self.committed.values.get(*key) != Some(*value))
+            .map(|(key, _)| key.clone())
+            .collect();
     }
 
     /// 丢弃全部未保存改动。
@@ -2579,7 +2585,7 @@ impl SettingsUi {
                 let ui = settings_ui();
                 match port.commit(&changes) {
                     Ok(()) => {
-                        Self::lock(&ui.draft).mark_saved();
+                        Self::lock(&ui.draft).mark_saved(&changes);
                         // 提交已完成：先落回 saving 态，重启失败时界面不卡在「保存中」。
                         ui.saving.store(false, Ordering::SeqCst);
                         // 重启失败不改写已保存的事实：文案只说「重启失败」。
@@ -2641,18 +2647,26 @@ impl SettingsUi {
             .spawn(move || match port.commit(&changes) {
                 Ok(()) => {
                     let ui = settings_ui();
-                    let font_snapshot = {
+                    let pending = {
                         let mut draft = Self::lock(&ui.draft);
-                        draft.mark_saved();
-                        draft.font_snapshot()
+                        draft.mark_saved(&changes);
+                        if !ui.window_open.load(Ordering::SeqCst) {
+                            // 窗口已关闭：本次写盘仍成为基线，关闭时丢弃的编辑不能复活。
+                            draft.revert_all();
+                        }
+                        draft.is_dirty()
                     };
                     // 保存成功 = 字体预览成为已提交基线（再应用一次，保证与磁盘一致）。
-                    let applied = font::store(font_snapshot);
-                    if let Err(error) = crate::ui::platform::imp::apply_font_snapshot(applied) {
-                        rust_warn!("保存后字体应用失败: {error}");
-                    }
+                    ui.run_on_ui(|| {
+                        // 执行时读最新草稿，不能让排队的旧保存回执覆盖后续字体预览。
+                        let snapshot = Self::lock(&settings_ui().draft).font_snapshot();
+                        let applied = font::store(snapshot);
+                        if let Err(error) = crate::ui::platform::imp::apply_font_snapshot(applied) {
+                            rust_warn!("保存后字体应用失败: {error}");
+                        }
+                    });
                     ui.saving.store(false, Ordering::SeqCst);
-                    ui.set_notice(Some("已保存".into()));
+                    ui.set_notice(Some(if pending { "本次改动已保存，仍有新的未保存改动" } else { "已保存" }.into()));
                 }
                 Err(error) => {
                     let ui = settings_ui();
@@ -3821,12 +3835,35 @@ mod tests {
         let changes = draft.changes();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].key, "appearance.chatImagePreview");
-        draft.mark_saved();
+        draft.mark_saved(&changes);
         assert!(!draft.is_dirty());
         assert_eq!(
             draft.value("appearance.chatImagePreview"),
             Some(&SettingsValue::Bool(true))
         );
+    }
+
+    #[test]
+    fn 保存回执不吞掉同字段的新编辑或其它字段的编辑() {
+        let mut draft = SettingsDraft::default();
+        draft.load(snapshot(&[
+            ("ai.model", SettingsValue::Text("model-a".into())),
+            ("appearance.chatImagePreview", SettingsValue::Bool(true)),
+        ]));
+        draft.set("ai.model", SettingsValue::Text("model-b".into())).unwrap();
+        let submitted = draft.changes();
+        draft.set("ai.model", SettingsValue::Text("model-c".into())).unwrap();
+        draft.set("appearance.chatImagePreview", SettingsValue::Bool(false)).unwrap();
+        draft.mark_saved(&submitted);
+        assert_eq!(draft.committed_value("ai.model"), Some(&SettingsValue::Text("model-b".into())));
+        assert_eq!(draft.value("ai.model"), Some(&SettingsValue::Text("model-c".into())));
+        assert_eq!(draft.changes(), vec![
+            SettingEdit { key: "ai.model".into(), value: SettingsValue::Text("model-c".into()) },
+            SettingEdit { key: "appearance.chatImagePreview".into(), value: SettingsValue::Bool(false) },
+        ]);
+        draft.revert_all();
+        assert_eq!(draft.value("ai.model"), Some(&SettingsValue::Text("model-b".into())));
+        assert_eq!(draft.value("appearance.chatImagePreview"), Some(&SettingsValue::Bool(true)));
     }
 
     #[test]

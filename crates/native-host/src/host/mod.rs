@@ -119,15 +119,11 @@ pub trait EventSink: Send + Sync {
 
 /// 宿主事件的业务形状。
 ///
-/// 这里只登记**由 Rust 侧产生**的事件（`deskpet-cursor-move`、`window-observed` 与
-/// `bash-background-finished` 三个出口）；Node 领域的事件走 HostBridge 的 `HostEventMap`，
+/// 这里只登记**由 Rust 侧产生**的事件（`window-observed` 与
+/// `bash-background-finished` 两个出口）；Node 领域的事件走 HostBridge 的 `HostEventMap`，
 /// 不在这里重复。
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostEvent {
-    /// 全局光标位置变化（灵动图层的输入）。
-    ///
-    /// 只在坐标真的变化时派发 —— 无条件每 16ms 派发会冲爆日志窗口。
-    CursorMoved(CursorPosition),
     /// 窗口观察采样（前台应用、空闲时长、桌宠自身可见/前台）。
     WindowObserved(WindowObservation),
     /// 后台 bash 命令结束（前台超时转入后台的任务走到终点）。

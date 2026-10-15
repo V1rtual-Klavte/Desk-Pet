@@ -63,7 +63,6 @@ use super::macos_widgets::{
 
 // ── 版面常量（逻辑点）──
 
-const MARGIN: f64 = 16.0;
 /// 字段标签列宽（右对齐）。旧值 110 放不下最长标签「默认发送方式（忙碌时）」
 /// （11 个全角字 × 正文基线 13.5 ≈ 148.5pt），实机症状是「收到消息自动弹出」
 /// 被截成「收到消息自动…」。按最长标签在正文基线下完整显示取值，并由
@@ -82,8 +81,6 @@ const CTRL_W_SHORTCUT: f64 = 180.0;
 
 // ── 左竖栏（设计稿 `.srail`；宽度 104 = 内容栅格第一列）──
 
-/// 竖栏宽（内容区起点 = `RAIL_W + MARGIN`）。
-const RAIL_W: f64 = 104.0;
 /// 竖栏行按钮的左右内边距（设计稿 `padding: 9px 6px` 的横向值）。
 const RAIL_PAD_X: f64 = 6.0;
 /// 竖栏首行的顶距（设计稿纵向 padding 9px）。
@@ -92,13 +89,7 @@ const RAIL_TOP: f64 = 9.0;
 const RAIL_ITEM_H: f64 = 26.0;
 const RAIL_ITEM_GAP: f64 = 1.0;
 
-/// 底部操作条预留（状态行 + 刷新/保存）：竖栏与内容滚动区的下边界都停在它上面。
-const FOOTER_H: f64 = 40.0;
-/// 内容滚动区上边距（对齐设计稿 `.spane` 的 11px 上内边距；与 Windows 侧同值）。
-///
-/// 2026-10-05 版面对齐：旧值 44 是「顶部 Tab 带」时代的残留（竖栏改造后
-/// 无顶部带），实机对照设计稿收齐为 11。
-const CONTENT_TOP: f64 = 11.0;
+// 主版面网格见 settings/layout.rs，两平台共用。
 
 // ── Bool 开关（设计稿 `.sw`：轨道 32×17，滑块由 apply_switch 自适）──
 
@@ -203,75 +194,8 @@ const REFRESH_SOUNDS: isize = 2;
 // 根容器上，让容器坐标系与算式一致 —— 直接 `place` 到 content 上会把整页垂直
 // 镜像（底部操作条 `height - 30` 被画到窗口顶部）。
 
-/// 一个视图矩形（逻辑点；`y` 从上往下量）。
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SettingsRect {
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-}
+use crate::ui::settings::layout::{settings_layout, SettingsRect, MARGIN, RAIL_W, CONTENT_TOP, FOOTER_H};
 
-/// 设置窗主版面：左竖栏 / 内容滚动区 / 底部操作条（状态行 + 刷新/保存）。
-struct SettingsLayout {
-    /// 左竖栏：从窗口顶铺到操作条上沿。
-    rail: SettingsRect,
-    /// 内容滚动区：竖栏右侧，上边距 `CONTENT_TOP`、下边界停在操作条上。
-    scroll: SettingsRect,
-    /// 操作条上缘的 1px 分隔线（设计稿 `.sfoot` 的 `border-top: 1px solid var(--bare)`）。
-    separator: SettingsRect,
-    /// 状态行（操作条左端）。
-    status: SettingsRect,
-    /// 「刷新」（操作条右端，主操作左边）。
-    refresh: SettingsRect,
-    /// 「保存」（操作条最右的主操作）。
-    save: SettingsRect,
-}
-
-/// 按窗口尺寸算主版面（纯函数，可测）。
-fn settings_layout(width: f64, height: f64) -> SettingsLayout {
-    SettingsLayout {
-        rail: SettingsRect {
-            x: 0.0,
-            y: 0.0,
-            w: RAIL_W,
-            h: (height - FOOTER_H).max(120.0),
-        },
-        scroll: SettingsRect {
-            x: RAIL_W + MARGIN,
-            y: CONTENT_TOP,
-            w: (width - RAIL_W - MARGIN * 2.0).max(80.0),
-            h: (height - CONTENT_TOP - FOOTER_H).max(80.0),
-        },
-        separator: SettingsRect {
-            x: 0.0,
-            y: height - FOOTER_H,
-            w: width,
-            h: 1.0,
-        },
-        // 底部操作条（设计稿 `.sfoot`）：状态行在左，主操作贴右。
-        // 页脚按钮右缘与内容控件右缘对齐（2026-10-05 评审：旧版外凸 16.5pt、
-        // 与内容不共网格）。控件右缘 = 窗宽 − 外边距 16 − 内容内边距 16 = width − 32。
-        status: SettingsRect {
-            x: MARGIN,
-            y: height - 30.0,
-            w: (width - 236.0).max(80.0),
-            h: 20.0,
-        },
-        refresh: SettingsRect {
-            x: width - 212.0,
-            y: height - 34.0,
-            w: 88.0,
-            h: 28.0,
-        },
-        save: SettingsRect {
-            x: width - 116.0,
-            y: height - 34.0,
-            w: 84.0,
-            h: 28.0,
-        },
-    }
-}
 
 /// 管理面行的 y 序列与行区结束 y（纯函数，可测）：首行 = `start_y`，
 /// 单个管理面行的行高：副标题框是「标题下 19 起、高 30（最多两行）」，有副标题时

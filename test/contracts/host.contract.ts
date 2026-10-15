@@ -1,3 +1,4 @@
+// 2026-10-15 Windows UI 验收 analyze -> generate：移除常驻光标事件链，hz-04 同步删除已废弃的光标事件表项；其余线名与 hz-05/hz-06 的 Blob 配对、归还、取消及 JSON 传输路径未改。
 // 2026-10-10 聚合 JSON 传输：hz-06覆盖请求的整包上传与取消；hz-05覆盖 JSON 回包递归物化和句柄归还。memory-multi-turn 经真 Rust IPC 验证超帧索引与完整超帧搜索结果，业务层不承担帧容量预检。
 // 宿主传输适配层契约（Node 侧取用面 / 装配 / 错误码保真）。
 //
@@ -51,7 +52,7 @@ export const hostContract: ModuleContract = {
     "crates/native-host/src/host/supervisor.rs",
     "src/services/error/format.ts",
   ],
-  sourceHash: "77503cb81dabbacc96547d5251979d3e41955a5fa03aa62789226c27e1fd09b6",
+  sourceHash: "548c8beef415cd4b2a6f951b6d7c2a1299ba08f2fd4da140f00a194c370f5f6c",
   coverage: [
     {
       id: "hz-06",

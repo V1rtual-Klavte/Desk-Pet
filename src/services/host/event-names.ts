@@ -18,11 +18,6 @@
 export const HOST_EVENT_WINDOW_OBSERVED = "window-observed"
 /** 后台命令结束（Rust `commands/tool_exec/bash.rs` 的等待线程 emit；只投 Node）。 */
 export const HOST_EVENT_BASH_BACKGROUND_FINISHED = "bash-background-finished"
-/**
- * 光标位置推送（Rust commands/cursor.rs；只直投原生 UI，不经 Node 转发，
- * 列入矩阵只为保住契约形状）。
- */
-export const HOST_EVENT_CURSOR_MOVE = "deskpet-cursor-move"
 /** 助手流式增量（Node `engine/harness/runtime.ts` 生产；Rust 分派见 `ui/chat/events.rs`）。 */
 export const HOST_EVENT_ASSISTANT_STREAM = "deskpet-assistant-stream"
 /** 流式收尾（同 `HOST_EVENT_ASSISTANT_STREAM`）。 */

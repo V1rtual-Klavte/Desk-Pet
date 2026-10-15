@@ -545,6 +545,9 @@ define_class!(
         /// 可见期跟踪：全局光标 → 舞台渲染器（灵动输入）。
         #[unsafe(method(mainTrack:))]
         fn main_track(&self, _timer: &NSTimer) {
+            if !self.ivars().machine.borrow().stage().tracks_cursor() {
+                return;
+            }
             self.with_main_layout(macos_main::track);
         }
 

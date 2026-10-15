@@ -388,7 +388,7 @@ const APPEARANCE_DISPLAY: &[Field] = &[
         key: "appearance.theme",
         label: "界面主题",
         kind: FieldKind::Enum(THEME),
-        help: "产品预设三选一（不可改色值）；与 Profile 无关，换 Profile 不换主题",
+        help: "产品级主题预设（不可改色值）；与 Profile 无关，换 Profile 不换主题",
     },
     Field {
         key: "appearance.parallax.intensity",

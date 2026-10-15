@@ -22,6 +22,12 @@ import type { FoldOutcome } from "./session-fold"
 
 const log = createLogger("PiSessionRepo")
 
+/** cwd 是会话归属标识；Windows 文件 API 的命名空间前缀不能进入 Pi 的目录名编码。 */
+function sessionCwd(path: string): string {
+  if (/^\\\\\?\\UNC\\/i.test(path)) return `\\\\${path.slice(8)}`
+  return path.replace(/^\\\\\?\\(?=[a-z]:\\)/i, "")
+}
+
 /**
  * V1rtual-Desk-Pet 的会话仓库门面。
  *
@@ -115,7 +121,7 @@ class DataRootSessionRepo implements PiSessionRepo {
    * 旧会话仍会被如实列出，由调用方显式处理 —— 不允许出现「index.json 里有 id、仓库列表里静默消失」。
    */
   list(options: JsonlSessionListOptions | undefined, context: Context): Promise<JsonlSessionMetadata[]> {
-    return this.repo.list(options, context)
+    return this.repo.list(options?.cwd === undefined ? options : { ...options, cwd: sessionCwd(options.cwd) }, context)
   }
 
   delete(metadata: JsonlSessionMetadata, context: Context): Promise<void> {
@@ -145,7 +151,7 @@ class DataRootSessionRepo implements PiSessionRepo {
  *   `pi.pending.assistant_frame` 的帧 append，其余读写逐字节透传（见 session-frame-buffer.ts）。
  */
 export async function createPiSessionRepo(options: PiSessionRepoOptions = {}): Promise<PiSessionRepo> {
-  const cwd = options.cwd ?? (await runtimePath("data"))
+  const cwd = sessionCwd(options.cwd ?? (await runtimePath("data")))
   const base = options.fileSystem ?? new SessionFileSystem(cwd, await runtimePath("sessions"))
   // O-9 裁定：帧写入合并是全局开关、默认开，`=== false` 是本文件唯一的旁路点。
   //   · 不做按会话粒度 —— 缓冲本身已按文件路径分桶，「按会话开关」只会多一个状态点而没有

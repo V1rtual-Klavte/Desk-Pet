@@ -6,10 +6,7 @@
 //!   舞台子窗口（`WinLayerSurface`）。两侧都只给本模块一个已经建好的 [`RenderSurface`]。
 //! - **本模块**负责：保存 Node 推送的舞台快照（层列表 + 灵动参数）、把窗口可见性与
 //!   几何翻译成 [`Renderer`] 输入、在显示/隐藏边沿启动/停止帧循环。
-//! - **光标输入有两个来源**（见 [`Stage::set_cursor`]）：事件出口直投的推送值
-//!   （[`StageNativeEvents`] ← `spawn_cursor_tracker` 的 16ms 事件，原生宿主迁移过程记录 §9.4 第 1 条的
-//!   直连路径）与平台跟踪计时器的轮询值（可见期 60Hz，事件缺席时兜底）。两者读数
-//!   同源，汇到同一个 [`Renderer::set_cursor`]。
+//! - 光标由平台在可见期采样，直接送入同一个 Renderer；收回后停止采样。
 //!
 //! 不变量（执行契约 §6.1/§6.2）：
 //! - 隐藏期零帧：`set_visible(false)` 停止帧循环；隐藏期到达的 `render_now`（编辑器拖动
@@ -17,54 +14,11 @@
 //! - 层列表与几何语义只有 W6 一份：舞台与编辑器预览各自构造 `Renderer`，参数都来自
 //!   同一 `LayerSpec`，不重建第二份数学。
 
-use std::sync::Mutex;
-
 use crate::error::{AppError, AppResult};
-use crate::host::events::NativeEventSink;
 use crate::render::geometry::WindowGeometry;
 use crate::render::surface::RenderSurface;
 use crate::render::{LayerSpec, Renderer, RendererStats};
 use crate::{rust_debug, rust_info, rust_warn};
-
-/// 事件出口直投的光标（进程内唯一主窗舞台；[`push_cursor`] 写入、[`Stage::set_cursor`] 消费）。
-///
-/// 事件推送与平台轮询是同一 OS 光标的两个读数（见 [`Stage::set_cursor`] 的说明）；
-/// 槽位只保最新一帧，消费即清空，轮询值随即兜底。
-static PUSHED_CURSOR: Mutex<Option<crate::render::geometry::CursorPosition>> = Mutex::new(None);
-
-/// 事件出口的直投入口：把 `HostEvent::CursorMoved` 的坐标放到舞台的下一拍消费。
-pub fn push_cursor(cursor: crate::render::geometry::CursorPosition) {
-    *PUSHED_CURSOR
-        .lock()
-        .unwrap_or_else(|error| error.into_inner()) = Some(cursor);
-}
-
-fn take_pushed_cursor() -> Option<crate::render::geometry::CursorPosition> {
-    PUSHED_CURSOR
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .take()
-}
-
-/// 原生 UI 的事件消费口实现（`EventSink` 出口按 原生宿主迁移过程记录 §9.4 第 1/2 条路由到这里）。
-pub struct StageNativeEvents;
-
-impl NativeEventSink for StageNativeEvents {
-    fn cursor_moved(&self, cursor: crate::host::CursorPosition) {
-        // 与平台 track 同一坐标翻译（web 坐标系，i32 → f64）。
-        push_cursor(crate::render::geometry::CursorPosition {
-            x: f64::from(cursor.x),
-            y: f64::from(cursor.y),
-        });
-    }
-
-    fn window_observed(&self, _observation: &crate::host::WindowObservation) {
-        // 原生 UI 当前没有 `window-observed` 消费者：观察/行为域在 Node 侧消费
-        //（原生宿主迁移过程记录 §9.4 第 2 条的「原生 UI 也可能要」为后续接入预留）。
-        // 按无消费者**有意丢弃**：Node 侧照常消费、不属故障路径；排查观察链的证据点
-        // 在 Node 的 `ProactiveTrace`（behavior_observed）。不再逐条留痕（降噪 2026-10-07）。
-    }
-}
 
 /// Node 推送的舞台快照（`appearance` 与当前 Profile 的显示投影）。
 ///
@@ -209,13 +163,9 @@ impl Stage {
 
     /// 全局光标（`None` = 未知/隐藏）。
     ///
-    /// 两个来源汇到同一调用：事件出口直投的推送值（[`push_cursor`]，
-    /// `spawn_cursor_tracker` 的 16ms 事件）优先消费，平台跟踪计时器的轮询值兜底。
-    /// 两者读的是同一个 OS 光标，取值只差一个采样间隔（≤16ms）；推送链未启动或
-    /// 中断时轮询照常供值，跟随不会失效。
+    /// 平台采样直接生效，不让后台旧采样覆盖当前帧。
     pub fn set_cursor(&mut self, cursor: Option<crate::render::geometry::CursorPosition>) {
-        let effective = take_pushed_cursor().or(cursor);
-        self.renderer.set_cursor(effective);
+        self.renderer.set_cursor(cursor);
     }
 
     /// 可见性边沿：可见 → 启动帧循环；隐藏 → 停止（隐藏期零帧）。
@@ -288,15 +238,6 @@ mod tests {
 
     fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         mutex.lock().unwrap_or_else(|error| error.into_inner())
-    }
-
-    #[test]
-    fn 事件推送的光标优先消费_之后回落平台轮询值() {
-        let pushed = crate::render::geometry::CursorPosition { x: 10.0, y: 20.0 };
-        push_cursor(pushed);
-        // `Stage::set_cursor` 的消费点：推送存在时优先，消费一次后清空。
-        assert_eq!(take_pushed_cursor(), Some(pushed));
-        assert_eq!(take_pushed_cursor(), None, "消费一次后回落平台轮询值");
     }
 
     const FIXTURE_PNG: &[u8] =
