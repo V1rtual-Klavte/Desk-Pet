@@ -3,7 +3,7 @@
 use super::conversation::ConversationIndexEntry;
 use super::protocol::{MEMORY_COMMANDS, MEMORY_SCHEMA_VERSION};
 use super::schema::SCHEMA_VERSION;
-use super::store::{id_suffix, payload_hash, rand_suffix};
+use super::store::{id_suffix, payload_hash, rand_suffix, MemoryEventTime};
 use super::MemoryStore;
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -562,6 +562,76 @@ fn pinned_core_is_read_without_query_and_bound_to_current_scopes_and_revision() 
         json!(store.status().unwrap().revision),
         "候选和核心画像 revision 应来自同一读取快照"
     );
+}
+
+#[test]
+fn event_time_recall_filters_half_open_ranges_and_calendar_dates() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("event-in-range", "event-in-range-entry", "event-in-range-hash"),
+            source("event-at-end", "event-at-end-entry", "event-at-end-hash"),
+            source("event-next-day", "event-next-day-entry", "event-next-day-hash"),
+        ])
+        .unwrap();
+
+    let mut in_range = draft("旅行纪念日", vec!["event-in-range"]);
+    in_range["kind"] = json!("working");
+    in_range["workingState"] = json!("open");
+    in_range["eventAt"] = json!({
+        "precision": "minute",
+        "instant": 1_000i64,
+        "timezone": "UTC",
+    });
+    add(&store, "event-in-range-add", 0, &in_range);
+
+    let mut at_end = draft("旅行纪念日", vec!["event-at-end"]);
+    at_end["kind"] = json!("working");
+    at_end["workingState"] = json!("open");
+    at_end["eventAt"] = json!({
+        "precision": "minute",
+        "instant": 2_000i64,
+        "timezone": "UTC",
+    });
+    add(&store, "event-at-end-add", 1, &at_end);
+
+    let mut next_day = draft("旅行纪念日", vec!["event-next-day"]);
+    next_day["kind"] = json!("working");
+    next_day["workingState"] = json!("open");
+    next_day["eventAt"] = json!({
+        "precision": "day",
+        "localDate": "2024-05-11",
+        "timezone": "UTC",
+    });
+    add(&store, "event-next-day-add", 2, &next_day);
+
+    let range = MemoryEventTime::from_value(json!({ "start": 1_000i64, "end": 2_000i64 }))
+        .expect("合法事件范围被拒绝");
+    let ranged = store
+        .recall_candidates_with_event_time("旅行纪念日", None, "s1", 50, &[], false, Some(&range))
+        .expect("事件范围召回失败");
+    let ranged_items = ranged["candidates"].as_array().unwrap();
+    assert_eq!(ranged_items.len(), 1, "范围应包含 start，不应包含 end");
+    assert_eq!(
+        ranged_items[0]["draft"]["eventAt"]["instant"],
+        json!(1_000i64)
+    );
+
+    let day = MemoryEventTime::from_value(json!({
+        "calendarDate": { "year": 2024, "month": 5, "day": 11 }
+    }))
+    .expect("合法日历日期被拒绝");
+    let dated = store
+        .recall_candidates_with_event_time("旅行纪念日", None, "s1", 50, &[], false, Some(&day))
+        .expect("事件日期召回失败");
+    assert_eq!(dated["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        dated["candidates"][0]["draft"]["eventAt"]["localDate"],
+        json!("2024-05-11"),
+        "事件日期应从 eventAt 中匹配，而不是借用记录时间"
+    );
+
+    assert!(MemoryEventTime::from_value(json!({ "start": 2_000i64, "end": 2_000i64 })).is_err());
 }
 
 #[test]
