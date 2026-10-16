@@ -13,9 +13,9 @@
 
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, relative as relativePath } from "node:path"
-import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
-import type { FileError, Result } from "@earendil-works/pi-agent-core"
+import { join, relative as relativePath, win32 } from "node:path"
+import { BACKGROUND_CONTEXT, ok } from "@earendil-works/pi-agent-core"
+import type { Context, FileError, Result } from "@earendil-works/pi-agent-core"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
@@ -31,6 +31,16 @@ function expectOk<T>(result: Result<T, FileError>, label: string): T {
 }
 
 let dataRoot = ""
+
+/** 非 Windows 主机只为外来 cwd 标识提供 Windows 解析；JSONL 仍经原生文件系统真实读写。 */
+class ForeignWindowsCwdFileSystem extends NativeExecutionEnv {
+  override async absolutePath(path: string, context: Context): Promise<Result<string, FileError>> {
+    if (/^(?:[a-z]:\\|\\\\)/i.test(path) && !context.abortSignal?.aborted) {
+      return ok(win32.resolve(path))
+    }
+    return super.absolutePath(path, context)
+  }
+}
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), "deskpet-harness-restart-"))
@@ -52,7 +62,12 @@ describe("会话重启恢复", () => {
         [String.raw`\\?\UNC\server\share\deskpet`, String.raw`\\server\share\deskpet`],
       ]) {
         const sessionsRoot = join(root, crypto.randomUUID())
-        const repo = await createPiSessionRepo({ sessionsRoot, cwd: source })
+        // Windows CI 保留默认产品文件系统；macOS 上不把盘符或 UNC 当成本机相对路径。
+        const options = {
+          sessionsRoot, cwd: source,
+          fileSystem: process.platform === "win32" ? undefined : new ForeignWindowsCwdFileSystem(dataRoot),
+        }
+        const repo = await createPiSessionRepo(options)
         const session = await repo.create({ id: "windows-cwd" }, BACKGROUND_CONTEXT)
         await session.setName("窗口测试会话", BACKGROUND_CONTEXT)
         const path = session.metadata.path
@@ -60,7 +75,7 @@ describe("会话重启恢复", () => {
         expect(relativePath(sessionsRoot, path)).not.toContain("?")
         await session.close(BACKGROUND_CONTEXT)
         await repo.close(BACKGROUND_CONTEXT)
-        const reopenedRepo = await createPiSessionRepo({ sessionsRoot, cwd: source })
+        const reopenedRepo = await createPiSessionRepo(options)
         try {
           const listed = await reopenedRepo.list({ cwd: source }, BACKGROUND_CONTEXT)
           expect(listed.map(item => item.id)).toEqual(["windows-cwd"])

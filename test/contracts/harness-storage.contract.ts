@@ -1,3 +1,4 @@
+// 2026-10-16 hs-11 夹具复核：Windows 保留默认产品文件系统；非 Windows 仅注入外来 cwd 的 Windows 解析，避免本机将盘符/UNC 误作相对路径。两端均真实 JSONL create/list/reopen，前缀规范化仍只由产品完成；源码与 hs-01..hs-10 未改。
 // 2026-10-15 Windows 路径验收 analyze -> generate：新增 hs-11 / harness-session-windows-cwd：盘符及 UNC 命名空间前缀在会话 cwd 单点规范化，create/list/reopen 实际 JSONL 往返；hs-01..hs-10 的文件格式、事务、折叠与保留语义未改。
 // 2026-10-09 最终静态复核：会话文件锁新增检索与删除消费者，JSONL帧和折叠语义保留；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
 // 2026-10-06 聊天图片与折叠守卫批次（analyze→generate）：sourceFiles 变化 ——
