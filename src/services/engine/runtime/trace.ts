@@ -43,6 +43,7 @@ export type RuntimeTraceKind =
   | "memory_recall_selected"
   | "memory_recall_projected"
   | "memory_recall_rendered"
+  | "memory_recall_reference_page"
   | "memory_recall_end"
   | "memory_reading_end"
   | "memory_coverage_end"
@@ -110,6 +111,7 @@ const listeners = new Set<RuntimeTraceListener>()
 const contextsByRequest = new Map<string, RuntimeTraceContext>()
 const MAX_REQUEST_CONTEXTS = 512
 const TRACE_LISTENER_TIMEOUT_MS = 250
+const TRACE_ARRAY_ITEMS = 256
 
 /**
  * 已留痕的坏观察者：同一个 listener 只记一次（它每回合都跑，逐次记会刷屏）。
@@ -169,7 +171,8 @@ const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
   provider_payload: ["model", "api", "payloadHash", "redactions"], provider_response: ["model", "api", "status", "headerNames"], humanizer_transform: ["flow", "status", "split", "silent", "partCount"], provider_usage: ["inputTokens", "outputTokens", "cacheRead", "cacheWrite", "driftRatio"], prompt_snapshot: ["captureStage", "contentHash", "snapshotId", "requestId", "turnId"],
   memory_recall_start: ["queryHash", "budget", "coreBudget", "recallBudget", "contextWindow"], memory_recall_candidates: ["candidateIds", "candidateCount", "candidateIdsOmitted", "candidateIdsByScope"], memory_recall_selected: ["selectedIds", "strategy", "selectedIdsOmitted"], memory_recall_projected: ["sourceIds", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted"], memory_recall_rendered: ["sourceIds", "conversationRefs", "projectedCount", "usedTokens", "droppedIds", "sourceIdsOmitted", "droppedIdsOmitted", "readingNoteSourceIds", "readingNoteSourceIdsOmitted", "questionCheckCount", "guideStatus", "status"], memory_recall_end: ["status", "fallback", "durationMs", "queryRewriteStatus", "queryCount", "optionalFailureCount", "optionalFailures", "error"],
   memory_extraction_start: ["jobId", "revision", "phase"], memory_extraction_end: ["jobId", "revision", "status", "candidateCount", "sourceIds", "sourceCount", "durationMs", "reason"],
-  memory_reading_end: ["status", "noteCount", "sourceCount", "durationMs", "noteSourceIds", "noteSourceIdsOmitted", "noteStatus", "guideStatus", "errorCounts", "checkCounts"],
+  memory_recall_reference_page: ["renderId", "offset", "total", "sourceIds", "conversationRefs"],
+  memory_reading_end: ["status", "noteCount", "sourceCount", "durationMs", "noteSourceIds", "noteSourceIdsOmitted", "noteStatus", "guideStatus", "errorCounts", "checkCounts", "checkFingerprints"],
   memory_coverage_end: ["status", "retrievalCount", "sourceCount"],
   input_accepted: ["requestId", "status", "source", "priority"], input_consumed: ["requestId"], input_cancelled: ["requestId", "reason"],
   plan_created: ["planId", "stepCount"], plan_confirmed: ["planId", "stepId", "decision"], plan_settled: ["planId", "status"], plan_step_end: ["planId", "stepId", "status"],
@@ -207,7 +210,7 @@ export function runtimeTracePreview(value: unknown, maxChars = 300): string {
 
 function safePayload(kind: RuntimeTraceKind, payload: Record<string, unknown>): Record<string, unknown> {
   const safe: Record<string, unknown> = {}
-  const maxArrayItems = 256
+  const maxArrayItems = TRACE_ARRAY_ITEMS
   for (const field of SAFE_FIELDS[kind]) {
     const value = payload[field]
     if (value === undefined) continue
@@ -229,6 +232,20 @@ function safePayload(kind: RuntimeTraceKind, payload: Record<string, unknown>): 
         const count = counts[key]
         return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? [[key, count]] : []
       })))
+    }
+    else if (field === "checkFingerprints" && Array.isArray(value)) {
+      safe[field] = Object.freeze(value.slice(0, 16).flatMap(item => {
+        if (!item || typeof item !== "object") return []
+        const record = item as Record<string, unknown>
+        if (!(record.kind === "premise" || record.kind === "detail")
+          || !(record.obligation === "required" || record.obligation === "supporting")
+          || !(record.status === "supported" || record.status === "missing" || record.status === "conflicting")
+          || typeof record.conditionHash !== "string" || !/^[0-9a-f]{64}$/.test(record.conditionHash)
+          || typeof record.sourceCount !== "number" || !Number.isSafeInteger(record.sourceCount) || record.sourceCount < 0) return []
+        return [Object.freeze({
+          kind: record.kind, obligation: record.obligation, status: record.status, conditionHash: record.conditionHash, sourceCount: record.sourceCount,
+        })]
+      }))
     }
     else if (field === "conversationRefs" && Array.isArray(value)) {
       // Identifiers only: conversation text, thinking and paths never enter trace payloads.
@@ -313,4 +330,20 @@ export function publishRuntimeTrace(
     try { settleListener(listener, listener(event)) } catch (error) { warnListenerFailure(listener, error) }
   }
   return event
+}
+
+/** Complete identifier-only audit in bounded pages; the ordinary event cap stays intact. */
+export function publishMemoryRecallReferences(
+  context: RuntimeTraceContext, renderId: string, sourceIds: readonly string[],
+  conversationRefs: readonly Record<string, unknown>[],
+): void {
+  if (listeners.size === 0) return
+  const byId = new Map(conversationRefs.map(ref => [ref.sourceId, ref]))
+  for (let offset = 0; offset < sourceIds.length; offset += TRACE_ARRAY_ITEMS) {
+    const pageIds = sourceIds.slice(offset, offset + TRACE_ARRAY_ITEMS)
+    publishRuntimeTrace(context, "memory_recall_reference_page", {
+      renderId, offset, total: sourceIds.length, sourceIds: pageIds,
+      conversationRefs: pageIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []),
+    })
+  }
 }

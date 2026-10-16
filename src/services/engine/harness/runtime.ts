@@ -86,7 +86,7 @@ import { classifyFailureKind } from "@/services/error/failure-kind"
 import type { FailureKind } from "@/services/error/failure-kind"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createMemoryRecallMessage, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, TURN_NOTE_CUSTOM_TYPE, userInputMessage } from "@/services/engine/runtime"
+import { createMemoryRecallMessage, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishMemoryRecallReferences, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, TURN_NOTE_CUSTOM_TYPE, userInputMessage } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -1081,7 +1081,7 @@ function createRequestViewHook(args: {
             prepared = nextPrepared
             used = nextUsed
           }
-          publishRuntimeTrace(args.memory.traceContext, "memory_recall_rendered", () => ({
+          const renderEvent = publishRuntimeTrace(args.memory.traceContext, "memory_recall_rendered", () => ({
             sourceIds: rendered.sourceIds,
             conversationRefs: focused.projections.filter(item => item.conversation && rendered.sourceIds.includes(item.sourceId))
               .map(item => ({ sourceId: item.sourceId, ...item.conversation })),
@@ -1093,6 +1093,8 @@ function createRequestViewHook(args: {
             guideStatus: rendered.guideStatus,
             status: memoryBudget <= 0 ? "skipped_budget" : rendered.text ? "inserted" : "empty",
           }))
+          if (renderEvent) publishMemoryRecallReferences(args.memory.traceContext, renderEvent.traceId, rendered.sourceIds,
+            focused.projections.filter(item => item.conversation).map(item => ({ sourceId: item.sourceId, ...item.conversation })))
         } catch (error) {
           publishRuntimeTrace(args.memory.traceContext, "memory_recall_rendered", () => ({
             sourceIds: [], projectedCount: 0, usedTokens: 0, droppedIds: [], status: "failed",

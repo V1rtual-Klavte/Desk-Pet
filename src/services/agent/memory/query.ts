@@ -115,7 +115,7 @@ export async function planMemoryQueries(request: MemoryQueryPlanningRequest): Pr
     }
 
     const result = await completePiText({
-      purpose: "memory",
+      purpose: "memory", memoryStage: "rewrite",
       systemPrompt,
       userText,
       maxTokens: memorySelectionOutputBudget({ queries: ["字".repeat(MAX_MODEL_PLAN_CHARS)] }),

@@ -65,7 +65,9 @@ const FIRST = `${FIRST_PREFIX}${payload(Math.floor(BUDGET.hardInputLimit * .75))
  * - 下界：B 单独超过保留窗口（字符数 > R）—— 压缩切点落在它本人身上，恢复只吸收它之前的历史；
  * - 上界：B + RETRY_RESERVE < H —— 压缩后的重试视图放得进硬预算，回合靠恢复照常完成。
  */
-const SECOND_CHARS = Math.min(Math.floor(BUDGET.hardInputLimit - RETRY_RESERVE), Math.ceil(RETAINED_CHARS * 1.02))
+// 只越过上游保留窗一个极小余量：静态提示词会随记忆阅读规则增长，重试还需容纳消息结构开销。
+// 仍严格大于 RETAINED_CHARS，因此先触发 Harness 压缩；与 1.02 的固定比例相比不把边界推过硬上限。
+const SECOND_CHARS = Math.min(Math.floor(BUDGET.hardInputLimit - RETRY_RESERVE), Math.ceil(RETAINED_CHARS * 1.001))
 const SECOND = `${SECOND_PREFIX}${payload(SECOND_CHARS)}`
 /**
  * 第三段：正文本身就超过硬输入上限（留 4k 余量），压缩只能吸收它之前的历史，

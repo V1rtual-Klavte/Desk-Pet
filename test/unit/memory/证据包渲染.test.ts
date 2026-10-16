@@ -60,7 +60,7 @@ describe("结构化记忆证据包", () => {
   it("把问题核对项单独渲染，并在预算不足时整块舍弃注释但保留原证据 [memory-recall-question-guide-budget]", () => {
     const annotated = { ...quote, readingNote: { quote: "我不喜欢这款", relevance: "保留当前选择的否定条件" } }
     const guide: MemoryQuestionGuide = { questionChecks: [{
-      condition: "所问实体是否为当前明确指定的物品", status: "missing", sourceIds: [],
+      kind: "detail", obligation: "required", condition: "所问实体是否为当前明确指定的物品", status: "missing", sourceIds: [],
     }] }
     const fullText = memoryRecallText([annotated], guide)
     const packet = JSON.parse(fullText.slice(fullText.indexOf("\n{") + 1))

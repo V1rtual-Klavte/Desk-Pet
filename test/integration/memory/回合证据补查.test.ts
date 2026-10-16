@@ -58,19 +58,19 @@ async function assertFollowupTurn(question: string): Promise<void> {
   }
   const provider = installFakeProvider([
     fakeText(JSON.stringify({
-      notes: [{ id: CHOICE.sourceId, quote: CHOICE.text, relevance: "记录了路线选择，但没有说明原因" }],
-      questionChecks: [{ condition: "The historical reason for choosing the blue route", status: "missing", sourceIds: [] }],
+      notes: [{ id: "S1", quote: CHOICE.text, relevance: "记录了路线选择，但没有说明原因" }],
+      questionChecks: [{ kind: "detail", obligation: "required", condition: "The historical reason for choosing the blue route", status: "missing", sourceIds: [] }],
       searchQueries: ["blue route reason"],
     })),
     fakeText(JSON.stringify({
       notes: [
-        { id: CHOICE.sourceId, quote: CHOICE.text, relevance: "记录了原先的路线选择" },
-        { id: REASON.sourceId, quote: REASON.text, relevance: "给出了这次选择的历史原因" },
+        { id: "S1", quote: CHOICE.text, relevance: "记录了原先的路线选择" },
+        { id: "S2", quote: REASON.text, relevance: "给出了这次选择的历史原因" },
       ],
       questionChecks: [{
-        condition: "The historical reason for choosing the blue route",
+        kind: "detail", obligation: "required", condition: "The historical reason for choosing the blue route",
         status: "supported",
-        sourceIds: [REASON.sourceId],
+        sourceIds: ["S2"],
       }],
       searchQueries: [],
     })),
@@ -142,7 +142,7 @@ async function assertFollowupTurn(question: string): Promise<void> {
       expect.objectContaining({ sourceId: REASON.sourceId, quote: REASON.text }),
     ]))
     expect(packet.questionChecks).toEqual([{
-      condition: "The historical reason for choosing the blue route",
+      kind: "detail", obligation: "required", condition: "The historical reason for choosing the blue route",
       status: "supported",
       sourceIds: [REASON.sourceId],
     }])
@@ -164,6 +164,49 @@ async function assertFollowupTurn(question: string): Promise<void> {
 }
 
 describe("真实回合的记忆证据补查", () => {
+  it("可选提及缺失时不补查，必要偏好与推断边界进入真实主请求 [memory-supporting-runtime-turn]", async () => {
+    const taste = { ...CHOICE, sourceId: "fact:taste@1", text: "Nora: I enjoy classical music." }
+    const oldConfig = { enabled: memoryConfig.enabled, rerank: memoryConfig.rerank, queryRewrite: memoryConfig.queryRewrite, planEnabled: planConfig.enabled }
+    const provider = installFakeProvider([
+      fakeText(JSON.stringify({
+        notes: [{ id: "S1", quote: taste.text, relevance: "所问人物的音乐偏好" }],
+        questionChecks: [
+          { kind: "premise", obligation: "required", condition: "Nora's relevant preference", status: "supported", sourceIds: ["S1"] },
+          { kind: "detail", obligation: "supporting", condition: "Direct mention of the target concert", status: "missing", sourceIds: [] },
+        ],
+      })),
+      fakeText("Likely, based on her preference for classical music."),
+    ], { id: "memory-inference-runtime-model", name: "Memory Inference Runtime Model", contextWindow: 128_000, maxTokens: 4_096 })
+    const requests: MemoryRecallRequest[] = []
+    const restoreMemory = installMemoryProvider({ async recall(request) { requests.push(request); return [taste] } })
+    setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.queryRewrite": "off", "ai.plan.enabled": false })
+    await flushConfig()
+    await ensureSession()
+    const trace = captureRuntimeTrace()
+    try {
+      await runRuntimeTurn("Answer using our conversation history: Would Nora likely enjoy a classical concert?")
+      expect(requests).toHaveLength(1)
+      expect(provider.payloads).toHaveLength(2)
+      const main = provider.payloads[1]!
+      const memoryText = main.messages.flatMap(message => typeof message.content === "string"
+        ? [message.content] : message.content.flatMap(part => part.type === "text" ? [part.text] : []))
+        .find(text => text.startsWith("[记忆与会话参考]"))!
+      const packet = JSON.parse(memoryText.slice(memoryText.indexOf("\n{") + 1))
+      expect(packet.evidence.map((item: { id: string; text: string }) => [item.id, item.text])).toEqual([[taste.sourceId, taste.text]])
+      expect(packet.questionChecks).toEqual([
+        { kind: "premise", obligation: "required", condition: "Nora's relevant preference", status: "supported", sourceIds: [taste.sourceId] },
+        { kind: "detail", obligation: "supporting", condition: "Direct mention of the target concert", status: "missing", sourceIds: [] },
+      ])
+      expect(main.systemPrompt).toContain("只有问题本身询问可能性、兴趣倾向、适合度或假设选择/未来意愿")
+      expect(main.systemPrompt).toContain("目标对象的直接历史证据仍为required")
+      expect(trace.events.find(event => event.kind === "memory_coverage_end")?.payload).toMatchObject({ status: "satisfied", retrievalCount: 0 })
+    } finally {
+      trace.unsubscribe(); restoreMemory(); provider.restore()
+      setOverrides({ "ai.memory.enabled": oldConfig.enabled, "ai.memory.rerank": oldConfig.rerank, "ai.memory.queryRewrite": oldConfig.queryRewrite, "ai.plan.enabled": oldConfig.planEnabled })
+      await flushConfig()
+    }
+  })
+
   it("补齐历史原因后把合并证据、核对指南和追查计划送入真实主请求 [memory-followup-runtime-turn]", async () => {
     await assertFollowupTurn("Why did I choose the blue route earlier?")
   })

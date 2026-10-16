@@ -7,7 +7,8 @@
 //   · 提取走真实 dreaming（档位 off + 手动 sweep）；所有数据集保留生产 scope 与真实 JSONL；
 //   · 每题新建会话提问；cell = 题 × 1 trial（观测证据，不套自建集的 ≥3 trial 配对纪律）；
 //   · LoCoMo / MemoryBank 按「组」灌一次库、组内多题复用（对话级/角色级分组）。
-// 证据与计量：memory_recall_rendered / memory_recall_candidates trace + summarizeMemoryQualityUsage。
+// 证据与计量：memory_recall_rendered 决定注入集合，memory_recall_reference_page 补齐完整引用，
+// memory_recall_candidates 负责候选诊断；usage 仍由 summarizeMemoryQualityUsage 统一汇总。
 
 import { getHostBridge } from "@/services/host"
 import { sendMessage } from "@/services/agent/runner"
@@ -323,7 +324,7 @@ function evidenceFromTraceEvents(traces: unknown[], sourceMeta: Map<string, Sour
   itemById: Map<string, MemoryItem>): BenchEvidenceRef[] {
   const refs = new Map<string, BenchEvidenceRef>()
   for (const event of traces as Array<{ kind?: string; payload?: Record<string, unknown> }>) {
-    if (event.kind !== "memory_recall_rendered") continue
+    if (event.kind !== "memory_recall_reference_page") continue
     const sourceIds = Array.isArray(event.payload?.sourceIds)
       ? event.payload.sourceIds.filter((id): id is string => typeof id === "string") : []
     for (const projectionId of sourceIds) {
@@ -423,7 +424,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
     // Count attempted calls too, including an unknown name rejected before execution.
     const observedToolCalls = Math.max(result.toolCallsMade, emittedToolCalls)
     const projectionIds = [...new Set((traces as Array<{ kind?: string; payload?: Record<string, unknown> }>)
-      .filter(event => event.kind === "memory_recall_rendered")
+      .filter(event => event.kind === "memory_recall_reference_page")
       .flatMap(event => Array.isArray(event.payload?.sourceIds)
         ? (event.payload.sourceIds as unknown[]).filter((id): id is string => typeof id === "string") : []))]
     const itemIds = projectionIds.filter(id => !id.startsWith("conversation:")).map(id => id.split("@")[0] ?? "").filter(Boolean)

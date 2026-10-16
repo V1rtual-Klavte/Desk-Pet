@@ -303,7 +303,7 @@ async function selectRecallCandidates(
     }
     const userText = JSON.stringify({ originalQuery: request.query, queries: request.queryPlan?.queries ?? [request.query], candidates: descriptors })
     const result = await completePiText({
-      purpose: "memory",
+      purpose: "memory", memoryStage: "rerank",
       systemPrompt,
       userText,
       maxTokens: memorySelectionOutputBudget(sentCandidates.map(candidateId)),

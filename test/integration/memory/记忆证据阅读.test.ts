@@ -62,11 +62,16 @@ function input(projections: readonly MemoryProjection[], overrides: Partial<Para
   }
 }
 
-function readingResponse(sourceId = evidence()[0]!.sourceId, quote = "I own a ThinkPad") {
+function wireId(id: string): string {
+  const index = evidence().findIndex(item => item.sourceId === id)
+  return index < 0 ? id : `S${index + 1}`
+}
+
+function readingResponse(sourceId = "S1", quote = "I own a ThinkPad") {
   return {
     text: JSON.stringify({
-      notes: [{ id: sourceId, quote, relevance: "可能与用户当前偏好有关" }],
-      questionChecks: [{ condition: "Prefer recommendations grounded in already owned items", status: "supported", sourceIds: [sourceId] }],
+      notes: [{ id: wireId(sourceId), quote, relevance: "可能与用户当前偏好有关" }],
+      questionChecks: [{ kind: "detail", obligation: "required", condition: "Prefer recommendations grounded in already owned items", status: "supported", sourceIds: [wireId(sourceId)] }],
     }),
     stopReason: "stop",
   }
@@ -80,6 +85,73 @@ beforeEach(() => {
 })
 
 describe("记忆证据阅读接线", () => {
+  it("同问题扩展原池后按当前别名复用合法引文，但只采用本轮核对状态 [memory-reading-retained-notes-current-checks]", async () => {
+    const raw = evidence()
+    const signal = new AbortController().signal
+    mocks.completePiText.mockResolvedValueOnce(readingResponse())
+    await focusMemoryEvidence(input(raw, { signal }))
+    // Reordering sources changes S1 to S2. No new quote must not erase the
+    // earlier verified quote or carry forward its supported interpretation.
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+      notes: [], questionChecks: [{ kind: "detail", obligation: "required", condition: "A suitable accessory is still unknown", status: "missing", sourceIds: [] }],
+    }) })
+    const reordered = [raw[1]!, raw[0]!, ...raw.slice(2)]
+    const result = await focusMemoryEvidence(input(reordered, { signal }))
+    expect(JSON.parse(mocks.completePiText.mock.calls[1]![0].userText).previousNotes).toEqual([
+      { id: "S2", quote: "I own a ThinkPad", relevance: "可能与用户当前偏好有关" },
+    ])
+    expect(result.projections.map(item => item.sourceId)).toEqual([raw[0]!.sourceId])
+    expect(result.projections[0]!.readingNote?.quote).toBe("I own a ThinkPad")
+    expect(result.guide?.questionChecks).toEqual([{ kind: "detail", obligation: "required", condition: "A suitable accessory is still unknown", status: "missing", sourceIds: [] }])
+    expect(result.checkCounts).toEqual({ supported: 0, missing: 1, conflicting: 0 })
+
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+      notes: [{ id: "S1", quote: "prefer its keyboard", relevance: "本轮重选引文" }],
+      questionChecks: [{ kind: "detail", obligation: "required", condition: "The recorded keyboard preference", status: "supported", sourceIds: ["S1"] }],
+    }) })
+    const replaced = await focusMemoryEvidence(input(raw, { signal }))
+    expect(replaced.noteStatus).toBe("complete")
+    expect(replaced.errors).toEqual({})
+    expect(replaced.projections[0]!.readingNote?.quote).toBe("prefer its keyboard")
+    expect(replaced.guide?.questionChecks[0]?.sourceIds).toEqual([raw[0]!.sourceId])
+  })
+
+  it("正文、治理身份或请求语义变化后不得复用旧引文 [memory-reading-retained-notes-invalidation]", async () => {
+    const raw = evidence()
+    const changes: Array<(item: MemoryProjection) => MemoryProjection> = [
+      item => ({ ...item, text: `${item.text} Corrected.` }),
+      item => ({ ...item, memoryVersion: "new-version" }),
+      item => ({ ...item, memoryRevision: 8 }),
+      item => ({ ...item, taint: "trusted_user" }),
+      item => ({ ...item, origin: "user" }),
+      item => ({ ...item, provenance: "changed source" }),
+      item => ({ ...item, conversation: { ...item.conversation!, eventId: "different-event" } }),
+      item => ({ ...item, conversation: { ...item.conversation!, role: "assistant" } }),
+    ]
+    for (const change of changes) {
+      const signal = new AbortController().signal
+      mocks.completePiText.mockResolvedValueOnce(readingResponse()).mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+        notes: [], questionChecks: [{ kind: "detail", obligation: "required", condition: "An old citation cannot establish the current fact", status: "supported", sourceIds: ["S1"] }],
+      }) })
+      await focusMemoryEvidence(input(raw, { signal }))
+      const result = await focusMemoryEvidence(input([change(raw[0]!), ...raw.slice(1)], { signal }))
+      expect(JSON.parse(mocks.completePiText.mock.calls.slice(-1)[0]![0].userText).previousNotes).toBeUndefined()
+      expect(result.noteSourceIds).toEqual([])
+      expect(result.guide).toBeUndefined()
+      expect(result.errors).toEqual({ invalid_check_source: 1 })
+    }
+    for (const overrides of [{ requestId: "different-turn" }, { query: "Did I buy a charger?" }]) {
+      const signal = new AbortController().signal
+      mocks.completePiText.mockResolvedValueOnce(readingResponse()).mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+        notes: [], questionChecks: [{ kind: "detail", obligation: "required", condition: "Current query evidence", status: "missing", sourceIds: [] }],
+      }) })
+      await focusMemoryEvidence(input(raw, { signal }))
+      const result = await focusMemoryEvidence(input(raw, { signal, ...overrides }))
+      expect(JSON.parse(mocks.completePiText.mock.calls.slice(-1)[0]![0].userText).previousNotes).toBeUndefined()
+      expect(result.noteSourceIds).toEqual([])
+    }
+  })
+
   it("one-entry 与 zero-entry 的已知历史仍调用阅读器并复用同一 queryPlan [memory-reading-known-history-small-evidence]", async () => {
     const query = "What did I say about my ThinkPad earlier?"
     const queryPlan = deriveMemoryQueryPlan(query)
@@ -90,7 +162,7 @@ describe("记忆证据阅读接线", () => {
         stopReason: "stop",
         text: JSON.stringify({
           notes: [],
-          questionChecks: [{ condition: "The specifically named historical detail", status: "missing", sourceIds: [] }],
+          questionChecks: [{ kind: "detail", obligation: "required", condition: "The specifically named historical detail", status: "missing", sourceIds: [] }],
         }),
       })
 
@@ -101,7 +173,7 @@ describe("记忆证据阅读接线", () => {
     expect(oneEntry.projections[0]?.readingNote?.quote).toBe("I own a ThinkPad")
     expect(zeroEntry.projections).toEqual([])
     expect(zeroEntry.guide?.questionChecks).toEqual([{
-      condition: "The specifically named historical detail", status: "missing", sourceIds: [],
+      kind: "detail", obligation: "required", condition: "The specifically named historical detail", status: "missing", sourceIds: [],
     }])
     for (const call of mocks.completePiText.mock.calls) {
       expect(JSON.parse(call[0].userText).queryPlan).toEqual(queryPlan)
@@ -129,8 +201,8 @@ describe("记忆证据阅读接线", () => {
     mocks.completePiText.mockResolvedValueOnce({
       stopReason: "stop",
       text: JSON.stringify({
-        notes: [{ id: raw[0]!.sourceId, quote: "I own a ThinkPad", relevance: "记下的设备偏好可作为后续检索线索" }],
-        questionChecks: [{ condition: "Use the named historical device", status: "supported", sourceIds: [raw[0]!.sourceId] }],
+        notes: [{ id: wireId(raw[0]!.sourceId), quote: "I own a ThinkPad", relevance: "记下的设备偏好可作为后续检索线索" }],
+        questionChecks: [{ kind: "detail", obligation: "required", condition: "Use the named historical device", status: "supported", sourceIds: ["S1"] }],
         searchQueries: ["ThinkPad context", "Hogwarts context"],
       }),
     })
@@ -140,12 +212,12 @@ describe("记忆证据阅读接线", () => {
     const sent = JSON.parse(call.userText) as { queryPlan: unknown; sources: Array<{ sourceId: string; text: string }> }
 
     expect(sent.queryPlan).toEqual(queryPlan)
-    expect(sent.sources).toEqual([{ sourceId: raw[0]!.sourceId, role: "user", time: expect.any(String), sessionId: "session-0", seq: 0, text: raw[0]!.text }])
+    expect(sent.sources).toEqual([{ sourceId: "S1", role: "user", time: expect.any(String), sessionId: "session-0", seq: 0, text: raw[0]!.text }])
     expect(call.systemPrompt).toContain("实体和内容词只能逐字取自query或本次合法notes.quote")
     expect(call.systemPrompt).toContain("不能猜测人名、作品或事件")
     expect(focused.projections[0]?.readingNote?.quote).toBe("I own a ThinkPad")
     expect(focused.guide?.questionChecks).toEqual([{
-      condition: "Use the named historical device", status: "supported", sourceIds: [raw[0]!.sourceId],
+      kind: "detail", obligation: "required", condition: "Use the named historical device", status: "supported", sourceIds: [raw[0]!.sourceId],
     }])
     expect(focused.guide?.searchQueries).toEqual(["ThinkPad context"])
     expect(focused.errors).toEqual({ invalid_search_query: 1 })
@@ -160,10 +232,10 @@ describe("记忆证据阅读接线", () => {
 
     expect(focused.projections[0]?.readingNote).toEqual({ quote: "I own a ThinkPad", relevance: "可能与用户当前偏好有关" })
     expect(focused.guide?.questionChecks).toEqual([{
-      condition: "Prefer recommendations grounded in already owned items", status: "supported", sourceIds: [raw[0]!.sourceId],
+      kind: "detail", obligation: "required", condition: "Prefer recommendations grounded in already owned items", status: "supported", sourceIds: [raw[0]!.sourceId],
     }])
     expect(focused.projections.map(item => [item.sourceId, item.memoryVersion, item.text, item.taint, item.origin]))
-      .toEqual(raw.map(item => [item.sourceId, item.memoryVersion, item.text, item.taint, item.origin]))
+      .toEqual(raw.slice(0, 1).map(item => [item.sourceId, item.memoryVersion, item.text, item.taint, item.origin]))
     expect(raw.every(item => item.readingNote === undefined), "阅读阶段不能回写原始召回对象").toBe(true)
     expect(mocks.completePiText).toHaveBeenCalledTimes(1)
     expect(mocks.completePiText.mock.calls[0]?.[0]).toMatchObject({
@@ -180,7 +252,7 @@ describe("记忆证据阅读接线", () => {
     const first = await focusMemoryEvidence(input(raw, { signal }))
     const shrunk = await focusMemoryEvidence(input(raw, {
       signal,
-      tokenBudget: memoryRecallTokens(raw),
+      tokenBudget: memoryRecallTokens(raw.slice(0, 1)),
     }))
 
     expect(first.projections[0]?.readingNote, "初次阅读结果未附注").toBeDefined()
@@ -222,7 +294,7 @@ describe("记忆证据阅读接线", () => {
     const roleChangedInput = JSON.parse(mocks.completePiText.mock.calls[3]![0].userText) as {
       sources: Array<{ sourceId: string; role: string }>
     }
-    expect(roleChangedInput.sources[0]).toMatchObject({ sourceId: raw[0]!.sourceId, role: "assistant" })
+    expect(roleChangedInput.sources[0]).toMatchObject({ sourceId: "S1", role: "assistant" })
 
     await focusMemoryEvidence(input(raw, { signal: new AbortController().signal, requestId: "reader-turn-2" }))
     expect(mocks.completePiText).toHaveBeenCalledTimes(5)
@@ -261,13 +333,13 @@ describe("记忆证据阅读接线", () => {
       stopReason: "stop",
       text: JSON.stringify({
         notes: [
-          { id: goodId, quote: "I own ... keyboard", relevance: "拼接片段" },
-          { id: goodId, quote: "I own a ThinkPad", relevance: "已有笔记本键盘偏好" },
+          { id: wireId(goodId), quote: "I own ... keyboard", relevance: "拼接片段" },
+          { id: wireId(goodId), quote: "I own a ThinkPad", relevance: "已有笔记本键盘偏好" },
           { id: "fabricated", quote: "I own a ThinkPad", relevance: "伪造来源" },
         ],
         questionChecks: [
-          { condition: "Use the named, already owned laptop", status: "supported", sourceIds: [goodId] },
-          { condition: "Specific charging accessory is not established", status: "missing", sourceIds: [] },
+          { kind: "detail", obligation: "required", condition: "Use the named, already owned laptop", status: "supported", sourceIds: ["S1"] },
+          { kind: "detail", obligation: "required", condition: "Specific charging accessory is not established", status: "missing", sourceIds: [] },
         ],
       }),
     })
@@ -283,7 +355,7 @@ describe("记忆证据阅读接线", () => {
     expect(focused.noteStatus).toBe("partial")
     expect(focused.projections[0]?.readingNote?.quote).toBe("I own a ThinkPad")
     expect(focused.guide?.questionChecks[1]).toEqual({
-      condition: "Specific charging accessory is not established", status: "missing", sourceIds: [],
+      kind: "detail", obligation: "required", condition: "Specific charging accessory is not established", status: "missing", sourceIds: [],
     })
     expect(packet.evidence[0]?.text).toBe(raw[0]?.text)
     expect(packet.readingNotes).toEqual([{ sourceId: goodId, quote: "I own a ThinkPad", relevance: "已有笔记本键盘偏好" }])
@@ -295,6 +367,10 @@ describe("记忆证据阅读接线", () => {
       status: "partial", noteSourceIds: [goodId],
       errorCounts: { invalid_note_id: 1, non_contiguous_quote: 1 },
       checkCounts: { supported: 1, missing: 1, conflicting: 0 },
+      checkFingerprints: [
+        { kind: "detail", obligation: "required", status: "supported", conditionHash: "d15b5370f764e65c83fd416dd3f61c0a4538307d354a60c6fe4965cfdd887a05", sourceCount: 1 },
+        { kind: "detail", obligation: "required", status: "missing", conditionHash: "6bcbea2961a5c635b4652c92d5f4ab679dceb2573cc62bc192b3cb8a3e77a2d2", sourceCount: 0 },
+      ],
     })
     expect(JSON.stringify(readingTrace)).not.toContain("Specific charging accessory")
   })
@@ -315,13 +391,13 @@ describe("记忆证据阅读接线", () => {
       stopReason: "stop",
       text: JSON.stringify({
         notes: [
-          { id: ownedId, quote: "I own a tool I have used successfully", relevance: "已有物品和成功经验可直接指导建议" },
-          { id: preferenceId, quote: "I prefer simple steps", relevance: "用户明确表达的偏好" },
+          { id: wireId(ownedId), quote: "I own a tool I have used successfully", relevance: "已有物品和成功经验可直接指导建议" },
+          { id: wireId(preferenceId), quote: "I prefer simple steps", relevance: "用户明确表达的偏好" },
         ],
         questionChecks: [
-          { condition: "Build advice on the current relevant user experience", status: "supported", sourceIds: [ownedId, preferenceId] },
-          { condition: "Whether the future plan happened", status: "missing", sourceIds: [] },
-          { condition: "Whether the assistant suggestion was adopted", status: "missing", sourceIds: [] },
+          { kind: "detail", obligation: "required", condition: "Build advice on the current relevant user experience", status: "supported", sourceIds: ["S1", "S4"] },
+          { kind: "detail", obligation: "required", condition: "Whether the future plan happened", status: "missing", sourceIds: [] },
+          { kind: "detail", obligation: "required", condition: "Whether the assistant suggestion was adopted", status: "missing", sourceIds: [] },
         ],
       }),
     })
@@ -336,6 +412,8 @@ describe("记忆证据阅读接线", () => {
     }
 
     // Fake output exercises validated plumbing and boundaries; it does not establish model-level semantic quality.
+    expect(call.systemPrompt).toContain("只有问已发生的经历及其感受、原因、时间或结果时，才先核对指定主体是否亲历指定事件")
+    expect(call.systemPrompt).toContain("听说、安慰或评论他人的经历")
     expect(call.systemPrompt).toContain("所有user来源")
     expect(call.systemPrompt).toContain("另一话题里提到")
     expect(call.systemPrompt).toContain("计划、假设、条件句和assistant建议不能转成用户已拥有或已做过的事实")
@@ -343,16 +421,18 @@ describe("记忆证据阅读接线", () => {
     expect(call.systemPrompt).toContain("先用currentTimeNote换算成具体日期区间")
     expect(call.systemPrompt).toContain("currently doing / 正在做 这类持续表述")
     expect(MEMORY_READING_POLICY).toContain("missing或conflicting只限制对应条件")
-    expect(MEMORY_READING_POLICY).toContain("它们不能抹除或否定其他supported项")
+    expect(MEMORY_READING_POLICY).toContain("supporting的missing仅表示缺少额外佐证，不能抹除或否定其他supported项")
+    expect(call.systemPrompt).toContain("premise和conflicting一律required")
+    expect(call.systemPrompt).toContain("目标对象或选项的直接历史提及只是额外佐证")
     expect(MEMORY_READING_POLICY).toContain("必须把它落实在建议理由或具体步骤中，不得只给与用户无关的通用建议")
     expect(MEMORY_READING_POLICY).toContain("更晚的确认记录更新先前值")
     expect(MEMORY_READING_POLICY).toContain("不以看不出、不敢确定或没翻到收尾")
     expect(MEMORY_READING_POLICY).toContain("相似事实只能作为附带说明，不得作为答案主体")
     expect(MEMORY_READING_POLICY).toContain("不得补造历史中未出现的地点、天气、光线、物品、心情、原因、结果、经历与双方当时的反应")
     expect(MEMORY_READING_POLICY).toContain("不得用自己的偏好、愿望或一般常识补足历史内容")
-    expect(sent.sources.find(item => item.sourceId === ownedId)).toMatchObject({ role: "user", text: raw[0]?.text })
-    expect(sent.sources.find(item => item.sourceId === plannedId)).toMatchObject({ role: "user", text: raw[1]?.text })
-    expect(sent.sources.find(item => item.sourceId === assistantId)).toMatchObject({ role: "assistant", text: raw[2]?.text })
+    expect(sent.sources.find(item => item.sourceId === wireId(ownedId))).toMatchObject({ role: "user", text: raw[0]?.text })
+    expect(sent.sources.find(item => item.sourceId === wireId(plannedId))).toMatchObject({ role: "user", text: raw[1]?.text })
+    expect(sent.sources.find(item => item.sourceId === wireId(assistantId))).toMatchObject({ role: "assistant", text: raw[2]?.text })
     expect(focused.guide?.questionChecks.map(check => check.status)).toEqual(["supported", "missing", "missing"])
     expect(packet.questionChecks.map(check => check.status)).toEqual(["supported", "missing", "missing"])
     expect(packet.readingNotes.map(item => item.sourceId)).toEqual([ownedId, preferenceId])
@@ -364,14 +444,14 @@ describe("记忆证据阅读接线", () => {
       stopReason: "stop",
       text: JSON.stringify({
         notes: [],
-        questionChecks: [{ condition: "The specifically named tablet purchase", status: "missing", sourceIds: [] }],
+        questionChecks: [{ kind: "detail", obligation: "required", condition: "The specifically named tablet purchase", status: "missing", sourceIds: [] }],
       }),
     })
     const focused = await focusMemoryEvidence(input(raw))
     const rendered = renderMemoryRecall(focused.projections, 12_000, focused.guide)
     const packet = JSON.parse(rendered.text.slice(rendered.text.indexOf("\n{") + 1))
     expect(focused.guide?.questionChecks).toEqual([{
-      condition: "The specifically named tablet purchase", status: "missing", sourceIds: [],
+      kind: "detail", obligation: "required", condition: "The specifically named tablet purchase", status: "missing", sourceIds: [],
     }])
     expect(focused.projections.map(item => item.text)).toEqual(raw.map(item => item.text))
     expect(packet.questionChecks[0]?.status).toBe("missing")

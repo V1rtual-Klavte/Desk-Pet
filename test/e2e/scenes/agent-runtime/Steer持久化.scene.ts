@@ -10,7 +10,7 @@ const STEER_TEXT = "工具结束后改成新方向。"
 const TOOL_NAME = "live_p2_steer_wait"
 const EMPTY_READER_REPLY = JSON.stringify({
   notes: [],
-  questionChecks: [{ condition: "The historical details requested", status: "missing", sourceIds: [] }],
+  questionChecks: [{ kind: "detail", obligation: "required", condition: "The historical details requested", status: "missing", sourceIds: [] }],
 })
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
 let queuedSteerWhileToolRunning = false

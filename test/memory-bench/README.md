@@ -12,7 +12,7 @@
   `qualityThresholds: null`。宿主对本次运行的 `PASS` 只表示「完整跑完」，不表示质量达标。
 - **不冒充官方榜单成绩**：判分是「基于官方脚本/模板的自适配结果」，口径差异逐项列在下面。
 
-预算对比读取 manifest 的 `memoryConfig.budgetPolicy=request-headroom` 与逐题 `memory_recall_start`（总预算、core/recall 额度、实际窗口），并以 `memory_recall_rendered` 核对真正进入请求的证据。记忆额度统一按请求剩余输入空间自动派生，不提供手动分层配置；额度提升本身不代表质量或费用收益，须保持题集、模型与判分口径一致对比。
+预算对比读取 manifest 的 `memoryConfig.budgetPolicy=request-headroom` 与逐题 `memory_recall_start`（总预算、core/recall 额度、实际窗口）；`memory_recall_rendered` 核对真正进入请求的证据集合，`memory_recall_reference_page` 补齐该 render 的完整来源 ID 与角色/时间锚。记忆额度统一按请求剩余输入空间自动派生，不提供手动分层配置；额度提升本身不代表质量或费用收益，须保持题集、模型与判分口径一致对比。
 
 ## 1. 数据集与许可
 
@@ -193,7 +193,7 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 - LoCoMo 每个上游 session 建真实 JSONL，正文保留原始 speaker、日期、文本和独立标记的 blip_caption。固定 speaker_a → user（可登记事实）、speaker_b → assistant（仅对话引用）；双方都是上游真人，此模型角色映射是适配器选择，不能同时将两人的经历登记为用户本人事实。来源坐标指向已提交的 sessionId/entryId/seq，样本id:dia_id 仅作评测映射标签。
 - `evidence` 截 2000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留完整渲染正文长度；dreaming 对 >4800 字符来源的整条丢弃按实计数。原话 JSONL 完整保留，不跟随摘要截断。
 - 提取走真实 dreaming（manual 模式，循环 sweep 直至无待处理来源）；全部数据集保留生产 scope，不做 session→user 或 add/forget 归一，`ingest.scopeNormalized` 恒为 0。跨会话细节通过受治理的对话检索读取，不撤销其引用锚。
-- LoCoMo 所有题加同一 `Answer using our conversation history:` 前缀，原题不改；该明确任务上下文驱动生产查询计划和阅读器，普通知识问答的跳过路径仍保留。活动 Card 的输出规则统一要求英文完整短答、保留全部必需信息、证据不足时 `No information available.`，经公共保存入口刷新并在收尾恢复。生成输入不使用 answer/category/evidence 金标；这些字段只供判分及诊断。报告 manifest 留存完整规则、角色映射和 `productScore: false`：结果是官方确定性判分的 **LoCoMo 适配器分数**，不直接宣称产品分数。
+- LoCoMo 所有题加同一 `Answer using our conversation history:` 前缀，原题不改；该明确任务上下文驱动生产查询计划和阅读器，普通知识问答的跳过路径仍保留。活动 Card 的输出规则统一要求英文完整短答、计数使用数字、只答所求且保留多项/日期/否定/可能性等必需信息；历史事件核对亲历前提，假设意愿题允许依据相关个人证据作限定推断，身份不靠沉默推断；证据不足时 `No information available.`，经公共保存入口刷新并在收尾恢复。生成输入不使用 answer/category/evidence 金标；这些字段只供判分及诊断。报告 manifest 留存完整规则、角色映射和 `productScore: false`：结果是官方确定性判分的 **LoCoMo 适配器分数**，不直接宣称产品分数。
 - 提问：每题新建会话；cell = 题 × 1 trial（外部集是观测证据，不套自建集的 ≥3 trial 配对纪律）。
 - 组复用：LoCoMo 一段对话灌一次库、组内多题提问；MemoryBank 一个角色同理；LongMemEval 每题一组。
 - 每个提问回合通过 `toolMode: "none"` 请求禁用模型工具，并记录实际调用数与协议违规；不改全局工具注册表。

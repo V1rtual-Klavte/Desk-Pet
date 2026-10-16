@@ -16,7 +16,7 @@ const LARGE_EVIDENCE = "终端会话索引证据九三一七"
 const LARGE_ASSISTANT_TEXT = "大段会话原文已保存。"
 const EMPTY_READER_REPLY = JSON.stringify({
   notes: [],
-  questionChecks: [{ condition: "The historical details requested", status: "missing", sourceIds: [] }],
+  questionChecks: [{ kind: "detail", obligation: "required", condition: "The historical details requested", status: "missing", sourceIds: [] }],
 })
 // 大 JSON 请求和回包都走 HostBridge 的自动 blob；大型会话单独隔离，避免影响早轮负对照。
 const LARGE_SESSION_TEXT = `${"legacy-frame-payload ".repeat(3_400)}${LARGE_EVIDENCE}`

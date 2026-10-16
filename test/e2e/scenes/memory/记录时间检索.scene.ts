@@ -23,7 +23,7 @@ export const 记录时间检索: SceneDef = {
     installFakeProvider([
       fakeText(JSON.stringify({
         notes: [],
-        questionChecks: [{ condition: "探针的先前记录", status: "missing", sourceIds: [] }],
+        questionChecks: [{ kind: "detail", obligation: "required", condition: "探针的先前记录", status: "missing", sourceIds: [] }],
       })),
       fakeText("收到，我记下这条时间检索验证。"),
     ])

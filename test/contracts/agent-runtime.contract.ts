@@ -1,3 +1,7 @@
+// 2026-10-15 定向复核：trace checkFingerprints新增受控obligation枚举，其余本域行为不变；
+// 来源与诊断断言归memory mm-68，跨域不复制覆盖；按实际定义点复核后刷新hash。
+// 2026-10-14：runtime在成功render概览后发同renderId的有限引用页；只观测，不改回合/准入/取消。
+// ar-07记账与trace隔离、请求装配直接消费者复核；域内page完整性与主请求指南归memory。
 // 2026-10-13 一次性调用显式关闭思考通路（本批刷新）：sourceFiles 中 src/services/engine/harness/model-gateway.ts 变化——
 // PiTextCallInput.thinkingEffort 增加 "off"，completePiText 按需克隆模型放开 thinkingLevelMap.off（pi 的 deepseek 分支
 // 据此发 thinking:{type:"disabled"}）并登记网关表；其余档位与主回合路径不变，未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -188,6 +192,8 @@ import type { ModuleContract } from "../host/types"
 // 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；
 // rules 不动（无 L4 场景增删）；sourceHash 按当前源码复算。
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
+// 2026-10-14 阅读诊断定向复核：trace.ts 仅为 memory_reading_end 增加受控哈希数组过滤，
+// 未改回合、取消、Provider 或提交分支；安全字段由 memory mm-68 / evaluation eval-02 覆盖。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -232,7 +238,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "ec6cd5b259b1468200c9b97666700939ca105394a6eca46e993446a1b7502c5f",
+  sourceHash: "c12bcc1e46822e44c71143dc76af6702b729a5fd76122d33e68ab9e65da135db",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

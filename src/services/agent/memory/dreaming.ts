@@ -637,7 +637,7 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
           reservedTokens += reservation
         }
         const result = await completePiText({
-          purpose: "memory",
+          purpose: "memory", memoryStage: "dreaming",
           // 2026-10-13 定档：整理入口显式低档思考——不传参等于拿服务端默认（实测默认高于 low 一档），
           // 与业界整理侧低档/小模型口径对齐。
           thinkingEffort: "low",
@@ -768,7 +768,7 @@ async function runMergeSweep(options: ReviewJobInput["options"]): Promise<Dreami
     const reservation = inputTokens + batchMaxTokens
     if (options.automatic) await reserveMemoryDreamingBudget(reservationId, today, reservation)
     const result = await completePiText({
-      purpose: "memory",
+      purpose: "memory", memoryStage: "dreaming",
       thinkingEffort: "low", // 与 Review 同档（2026-10-13 定档）
       model: auxModel,
       systemPrompt: MERGE_SYSTEM_PROMPT,

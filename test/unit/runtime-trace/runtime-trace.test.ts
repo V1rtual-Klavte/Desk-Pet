@@ -3,6 +3,7 @@ import {
   createRuntimeTraceContext,
   hasRuntimeTraceSubscribers,
   publishRuntimeTrace,
+  publishMemoryRecallReferences,
   runtimeTracePreview,
   subscribeRuntimeTrace,
 } from "@/services/engine/runtime"
@@ -118,6 +119,23 @@ describe("Runtime trace [trace-runtime]", () => {
 })
 
 describe("阅读诊断的隐私边界", () => {
+  it("完整引用分成有限大小的页，稳定归属同一render且不保留原文 [trace-memory-reference-pages]", () => {
+    const context = createRuntimeTraceContext("session-test", "request-test")
+    const observed: RuntimeTraceEvent[] = []
+    unsubscribes.push(subscribeRuntimeTrace(event => { observed.push(event) }))
+    const sourceIds = Array.from({ length: 600 }, (_, index) => `conversation:session-${index}:entry-${index}:0`)
+    const refs = sourceIds.map((sourceId, index) => ({ sourceId, sessionId: `session-${index}`, entryId: `entry-${index}`,
+      role: index % 2 ? "assistant" : "user", timestamp: index, chunk: 0, text: "private-body", path: "private-path" }))
+    publishMemoryRecallReferences(context, "render-1", sourceIds, refs)
+    expect(observed.map(event => [event.kind, event.payload.renderId, event.payload.offset, event.payload.total])).toEqual([
+      ["memory_recall_reference_page", "render-1", 0, 600],
+      ["memory_recall_reference_page", "render-1", 256, 600],
+      ["memory_recall_reference_page", "render-1", 512, 600],
+    ])
+    expect(observed.flatMap(event => event.payload.sourceIds as string[])).toEqual(sourceIds)
+    expect(observed.flatMap(event => event.payload.conversationRefs as Array<{ sourceId: string }>).map(ref => ref.sourceId)).toEqual(sourceIds)
+    expect(JSON.stringify(observed)).not.toContain("private")
+  })
   it("补查结束仅记录停止原因与次数，不泄露检索词或缺口正文 [trace-memory-coverage-schema]", () => {
     const observed: RuntimeTraceEvent[] = []
     unsubscribes.push(subscribeRuntimeTrace(event => { observed.push(event) }))
@@ -138,6 +156,16 @@ describe("阅读诊断的隐私边界", () => {
       noteStatus: "partial", guideStatus: "valid",
       errorCounts: { invalid_note_id: 1, invalid_quote: -1, invalid_json: "private-query", private_query: 8 },
       checkCounts: { supported: 1, missing: 2, conflicting: 0, private_query: 8 },
+      checkFingerprints: [
+        { kind: "detail", obligation: "required", status: "missing", conditionHash: "a".repeat(64), sourceCount: 0, condition: "private-condition" },
+        { kind: "detail", obligation: "supporting", status: "missing", conditionHash: "d".repeat(64), sourceCount: 0 },
+        { kind: "detail", obligation: "private-obligation", status: "missing", conditionHash: "b".repeat(64), sourceCount: 0 },
+        { kind: "detail", status: "missing", conditionHash: "b".repeat(64), sourceCount: 0 },
+        { kind: "detail", obligation: "required", status: "missing", conditionHash: "not-a-hash", sourceCount: 0 },
+        { kind: "private-kind", status: "missing", conditionHash: "b".repeat(64), sourceCount: 0 },
+        { kind: "detail", obligation: "required", status: "private-status", conditionHash: "b".repeat(64), sourceCount: 0 },
+        { kind: "detail", obligation: "required", status: "missing", conditionHash: "b".repeat(64), sourceCount: -1 },
+      ],
       query: "private-query", quote: "private-quote", questionChecks: [{ condition: "private-condition" }],
     })
     publishRuntimeTrace(context, "memory_recall_rendered", {
@@ -148,10 +176,18 @@ describe("阅读诊断的隐私边界", () => {
       status: "partial", noteCount: 1, sourceCount: 4, noteSourceIds: ["conv:1"],
       noteStatus: "partial", guideStatus: "valid", errorCounts: { invalid_note_id: 1 },
       checkCounts: { supported: 1, missing: 2, conflicting: 0 },
+      checkFingerprints: [
+        { kind: "detail", obligation: "required", status: "missing", conditionHash: "a".repeat(64), sourceCount: 0 },
+        { kind: "detail", obligation: "supporting", status: "missing", conditionHash: "d".repeat(64), sourceCount: 0 },
+      ],
     })
     expect(observed[1]?.payload).toEqual({
       sourceIds: ["conv:1"], readingNoteSourceIds: ["conv:1"], questionCheckCount: 3, guideStatus: "included",
     })
+    publishRuntimeTrace(context, "memory_reading_end", {
+      checkFingerprints: Array.from({ length: 20 }, () => ({ kind: "premise", obligation: "required", status: "supported", conditionHash: "c".repeat(64), sourceCount: 1 })),
+    })
+    expect(observed[2]?.payload.checkFingerprints).toHaveLength(16)
     expect(JSON.stringify(observed)).not.toContain("private")
   })
 })

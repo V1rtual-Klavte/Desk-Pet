@@ -48,6 +48,7 @@ export type { PromptRewriteInput, PromptSnapshotInput, RedactedText } from "./sn
 export {
   createRuntimeTraceContext,
   hasRuntimeTraceSubscribers,
+  publishMemoryRecallReferences,
   publishRuntimeTrace,
   runtimeTraceContextForRequest,
   runtimeTracePreview,

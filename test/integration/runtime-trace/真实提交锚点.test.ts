@@ -126,7 +126,7 @@ describe("Runtime trace 持久化锚点", () => {
     }
     const readerReply = fakeText(JSON.stringify({
       notes: [],
-      questionChecks: [{ condition: "Specific phone accessory already owned", status: "missing", sourceIds: [] }],
+      questionChecks: [{ kind: "detail", obligation: "required", condition: "Specific phone accessory already owned", status: "missing", sourceIds: [] }],
     }))
     const provider = installFakeProvider([readerReply, fakeText("先用好已经有的物品，也可以关闭耗电后台功能。")], {
       id: "memory-reading-guide-runtime-model", name: "Memory Reading Guide Runtime Model",
@@ -163,11 +163,16 @@ describe("Runtime trace 持久化锚点", () => {
       const rendered = trace.events.find(event => event.kind === "memory_recall_rendered")
       expect(packet.evidence[0]?.text, "原始证据仍须完整进入主请求").toBe("I own a portable power bank.")
       expect(packet.questionChecks).toEqual([{
-        condition: "Specific phone accessory already owned", status: "missing", sourceIds: [],
+        kind: "detail", obligation: "required", condition: "Specific phone accessory already owned", status: "missing", sourceIds: [],
       }])
       expect(rendered?.payload.guideStatus).toBe("included")
       expect(rendered?.payload.questionCheckCount).toBe(1)
       expect(rendered?.payload.readingNoteSourceIds).toEqual([])
+      const pages = trace.events.filter(event => event.kind === "memory_recall_reference_page")
+      expect(pages).toHaveLength(1)
+      expect(pages[0]?.payload.renderId).toBe(rendered?.traceId)
+      expect(pages[0]?.payload.total).toBe(4)
+      expect(pages[0]?.payload.sourceIds).toEqual(packet.evidence.map(item => item.id))
       expect(provider.payloads[provider.payloads.length - 1]?.messages.length).toBeGreaterThan(0)
     } finally {
       trace.unsubscribe()

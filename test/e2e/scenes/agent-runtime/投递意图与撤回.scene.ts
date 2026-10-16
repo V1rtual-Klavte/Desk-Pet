@@ -14,7 +14,7 @@ const WITHDRAWN_TEXT = "这条应该被撤回，不该进入对话。"
 const TOOL_NAME = "live_p1_delivery_wait"
 const EMPTY_READER_REPLY = JSON.stringify({
   notes: [],
-  questionChecks: [{ condition: "The historical details requested", status: "missing", sourceIds: [] }],
+  questionChecks: [{ kind: "detail", obligation: "required", condition: "The historical details requested", status: "missing", sourceIds: [] }],
 })
 
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
