@@ -919,6 +919,9 @@ impl NativeDispatcher {
                     .and_then(Value::as_array)
                     .cloned(),
                 arg_opt_bool(args, "allowExpiredTargets")?,
+                args.get("eventTime")
+                    .filter(|value| !value.is_null())
+                    .cloned(),
             ),
             "memory_get_items" => ser(memory_commands::memory_get_items(
                 self.memory()?,

@@ -22,6 +22,7 @@ import type {
   MemoryScope,
   MemoryRestorePreview,
   MemoryRecallCandidateSnapshot,
+  MemoryEventTime,
   MemorySource,
   MemorySourceAudit,
   MemoryStatus,
@@ -41,6 +42,7 @@ export type {
   MemoryKind,
   MemoryOrigin,
   MemoryRecallCandidateSnapshot,
+  MemoryEventTime,
   MemoryRestorePreview,
   MemoryScope,
   MemorySource,
@@ -114,9 +116,18 @@ export async function getMemoryRecallCandidates(
   sessionId: string,
   targets: Array<{ id: string; version: number }> = [],
   allowExpiredTargets = false,
+  eventTime?: MemoryEventTime,
 ): Promise<MemoryRecallCandidateSnapshot> {
   if (!sessionId) throw new Error("记忆召回缺少当前会话身份")
-  return getHostBridge().request("memory_recall_candidates", { query, cardId: cardId ?? null, sessionId, limit: 50, targets, allowExpiredTargets })
+  return getHostBridge().request("memory_recall_candidates", {
+    query,
+    cardId: cardId ?? null,
+    sessionId,
+    limit: 50,
+    targets,
+    allowExpiredTargets,
+    ...(eventTime ? { eventTime } : {}),
+  })
 }
 
 export async function memoryJobList(limit = 50, offset = 0): Promise<MemoryJobListItem[]> {

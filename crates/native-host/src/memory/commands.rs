@@ -7,7 +7,7 @@
 use super::conversation::{ConversationIndexEntry, ConversationRecordTime};
 use super::store::{
     JOB_LEASE_MS, JOB_LIST_LIMIT_DEFAULT, LIST_LIMIT_DEFAULT, QUERY_LIMIT_DEFAULT,
-    RECALL_LIMIT_DEFAULT,
+    MemoryEventTime, RECALL_LIMIT_DEFAULT,
 };
 use super::MemoryState;
 use super::{ConversationClearFence, ConversationIndexBatch};
@@ -88,14 +88,19 @@ pub fn memory_recall_candidates(
     limit: Option<i64>,
     targets: Option<Vec<Value>>,
     allow_expired_targets: Option<bool>,
+    event_time: Option<Value>,
 ) -> AppResult<Value> {
-    state.0.recall_candidates(
+    let event_time = event_time
+        .map(MemoryEventTime::from_value)
+        .transpose()?;
+    state.0.recall_candidates_with_event_time(
         &query,
         card_id.as_deref(),
         &session_id,
         limit.unwrap_or(RECALL_LIMIT_DEFAULT),
         targets.as_deref().unwrap_or(&[]),
         allow_expired_targets.unwrap_or(false),
+        event_time.as_ref(),
     )
 }
 

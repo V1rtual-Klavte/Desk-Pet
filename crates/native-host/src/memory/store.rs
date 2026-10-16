@@ -10,10 +10,12 @@ use super::schema;
 use super::ConversationClearFence;
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
+use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use rusqlite::{
     backup, params, params_from_iter, Connection, OpenFlags, OptionalExtension, Transaction,
     TransactionBehavior,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -278,6 +280,98 @@ fn escape_like(text: &str) -> String {
     text.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MemoryEventTime {
+    start: Option<i64>,
+    end: Option<i64>,
+    calendar_date: Option<MemoryCalendarDate>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
+struct MemoryCalendarDate {
+    year: Option<i32>,
+    month: u32,
+    day: u32,
+}
+
+impl MemoryEventTime {
+    pub(crate) fn from_value(value: Value) -> AppResult<Self> {
+        let filter: Self = serde_json::from_value(value)
+            .map_err(|error| AppError::Config(format!("memory_recall_candidates 的 eventTime 无效: {error}")))?;
+        filter.validate()?;
+        Ok(filter)
+    }
+
+    fn validate(&self) -> AppResult<()> {
+        if self.start.is_none() && self.end.is_none() && self.calendar_date.is_none() {
+            return Err(AppError::Config("eventTime 至少需要一个时间条件".into()));
+        }
+        if self.start.is_some_and(|value| value < 0)
+            || self.end.is_some_and(|value| value < 0)
+            || matches!((self.start, self.end), (Some(start), Some(end)) if start >= end)
+        {
+            return Err(AppError::Config("eventTime 范围无效".into()));
+        }
+        if let Some(date) = &self.calendar_date {
+            if date.year.is_some_and(|year| year <= 0)
+                || NaiveDate::from_ymd_opt(date.year.unwrap_or(2000), date.month, date.day).is_none()
+            {
+                return Err(AppError::Config("eventTime 日历日期无效".into()));
+            }
+        }
+        Ok(())
+    }
+
+    fn matches_event_at(&self, event_at: Option<&Value>) -> bool {
+        let Some(anchor) = event_at else { return false };
+        let precision = anchor.get("precision").and_then(Value::as_str);
+        match precision {
+            Some("minute") => {
+                let Some(instant) = anchor.get("instant").and_then(Value::as_i64) else { return false };
+                self.matches_instant(instant) && self.matches_calendar_instant(instant)
+            }
+            Some("day") => {
+                let Some(local_date) = anchor.get("localDate").and_then(Value::as_str)
+                    .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+                else { return false };
+                self.matches_calendar_date(local_date) && self.matches_date_range(local_date)
+            }
+            _ => false,
+        }
+    }
+
+    fn matches_instant(&self, instant: i64) -> bool {
+        self.start.map_or(true, |start| instant >= start)
+            && self.end.map_or(true, |end| instant < end)
+    }
+
+    fn matches_calendar_instant(&self, instant: i64) -> bool {
+        if self.calendar_date.is_none() {
+            return true;
+        }
+        let Some(local) = Local.timestamp_millis_opt(instant).single() else { return false };
+        self.matches_calendar_date(local.date_naive())
+    }
+
+    fn matches_calendar_date(&self, date: NaiveDate) -> bool {
+        self.calendar_date.as_ref().map_or(true, |expected| {
+            expected.year.map_or(true, |year| date.year() == year)
+                && date.month() == expected.month
+                && date.day() == expected.day
+        })
+    }
+
+    fn matches_date_range(&self, date: NaiveDate) -> bool {
+        let start_date = self.start.and_then(|value| Local.timestamp_millis_opt(value).single()).map(|value| value.date_naive());
+        let end_date = self.end.and_then(|value| Local.timestamp_millis_opt(value).single()).map(|value| value.date_naive());
+        start_date.map_or(true, |start| date >= start) && end_date.map_or(true, |end| date < end)
+    }
 }
 
 /// Chinese natural questions need concept n-grams in addition to whole-phrase LIKE.
@@ -1263,6 +1357,18 @@ impl MemoryStore {
         session_id: Option<&str>,
         limit: i64,
     ) -> AppResult<Vec<Value>> {
+        Self::query_on_with_event_time(conn, query, scope, scope_id, session_id, limit, None)
+    }
+
+    fn query_on_with_event_time(
+        conn: &Connection,
+        query: &str,
+        scope: Option<&str>,
+        scope_id: Option<&str>,
+        session_id: Option<&str>,
+        limit: i64,
+        event_time: Option<&MemoryEventTime>,
+    ) -> AppResult<Vec<Value>> {
         let text = query.trim();
         if text.is_empty() {
             return Ok(Vec::new());
@@ -1305,12 +1411,12 @@ impl MemoryStore {
                 args.len()
             ));
         }
-        sql.push_str(&format!(
-            " ORDER BY {} DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id LIMIT ?",
-            relevance_order(&terms, 4)
-        ));
-        args.push(json!(limit));
-        let rows = {
+        sql.push_str(&format!(" ORDER BY {} DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id", relevance_order(&terms, 4)));
+        if event_time.is_none() {
+            sql.push_str(" LIMIT ?");
+            args.push(json!(limit));
+        }
+        let mut rows = {
             let mut statement = conn.prepare(&sql).map_err(db_err)?;
             let mapped = statement
                 .query_map(
@@ -1355,8 +1461,11 @@ impl MemoryStore {
                             fallback_args.len()
                         ));
                     }
-                    fallback.push_str(&format!(" ORDER BY {} DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id LIMIT ?", relevance_order(&terms, 3)));
-                    fallback_args.push(json!(limit));
+                    fallback.push_str(&format!(" ORDER BY {} DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id", relevance_order(&terms, 3)));
+                    if event_time.is_none() {
+                        fallback.push_str(" LIMIT ?");
+                        fallback_args.push(json!(limit));
+                    }
                     let mut statement = conn.prepare(&fallback).map_err(db_err)?;
                     let rows = statement
                         .query_map(
@@ -1370,6 +1479,14 @@ impl MemoryStore {
                 }
             }
         };
+        if let Some(event_time) = event_time {
+            rows.retain(|item| {
+                event_time.matches_event_at(
+                    item.get("draft").and_then(|draft| draft.get("eventAt")),
+                )
+            });
+            rows.truncate(limit as usize);
+        }
         Self::attach_sources(conn, rows)
     }
 
@@ -1383,6 +1500,27 @@ impl MemoryStore {
         targets: &[Value],
         allow_expired_targets: bool,
     ) -> AppResult<Value> {
+        self.recall_candidates_with_event_time(
+            query,
+            card_id,
+            session_id,
+            limit,
+            targets,
+            allow_expired_targets,
+            None,
+        )
+    }
+
+    pub(crate) fn recall_candidates_with_event_time(
+        &self,
+        query: &str,
+        card_id: Option<&str>,
+        session_id: &str,
+        limit: i64,
+        targets: &[Value],
+        allow_expired_targets: bool,
+        event_time: Option<&MemoryEventTime>,
+    ) -> AppResult<Value> {
         if session_id.is_empty() {
             return Err(AppError::Memory("召回缺少当前 sessionId".into()));
         }
@@ -1395,26 +1533,28 @@ impl MemoryStore {
                 |row| row.get(0),
             )
             .map_err(db_err)?;
-        let user = Self::query_on(&tx, query, Some("user"), None, Some(session_id), limit)?;
+        let user = Self::query_on_with_event_time(&tx, query, Some("user"), None, Some(session_id), limit, event_time)?;
         let card = if let Some(card_id) = card_id {
-            Self::query_on(
+            Self::query_on_with_event_time(
                 &tx,
                 query,
                 Some("card"),
                 Some(card_id),
                 Some(session_id),
                 limit,
+                event_time,
             )?
         } else {
             Vec::<Value>::new()
         };
-        let session = Self::query_on(
+        let session = Self::query_on_with_event_time(
             &tx,
             query,
             Some("session"),
             Some(session_id),
             Some(session_id),
             limit,
+            event_time,
         )?;
         let now = now_ms();
         let mut targeted = Vec::new();

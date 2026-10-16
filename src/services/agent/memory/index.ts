@@ -49,7 +49,7 @@ export {
   queryMemory, rebuildMemory, registerMemorySources, restoreMemory, resumeMemoryJob, startMemoryJob,
 } from "./ipc"
 export type {
-  MemoryCandidateDraft, MemoryChangeRequest, MemoryDreamingBudget, MemoryDraft, MemoryHistoryEntry, MemoryItem,
+  MemoryCandidateDraft, MemoryChangeRequest, MemoryDreamingBudget, MemoryDraft, MemoryEventTime, MemoryHistoryEntry, MemoryItem,
   MemoryJob, MemoryJobListItem, MemoryKind, MemoryOrigin, MemoryRecallCandidateSnapshot, MemoryRestorePreview, MemoryScope, MemorySource, MemorySourceAudit, MemoryStatus, MemoryStatusSnapshot, WorkingState,
 } from "./ipc"
 export { collectAllMemorySources, collectBehaviorMemorySources, collectUnderstandingMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"

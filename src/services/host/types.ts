@@ -68,6 +68,7 @@ import type {
   MemoryJobListItem,
   MemoryOrigin,
   MemoryRecallCandidateSnapshot,
+  MemoryEventTime,
   MemoryRestorePreview,
   MemoryScope,
   MemorySource,
@@ -1183,6 +1184,7 @@ export type HostCommandMap = {
       limit?: number | null
       targets?: MemoryRecallTarget[] | null
       allowExpiredTargets?: boolean | null
+      eventTime?: MemoryEventTime | null
     }
     result: MemoryRecallCandidateSnapshot
   }

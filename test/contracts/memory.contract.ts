@@ -276,6 +276,7 @@ import type { ModuleContract } from "../host/types"
 // 2026-10-10 自动预算收口：删除 CONFIG/getter 的手动分层额度及预算函数的查询/覆盖参数，
 // 直接消费者统一传 purpose/headroom；mm-54 修订自动共用额度，超额原文淘汰仍由真实窗口触发。
 // 2026-10-10 oracle断点修复：mm-58/63归属受控会话分页及选择边界，mm-61/62归属逐条笔记与问题前提清单，mm-55覆盖主请求guide接线；mm-08以真Rust IPC补负对照、before与clear。
+// 2026-10-16 查询召回复核：provider.ts 将原问题与互补改写词逐条召回后稳定补位合并；protocol/IPC/store 增加 eventTime 约束，将 eventAt 按 [start,end) 与日历日期过滤，record 时间仍只约束会话记录。既有查询融合、事件时间和真实 IPC 覆盖点保留；本轮仅复核源码与覆盖声明并刷新指纹。
 export const memoryContract: ModuleContract = {
   module: "memory",
   sourceFiles: [
@@ -349,7 +350,7 @@ export const memoryContract: ModuleContract = {
   ],
   // 2026-10-10：预算/结构化证据归 mm-54..61，阅读器网关、缓存与取消组合归 mm-62；
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
-  sourceHash: "b9b8291b8b4dfff8454ed5c040a0f2ef72a0dd13dab6994196ca30ac6c4e56ca",
+  sourceHash: "ab86f059849eff351595b241c702b035578699675c883b17e8b66184df346f4e",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },

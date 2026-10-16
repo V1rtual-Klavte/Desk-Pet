@@ -381,6 +381,12 @@ export interface MemoryRecallTarget {
   version: number
 }
 
+export interface MemoryEventTime {
+  start?: number
+  end?: number
+  calendarDate?: { "year"?: number; "month": number; "day": number }
+}
+
 export interface MemoryRecallCandidateSnapshot {
   revision: number
   candidatesByScope: { "user": Array<MemoryItem>; "card": Array<MemoryItem>; "session": Array<MemoryItem> }

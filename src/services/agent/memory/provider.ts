@@ -17,7 +17,7 @@ import { memoryConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { getMemoryRecallCandidates } from "./ipc"
-import type { MemoryItem, MemoryOrigin, MemoryRecallCandidateSnapshot } from "./ipc"
+import type { MemoryEventTime, MemoryItem, MemoryOrigin, MemoryRecallCandidateSnapshot } from "./ipc"
 import { DERIVED_BEHAVIOR_ORIGIN } from "./sources"
 import { parseRerankSelection } from "./rerank"
 import { deriveMemoryQueryPlan, planMemoryQueries, recordOptionalFailure } from "./query"
@@ -368,16 +368,31 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   const retrievalPlan = suppliedPlan ?? deriveMemoryQueryPlan(request.query, request.timeAnchor ?? request.before)
   const baseQueries = exactTargetMode ? [request.query]
     : queryRewriteEnabled || suppliedPlan ? retrievalPlan.queries : [request.query]
-  const baseFactQuery = exactTargetMode ? "" : baseQueries.join(" ")
+  // Keep each lexical query independent. Joining rewrites into one string turns
+  // a complementary query set into a single phrase/term mix and loses which
+  // wording produced each candidate. The first query remains the authoritative
+  // local order; later queries only add candidates through snapshot merging.
+  const baseFactQueries = exactTargetMode ? [""] : baseQueries.length > 0 ? baseQueries : [""]
+  const eventTime: MemoryEventTime | undefined = retrievalPlan.timeConstraint?.basis === "event"
+    ? {
+      ...(retrievalPlan.timeConstraint.start === undefined ? {} : { start: retrievalPlan.timeConstraint.start }),
+      ...(retrievalPlan.timeConstraint.end === undefined ? {} : { end: retrievalPlan.timeConstraint.end }),
+      ...(retrievalPlan.timeConstraint.calendarDate === undefined ? {} : { calendarDate: retrievalPlan.timeConstraint.calendarDate }),
+    }
+    : undefined
 
   // Start the original-query local reads before query rewriting. They become a safe,
   // already-budgeted fallback if a later optional model call consumes the recall deadline.
-  const baseFactsPromise = getMemoryRecallCandidates(
-    baseFactQuery,
+  const baseFactsPromise = Promise.all(baseFactQueries.map(query => getMemoryRecallCandidates(
+    query,
     request.cardId,
     request.sessionId,
     targets,
     request.allowExpiredTargets ?? proactive,
+    eventTime,
+  ))).then(
+    snapshots => snapshots.reduce((merged, snapshot) => mergeMemorySnapshots(merged, snapshot)),
+    error => { throw error },
   ).then(
     value => ({ ok: true as const, value }),
     error => ({ ok: false as const, error }),
@@ -439,9 +454,9 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
 
   if (extraQueries.length > 0) {
     request.localFallbackFailureChannel = "conversation"
-    const extraFactQuery = extraQueries.join(" ")
     const [extraFacts, extraConversation] = await Promise.all([
-      getMemoryRecallCandidates(extraFactQuery, request.cardId, request.sessionId, [], false)
+      Promise.all(extraQueries.map(query => getMemoryRecallCandidates(query, request.cardId, request.sessionId, [], false, eventTime)))
+        .then(values => values.reduce((merged, snapshot) => mergeMemorySnapshots(merged, snapshot)))
         .then(value => ({ value }), error => ({ error })),
       searchConversationChannel(request, extraQueries, queryPlan)
         .then(value => ({ value }), error => ({ error })),
