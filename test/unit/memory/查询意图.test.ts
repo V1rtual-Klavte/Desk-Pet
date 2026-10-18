@@ -164,6 +164,17 @@ describe("记忆检索意图", () => {
       start: new Date(2026, 9, 3).getTime(), end: new Date(2026, 9, 5).getTime(),
     })
   })
+
+  it("复数直接历史问题标记 enumeration，overview/count/推断和一般知识不标记 [memory-query-plan-enumeration]", () => {
+    expect(deriveMemoryQueryPlan("Answer using our conversation history:\nWhat are Nate's favorite desserts?").evidenceNeeds)
+      .toContain("enumeration")
+    expect(deriveMemoryQueryPlan("Answer using our conversation history:\nWhat outdoor activities does John enjoy?").evidenceNeeds)
+      .toContain("enumeration")
+    expect(deriveMemoryQueryPlan("我曾经分享过哪些喜欢的书？").evidenceNeeds).not.toContain("enumeration")
+    expect(deriveMemoryQueryPlan("Answer using our conversation history:\nWhat fields would Caroline be likely to pursue?").evidenceNeeds)
+      .not.toContain("enumeration")
+    expect(deriveMemoryQueryPlan("What is SQLite?").evidenceNeeds).not.toContain("enumeration")
+  })
 })
 
 

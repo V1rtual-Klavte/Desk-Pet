@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { applyMemoryReadingNotes, isGroundedMemorySearch, parseMemoryReadingNotes } from "@/services/agent/memory/reader"
-import { deduplicateMemoryEvidence, hasNewMemoryEvidence, memoryRecallTokens, selectMemoryAnswerEvidence, selectMemoryReadingEvidence } from "@/services/agent/memory/projection"
+import { deduplicateMemoryEvidence, enumerationEvidenceIds, hasNewMemoryEvidence, memoryRecallTokens, renderMemoryRecall, selectMemoryAnswerEvidence, selectMemoryReadingEvidence } from "@/services/agent/memory/projection"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
 
 const source = { id: "conv:1", text: "I already bought a power bank for the trip." }
@@ -94,6 +94,42 @@ describe("query-focused memory reading", () => {
     expect(selectMemoryAnswerEvidence([required, supporting, unrelated], {
       questionChecks: [{ kind: "detail", obligation: "required", condition: "The requested field", status: "missing", sourceIds: [] }],
     })).toEqual([])
+  })
+
+  it("列项问题把直接命中的其他会话完整回合并入回答证据与answerSourceIds [memory-reading-enumeration-evidence]", () => {
+    const checked = projection({
+      sourceId: "checked", text: "Nate's favorite desserts include coconut milk ice cream.",
+      conversation: { ...projection().conversation!, sessionId: "s1", entryId: "checked", seq: 1 },
+    })
+    const otherUser = projection({
+      sourceId: "other-user", text: "Got any favorite desserts?",
+      conversation: { ...projection().conversation!, sessionId: "s2", entryId: "other-user", seq: 10, role: "user" },
+    })
+    const otherReply = projection({
+      sourceId: "other-reply", text: "I also made a dairy-free chocolate cake with berries.",
+      conversation: { ...projection().conversation!, sessionId: "s2", entryId: "other-reply", seq: 11, role: "assistant" },
+    })
+    const unrelated = projection({
+      sourceId: "unrelated", text: "The blue route is sunny.",
+      conversation: { ...projection().conversation!, sessionId: "s3", entryId: "unrelated", seq: 20 },
+    })
+    const plan = {
+      originalQuery: "What are Nate's favorite desserts?",
+      aspectQueries: ["cake", "icecream"],
+      evidenceNeeds: ["enumeration"],
+    }
+    const ids = enumerationEvidenceIds([checked, otherUser, otherReply, unrelated], plan)
+    expect(ids).toEqual(expect.arrayContaining([otherUser.sourceId, otherReply.sourceId]))
+    expect(ids).not.toContain(unrelated.sourceId)
+
+    const guide = {
+      questionChecks: [{ kind: "detail" as const, obligation: "required" as const, condition: "Nate's desserts", status: "supported" as const, sourceIds: [checked.sourceId] }],
+      enumerationSourceIds: ids,
+    }
+    const rendered = renderMemoryRecall([checked, otherUser, otherReply, unrelated], 10_000, guide)
+    expect(rendered.sourceIds).toEqual(expect.arrayContaining([otherUser.sourceId, otherReply.sourceId]))
+    const json = JSON.parse(rendered.text.slice(rendered.text.indexOf("{"))) as { answerSourceIds?: string[] }
+    expect(json.answerSourceIds?.length).toBeGreaterThanOrEqual(2)
   })
 
   it("retains exact notes independently and drops invalid ids, stitched quotes, and duplicates [memory-reading-partial-validation]", () => {

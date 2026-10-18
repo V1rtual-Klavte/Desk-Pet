@@ -86,7 +86,8 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "4ea146aa1af2d942e3b3afc424ed586b04a6d19ece0f9d2f241a98c0050a6f74",
+  // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
+  sourceHash: "bd6b97e989c586a622d82a54756bd3c124e52aedae39b1f1f51175304de9e369",
   coverage: [
     {
       id: "hz-01",

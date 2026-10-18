@@ -10,8 +10,8 @@ import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, CompactionDeclineKind, CompactionDeclineRecord, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, completeMemoryEvidence, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
-import type { FocusedMemoryEvidence, MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
+import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, completeMemoryEvidence, enumerationAnswerSuffix, missingEnumerationItems, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
+import type { EnumerationAnswerContext, FocusedMemoryEvidence, MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
 import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import { createPlanSettlement } from "@/services/engine/plan/settlement"
@@ -1005,7 +1005,9 @@ function createRequestViewHook(args: {
    * 落位由前缀缓存决定：记忆每回合都可能不同，留在 system prompt 里会把缓存断在会话正文之前。
    * hook 将当前视图剩余 headroom 传给 recall，由 runtime 按本轮查询与配置派生 tier 预算。
    */
-  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext }
+  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext; question: string }
+  /** Reader-produced enumeration items for the final answer; completion is applied at commit time. */
+  onEnumeration?: (context: EnumerationAnswerContext) => void
   activeAdmission?: { owner: ProactiveOwner; beforeGenerate: NonNullable<ActiveMessageRequest["beforeGenerate"]>; maxOutputTokens: number }
   providerAdmission?: { beforeProvider: (reservation: ProviderReservation) => Promise<boolean>; maxOutputTokens: number }
   supportsImages?: boolean
@@ -1072,6 +1074,12 @@ function createRequestViewHook(args: {
               - estimateMessageTokens(createMemoryRecallMessage("")),
           )
           const focused = await args.memory.recall(memoryBudget)
+          const enumerationItems = (focused.guide?.enumerationItems ?? [])
+            .flatMap(item => item.item.trim() ? [item.item.trim()] : [])
+          // 只在确实抽到列项时更新；同一回合后续请求没有列项时保留上一份，避免临门丢约束。
+          if (enumerationItems.length) {
+            args.onEnumeration?.({ items: enumerationItems, question: args.memory.question })
+          }
           const rendered = renderMemoryRecall(focused.projections, memoryBudget, focused.guide, {
             preserveCandidates: focused.noteStatus === "partial",
           })
@@ -1161,19 +1169,70 @@ function createRequestViewHook(args: {
   }
 }
 
+/**
+ * 把宿主逐字校验过、但主答遗漏的列项补到最后一个可见正文段。
+ * 只补缺失项；已出现的项目保持原样，不重写主答。多泡回复保留原有分段。
+ */
+function completeEnumerationParts(
+  parts: readonly string[],
+  context: EnumerationAnswerContext | undefined,
+  traceContext?: RuntimeTraceContext,
+): string[] {
+  if (!context?.items.length || parts.length === 0) return [...parts]
+  const missing = missingEnumerationItems(parts.join("\n"), context.items)
+  if (!missing.length) return [...parts]
+  if (traceContext) publishRuntimeTrace(traceContext, "memory_answer_completed", () => ({
+    itemCount: context.items.length,
+    appendedCount: missing.length,
+  }))
+  const suffix = enumerationAnswerSuffix(missing, context.question)
+  return parts.map((part, index) => index === parts.length - 1 ? `${part}${suffix}` : part)
+}
+
+function completeEnumerationMessage(
+  message: SettledAssistantMessage,
+  context: EnumerationAnswerContext | undefined,
+  traceContext?: RuntimeTraceContext,
+): SettledAssistantMessage {
+  if (!context?.items.length) return message
+  if (message.stopReason === "error" || message.stopReason === "aborted") return message
+  if (message.content.some(part => part.type === "toolCall")) return message
+  if ((message as SettledAssistantMessage & { deskpetSilent?: boolean }).deskpetSilent === true) return message
+  const texts = message.content.flatMap(part => part.type === "text" ? [part.text] : [])
+  if (!texts.length) return message
+  const completed = completeEnumerationParts(texts, context, traceContext)
+  if (completed.every((text, index) => text === texts[index])) return message
+  let textIndex = 0
+  const content = message.content.map(part => part.type === "text" ? { ...part, text: completed[textIndex++]! } : part)
+  return { ...message, content }
+}
+
 /** RUNTIME_DATA 剥离（主回合与手动压缩的续跑共用）：条目是真相源，但协议块不进后续请求与展示。 */
 function createRuntimeDataStripHook(args: {
   recordSettledReply?: (raw: string, stripped: string, humanized?: HumanizedText) => void
   humanizer?: { enabled: boolean; sessionId?: string; fallbackReply: string; flow: () => HumanizerFlow; traceContext?: RuntimeTraceContext }
+  /** Request-local enumeration items from the reader; completion happens before the entry is committed. */
+  enumerationAnswer?: () => EnumerationAnswerContext | undefined
+  /** Called only when items were actually appended; settle uses the committed text for the visible reply. */
+  onCompleted?: (source: string, text: string) => void
+  traceContext?: RuntimeTraceContext
 }): NonNullable<HarnessRunHooks["afterResponse"]> {
   return (message) => {
     // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，结算时的变量写入要靠它。
     const stripped = stripRuntimeData(message)
     const raw = contentText(message.content)
     const visibleText = contentText(stripped.content)
-    if (!args.humanizer?.enabled || message.content.some(part => part.type === "toolCall")) {
+    if (message.content.some(part => part.type === "toolCall")) {
       args.recordSettledReply?.(raw, visibleText)
       return stripped
+    }
+    if (!args.humanizer?.enabled) {
+      const context = args.enumerationAnswer?.()
+      const missing = context ? missingEnumerationItems(visibleText, context.items) : []
+      const completed = completeEnumerationMessage(stripped, context, args.traceContext)
+      if (missing.length) args.onCompleted?.(raw, contentText(completed.content))
+      args.recordSettledReply?.(raw, contentText(completed.content))
+      return completed
     }
 
     try {
@@ -1183,9 +1242,15 @@ function createRuntimeDataStripHook(args: {
         : { silent: transformed.silent, text: transformed.text, parts: transformed.parts, rejected: false }
       const safeParts = resolved.parts.some(part => part.trim().length > 0) ? resolved.parts
         : resolved.silent ? [] : [args.humanizer.fallbackReply]
+      // 拟人变换之后、落条目之前补列项：变换可能改写或丢词，必须在最终正文上判断。
+      const enumeration = args.enumerationAnswer?.()
+      const missing = enumeration && !resolved.silent
+        ? missingEnumerationItems(safeParts.join("\n"), enumeration.items) : []
+      const completedParts = resolved.silent ? safeParts
+        : completeEnumerationParts(safeParts, enumeration, args.traceContext)
       const finalResult: HumanizedText = {
-        text: safeParts.join("\n"),
-        parts: safeParts,
+        text: completedParts.join("\n"),
+        parts: completedParts,
         silent: resolved.silent,
         split: transformed.split,
       }
@@ -1194,28 +1259,33 @@ function createRuntimeDataStripHook(args: {
         status: resolved.rejected ? "silent_rejected" : resolved.silent ? "silent" : "transformed",
         split: transformed.split,
         silent: resolved.silent,
-        partCount: safeParts.length,
+        partCount: completedParts.length,
       }))
       let inserted = false
       const content = stripped.content.flatMap<typeof stripped.content[number]>(part => {
         if (part.type !== "text") return [part]
         if (inserted) return []
         inserted = true
-        return safeParts.map(text => ({ type: "text" as const, text }))
+        return completedParts.map(text => ({ type: "text" as const, text }))
       })
-      if (!inserted) content.push(...safeParts.map(text => ({ type: "text" as const, text })))
+      if (!inserted) content.push(...completedParts.map(text => ({ type: "text" as const, text })))
       const output = {
         ...stripped,
         content,
         ...(resolved.silent ? { deskpetSilent: true } : {}),
       } as typeof stripped
       args.recordSettledReply?.(raw, contentText(output.content), finalResult)
+      if (missing.length) args.onCompleted?.(raw, contentText(output.content))
       return output
     } catch (error) {
       // Keep the entire stripped source as one body if any transformation step fails.
-      args.recordSettledReply?.(raw, visibleText)
+      const context = args.enumerationAnswer?.()
+      const missing = context ? missingEnumerationItems(visibleText, context.items) : []
+      const completed = completeEnumerationMessage(stripped, context, args.traceContext)
+      if (missing.length) args.onCompleted?.(raw, contentText(completed.content))
+      args.recordSettledReply?.(raw, contentText(completed.content))
       log.warn("拟人表达变换失败，按原文提交:", formatError(error))
-      return stripped
+      return completed
     }
   }
 }
@@ -1277,7 +1347,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
    */
   addressRefs?: () => Promise<ReadonlyMap<string, string>>
   /** 记忆召回块（只有主回合传）：headroom-aware 取数 thunk 与渲染在投影 hook 同处完成。 */
-  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext }
+  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext; question: string }
   /**
    * 子运行（规划 / 计划步骤 / 子代理）对聊天界面**不可见**：过程消息、工具结果与流式
    * 草稿都不进活跃会话的可见列表与瞬时尾巴。子运行槽是内存临时的、什么都不落盘，
@@ -1308,6 +1378,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
    * 回合级内存态：不落盘、不进会话条目（提示只存在于请求视图）。
    */
   const toolLoopNotices = new Map<string, string>()
+  /** 本回合阅读器抽到的列项；提交钩子在落条目/结算前用它做确定性补全。 */
+  let enumerationAnswer: EnumerationAnswerContext | undefined
   const stripReply = createRuntimeDataStripHook({
     recordSettledReply: (raw, stripped, humanized) => kernel.recordSettledReply(raw, stripped, humanized),
     humanizer: {
@@ -1318,6 +1390,9 @@ function createTurnSpec(kernel: TurnKernel, options: {
         : (options.taskReply ?? kernel.taskReply) || kernel.toolRun.history.length > 0 ? "task" : "casual",
       traceContext: kernel.traceContext,
     },
+    enumerationAnswer: () => enumerationAnswer,
+    onCompleted: (source, text) => { state.completedReply = { source, text } },
+    traceContext: kernel.traceContext,
   })
   const hooks: HarnessRunHooks = {
     beforeTool: async ({ toolCallId, toolName, args, signal }) => {
@@ -1406,7 +1481,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       snapshotTasks: kernel.snapshotTasks,
       latestMessages: messages => { kernel.latestMessages = messages },
       ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
-      ...(options.memory ? { memory: options.memory } : {}),
+      ...(options.memory ? { memory: options.memory, onEnumeration: (next: EnumerationAnswerContext) => { enumerationAnswer = next } } : {}),
       ...(options.activeRequest && options.activeOwner && options.activeRequest.beforeGenerate ? {
         activeAdmission: {
           owner: options.activeOwner,
@@ -2175,7 +2250,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       // 投影与压缩共用同一份地址目录 thunk：两路投影对同一条结果逐字相同（槽内有稳定缓存）。
       addressRefs: () => slot.addressRefs(),
       // 记忆块与额度一起交给投影 hook：额度是这块的硬上限，实际可用量还要减当前视图已用量。
-      memory: { recall: memoryRecallForRequest, traceContext },
+      memory: { recall: memoryRecallForRequest, traceContext, question: userText },
       // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
       isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
     })
@@ -2804,8 +2879,14 @@ async function settleMainTurn(args: {
     return failTurn(finalAssistant?.errorMessage || "Pi Agent 未返回有效回复", "unknown")
   }
   // afterResponse 已把提交的助手消息剥离过 RUNTIME_DATA，取配对留底的原始正文再交给回复模块。
-  const rawReply = kernel.rawTextForSettledReply(contentText(finalAssistant.content))
-  const committedText = contentText(finalAssistant.content)
+  // 提交钩子补过列项时，结算候选仍是补全前的消息；只有来源正文一致才采用已提交的补全正文，
+  // 保证界面回复、JSONL 条目与变量协议配对读写的是同一份文本。
+  const settledText = contentText(finalAssistant.content)
+  // 结算候选可能仍是补全前对象，也可能已是提交钩子返回的补全后对象；两种形状都用同一份补全正文。
+  const completionApplied = state.completedReply !== undefined
+    && (settledText === state.completedReply.source || settledText === state.completedReply.text)
+  const committedText = completionApplied ? state.completedReply!.text : settledText
+  const rawReply = kernel.rawTextForSettledReply(committedText)
   const humanized = kernel.humanizedForSettledReply(committedText)
   const casualFlow = Boolean(kernel.humanizerEnabled)
     && (Boolean(args.input.activeRequest) || (!kernel.taskReply && kernel.toolRun.history.length === 0))
@@ -2834,7 +2915,9 @@ async function settleMainTurn(args: {
     }
   }
   return {
-    reply: humanized?.text ?? processed.text,
+    // 收尾正文与已提交条目同源：补全后 `generateReply` 从原始正文重解析会丢掉补全项，
+    // 因此补全已应用时直接采用提交钩子写回的最终正文；变量仍由 rawReply 的正常路径写入。
+    reply: completionApplied ? committedText : (humanized?.text ?? processed.text),
     ...(humanized && humanized.parts.length > 1 ? { replyParts: humanized.parts } : {}),
     ...(humanized?.silent ? { silent: true } : {}),
     runGeneration: kernel.generation,

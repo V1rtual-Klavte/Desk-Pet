@@ -303,7 +303,8 @@ export const observationContract: ModuleContract = {
     "test/unit/observation/证据身份稳定.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "7e8ee7ee469ff10a2f1a4d5d5394876c7e0300c77e13c0262734cfb004a3c7bc",
+  // 2026-10-18 列项答案补全批次：观察域行为未变，仅共享 runtime/trace 变化；定向复核后刷新。
+  sourceHash: "240f53580c48d6a74c1642468c8339206731f16752fd3b6882cf82d375621cbc",
   coverage: [
     {
       id: "ob-01",

@@ -12,11 +12,15 @@ export interface MemoryTimeConstraint {
   calendarDate?: { year?: number; month: number; day: number }
 }
 
+export type MemoryAspectCategory = "activity" | "food" | "book"
+
 export interface LocalMemoryQueryShape {
   recallIntent: MemoryRecallIntent
   sourceRoles: Array<"user" | "assistant">
   entities: string[]
   evidenceNeeds: string[]
+  /** Everyday categories whose concrete vocabulary is often absent from the question. */
+  aspectCategories?: MemoryAspectCategory[]
   timeConstraint?: MemoryTimeConstraint
 }
 
@@ -24,6 +28,145 @@ export interface DerivedMemoryQueryPlan extends LocalMemoryQueryShape {
   originalQuery: string
   queries: string[]
   rewriteStatus: "not_needed"
+  /** Local entity/aspect fan-out kept separate from model rewrites. */
+  aspectQueries?: string[]
+}
+
+type MemoryAspectLanguage = "zh" | "en"
+
+const MEMORY_ASPECT_CUES: Record<Exclude<MemoryRecallIntent, "none">, Record<MemoryAspectLanguage, readonly string[]>> = {
+  lookup: { zh: ["记录", "经历", "前后文"], en: ["said", "mentioned", "told"] },
+  overview: { zh: ["记录", "话题", "经历"], en: ["records", "talked about", "discussed"] },
+  explanation: { zh: ["原因", "为什么", "因为"], en: ["reason", "because", "why"] },
+  procedure: { zh: ["步骤", "方法", "过程"], en: ["steps", "process", "method"] },
+  advice: { zh: ["偏好", "经历", "建议"], en: ["preferences", "enjoy", "suggest"] },
+  count: { zh: ["次数", "经历", "时间"], en: ["times", "once", "twice"] },
+}
+
+const MEMORY_EVIDENCE_CUES: Record<string, Record<MemoryAspectLanguage, readonly string[]>> = {
+  preferences: { zh: ["偏好", "喜欢"], en: ["favorite", "like", "enjoy", "prefer"] },
+  reason: { zh: ["原因", "因为"], en: ["because", "reason"] },
+  steps: { zh: ["步骤", "方法"], en: ["steps", "process"] },
+  count: { zh: ["次数", "经历"], en: ["times", "once"] },
+  coverage: { zh: ["记录", "话题"], en: ["records", "talked about"] },
+}
+
+/**
+ * Generic everyday vocabulary for questions whose answer terms usually do not
+ * appear in the question itself. These are search hypotheses only; a term with
+ * no corpus hit simply contributes no candidate, and it is never asserted as a
+ * fact. The lists stay short and category-level rather than transcript-specific.
+ */
+const MEMORY_ASPECT_SEEDS: Record<MemoryAspectCategory, Record<MemoryAspectLanguage, readonly string[]>> = {
+  activity: {
+    en: ["hiking", "surfing", "camping", "swimming", "running", "cycling", "fishing", "skiing", "climbing", "yoga"],
+    zh: ["徒步", "冲浪", "露营", "游泳", "跑步", "骑行", "钓鱼", "滑雪", "爬山", "瑜伽"],
+  },
+  food: {
+    en: ["cake", "icecream", "ice cream", "chocolate", "cookie", "pie", "dessert", "mousse", "pizza", "pasta"],
+    zh: ["蛋糕", "冰淇淋", "巧克力", "饼干", "甜点", "披萨", "面食"],
+  },
+  book: {
+    en: ["book", "novel", "author", "fiction", "fantasy", "history"],
+    zh: ["书", "小说", "作者", "历史", "科幻"],
+  },
+}
+
+const MEMORY_ASPECT_CATEGORY_TESTS: ReadonlyArray<{ category: MemoryAspectCategory; test: RegExp }> = [
+  { category: "activity", test: /\b(?:activities|hobbies|sports|outdoor|exercise|pastimes)\b|(?:活动|爱好|运动|户外)/iu },
+  { category: "food", test: /\b(?:foods?|desserts?|snacks?|meals?|dishes?|treats?)\b|(?:食物|甜点|零食|菜)/iu },
+  { category: "book", test: /\b(?:books?|authors?|novels?)\b|(?:书|作者|小说)/iu },
+]
+
+function detectAspectCategories(query: string): MemoryAspectCategory[] {
+  return MEMORY_ASPECT_CATEGORY_TESTS.filter(item => item.test.test(query)).map(item => item.category)
+}
+
+function aspectSeedTerms(categories: readonly MemoryAspectCategory[], language: MemoryAspectLanguage): string[] {
+  return [...new Set(categories.flatMap(category => MEMORY_ASPECT_SEEDS[category][language]))]
+}
+
+function aspectLanguage(entities: readonly string[]): MemoryAspectLanguage {
+  return entities.some(entity => /[\p{Script=Han}]/u.test(entity)) ? "zh" : "en"
+}
+
+/** Shared aspect cues for local fan-out and coverage follow-up searches. */
+export function memoryAspectCues(shape: Pick<LocalMemoryQueryShape, "recallIntent" | "evidenceNeeds" | "entities">): string[] {
+  const language = aspectLanguage(shape.entities)
+  const cues: string[] = []
+  // Answer obligations first: a reason/count need must not be crowded out by
+  // generic intent cues when the facet budget is bounded.
+  for (const need of shape.evidenceNeeds) cues.push(...(MEMORY_EVIDENCE_CUES[need]?.[language] ?? []))
+  if (shape.recallIntent !== "none") cues.push(...MEMORY_ASPECT_CUES[shape.recallIntent][language])
+  return [...new Set(cues)].slice(0, 5)
+}
+
+/** Only multi-entity or multi-aspect questions pay for extra lexical facets. */
+function shouldDeriveAspectSubqueries(shape: LocalMemoryQueryShape): boolean {
+  if (shape.recallIntent === "none" || shape.entities.length === 0) return false
+  if (shape.recallIntent !== "lookup") return true
+  return shape.entities.length >= 2
+    || shape.evidenceNeeds.some(need => need !== "specific_fact" && need !== "source")
+}
+
+function selectAspectAnchors(entities: readonly string[], language: MemoryAspectLanguage): string[] {
+  if (language === "en") {
+    const named = entities.filter(entity => /^\p{Lu}/u.test(entity))
+    if (named.length > 0) return named.slice(0, 2)
+  }
+  return entities.slice(0, 2)
+}
+
+/**
+ * Deterministic entity/aspect fan-out: pair each named entity with the other
+ * content facets, then add intent-specific cues. The original query stays the
+ * primary RRF anchor; these only add independent lexical channels.
+ */
+export function deriveAspectSubqueries(shape: LocalMemoryQueryShape): string[] {
+  if (!shouldDeriveAspectSubqueries(shape)) return []
+  const language = aspectLanguage(shape.entities)
+  const cues = memoryAspectCues(shape)
+  const anchors = selectAspectAnchors(shape.entities, language)
+  const seedTerms = aspectSeedTerms(shape.aspectCategories ?? [], language)
+  if (anchors.length === 0 || (cues.length === 0 && seedTerms.length === 0)) return []
+  const anchorSet = new Set(anchors)
+  const aspects = shape.entities.filter(entity => !anchorSet.has(entity))
+  const result: string[] = []
+  const seen = new Set<string>()
+  const addQuery = (value: string): void => {
+    const query = value.trim()
+    const key = query.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ")
+    if (!query || seen.has(key)) return
+    seen.add(key)
+    result.push(query)
+  }
+  const add = (entity: string, aspect: string): void => {
+    if (aspect.trim()) addQuery(`${entity} ${aspect}`)
+  }
+  // Category questions spend two slots on entity×aspect pairs and reserve the
+  // rest for concrete vocabulary (an activity/food term often appears without
+  // the person's name in the same turn). Other questions keep the cue budget.
+  const aspectLimit = seedTerms.length > 0 ? 2 : cues.length > 0 ? 6 - Math.min(2, cues.length) : 6
+  for (const anchor of anchors) {
+    for (const aspect of aspects.slice(0, 3)) {
+      if (result.length >= aspectLimit) break
+      add(anchor, aspect)
+    }
+    if (result.length >= aspectLimit) break
+  }
+  if (seedTerms.length === 0) {
+    for (const cue of cues) {
+      for (const anchor of anchors) {
+        if (result.length >= 6) break
+        add(anchor, cue)
+      }
+    }
+  }
+  for (const seed of seedTerms) {
+    if (result.length >= 6) break
+    addQuery(seed)
+  }
+  return result.length >= 2 ? result.slice(0, 6) : []
 }
 
 export function hasExplicitRewriteHint(query: string): boolean {
@@ -97,6 +240,13 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
   const entities = extractEntities(text)
   const inference = memoryEvidenceReviewKind(text, recallIntent) === "inference"
   const contextualSource = hasExplicitConversationReference(text)
+  // A plural what/which question asks for a set of items, not one fact. This
+  // signal lets the renderer keep every directly named item across sessions.
+  const enumeration = recallIntent === "lookup" && !inference && (
+    /\b(?:what|which)\b[^?]{0,80}\b\w+s\b/iu.test(text)
+    || /\b(?:list|all|every|several)\b/iu.test(text)
+    || /(?:哪些|有什么|列出|所有|全部)/u.test(text)
+  )
   const evidenceNeeds = recallIntent === "none" ? [] : [
     ...(count ? ["count"] : []),
     ...(procedure ? ["steps"] : []),
@@ -105,18 +255,27 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
     ...(advice || inference ? ["preferences"] : []),
     ...(inference ? ["reason"] : []),
     ...(contextualSource ? ["source"] : []),
+    ...(enumeration ? ["enumeration"] : []),
     ...(!count && !procedure && !explanation && !advice && !overview && !inference ? ["specific_fact"] : []),
   ]
   const timeConstraint = parseTimeConstraint(text, before)
-  return { recallIntent, sourceRoles, entities, evidenceNeeds, ...(timeConstraint ? { timeConstraint } : {}) }
+  const aspectCategories = detectAspectCategories(text)
+  return {
+    recallIntent, sourceRoles, entities, evidenceNeeds,
+    ...(aspectCategories.length > 0 ? { aspectCategories } : {}),
+    ...(timeConstraint ? { timeConstraint } : {}),
+  }
 }
 
 export function deriveMemoryQueryPlan(originalQuery: string, before?: number): DerivedMemoryQueryPlan {
+  const shape = deriveLocalMemoryQueryShape(originalQuery, before)
+  const aspectQueries = deriveAspectSubqueries(shape)
   return {
     originalQuery,
     queries: originalQuery.trim() ? [originalQuery] : [],
     rewriteStatus: "not_needed",
-    ...deriveLocalMemoryQueryShape(originalQuery, before),
+    ...shape,
+    ...(aspectQueries.length > 0 ? { aspectQueries } : {}),
   }
 }
 

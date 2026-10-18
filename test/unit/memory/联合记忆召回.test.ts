@@ -8,6 +8,7 @@ const fake = vi.hoisted(() => ({
   getFacts: vi.fn(),
   getConversation: vi.fn(),
   expandConversation: vi.fn(),
+  expandNeighbors: vi.fn(),
   sourceMetadata: vi.fn(),
   readSources: vi.fn(),
 }))
@@ -22,6 +23,9 @@ vi.mock("@/services/agent/memory/evidence", () => ({ reconcileDerivedMemoryEvide
 vi.mock("@/services/agent/memory/conversation", () => ({
   searchConversationCandidates: fake.getConversation,
   expandConversationSessions: fake.expandConversation,
+  expandConversationNeighbors: fake.expandNeighbors,
+  MEMORY_NEIGHBOR_SEED_LIMIT: 4,
+  MEMORY_NEIGHBOR_TOKEN_BUDGET: 2_000,
   readConversationSources: fake.readSources,
   conversationProjection: (entry: ConversationSearchResult["entries"][number], indexRevision: number, memoryRevision: number) => ({
     sourceId: `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`,
@@ -150,6 +154,8 @@ beforeEach(() => {
   fake.getConversation.mockImplementation(async () => fake.conversationSnapshot)
   fake.expandConversation.mockReset()
   fake.expandConversation.mockImplementation(async snapshot => snapshot)
+  fake.expandNeighbors.mockReset()
+  fake.expandNeighbors.mockImplementation(async snapshot => snapshot)
   fake.sourceMetadata.mockReset()
   fake.sourceMetadata.mockResolvedValue(null)
   fake.readSources.mockReset()
@@ -465,6 +471,77 @@ describe("联合记忆召回", () => {
     ])
   })
 
+  it("多实体问题在改写关闭时也把本地方面子查询并入 base 检索 [memory-recall-aspect-fanout]", async () => {
+    const query = "Answer using our conversation history:\nWhat outdoor activities does John enjoy?"
+    const plan = deriveMemoryQueryPlan(query)
+    expect(plan.aspectQueries?.length).toBeGreaterThanOrEqual(4)
+
+    await sqliteMemoryProvider.recall(request({ query, queryRewriteMode: "off", rerankMode: "off" }))
+
+    const conversationQueries = fake.getConversation.mock.calls[0]?.[0].queries as string[]
+    expect(conversationQueries[0]).toBe(query)
+    expect(conversationQueries.slice(1)).toEqual(plan.aspectQueries)
+    expect(fake.getFacts.mock.calls.map(call => call[0])).toEqual(conversationQueries)
+  })
+
+  it("同一检索带内优先保留命中实体的完整事件 [memory-recall-selection-entity-order]", async () => {
+    fake.conversationSnapshot = {
+      ...conversationSnapshot(0),
+      entries: [
+        { sessionId: "session-a", entryId: "plain-user", eventId: "plain-event", seq: 1, chunk: 0, role: "user", text: "I did yoga daily", timestamp: 100, score: 1 },
+        { sessionId: "session-a", entryId: "maria-user", eventId: "maria-event", seq: 2, chunk: 0, role: "user", text: "Maria practiced kundalini yoga", timestamp: 101, score: 0.99 },
+        { sessionId: "session-a", entryId: "plain-reply", eventId: "plain-reply-event", seq: 3, chunk: 0, role: "assistant", text: "You did yoga daily", timestamp: 102, anchorEntryId: "plain-user", anchorEventId: "plain-event", score: 1 },
+        { sessionId: "session-a", entryId: "maria-reply", eventId: "maria-reply-event", seq: 4, chunk: 0, role: "assistant", text: "Maria practiced kundalini yoga", timestamp: 103, anchorEntryId: "maria-user", anchorEventId: "maria-event", score: 0.99 },
+      ],
+    }
+    const query = "Answer using our conversation history:\nWhat did Maria practice?"
+    const result = await sqliteMemoryProvider.recall(request({ query, queryRewriteMode: "off", rerankMode: "off", tokenBudget: 10_000 }))
+    expect(result.map(item => item.sourceId)).toEqual([
+      "conversation:session-a:maria-user:0",
+      "conversation:session-a:maria-reply:0",
+      "conversation:session-a:plain-user:0",
+      "conversation:session-a:plain-reply:0",
+    ])
+  })
+
+  it("普通回忆问题对原问题强命中做有界相邻补全 [memory-recall-neighbor-completion]", async () => {
+    const seed = {
+      sessionId: "session-a", entryId: "seed", eventId: "seed-event", seq: 5, chunk: 0, role: "user" as const,
+      text: "I love coconut milk icecream", matchedText: "I love coconut milk icecream", timestamp: 105, score: 1,
+    }
+    const neighbor = {
+      ...seed, entryId: "neighbor", eventId: "neighbor-event", seq: 6, chunk: 0, role: "assistant" as const,
+      text: "That sounds like a favorite dessert", matchedText: "That sounds like a favorite dessert",
+      timestamp: 106, anchorEntryId: "seed", anchorEventId: "seed-event", score: 0.3,
+    }
+    fake.conversationSnapshot = {
+      ...conversationSnapshot(0),
+      entries: [seed],
+    }
+    fake.expandNeighbors.mockImplementation(async snapshot => ({ ...snapshot, entries: [...snapshot.entries, neighbor] }))
+
+    const result = await sqliteMemoryProvider.recall(request({
+      query: "Answer using our conversation history:\nWhat desserts does Nate like?",
+      queryRewriteMode: "off", rerankMode: "off", tokenBudget: 10_000,
+    }))
+
+    expect(fake.expandNeighbors).toHaveBeenCalledTimes(1)
+    expect(result.map(item => item.sourceId)).toContain("conversation:session-a:neighbor:0")
+  })
+
+  it("一般知识问题不做相邻补全 [memory-recall-neighbor-general-skip]", async () => {
+    fake.conversationSnapshot = { ...conversationSnapshot(0), entries: conversationSnapshot(1).entries }
+    await sqliteMemoryProvider.recall(request({ query: "What is SQLite?", queryRewriteMode: "off", rerankMode: "off" }))
+    expect(fake.expandNeighbors).not.toHaveBeenCalled()
+  })
+
+  it("显式整段回顾走整会话展开，不重复相邻补全 [memory-recall-neighbor-overview-skip]", async () => {
+    fake.conversationSnapshot = conversationSnapshot(2)
+    await sqliteMemoryProvider.recall(request({ query: "回顾我们之前聊了什么", queryRewriteMode: "off", rerankMode: "off" }))
+    expect(fake.expandNeighbors).not.toHaveBeenCalled()
+    expect(fake.expandConversation).toHaveBeenCalled()
+  })
+
   it("动态召回先覆盖不同会话，超预算的首条不会阻断同会话较短候选 [memory-recall-session-coverage]", async () => {
     fake.factSnapshot = factSnapshot(Array.from({ length: 8 }, (_, index) => memoryItem(`fact-${index}`, { text: `small fact ${index}` })))
     const entries = [
@@ -594,6 +671,25 @@ describe("联合记忆召回", () => {
     expect(plan.rewriteStatus).toBe("rewritten")
     expect(plan.queries[0]).toBe(query)
     expect(plan.queries.length).toBeGreaterThan(1)
+  })
+
+  it("改写提示要求提出可语料校验的方面候选词，语料外词仍被拒绝 [memory-query-rewrite-aspect-hypothesis]", async () => {
+    fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
+    installTermCheckBridge(new Set(["surfing"]))
+    const query = "Answer using our conversation history:\nWhat outdoor activities does John enjoy?"
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["John surfing","John invented term"]}' })
+
+    const plan = await planMemoryQueries({
+      requestId: "aspect-hypothesis",
+      sessionId: "session-a",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive",
+    })
+
+    expect(String(fake.complete.mock.calls[0]?.[0].systemPrompt)).toContain("search hypotheses only")
+    expect(plan.queries).toContain("John surfing")
+    expect(plan.queries).not.toContain("John invented term")
   })
 
   it("少量事实候选不会挡住个人推荐问题的补充检索 [memory-query-rewrite-existing-facts-advice]", async () => {

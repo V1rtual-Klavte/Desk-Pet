@@ -39,7 +39,7 @@ vi.mock("@/services/observation", () => ({ clearSilentUnderstanding: async () =>
 
 import type { HostBridge } from "@/services/host"
 import { setHostBridge } from "@/services/host"
-import { captureConversationClearFences, expandConversationSessions, invalidateConversationSession, readConversationSources, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
+import { captureConversationClearFences, expandConversationNeighbors, expandConversationSessions, invalidateConversationSession, readConversationSources, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
 import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "@/services/agent/memory/conversation"
 import { estimateContextTokens } from "@/services/context/budget"
 import { applyMemoryChange } from "@/services/agent/memory/ipc"
@@ -344,7 +344,7 @@ describe("会话原文索引", () => {
     expect(result.entries.every(entry => entry.text === entry.matchedText)).toBe(true)
   })
 
-  it("跨query候选上限整组舍弃尾部回合，不留下失去user锚的回复 [conversation-query-complete-turn-cap]", async () => {
+  it("候选上限按事件数计数，完整回合整体准入且不留下失去user锚的回复 [conversation-query-complete-turn-cap]", async () => {
     const current = session("whole-turn-cap")
     fixture.metadata = [current]
     const singles: ConversationEvidenceEntry[] = Array.from({ length: 48 }, (_, index) => ({
@@ -364,8 +364,14 @@ describe("会话原文索引", () => {
     fixture.searchSnapshots.set("alpha", { ...snapshot, entries: singles })
     fixture.searchSnapshots.set("beta", { ...snapshot, entries: [...replies, user] })
     installBridge()
-    const result = await searchConversationCandidates({ sessionId: current.id, queries: ["alpha", "beta"], signal: new AbortController().signal, limit: 50 })
-    expect(result.entries.map(row => row.entryId)).toEqual(singles.map(row => row.entryId))
+    const roomy = await searchConversationCandidates({ sessionId: current.id, queries: ["alpha", "beta"], signal: new AbortController().signal, limit: 50 })
+    // 48 single-user events + one complete tail event = 49 events, so the whole tail fits.
+    expect(roomy.entries.slice(0, singles.length).map(row => row.entryId)).toEqual(singles.map(row => row.entryId))
+    expect(roomy.entries.slice(singles.length).map(row => row.entryId).sort())
+      .toEqual(["tail-reply-50", "tail-reply-51", "tail-user"])
+    const capped = await searchConversationCandidates({ sessionId: current.id, queries: ["alpha", "beta"], signal: new AbortController().signal, limit: 48 })
+    // Exactly 48 event slots are filled; the tail event is excluded whole, never split.
+    expect(capped.entries.map(row => row.entryId)).toEqual(singles.map(row => row.entryId))
   })
 
   it("不同记忆修订代的query结果不会混合 [conversation-query-snapshot-fence]", async () => {
@@ -754,6 +760,76 @@ describe("命中会话的治理上下文展开", () => {
     const controller = new AbortController()
     fixture.onContext = () => { controller.abort(); return { ...snapshot, entries: rows } }
     expect((await expandConversationSessions(snapshot, { signal: controller.signal, tokenBudget: 5_000 })).entries).toEqual([])
+  })
+})
+
+
+function neighborFixture(count = 9, seedSeq = 5): { snapshot: ConversationEvidenceResult; rows: ConversationEvidenceEntry[] } {
+  const sessionId = "neighbor-history"
+  const rows: ConversationEvidenceEntry[] = Array.from({ length: count }, (_, index) => {
+    const seq = index + 1
+    const role = seq % 2 === 0 ? "assistant" as const : "user" as const
+    const text = `${role}: neighbor ${seq}`
+    return {
+      sessionId, entryId: `n-${seq}`, eventId: `neighbor-event-${seq}`, seq, chunk: 0, role, text, matchedText: text,
+      timestamp: 100 + seq, score: 1,
+      ...(role === "assistant" ? { anchorEntryId: `n-${seq - 1}`, anchorEventId: `neighbor-event-${seq - 1}` } : {}),
+    }
+  })
+  fixture.transcripts.set(sessionId, {
+    entries: rows.map(row => messageEntry(row.entryId, row.seq, row.role, row.timestamp, row.role === "user" ? row.eventId! : undefined)),
+    messages: rows.map(row => ({ id: row.entryId, eventId: row.eventId, role: row.role, text: row.text,
+      timestamp: row.timestamp, ...(row.role === "user" ? { isUserInput: true } : {}) })),
+  })
+  const snapshot: ConversationEvidenceResult = { revision: 3, memoryRevision: 7, forgetEpoch: 1, entries: [rows[seedSeq - 1]!] }
+  fixture.onContext = args => ({ ...snapshot, entries: rows.filter(row => row.seq > Number(args.afterSeq)).slice(0, Number(args.limit)) })
+  installBridge()
+  return { snapshot, rows }
+}
+
+describe("同线程相邻回合补全", () => {
+  it("只读命中附近的 ±2 回合，按完整回合准入并保持 seed 在前 [conversation-neighbor-window]", async () => {
+    const { snapshot } = neighborFixture(9, 5)
+    const result = await expandConversationNeighbors(snapshot, [snapshot.entries[0]!], {
+      signal: new AbortController().signal, tokenBudget: 5_000,
+    })
+    const calls = fixture.calls.filter(call => call.method === "conversation_context")
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.args).toMatchObject({ sessionId: "neighbor-history", anchorEntryId: "n-5", afterSeq: 2, limit: 5 })
+    expect(result.entries.map(row => row.entryId)).toEqual(["n-5", "n-3", "n-4", "n-6", "n-7"])
+    expect(result.entries.filter(row => row.entryId === "n-4")).toHaveLength(1)
+  })
+
+  it("同一会话多个命中按跨度一次扩读，覆盖话题两端的相邻回合 [conversation-neighbor-span]", async () => {
+    const { snapshot, rows } = neighborFixture(12, 5)
+    const sessionSnapshot: ConversationEvidenceResult = { ...snapshot, entries: [rows[4]!, rows[9]!] }
+    const result = await expandConversationNeighbors(sessionSnapshot, [rows[4]!, rows[9]!], {
+      signal: new AbortController().signal, tokenBudget: 5_000,
+    })
+    const calls = fixture.calls.filter(call => call.method === "conversation_context")
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.args).toMatchObject({ sessionId: "neighbor-history", afterSeq: 2, limit: 10 })
+    expect(result.entries.map(row => row.entryId)).toContain("n-4")
+    expect(result.entries.map(row => row.entryId)).toContain("n-12")
+  })
+
+  it("预算不足时不越过邻接窗口，也不把 seed 重复计数 [conversation-neighbor-budget]", async () => {
+    const { snapshot } = neighborFixture(9, 5)
+    const result = await expandConversationNeighbors(snapshot, [snapshot.entries[0]!], {
+      signal: new AbortController().signal, tokenBudget: 1,
+    })
+    expect(result.entries.map(row => row.entryId)).toEqual(["n-5"])
+  })
+
+  it("邻接读取期间遗忘代变化时整组会话证据失效 [conversation-neighbor-revision-fence]", async () => {
+    const { snapshot, rows } = neighborFixture(9, 5)
+    fixture.onContext = () => ({ ...snapshot, forgetEpoch: 2, entries: rows })
+    const result = await expandConversationNeighbors(snapshot, [snapshot.entries[0]!], {
+      signal: new AbortController().signal, tokenBudget: 5_000,
+    })
+    expect(result.entries).toEqual([])
+    expect(result.revisionChanged).toBe(true)
+    expect(fixture.transcriptReads).toEqual([])
   })
 })
 

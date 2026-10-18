@@ -203,6 +203,7 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 
 - LongMemEval 每个原始会话、MemoryBank 每个历史日期建立隔离 JSONL 夹具，按顺序保留 user/assistant 角色与原始时间；不逐轮调用 `sendMessage` 重放。所有角色消息进入对话检索，只有 user 轮另登记为用户事实 `MemorySource`；MemoryBank 的 query/response 对应 user/assistant。
 - LoCoMo 每个上游 session 建真实 JSONL，正文保留原始 speaker、日期、文本和独立标记的 blip_caption。固定 speaker_a → user（可登记事实）、speaker_b → assistant（仅对话引用）；双方都是上游真人，此模型角色映射是适配器选择，不能同时将两人的经历登记为用户本人事实。来源坐标指向已提交的 sessionId/entryId/seq，样本id:dia_id 仅作评测映射标签。
+- 所问人物归属由适配器负责：问句含所属格（`Nate's` / `约翰的`）且是列项题时，适配器把人物映射到 speaker_a=user / speaker_b=assistant，并在 recall 投影上删除另一参与者的会话回合；该过滤只存在于 `test/memory-bench/datasets/locomo/attribution.ts`，产品记忆层不解析 `speaker:` 文本头。
 - `evidence` 截 4000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留完整渲染正文长度；dreaming 对 >4000 字符来源的整条丢弃按实计数。原话 JSONL 完整保留，不跟随摘要截断。
 - 提取走真实 dreaming（manual 模式，循环 sweep 直至无待处理来源）；全部数据集保留生产 scope，不做 session→user 或 add/forget 归一，`ingest.scopeNormalized` 恒为 0。跨会话细节通过受治理的对话检索读取，不撤销其引用锚。
 - 灌库链路是生产代码：`registerMemorySources` → 真实 `runDreamingSweep`（Light → Review → commit）→ Rust SQLite；但对话本身是隔离 fixture JSONL 预写入，**不是通过 UI 真实聊天回放**。提问回合才走真实 `sendMessage`（`toolMode: "none"`），召回/阅读/作答仍是生产链路。

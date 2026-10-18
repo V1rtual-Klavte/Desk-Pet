@@ -74,7 +74,8 @@ export const harnessStorageContract: ModuleContract = {
     // 该文件同时在 agent-runtime 契约在列，共享文件多契约并列是既有形态。
     "src/services/engine/harness/harness-slot.ts",
   ],
-  sourceHash: "c2a93b99b436dd1c5c7942951b18031427e2374b542fb960d22d458eeb726d6e",
+  // 2026-10-18 列项答案补全批次：HarnessRunState 增加内存字段，JSONL 条目 schema 未变；定向复核后刷新。
+  sourceHash: "323bf1f1ca6b48ba67608e91cd8e4de61460674ce07face08d7a5c77e156eedb",
   coverage: [
     {
       id: "hs-11",

@@ -1,3 +1,5 @@
+// 2026-10-18 B2C 记忆邻接补全：共享 trace.ts 的 memory_recall_end 白名单新增可选 neighborEntries；
+// trace 校验、保留、性能与回合调度行为面不变，仅按当前源码刷新 sourceHash。
 // 2026-10-16 回答证据范围复核：runtime 仅将 partial 阅读的 preserveCandidates 传给记忆渲染；
 // 回合准入、取消、usage、提交与流式调度未改，回答范围/引用预算覆盖归 memory mm-59/62/66。
 // 2026-10-15 定向复核：trace checkFingerprints新增受控obligation枚举，其余本域行为不变；
@@ -240,7 +242,8 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "993b034e268b22d79041246a39c2a5d3aa094c81861974b442c94c538d012e68",
+  // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
+  sourceHash: "7fbc24faff848d53dae6ddcc7a6b90b92bc58c504f5e734ff4438c820afe6aaa",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

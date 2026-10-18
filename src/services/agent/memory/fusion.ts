@@ -4,12 +4,20 @@
 const RRF_RANK_OFFSET = 60
 const RRF_ORIGINAL_WEIGHT = 2.5
 
-export function fuseRankedLists<T>(
+export interface ScoredFusionItem<T> {
+  item: T
+  score: number
+  /** First appearance order across lists; stable tie-break. */
+  first: number
+  original: boolean
+}
+
+export function fuseRankedListsScored<T>(
   lists: readonly (readonly T[])[],
   identity: (item: T) => string,
   anchorOriginal = true,
-): T[] {
-  const items = new Map<string, { item: T; score: number; first: number; original: boolean }>()
+): ScoredFusionItem<T>[] {
+  const items = new Map<string, ScoredFusionItem<T>>()
   lists.forEach((list, queryIndex) => {
     const seen = new Set<string>()
     const weight = anchorOriginal && queryIndex === 0 ? RRF_ORIGINAL_WEIGHT : 1
@@ -28,5 +36,12 @@ export function fuseRankedLists<T>(
       right.score - left.score
       || Number(right.original) - Number(left.original)
       || left.first - right.first)
-    .map(value => value.item)
+}
+
+export function fuseRankedLists<T>(
+  lists: readonly (readonly T[])[],
+  identity: (item: T) => string,
+  anchorOriginal = true,
+): T[] {
+  return fuseRankedListsScored(lists, identity, anchorOriginal).map(value => value.item)
 }

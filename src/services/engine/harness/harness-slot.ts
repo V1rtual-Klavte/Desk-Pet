@@ -93,6 +93,11 @@ export interface HarnessRunState {
   /** Durable JSONL entry identity paired with the final assistant message. */
   finalAssistantEntryId?: string
   /**
+   * 提交钩子在 afterResponse 里补全列项后的正文；结算据此与已提交条目同源。
+   * source 是补全前的原始助手正文，只有当前结算候选仍等于它时才采用 text。
+   */
+  completedReply?: { source: string; text: string }
+  /**
    * 本回合 show_to_user 截图的落盘路径（afterTool 从工具结果 details 取回）。
    * 提交链在最终助手消息落条目之前把它们并入条目（`deskpetImagePaths`）与结算回传；
    * 被取消/失败的回合不会走到提交，状态随回合丢弃。

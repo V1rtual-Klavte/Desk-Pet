@@ -13,10 +13,10 @@ vi.mock("@/services/engine/runtime", async importOriginal => ({
   publishRuntimeTrace: mocks.publishRuntimeTrace,
 }))
 vi.mock("@/services/context", () => ({ currentTimeNote: mocks.currentTimeNote }))
-vi.mock("@/services/logger", () => ({ createLogger: () => ({ warn: mocks.warn }) }))
+vi.mock("@/services/logger", () => ({ createLogger: () => ({ warn: mocks.warn, info: vi.fn() }) }))
 vi.mock("@/services/error", () => ({ formatError: (error: unknown) => String(error) }))
 
-import { focusMemoryEvidence } from "@/services/agent/memory/reader"
+import { extractMemoryEnumeration, focusMemoryEvidence } from "@/services/agent/memory/reader"
 import { MEMORY_READING_POLICY, memoryRecallTokens, renderMemoryRecall } from "@/services/agent/memory/projection"
 import { deriveMemoryQueryPlan } from "@/services/agent/memory/query"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
@@ -222,6 +222,180 @@ describe("记忆证据阅读接线", () => {
     }])
     expect(focused.guide?.searchQueries).toEqual(["ThinkPad context"])
     expect(focused.errors).toEqual({ invalid_search_query: 1 })
+  })
+
+  it("列项抽取只接受逐字来源项目并拒绝改写/未知来源 [memory-reading-enumeration-extract]", async () => {
+    const raw = [
+      { ...evidence()[0]!, sourceId: "d1", text: "I made a dairy-free chocolate cake with berries." },
+      { ...evidence()[1]!, sourceId: "d2", text: "Coconut milk ice cream is one of my favorites." },
+      { ...evidence()[2]!, sourceId: "d3", text: "I also like chocolate mousse." },
+    ]
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({ items: [
+      { item: "dairy-free chocolate cake", sourceId: "S1" },
+      { item: "invented dessert", sourceId: "S2" },
+      { item: "coconut milk ice cream", sourceId: "S9" },
+    ] }) })
+    const items = await extractMemoryEnumeration({
+      query: "What are Nate's favorite desserts?", queryPlan: deriveMemoryQueryPlan("What are Nate's favorite desserts?"),
+      projections: raw, sourceIds: raw.map(item => item.sourceId), contextWindow: 32_768,
+      signal: new AbortController().signal, requestId: "enum-extract", sessionId: "reader-session", timeoutMs: 30_000,
+    })
+    expect(items).toEqual([{ item: "dairy-free chocolate cake", sourceId: "d1" }])
+  })
+
+  it("类别词和问句片段不能作为列项项目 [memory-reading-enumeration-concrete-item]", async () => {
+    const raw = [
+      { ...evidence()[0]!, sourceId: "category-1", text: "Got any favorite flavors for dairy-free desserts?" },
+      { ...evidence()[1]!, sourceId: "category-2", text: "My favorite desserts are coconut milk ice cream and chocolate mousse." },
+      { ...evidence()[2]!, sourceId: "category-3", text: "I enjoy outdoor activities." },
+      { ...evidence()[0]!, sourceId: "category-4", text: "Nate loves chocolate and mixed berry flavors and chocolate desserts." },
+    ]
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({ items: [
+      { item: "dairy-free desserts", sourceId: "S1" },
+      { item: "favorite flavors", sourceId: "S1" },
+      { item: "outdoor activities", sourceId: "S3" },
+      { item: "chocolate and mixed berry flavors", sourceId: "S4" },
+      { item: "chocolate desserts", sourceId: "S4" },
+      { item: "coconut milk ice cream", sourceId: "S2" },
+      { item: "chocolate mousse", sourceId: "S2" },
+    ] }) })
+
+    const items = await extractMemoryEnumeration({
+      query: "What are Nate's favorite desserts?", queryPlan: deriveMemoryQueryPlan("What are Nate's favorite desserts?"),
+      projections: raw, sourceIds: raw.map(item => item.sourceId), contextWindow: 32_768,
+      signal: new AbortController().signal, requestId: "enum-concrete", sessionId: "reader-session", timeoutMs: 30_000,
+    })
+
+    expect(items).toEqual([
+      { item: "chocolate and mixed berry flavors", sourceId: "category-4" },
+      { item: "coconut milk ice cream", sourceId: "category-2" },
+      { item: "chocolate mousse", sourceId: "category-2" },
+    ])
+    expect(mocks.completePiText.mock.calls[0]![0].systemPrompt).toContain("完整的口味组合")
+  })
+
+
+  it("更长项目吸收被其包含的短片段 [memory-reading-enumeration-specific-item]", async () => {
+    const raw = [
+      { ...evidence()[0]!, sourceId: "specific-1",
+        text: "I made dairy-free chocolate cake with berries and chocolate." },
+      { ...evidence()[1]!, sourceId: "specific-2",
+        text: "I also like chocolate mousse." },
+    ]
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({ items: [
+      { item: "chocolate", sourceId: "S1" },
+      { item: "chocolate cake", sourceId: "S1" },
+      { item: "dairy-free chocolate cake with berries", sourceId: "S1" },
+    ] }) })
+
+    const items = await extractMemoryEnumeration({
+      query: "What are Nate's favorite desserts?", queryPlan: deriveMemoryQueryPlan("What are Nate's favorite desserts?"),
+      projections: raw, sourceIds: raw.map(item => item.sourceId), contextWindow: 32_768,
+      signal: new AbortController().signal, requestId: "enum-specific", sessionId: "reader-session", timeoutMs: 30_000,
+    })
+
+    expect(items).toEqual([{ item: "dairy-free chocolate cake with berries", sourceId: "specific-1" }])
+  })
+
+  it("去空格变体按同一项目去重 [memory-reading-enumeration-variant-dedupe]", async () => {
+    const raw = [
+      { ...evidence()[0]!, sourceId: "variant-1",
+        text: "I like coconut milk ice cream and coconut milk icecream." },
+      { ...evidence()[1]!, sourceId: "variant-2",
+        text: "I also like chocolate mousse." },
+    ]
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({ items: [
+      { item: "coconut milk ice cream", sourceId: "S1" },
+      { item: "coconut milk icecream", sourceId: "S1" },
+      { item: "chocolate mousse", sourceId: "S2" },
+    ] }) })
+
+    const items = await extractMemoryEnumeration({
+      query: "What are Nate's favorite desserts?", queryPlan: deriveMemoryQueryPlan("What are Nate's favorite desserts?"),
+      projections: raw, sourceIds: raw.map(item => item.sourceId), contextWindow: 32_768,
+      signal: new AbortController().signal, requestId: "enum-variant", sessionId: "reader-session", timeoutMs: 30_000,
+    })
+
+    expect(items).toEqual([
+      { item: "coconut milk ice cream", sourceId: "variant-1" },
+      { item: "chocolate mousse", sourceId: "variant-2" },
+    ])
+  })
+
+  it("列项抽取按小批覆盖全部来源并合并 [memory-reading-enumeration-batches]", async () => {
+    const fixture = evidence()
+    const raw = Array.from({ length: 9 }, (_, index) => ({
+      ...fixture[index % fixture.length]!,
+      sourceId: `batch-${index + 1}`,
+      text: `Nate made cake ${index + 1} for dessert.`,
+    }))
+    mocks.completePiText
+      .mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({ items: [
+        { item: "cake 1", sourceId: "S1" },
+        { item: "cake 8", sourceId: "S8" },
+      ] }) })
+      .mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({ items: [
+        { item: "cake 9", sourceId: "S1" },
+      ] }) })
+
+    const items = await extractMemoryEnumeration({
+      query: "What are Nate's favorite desserts?", queryPlan: deriveMemoryQueryPlan("What are Nate's favorite desserts?"),
+      projections: raw, sourceIds: raw.map(item => item.sourceId), contextWindow: 32_768,
+      signal: new AbortController().signal, requestId: "enum-batches", sessionId: "reader-session", timeoutMs: 30_000,
+    })
+
+    expect(mocks.completePiText).toHaveBeenCalledTimes(2)
+    expect(items.map(item => [item.item, item.sourceId])).toEqual([
+      ["cake 1", "batch-1"], ["cake 8", "batch-8"], ["cake 9", "batch-9"],
+    ])
+    const second = JSON.parse(mocks.completePiText.mock.calls[1]![0].userText) as { sources: Array<{ sourceId: string }> }
+    expect(second.sources).toEqual([{ sourceId: "S1", role: expect.any(String), text: expect.stringContaining("cake 9") }])
+  })
+
+  it("单批抽取失败不丢弃其他批次的有效项目 [memory-reading-enumeration-partial-batch]", async () => {
+    const fixture = evidence()
+    const raw = Array.from({ length: 9 }, (_, index) => ({
+      ...fixture[index % fixture.length]!,
+      sourceId: `partial-${index + 1}`,
+      text: `Nate made cake ${index + 1} for dessert.`,
+    }))
+    mocks.completePiText
+      .mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({ items: [
+        { item: "cake 1", sourceId: "S1" },
+      ] }) })
+      .mockResolvedValueOnce({ stopReason: "stop", text: "not-json" })
+
+    const items = await extractMemoryEnumeration({
+      query: "What are Nate's favorite desserts?", queryPlan: deriveMemoryQueryPlan("What are Nate's favorite desserts?"),
+      projections: raw, sourceIds: raw.map(item => item.sourceId), contextWindow: 32_768,
+      signal: new AbortController().signal, requestId: "enum-partial", sessionId: "reader-session", timeoutMs: 30_000,
+    })
+
+    expect(mocks.completePiText).toHaveBeenCalledTimes(2)
+    expect(items).toEqual([{ item: "cake 1", sourceId: "partial-1" }])
+  })
+
+  it("列项问题把抽取项目放进 enumerationItems 并进入最终记忆块 [memory-reading-enumeration-render]", async () => {
+    const raw = [
+      { ...evidence()[0]!, sourceId: "d1", text: "I made a dairy-free chocolate cake with berries." },
+      { ...evidence()[1]!, sourceId: "d2", text: "Coconut milk ice cream is one of my favorites." },
+      { ...evidence()[2]!, sourceId: "d3", text: "I also like chocolate mousse." },
+    ]
+    mocks.completePiText.mockResolvedValueOnce(readingResponse("S1", "dairy-free chocolate cake"))
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({ items: [
+      { item: "dairy-free chocolate cake", sourceId: "S1" },
+      { item: "coconut milk ice cream", sourceId: "S2" },
+      { item: "chocolate mousse", sourceId: "S3" },
+    ] }) })
+    const focused = await focusMemoryEvidence(input(raw, {
+      query: "Answer using our conversation history:\nWhat are Nate's favorite desserts?",
+    }))
+    expect(focused.guide?.enumerationItems?.map(item => item.item)).toEqual([
+      "dairy-free chocolate cake", "coconut milk ice cream", "chocolate mousse",
+    ])
+    const rendered = renderMemoryRecall(focused.projections, 10_000, focused.guide)
+    const json = JSON.parse(rendered.text.slice(rendered.text.indexOf("{"))) as { enumerationItems?: unknown[] }
+    expect(json.enumerationItems).toHaveLength(3)
   })
 
   it("附加来源可核对笔记且原文身份和信任字段不变 [memory-reading-notes-trust-preservation]", async () => {

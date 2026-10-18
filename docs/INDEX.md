@@ -20,6 +20,7 @@
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
 | 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |
 | 主动消息/静默了解/记忆整理的频率档位与锁屏语义 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[运行时数据](current/runtime-data.md)；剩余开放问题见[未完成总表](plans/active/未完成工作与已知缺口.md) §10 |
+| 统一调度、用户定时任务、复杂任务执行与子运行统一 | [统一调度与子运行执行方案](plans/active/统一调度与子运行执行方案-2026-10-18.md)（目标已确认，尚未实施） | [未完成总表](plans/active/未完成工作与已知缺口.md) §11；当前事实仍看主动陪伴、工具系统及运行时契约 |
 | 原生宿主（Rust）+ 唯一 Node Harness、私有 IPC 与轻量化收尾 | [未完成总表](plans/active/未完成工作与已知缺口.md) §8、§9 | [系统地图](current/system-design.md) 与目标源码；目标契约已归档（见下方历史入口） |
 | 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [当前记忆](current/memory.md)及相关源码（B 方案契约已归档） |
 
@@ -48,6 +49,7 @@
 ## 未完成工作
 
 - [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆剩余问题、活人感与整链陪伴的剩余环境验收、已知代码缺口与验证缺口。
+- [统一调度与子运行执行方案](plans/active/统一调度与子运行执行方案-2026-10-18.md)：按本轮用户要求汇总的活动目标契约，覆盖内部调度、用户提醒与执行型任务、工具确认、随机计划、Card 交付、思考强度和统一子运行；尚未实施，动态进度与验收结果只记未完成总表 §11。
 
 ## 历史入口
 

@@ -13,10 +13,10 @@
 import { getHostBridge } from "@/services/host"
 import { sendMessage } from "@/services/agent/runner"
 import {
-  getMemoryItems, installMemoryProvider, memoryJobSources,
+  deriveMemoryQueryPlan, getMemoryItems, installMemoryProvider, memoryJobSources,
   registerMemorySources, runDreamingSweep, sqliteMemoryProvider,
 } from "@/services/agent/memory"
-import type { MemoryItem, MemorySource } from "@/services/agent/memory"
+import type { MemoryItem, MemoryProvider, MemorySource } from "@/services/agent/memory"
 import { aiConfig, flushConfig, memoryConfig, setOverrides } from "@/services/config"
 import { contextBudget, estimateRequestTokens, setCurrentTimeNoteAnchor } from "@/services/context"
 import { completePiText, getPiModel } from "@/services/engine/harness"
@@ -39,6 +39,7 @@ import { summarizeMemoryQualityUsage } from "../memory-quality/index.mjs"
 import { buildReaderControlPrompts, requireCompleteReaderOutput } from "./reader-control.mjs"
 import { formatLocomoQuestion, LOCOMO_ANSWER_FORMAT } from "./datasets/locomo/fixture.mjs"
 import { buildLocomoHistory, installLocomoAnswerPolicy } from "./datasets/locomo/live-fixture"
+import { filterLocomoEnumerationProjections, locomoQuestionSpeakerRole } from "./datasets/locomo/attribution"
 import { candidateDiaIds } from "./candidate-recall.mjs"
 
 /** 与 src/services/agent/memory/sources.ts 的 EVIDENCE_CHARS 对齐：登记证据只保留引文长度。 */
@@ -186,6 +187,8 @@ interface PreparedGroup {
   ingest: NonNullable<BenchCellOutcome["ingest"]>
   cleanupFailure?: string
   answerPolicyCleanup?: () => Promise<void>
+  /** LoCoMo only: the two named participants, used for benchmark-side attribution. */
+  locomoSpeakers?: { a: string; b: string }
 }
 
 async function sha256(text: string): Promise<string> {
@@ -454,6 +457,26 @@ function formatMemoryBankHistory(persona: { name: string; metaInformation: Recor
   return lines.join("\n")
 }
 
+/**
+ * LoCoMo-only attribution. The product memory layer stays generic; the adapter,
+ * which knows the two named speakers and which one the question asks about,
+ * removes the other speaker's conversation turns before the reader/extractor sees them.
+ */
+function locomoAttributionProvider(
+  base: MemoryProvider,
+  question: string,
+  speakers: { a: string; b: string },
+): MemoryProvider {
+  if (!deriveMemoryQueryPlan(question).evidenceNeeds.includes("enumeration")) return base
+  const role = locomoQuestionSpeakerRole(question, speakers)
+  if (!role) return base
+  return {
+    async recall(request) {
+      return filterLocomoEnumerationProjections(await base.recall(request), role)
+    },
+  }
+}
+
 /** 提问回合：新建会话、撤下工具、记录首文本发布延迟；答案与渲染证据映射回登记来源。
  * Native L4 不建 UI；旧字段名兼容报告 schema，但时间点是 HostBridge publish 成功，不代表原生绘制。 */
 async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequence: number; total: number;
@@ -461,7 +484,9 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
   questionText?: string;
   signal?: AbortSignal }): Promise<BenchCellOutcome> {
   const { caseDef, groupKey, sequence, total, group, groupReused, traces, timeAnchor } = input
-  installMemoryProvider(sqliteMemoryProvider)
+  installMemoryProvider(group.locomoSpeakers
+    ? locomoAttributionProvider(sqliteMemoryProvider, String(caseDef.question), group.locomoSpeakers)
+    : sqliteMemoryProvider)
   const questionSession = await createNewSession()
   let start = 0
   let firstDeliveredTextDeltaMs: number | undefined
@@ -544,10 +569,15 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
     installMemoryProvider(sqliteMemoryProvider)
     await createNewSession()
     let built: { sources: MemorySource[]; meta: Map<string, SourceMeta> }
+    let locomoSpeakers: { a: string; b: string } | undefined
     if (dataset === "longmemeval") built = await longMemEvalSources(caseDef)
     else if (dataset === "locomo") {
       const conversation = (file.conversations ?? []).find(item => (item as { sampleId?: string }).sampleId === groupKey)
       if (!conversation) throw new Error(`找不到对话 ${groupKey}`)
+      const speakers = (conversation as { speakers?: { a?: unknown; b?: unknown } }).speakers
+      if (typeof speakers?.a === "string" && typeof speakers?.b === "string") {
+        locomoSpeakers = { a: speakers.a, b: speakers.b }
+      }
       built = await buildLocomoHistory(conversation as Parameters<typeof buildLocomoHistory>[0], EVIDENCE_CHARS)
     } else if (dataset === "memorybank") {
       const persona = (file.personas ?? []).find(item => (item as { name?: string }).name === groupKey)
@@ -571,7 +601,8 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
     // All datasets keep production scope. Forgetting a fact's sources would also revoke
     // their original conversation anchors; cross-session details stay in JSONL.
     const answerPolicyCleanup = dataset === "locomo" ? await installLocomoAnswerPolicy() : undefined
-    return { ok: true, group: { groupKey, storeGeneration: String(storeReset.generation), sourceMeta: built.meta, ingest, answerPolicyCleanup } }
+    return { ok: true, group: { groupKey, storeGeneration: String(storeReset.generation), sourceMeta: built.meta, ingest, answerPolicyCleanup,
+      ...(locomoSpeakers ? { locomoSpeakers } : {}) } }
   }
 
   return {

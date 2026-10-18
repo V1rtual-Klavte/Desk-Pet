@@ -8,6 +8,8 @@ import { deduplicateMemoryEvidence, hasNewMemoryEvidence, memoryRecallTokens } f
 import type { MemoryQuestionGuide } from "./projection"
 import type { MemoryProjection } from "./provider"
 import type { MemoryQueryPlan } from "./query"
+import { memoryAspectCues } from "./query-shape"
+import { memoryEvidenceValue } from "./selection-score"
 
 interface EvidenceSnapshot {
   projections: MemoryProjection[]
@@ -30,12 +32,7 @@ function unannotated(projections: readonly MemoryProjection[]): MemoryProjection
 /** A follow-up can rearrange original/quoted terms, but cannot guess a missing fact. */
 function followupQueries(plan: MemoryQueryPlan, focused: FocusedMemoryEvidence, searched: ReadonlySet<string>): string[] {
   const corpus = [plan.originalQuery, ...focused.projections.flatMap(item => item.readingNote ? [item.readingNote.quote] : [])].join("\n")
-  const cues = plan.recallIntent === "explanation" ? ["原因", "前后文", "reason"]
-    : plan.recallIntent === "procedure" ? ["步骤", "方法", "过程"]
-    : plan.recallIntent === "overview" ? ["记录", "前后文"]
-    : plan.recallIntent === "count" ? ["经历", "时间"]
-    : plan.recallIntent === "advice" ? ["偏好", "经历", "方法"]
-    : plan.evidenceNeeds.includes("preferences") ? ["偏好", "preferences", "reason"] : ["记录", "前后文"]
+  const cues = memoryAspectCues(plan)
   const proposed = [
     ...(focused.guide?.searchQueries ?? []),
   ]
@@ -121,12 +118,6 @@ function mergeEvidence(base: readonly MemoryProjection[], additions: readonly Me
     }
   }
   return merged
-}
-
-function memoryEvidenceValue(item: MemoryProjection): number {
-  if (item.tier === "core") return 3
-  if (item.conversation) return 1.5
-  return item.origin === "derived_behavior" ? 1 : 2
 }
 
 /** Split a count pool into reader-sized batches. A single oversized item stays alone. */

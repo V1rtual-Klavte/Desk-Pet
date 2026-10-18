@@ -16,7 +16,8 @@ import { messageEventId } from "@/services/engine/runtime"
 import { getPiSessionRepo, listPiSessionMetadata, readPiSessionEntriesOnce, readVisibleSessionTranscript, withPiSessionFileLock } from "@/services/session"
 import type { MemoryProjection } from "./provider"
 import { deriveMemoryQueryPlan } from "./query"
-import { fuseRankedLists } from "./fusion"
+import { fuseRankedListsScored } from "./fusion"
+import { conversationEventKey, conversationKeyAliases } from "./conversation-key"
 import { normalizeMemoryQueryText } from "./query"
 import type { MemoryQueryPlan } from "./query"
 
@@ -24,6 +25,12 @@ const log = createLogger("ConversationMemory")
 
 const CONVERSATION_SEARCH_LIMIT = MEMORY_LIMITS.conversation.maxSearchResults
 const CONVERSATION_SCAN_LIMIT = MEMORY_LIMITS.conversation.maxScanResults
+/** Bounded same-thread completion: a strong hit may have context-dependent neighbors. */
+export const MEMORY_NEIGHBOR_WINDOW = 2
+export const MEMORY_NEIGHBOR_SEED_LIMIT = 64
+export const MEMORY_NEIGHBOR_TOKEN_BUDGET = 2_000
+const MEMORY_NEIGHBOR_SESSION_LIMIT = 3
+const MEMORY_NEIGHBOR_MAX_SPAN = 10
 const MAX_INDEX_RETRIES = 2
 const CHUNK_SCHEMA_VERSION = 3
 const CHUNK_MAX_CODEPOINTS = 1_600
@@ -158,6 +165,112 @@ export async function expandConversationSessions(
   }
 }
 
+export interface ConversationNeighborRequest {
+  signal: AbortSignal
+  tokenBudget: number
+  before?: number
+  recordTime?: NonNullable<MemoryQueryPlan["timeConstraint"]>
+  window?: number
+  seedLimit?: number
+}
+
+function bestSeedScore(seeds: readonly ConversationEvidenceEntry[]): number {
+  return seeds.reduce((best, seed) => Math.max(best, seed.score), 0)
+}
+
+/**
+ * Complete a strong hit with its surrounding conversational thread. Hits are
+ * grouped by session and the union of their ±window is read once per session
+ * (capped so a scattered session cannot turn into a whole-session read). This is
+ * not recursive: neighbors are admitted through the same JSONL/hash validation
+ * and never become new seeds.
+ */
+export async function expandConversationNeighbors(
+  snapshot: ConversationEvidenceResult,
+  seeds: readonly ConversationEvidenceEntry[],
+  request: ConversationNeighborRequest,
+): Promise<ConversationEvidenceResult> {
+  if (request.signal.aborted || request.tokenBudget <= 0 || seeds.length === 0) return snapshot
+  const window = Math.max(1, Math.min(4, request.window ?? MEMORY_NEIGHBOR_WINDOW))
+  const seedLimit = Math.max(1, Math.min(MEMORY_NEIGHBOR_SEED_LIMIT, request.seedLimit ?? MEMORY_NEIGHBOR_SEED_LIMIT))
+  const seen = new Set(snapshot.entries.map(entry => `${entry.sessionId}\0${entry.entryId}`))
+  const selectedSeeds = [...new Map(seeds.map(entry => [`${entry.sessionId}\0${entry.entryId}`, entry])).values()]
+    .slice(0, seedLimit)
+  const bySession = new Map<string, ConversationEvidenceEntry[]>()
+  for (const seed of selectedSeeds) {
+    const group = bySession.get(seed.sessionId) ?? []
+    group.push(seed)
+    bySession.set(seed.sessionId, group)
+  }
+  const sessions = [...bySession.entries()]
+    .sort((left, right) => bestSeedScore(right[1]) - bestSeedScore(left[1])
+      || left[0].localeCompare(right[0]))
+    .slice(0, MEMORY_NEIGHBOR_SESSION_LIMIT)
+  let remaining = request.tokenBudget
+  const entries = [...snapshot.entries]
+  const transcripts = new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>()
+  const stats = snapshot.diagnostics ? { candidates: 0, validated: 0 } : undefined
+  for (const [sessionId, sessionSeeds] of sessions) {
+    if (request.signal.aborted) return { ...snapshot, entries: [] }
+    if (remaining <= 0) break
+    const orderedSeeds = [...sessionSeeds].sort((left, right) => right.score - left.score || left.seq - right.seq)
+    const anchor = orderedSeeds[0]!
+    const seqs = [...new Set(sessionSeeds.map(seed => seed.seq))].sort((left, right) => left - right)
+    let from = Math.max(1, seqs[0]! - window)
+    let to = seqs[seqs.length - 1]! + window
+    if (to - from + 1 > MEMORY_NEIGHBOR_MAX_SPAN) {
+      from = Math.max(1, anchor.seq - window)
+      to = anchor.seq + window
+    }
+    const page = await getHostBridge().request("conversation_context", {
+      sessionId,
+      anchorEntryId: anchor.entryId,
+      afterSeq: from - 1,
+      limit: to - from + 1,
+      ...(request.before === undefined ? {} : { before: request.before }),
+    }, { signal: request.signal })
+    if (request.signal.aborted) return { ...snapshot, entries: [] }
+    if (page.revision !== snapshot.revision || page.memoryRevision !== snapshot.memoryRevision
+      || page.forgetEpoch !== snapshot.forgetEpoch) {
+      return { ...snapshot, entries: [], revisionChanged: true }
+    }
+    const rows = page.entries.filter(entry => entry.sessionId === sessionId && entry.chunk === 0
+      && entry.seq >= from && entry.seq <= to
+      && (!request.recordTime || timestampMatchesRecordTime(entry.timestamp, request.recordTime))
+      && !seen.has(`${entry.sessionId}\0${entry.entryId}`))
+      .map(entry => ({ ...entry, score: Math.min(entry.score, bestSeedScore(sessionSeeds) / 3) }))
+    const verified = await expandSearchEntriesFromJsonl(rows, request.signal, request.before, {
+      transcripts, ...(stats ? { diagnostics: stats } : {}),
+    })
+    for (const turn of orderEvidenceTurns(verified, orderedSeeds)) {
+      const fullCost = turn.reduce((sum, entry) => sum + estimateContextTokens(entry.text), 0)
+      const excerptCost = turn.reduce((sum, entry) => sum + estimateContextTokens(entry.matchedText), 0)
+      const cost = fullCost <= remaining ? fullCost : excerptCost
+      if (cost <= 0 || cost > remaining) continue
+      const additions: ConversationEvidenceEntry[] = []
+      for (const entry of turn) {
+        const key = `${entry.sessionId}\0${entry.entryId}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        additions.push(entry)
+      }
+      if (additions.length === 0) continue
+      entries.push(...additions)
+      remaining -= cost
+    }
+  }
+  return {
+    ...snapshot,
+    entries: request.signal.aborted ? [] : entries,
+    ...(snapshot.diagnostics && stats ? { diagnostics: {
+      ...snapshot.diagnostics,
+      jsonlReadbackCandidates: snapshot.diagnostics.jsonlReadbackCandidates + stats.candidates,
+      jsonlReadbackDropped: snapshot.diagnostics.jsonlReadbackDropped
+        + Math.max(0, stats.candidates - stats.validated),
+    } } : {}),
+  }
+}
+
 /** Resolve admitted fact lineage to original turns, never treating the audit preview as transcript text. */
 export async function readConversationSources(
   snapshot: ConversationEvidenceResult,
@@ -204,24 +317,10 @@ function orderEvidenceTurns<T extends ConversationSearchEntry>(
   entries: readonly T[],
   anchors: readonly ConversationSearchEntry[],
 ): T[][] {
-  const aliases = new Map<string, string>()
-  for (const entry of [...anchors, ...entries]) {
-    if (entry.role !== "user") continue
-    aliases.set(`${entry.sessionId}:entry:${entry.entryId}`, entry.entryId)
-    if (entry.eventId) aliases.set(`${entry.sessionId}:event:${entry.eventId}`, entry.entryId)
-  }
-  const turnKey = (entry: ConversationSearchEntry): string => {
-    if (entry.role === "user") return `${entry.sessionId}:turn:${entry.entryId}`
-    const anchor = entry.anchorEntryId
-      ? aliases.get(`${entry.sessionId}:entry:${entry.anchorEntryId}`) ?? entry.anchorEntryId
-      : entry.anchorEventId
-        ? aliases.get(`${entry.sessionId}:event:${entry.anchorEventId}`) ?? entry.anchorEventId
-        : entry.entryId
-    return `${entry.sessionId}:turn:${anchor}`
-  }
+  const aliases = conversationKeyAliases([...anchors, ...entries])
   const turns = new Map<string, T[]>()
   for (const entry of entries) {
-    const key = turnKey(entry)
+    const key = conversationEventKey(entry, aliases)
     const turn = turns.get(key) ?? []
     turn.push(entry)
     turns.set(key, turn)
@@ -430,19 +529,34 @@ export async function searchConversationCandidates(request: ConversationCandidat
 
   const eventIdentity = (entry: Pick<ConversationSearchEntry, "sessionId" | "entryId" | "eventId">) =>
     `conversation:${entry.sessionId}:${entry.eventId ?? entry.entryId}`
-  const fusedOrder = fuseRankedLists(compatibleResults.map(item => item.entries), eventIdentity,
+  const fusedOrder = fuseRankedListsScored(compatibleResults.map(item => item.entries), eventIdentity,
     !request.queryPlan || request.queries[0] === request.queryPlan.originalQuery)
   const governed = fusedOrder
-    .filter(entry => currentIds.has(entry.sessionId)
-      && (request.recentFallback || usedRecentFallback || Boolean(recordTime) || entry.score > 0))
-  const units = orderEvidenceTurns(governed, [])
-  const admittedIds = new Set<string>()
-  for (const unit of units) {
-    if (admittedIds.size + unit.length > limit) continue
-    for (const entry of unit) admittedIds.add(eventIdentity(entry))
+    .filter(candidate => currentIds.has(candidate.item.sessionId)
+      && (request.recentFallback || usedRecentFallback || Boolean(recordTime) || candidate.item.score > 0))
+  // One event = one user entry plus its anchored replies. The limit counts events,
+  // not entries, so a complete turn is never split at the admission boundary.
+  const aliases = conversationKeyAliases([
+    ...compatibleResults.flatMap(result => result.entries),
+    ...governed.map(candidate => candidate.item),
+  ])
+  const units = new Map<string, { score: number; first: number; entries: ConversationSearchEntry[] }>()
+  for (const candidate of governed) {
+    const key = conversationEventKey(candidate.item, aliases)
+    const unit = units.get(key) ?? { score: 0, first: candidate.first, entries: [] }
+    unit.score = Math.max(unit.score, candidate.score)
+    unit.first = Math.min(unit.first, candidate.first)
+    unit.entries.push(candidate.item)
+    units.set(key, unit)
   }
+  const admittedKeys = new Set([...units.entries()]
+    .sort((left, right) => right[1].score - left[1].score || left[1].first - right[1].first)
+    .slice(0, limit)
+    .map(([key]) => key))
   // Preserve lexical rank while admitting whole user/reply groups across queries.
-  const eligible = governed.filter(entry => admittedIds.has(eventIdentity(entry)))
+  const eligible = governed
+    .filter(candidate => admittedKeys.has(conversationEventKey(candidate.item, aliases)))
+    .map(candidate => candidate.item)
   const readbackStats = request.observe ? { candidates: 0, validated: 0 } : undefined
   const entries = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before, { diagnostics: readbackStats })
   if (request.signal.aborted) return { ...result, entries: [] }

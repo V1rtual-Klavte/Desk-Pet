@@ -1,3 +1,8 @@
+// 2026-10-18 B2C：共享 sourceFiles 中 trace.ts 的 memory_recall_end 白名单新增 neighborEntries；
+// 评测计分/导出/判分链行为面不变，eval-01..09 未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-18 B2 记忆召回定向复核：共享 sourceFiles 中 agent/memory/provider.ts 变化 ——
+// 方面子查询并入 base 检索、确定性选择分仅在无 rerank 裁决时排序；评测计分/导出/判分链
+// 与 trace/保留/性能路径行为面不变，eval-01..09 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-18 定向复核：sourceFiles 中 test/e2e/native-main.ts 与 scripts/e2e-test.mjs 变化 ——
 // bench CLI 新增 `--bench-per-category`（正整数校验后传入 planBenchCells / runMemoryBenchEvaluation，
 // 并写入 manifest.bench.perCategory）；trace、评测、保留与性能路径不受影响，eval-01..09 未修订覆盖点，
@@ -109,7 +114,8 @@ import type { ModuleContract } from "../host/types"
 export const evaluationContract: ModuleContract = {
   module: "evaluation",
   sourceFiles: ["test/host/standard-setup.ts", "vite.config.ts", "src/services/engine/runtime/trace.ts", "src/services/agent/memory/reading-errors.ts", "src/services/agent/memory/provider.ts", "src/services/agent/memory/dreaming.ts", "crates/native-host/src/e2e_trace.rs", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/host/dispatch.rs", "test/host/trace-observer.ts", "test/trace/evidence.ts", "scripts/report-retention.mjs", "scripts/trace-evidence.mjs", "scripts/contract-layers.mjs", "scripts/e2e-test.mjs", "scripts/check-contract-hashes.mjs", "test/memory-quality/dataset.mjs", "test/memory-quality/index.mjs", "test/memory-quality/live-adapter.ts", "scripts/memory-quality-review.mjs", "scripts/memory-performance.mjs", "test/e2e/eval-models.ts", "test/eval-models.json", "test/e2e/memory-performance.ts", "test/host/performance.ts", "test/e2e/native-main.ts", "test/e2e/scene-runner.ts"],
-  sourceHash: "3af28d975bf658a3bd242a79741c38e865c7c4c943039b954c2659cde301e5da",
+  // 2026-10-18 列项答案补全批次：评测口径未变，仅共享 runtime/trace 增加列项补全计数；定向复核后刷新。
+  sourceHash: "d80c5ff737ba7648cef589c2ba6e42abb7efdabab4f49d61163058397feaa9d6",
   coverage: [
     {"id": "eval-01", "feature": "生产 trace 提交线路", "description": "真实 sendMessage 经过 Rust IPC：输入、host/Pi关联、Provider span、首文本生成与 JSONL assistant entry commit 一致；消息结束不冒充提交或UI首显", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "e2e", "depth": "deep", "scenarios": ["trace-production-commit"]},
     {"id": "eval-02", "feature": "惰性与隔离观测", "description": "无订阅者不计算payload；listener异常隔离、event冻结、spread context共享单调序号；阅读状态/合法来源ID及固定错误计数（含缺失/非法语义核对表）可见，核对条件只登记有界哈希、状态与引用数，核对条件正文/引文/查询和任意错误键被过滤；正文与工具参数结果不进入允许字段，主动/行为事件只保留结构字段（应用身份、标题与任务正文被白名单挡下）", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-lazy-off", "trace-listener-isolation", "trace-sequence-redaction", "trace-preview", "trace-scope-candidates", "trace-memory-rendered-schema", "trace-memory-reading-schema", "trace-proactive-behavior-schema"]},
