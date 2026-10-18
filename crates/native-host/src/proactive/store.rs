@@ -1,5 +1,5 @@
 use crate::error::{AppError, AppResult};
-use crate::memory::MemoryStore;
+use crate::memory::{event_at_projection, normalize_memory_text, MemoryStore};
 use crate::proactive::ProactiveLimits;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
@@ -466,11 +466,19 @@ fn finish_linked_memory_tx(
     }
     let now = now_ms();
     let next = version + 1;
+    let event_anchor = event_at
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    let (event_at_ms, event_at_date) = event_at_projection(event_anchor.as_ref());
     tx.execute("UPDATE memory_items SET status='superseded',valid_to=?2,updated_at=?2 WHERE id=?1 AND status='active'",params![item_id,now]).map_err(db)?;
-    tx.execute("INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state) VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",params![item_id,next,content,summary,kind,scope,scope_id,aliases,pinned,importance,confidence,observed,valid_from,valid_to,expires,supersedes.unwrap_or_else(||item_id.clone()),now,now,event_at,due_at,new_state]).map_err(db)?;
+    tx.execute(
+        "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state,event_at_ms,event_at_date,content_norm,summary_norm,aliases_norm)
+         VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)",
+        params![item_id,next,content,summary,kind,scope,scope_id,aliases,pinned,importance,confidence,observed,valid_from,valid_to,expires,supersedes.unwrap_or_else(||item_id.clone()),now,now,event_at,due_at,new_state,event_at_ms,event_at_date,normalize_memory_text(&content),normalize_memory_text(&summary),normalize_memory_text(&aliases)],
+    ).map_err(db)?;
     tx.execute("INSERT INTO memory_item_sources(item_id,item_version,source_id) SELECT item_id,?2,source_id FROM memory_item_sources WHERE item_id=?1 AND item_version=?3 ON CONFLICT DO NOTHING",params![item_id,next,version]).map_err(db)?;
     tx.execute("INSERT INTO memory_item_sources(item_id,item_version,source_id) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",params![item_id,next,source_id(&source)]).map_err(db)?;
-    tx.execute("INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) VALUES (?1,?2,?3,?4,?5)",params![item_id,next,content,summary,aliases]).map_err(db)?;
+    tx.execute("INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) VALUES (?1,?2,?3,?4,?5)",params![item_id,next,normalize_memory_text(&content),normalize_memory_text(&summary),normalize_memory_text(&aliases)]).map_err(db)?;
     tx.execute(
         "UPDATE memory_meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'",
         [],
@@ -617,14 +625,20 @@ fn reschedule_linked_memory_tx(
         .or(old_due);
     let now = now_ms();
     let next = version + 1;
+    let event_anchor = event
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    let (event_at_ms, event_at_date) = event_at_projection(event_anchor.as_ref());
     let changed=tx.execute("UPDATE memory_items SET status='superseded',valid_to=?2,updated_at=?2 WHERE id=?1 AND status='active' AND version=?3",params![item_id,now,version]).map_err(db)?;
     if changed != 1 {
         return Err(AppError::MemoryConflict);
     }
-    tx.execute("INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state) VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14,?15,?16,?16,?17,?18,?19)",
-        params![item_id,next,content,summary,kind,scope,scope_id,aliases,pinned,importance,confidence,observed,valid_from,expires,supersedes.unwrap_or_else(||item_id.clone()),now,event,due,working_state]).map_err(db)?;
+    tx.execute(
+        "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state,event_at_ms,event_at_date,content_norm,summary_norm,aliases_norm)
+         VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL,?14,?15,?16,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
+        params![item_id,next,content,summary,kind,scope,scope_id,aliases,pinned,importance,confidence,observed,valid_from,expires,supersedes.unwrap_or_else(||item_id.clone()),now,event,due,working_state,event_at_ms,event_at_date,normalize_memory_text(&content),normalize_memory_text(&summary),normalize_memory_text(&aliases)]).map_err(db)?;
     tx.execute("INSERT INTO memory_item_sources(item_id,item_version,source_id) SELECT item_id,?2,source_id FROM memory_item_sources WHERE item_id=?1 AND item_version=?3 ON CONFLICT DO NOTHING",params![item_id,next,version]).map_err(db)?;
-    tx.execute("INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) VALUES (?1,?2,?3,?4,?5)",params![item_id,next,content,summary,aliases]).map_err(db)?;
+    tx.execute("INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) VALUES (?1,?2,?3,?4,?5)",params![item_id,next,normalize_memory_text(&content),normalize_memory_text(&summary),normalize_memory_text(&aliases)]).map_err(db)?;
     tx.execute(
         "UPDATE memory_meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'",
         [],
@@ -2919,6 +2933,29 @@ mod tests {
         assert_eq!(item["version"], json!(2));
         assert_eq!(item["draft"]["eventAt"]["localDate"], json!("2026-10-05"));
         assert_eq!(item["draft"]["dueAt"]["localDate"], json!("2026-10-05"));
+        let conn = connection(&fixture.1).expect("锁库验证记忆搜索投影");
+        let projection: (Option<i64>, Option<String>, String, String, String) = conn
+            .query_row(
+                "SELECT event_at_ms,event_at_date,content_norm,summary_norm,aliases_norm
+                 FROM memory_items WHERE id=?1 AND version=2",
+                [&item_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .expect("改期版本应写完整搜索投影");
+        assert_eq!(projection.0, None, "day precision does not populate an instant");
+        assert_eq!(projection.1.as_deref(), Some("2026-10-05"));
+        assert_eq!(projection.2, "练琴计划");
+        assert_eq!(projection.3, "练琴计划");
+        assert_eq!(projection.4, "[]");
+        let indexed_content: String = conn
+            .query_row(
+                "SELECT content FROM memory_fts WHERE item_id=?1 AND item_version=2",
+                [&item_id],
+                |row| row.get(0),
+            )
+            .expect("改期版本应进入 FTS");
+        assert_eq!(indexed_content, "练琴计划");
+        drop(conn);
         let task = fixture
             .1
             .proactive_query(&json!({"owner":owner,"sessionId":"s1"}))

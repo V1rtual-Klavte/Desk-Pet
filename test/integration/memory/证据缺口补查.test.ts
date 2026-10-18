@@ -121,6 +121,111 @@ beforeEach(() => {
 })
 
 describe("记忆证据缺口补查", () => {
+  it("已定位必要缺口只扩读其引用，不扩读已支持与可选笔记 [memory-coverage-required-gap-context-scope]", async () => {
+    const known = initialEvidence()
+    const gap = projection("route-gap", "I changed my route after reading a notice.", { seq: 2 })
+    const supporting = projection("bag", "I bought a green bag.", { sessionId: "other-session" })
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+      notes: [known, gap, supporting].map((item, index) => ({ id: `S${index + 1}`, quote: item.text, relevance: "核对原文" })),
+      questionChecks: [
+        { kind: "premise", obligation: "required", condition: "The route choice occurred", status: "supported", sourceIds: ["S1"] },
+        { kind: "detail", obligation: "required", condition: "The notice's reason is not stated", status: "missing", sourceIds: ["S2"] },
+        { kind: "detail", obligation: "supporting", condition: "A bag purchase is recorded", status: "supported", sourceIds: ["S3"] },
+      ], searchQueries: [QUERY],
+    }) })
+    const retrieve = vi.fn(async (_plan: MemoryQueryPlan, _signal: AbortSignal, _ids: readonly string[]) => ({ projections: [known, gap, supporting], readRevision: READ_REVISION }))
+    const result = await completeMemoryEvidence(input([known, gap, supporting]), retrieve, validateAtRevision())
+    expect(retrieve).toHaveBeenCalledTimes(1)
+    expect(retrieve.mock.calls[0]![2]).toEqual([gap.sourceId])
+    expect(result.guide?.questionChecks[1]).toMatchObject({ status: "missing", sourceIds: [gap.sourceId] })
+    expect(mocks.publishRuntimeTrace).toHaveBeenLastCalledWith(expect.anything(), "memory_coverage_end", expect.objectContaining({ status: "no_progress", retrievalCount: 1 }))
+  })
+
+  it("计数未决实例驱动扩读，已尝试的缺口不回退扩读确认或排除项 [memory-coverage-count-gap-context-scope]", async () => {
+    const confirmed = projection("trip", "I went hiking yesterday.")
+    const uncertain = projection("photo", "Here is a photo of my hike.", { sessionId: "photo-session" })
+    const excluded = projection("other-trip", "Eli went hiking yesterday.", { sessionId: "other-session" })
+    const addition = projection("weather", "The sky was blue.", { sessionId: "photo-session", seq: 2 })
+    const query = "Answer using our conversation history: How many times did I go hiking this year?"
+    const reading = { stopReason: "stop", text: JSON.stringify({
+      notes: [confirmed, uncertain, excluded].map((item, index) => ({ id: `S${index + 1}`, quote: item.text, relevance: "核对事件与时间" })),
+      questionChecks: [{ kind: "detail", obligation: "required", condition: "The photo's event date is missing", status: "missing", sourceIds: [] }],
+      evidenceReview: { kind: "count", scope: "My hikes this year", complete: false, items: [
+        { id: "E1", subject: "me", event: "hike", time: "yesterday", disposition: "counted", basis: "The trip occurred yesterday", sourceIds: ["S1"] },
+        { id: "E2", subject: "me", event: "photo hike", time: "unknown", disposition: "uncertain", basis: "The photo does not date the event", sourceIds: ["S2"] },
+        { id: "E3", subject: "Eli", event: "hike", time: "yesterday", disposition: "out_of_scope", basis: "A different person's trip", sourceIds: ["S3"] },
+      ] }, searchQueries: [query],
+    }) }
+    mocks.completePiText.mockResolvedValue(reading)
+    const retrieve = vi.fn(async (_plan: MemoryQueryPlan, _signal: AbortSignal, _ids: readonly string[]) => ({ projections: [addition], readRevision: READ_REVISION }))
+    const result = await completeMemoryEvidence(input([confirmed, uncertain, excluded], { query, queryPlan: deriveMemoryQueryPlan(query) }), retrieve, validateAtRevision())
+    expect(retrieve).toHaveBeenCalledTimes(1)
+    expect(retrieve.mock.calls[0]![2]).toEqual([uncertain.sourceId])
+    expect(mocks.completePiText).toHaveBeenCalledTimes(2)
+    expect(result.guide?.evidenceReview).toMatchObject({ kind: "count", complete: false, observedCount: 1 })
+    expect(mocks.publishRuntimeTrace).toHaveBeenLastCalledWith(expect.anything(), "memory_coverage_end", expect.objectContaining({ status: "exhausted", retrievalCount: 1 }))
+  })
+
+  it("推断只扩读未决回答的依据与反例，不为排除项或已支持结论扩读 [memory-coverage-inference-gap-context-scope]", async () => {
+    const supported = projection("outdoors", "Nora likes hiking.")
+    const gap = projection("transport", "Nora's route depends on transport.", { sessionId: "transport-session" })
+    const counter = projection("schedule", "Nora cannot travel on weekdays.", { sessionId: "schedule-session" })
+    const excluded = projection("swimming", "Nora dislikes swimming.", { sessionId: "swimming-session" })
+    const all = [supported, gap, counter, excluded]
+    const query = "Answer using our conversation history: Would Nora likely choose this hiking trip?"
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+      notes: all.map((item, index) => ({ id: `S${index + 1}`, quote: item.text, relevance: "核对偏好和限制" })),
+      questionChecks: [{ kind: "premise", obligation: "required", condition: "Nora's outdoor preference", status: "supported", sourceIds: ["S1"] }],
+      evidenceReview: { kind: "inference", complete: false, items: [
+        { disposition: "answer", conclusion: "Hiking suits her interests", basis: "She likes hiking", status: "supported", sourceIds: ["S1"], counterSourceIds: [] },
+        { disposition: "answer", conclusion: "The trip fits her constraints", basis: "Transport and weekday restrictions remain unresolved", status: "conflicting", sourceIds: ["S2"], counterSourceIds: ["S3"] },
+        { disposition: "excluded", conclusion: "Swimming trip", basis: "Swimming is not the requested option", status: "missing", sourceIds: ["S4"], counterSourceIds: [] },
+      ] }, searchQueries: [query],
+    }) })
+    const retrieve = vi.fn(async (_plan: MemoryQueryPlan, _signal: AbortSignal, _ids: readonly string[]) => ({ projections: all, readRevision: READ_REVISION }))
+    const result = await completeMemoryEvidence(input(all, { query, queryPlan: deriveMemoryQueryPlan(query) }), retrieve, validateAtRevision())
+    expect(retrieve).toHaveBeenCalledTimes(1)
+    expect(retrieve.mock.calls[0]![2]).toEqual([gap.sourceId, counter.sourceId])
+    expect(result.guide?.evidenceReview).toMatchObject({ kind: "inference", complete: false })
+    expect(result.projections.map(item => item.sourceId)).toEqual(all.map(item => item.sourceId))
+  })
+
+  it("词面搜索耗尽仍按合法原话引用补读会话，满足后不再扩读 [memory-coverage-context-after-query-exhaustion]", async () => {
+    const initial = initialEvidence()
+    const reason = reasonEvidence()
+    const unrelated = projection("unrelated", "I bought a green bag.", { sessionId: "other-session" })
+    mocks.completePiText.mockResolvedValueOnce(response([{ id: initial.sourceId, quote: initial.text }], "missing", [], [QUERY]))
+      .mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+        notes: [{ id: "S3", quote: reason.text, relevance: "原话给出选择原因" }],
+        questionChecks: [{ kind: "detail", obligation: "required", condition: "The route choice reason", status: "supported", sourceIds: ["S3"] }],
+      }) })
+    const retrieve = vi.fn(async (_plan: MemoryQueryPlan, _signal: AbortSignal, _contextSourceIds: readonly string[]) => ({ projections: [reason], readRevision: READ_REVISION }))
+    const result = await completeMemoryEvidence(input([initial, unrelated]), retrieve, validateAtRevision())
+    expect(retrieve).toHaveBeenCalledTimes(1)
+    expect(retrieve.mock.calls[0]![0].queries).toEqual([QUERY])
+    expect(retrieve.mock.calls[0]![2]).toEqual([initial.sourceId])
+    expect(result.guide?.questionChecks[0]).toMatchObject({ status: "supported", sourceIds: [reason.sourceId] })
+    expect(result.projections.map(item => item.sourceId)).toEqual([initial.sourceId, reason.sourceId])
+    expect(mocks.publishRuntimeTrace).toHaveBeenLastCalledWith(expect.anything(), "memory_coverage_end", expect.objectContaining({ status: "satisfied", retrievalCount: 1 }))
+  })
+
+  it("已校验用户事实的缺口引用也能驱动来源原话补读 [memory-coverage-fact-source-gap]", async () => {
+    const { conversation: _conversation, ...base } = initialEvidence()
+    const fact: MemoryProjection = { ...base, sourceId: "route-fact@2", memoryVersion: "route-fact@2", provenance: "用户事实" }
+    const reason = reasonEvidence()
+    mocks.completePiText.mockResolvedValueOnce(response([{ id: fact.sourceId, quote: fact.text }], "missing", [], [QUERY]))
+      .mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+        notes: [{ id: "S2", quote: reason.text, relevance: "来源原话给出选择原因" }],
+        questionChecks: [{ kind: "detail", obligation: "required", condition: "The route choice reason", status: "supported", sourceIds: ["S2"] }],
+      }) })
+    const retrieve = vi.fn(async (_plan: MemoryQueryPlan, _signal: AbortSignal, _contextSourceIds: readonly string[]) => ({ projections: [reason], readRevision: READ_REVISION }))
+    const result = await completeMemoryEvidence(input([fact]), retrieve, validateAtRevision())
+    expect(retrieve).toHaveBeenCalledTimes(1)
+    expect(retrieve.mock.calls[0]![2]).toEqual(["route-fact@2"])
+    expect(result.projections.map(item => item.sourceId)).toEqual(["route-fact@2", reason.sourceId])
+    expect(result.guide?.questionChecks[0]).toMatchObject({ status: "supported", sourceIds: [reason.sourceId] })
+  })
+
   it("后轮空笔记保留合法原文和计数范围缺口，不回退无关全池或提前满足 [memory-coverage-retains-notes-and-scope]", async () => {
     const initial = initialEvidence()
     const unrelated = projection("unrelated", "I bought a green bag.", { seq: 2 })
@@ -183,6 +288,10 @@ describe("记忆证据缺口补查", () => {
         { kind: "detail", obligation: "supporting", condition: "Prior mention of the target piece", status: "missing", sourceIds: [] },
       ],
       searchQueries: ["Nora music context"],
+      evidenceReview: { kind: "inference", complete: true, items: [{
+        disposition: "answer", conclusion: "Nora would likely enjoy a classical concert", basis: "Her classical music preference is relevant to a concert",
+        status: "supported", sourceIds: ["S1"], counterSourceIds: [],
+      }] },
     }) })
     const retrieve = vi.fn(async () => ({ projections: [], readRevision: READ_REVISION }))
     const result = await completeMemoryEvidence(input([original], { query, queryPlan: deriveMemoryQueryPlan(query) }), retrieve, validateAtRevision())
@@ -215,6 +324,49 @@ describe("记忆证据缺口补查", () => {
       expect(result.guide?.questionChecks[0]).toMatchObject({ obligation: "required", status: "missing", sourceIds: [] })
       expect(mocks.publishRuntimeTrace).toHaveBeenLastCalledWith(expect.anything(), "memory_coverage_end", expect.objectContaining({ status: "no_progress", retrievalCount: 1 }))
     }
+  })
+
+  it("计数实例未决时广义supported不能结束，补查后的不同经历进入汇总 [memory-coverage-count-review-gap]", async () => {
+    const original = projection("first-hike", "Nora: I hiked in April 2025. I also mentioned another hike but did not give its year.")
+    const dated = projection("second-hike", "Nora: The other hike was in June 2025, separate from April.", { seq: 2 })
+    const query = "Answer using our conversation history: How many times did Nora hike in 2025?"
+    mocks.completePiText.mockImplementation(async ({ userText }: { userText: string }) => {
+      const { sources } = JSON.parse(userText) as { sources: Array<{ sourceId: string; text: string }> }
+      const complete = sources.some(source => source.text === dated.text)
+      return { stopReason: "stop", text: JSON.stringify({
+        notes: sources.map(source => ({ id: source.sourceId, quote: source.text, relevance: "核对独立经历与事件年份" })),
+        questionChecks: [{ kind: "detail", obligation: "required", condition: "Nora's completed hikes during 2025", status: "supported", sourceIds: ["S1"] }],
+        evidenceReview: { kind: "count", scope: "Nora's completed hikes in 2025", complete: true, items: [
+          { id: "E1", subject: "Nora", event: "April hike", time: "April 2025", disposition: "counted", basis: "Explicit completed hike", sourceIds: ["S1"] },
+          { id: "E2", subject: "Nora", event: "Other hike", time: complete ? "June 2025" : "Unknown year",
+            disposition: complete ? "counted" : "uncertain", basis: complete ? "Explicitly separate from April, with a year" : "The event year is missing", sourceIds: [complete ? "S2" : "S1"] },
+        ] },
+        searchQueries: complete ? [] : ["Nora hike time"],
+      }) }
+    })
+    const retrieve = vi.fn(async () => ({ projections: [dated], readRevision: READ_REVISION }))
+    const result = await completeMemoryEvidence(input([original], { query, queryPlan: deriveMemoryQueryPlan(query) }), retrieve, validateAtRevision())
+    expect(retrieve).toHaveBeenCalledTimes(1)
+    expect(mocks.completePiText).toHaveBeenCalledTimes(2)
+    expect(result.guide?.evidenceReview).toMatchObject({ kind: "count", complete: true, observedCount: 2 })
+    expect(result.guide?.evidenceReview?.items.map(item => item.sourceIds)).toEqual([[original.sourceId], [dated.sourceId]])
+    expect(mocks.publishRuntimeTrace).toHaveBeenLastCalledWith(expect.anything(), "memory_coverage_end", expect.objectContaining({ status: "satisfied", retrievalCount: 1 }))
+  })
+
+  it("缺少具体推断核对表不能靠宽泛偏好提前结束，无新证据仍如实停止 [memory-coverage-inference-review-gap]", async () => {
+    const original = projection("broad-values", "Nora: My community matters to me.")
+    const query = "Answer using our conversation history: Would Nora likely move abroad?"
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+      notes: [{ id: "S1", quote: original.text, relevance: "本人宽泛价值观，具体选择依据仍待核对" }],
+      questionChecks: [{ kind: "premise", obligation: "required", condition: "Nora's personal values", status: "supported", sourceIds: ["S1"] }],
+      searchQueries: ["Nora community context"],
+    }) })
+    const retrieve = vi.fn(async () => ({ projections: [original], readRevision: READ_REVISION }))
+    const result = await completeMemoryEvidence(input([original], { query, queryPlan: deriveMemoryQueryPlan(query) }), retrieve, validateAtRevision())
+    expect(retrieve).toHaveBeenCalledTimes(1)
+    expect(result.guide?.evidenceReview).toEqual({ kind: "inference", complete: false, items: [] })
+    expect(result.errors).toEqual({ missing_evidence_review: 1 })
+    expect(mocks.publishRuntimeTrace).toHaveBeenLastCalledWith(expect.anything(), "memory_coverage_end", expect.objectContaining({ status: "no_progress", retrievalCount: 1 }))
   })
 
   it("同一原文改成chunk坐标不触发第二次阅读，来源被撤销后退休旧指南 [memory-coverage-canonical-no-progress]", async () => {
@@ -433,7 +585,9 @@ describe("记忆证据缺口补查", () => {
 
   it("新增用户与助手必须成对容纳，预算不够时不泄露半条助手来源 [memory-coverage-budget-keeps-turn-pair]", async () => {
     const initial = initialEvidence()
-    const addedUser = projection("route-reason-user", "I learned the main road was blocked.", { seq: 2 })
+    // Leave room for the initial reading guide while making the added turn
+    // exceed headroom as a pair. A tiny quote can instead stop at guide fitting.
+    const addedUser = projection("route-reason-user", "I learned the main road was blocked. The station notice explained that the closure affected both directions near the bridge, and the driver confirmed that the usual bus would turn back before reaching my stop. I checked the route map and the departure board before choosing another service, because I still needed to arrive at the office before the morning meeting.", { seq: 2 })
     const addedAssistant = projection("route-reason-assistant", "The earlier route failed because of the road closure.", { role: "assistant", seq: 3 })
     const pairBudget = memoryRecallTokens([initial, addedUser]) + 1
     expect(memoryRecallTokens([initial])).toBeLessThan(pairBudget)
@@ -452,6 +606,8 @@ describe("记忆证据缺口补查", () => {
 
     const result = await completeMemoryEvidence(input([initial], { tokenBudget: pairBudget }), retrieve, validate)
 
+    expect(retrieve).toHaveBeenCalledTimes(1)
+    expect(validate).toHaveBeenCalledTimes(1)
     expect(validatedIds).toEqual([initial.sourceId])
     expect(result.projections.map(item => item.sourceId)).toEqual([initial.sourceId])
     expect(result.projections.some(item => item.sourceId === addedAssistant.sourceId)).toBe(false)

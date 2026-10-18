@@ -1185,6 +1185,8 @@ export type HostCommandMap = {
       targets?: MemoryRecallTarget[] | null
       allowExpiredTargets?: boolean | null
       eventTime?: MemoryEventTime | null
+      observe?: boolean | null
+      entities?: string[] | null
     }
     result: MemoryRecallCandidateSnapshot
   }

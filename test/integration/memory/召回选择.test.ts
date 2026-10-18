@@ -52,6 +52,7 @@ function configure(dynamic: MemoryItem[], pinned: MemoryItem[] = []) {
     candidates: dynamic,
     pinned,
     targeted: [],
+    diagnostics: { ftsHits: 0, likeFallbacks: 0, timeFilterBefore: 0, timeFilterAfter: 0, queryLatencyMs: 0, duplicateEvents: 0, jsonlReadbackCandidates: 0, jsonlReadbackDropped: 0, coldIndexMs: 0, coldIndexSessions: 0 },
   })
 }
 
@@ -117,11 +118,15 @@ describe("本地与adaptive召回选择", () => {
       revision: 10,
       candidatesByScope: { user: [], card: [], session: [] },
       candidates: [], pinned: [], targeted: [targeted],
+      diagnostics: { ftsHits: 0, likeFallbacks: 0, timeFilterBefore: 0, timeFilterAfter: 0, queryLatencyMs: 0, duplicateEvents: 0, jsonlReadbackCandidates: 0, jsonlReadbackDropped: 0, coldIndexMs: 0, coldIndexSessions: 0 },
     })
     const input = { ...request(), targets: [{ id: "expired-target", version: 1 }], allowExpiredTargets: true }
     const rows = await sqliteMemoryProvider.recall(input)
     // 精确目标模式不扩展检索：事实查询用空 query 只取核心画像与指定目标（mm-51）。
-    expect(mocks.recallCandidates).toHaveBeenCalledWith("", "card", "session", input.targets, true)
+    const recallArgs = mocks.recallCandidates.mock.calls[0]
+    expect(recallArgs?.slice(0, 5)).toEqual(["", "card", "session", input.targets, true])
+    expect(recallArgs?.[5]).toBeUndefined()
+    expect(recallArgs?.[6]).toBe(false)
     expect(mocks.completePiText).not.toHaveBeenCalled()
     expect(rows.map(row => row.sourceId)).toEqual(["expired-target@1"])
     expect(input.readRevision).toBe(10)

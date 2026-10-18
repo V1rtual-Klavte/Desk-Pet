@@ -108,6 +108,41 @@ describe("记忆基准报告呈现", () => {
     expect(text).toContain("报告：/tmp/r.json")
   })
 
+  it("汇总召回诊断计数与 p95，未采集的诊断保持为空值 [bench-report-memory-recall-diagnostics]", () => {
+    const report = longMemEvalReport() as Record<string, any>
+    report.outcomes = [
+      outcome({ metrics: { firstDeliveredTextDeltaMs: 500, memoryRecall: {
+        recallDurationMs: [20, 50], queryLatencyMs: [8, 3], diagnosticSamples: 1,
+        ftsHits: 2, likeFallbacks: 1, timeFilterBefore: 4, timeFilterAfter: 2,
+        duplicateEvents: 1, jsonlReadbackCandidates: 5, jsonlReadbackDropped: 2,
+        coldIndexMs: 12, coldIndexSessions: 1,
+      } } }),
+      outcome({ metrics: { firstDeliveredTextDeltaMs: 600, memoryRecall: {
+        recallDurationMs: [80], queryLatencyMs: [40], diagnosticSamples: 1,
+        ftsHits: 3, likeFallbacks: 2, timeFilterBefore: 6, timeFilterAfter: 3,
+        duplicateEvents: 2, jsonlReadbackCandidates: 7, jsonlReadbackDropped: 1,
+        coldIndexMs: 18, coldIndexSessions: 2,
+      } } }),
+    ]
+
+    const summary = summarizeBenchReport(report)
+    expect(summary.memoryRecall).toMatchObject({
+      samples: 3, diagnosticSamples: 2, recallP95Ms: 80, queryP95Ms: 40,
+      ftsHits: 5, likeFallbacks: 3, timeFilterBefore: 10, timeFilterAfter: 5,
+      duplicateEvents: 3, jsonlReadbackCandidates: 12, jsonlReadbackDropped: 3,
+      coldIndexMs: 30, coldIndexSessions: 3,
+    })
+    expect(formatBenchSummary(summary)).toContain("FTS 5 · LIKE 回退 3")
+    expect(renderBenchHtmlReport(report)).toContain("p95 recall / query")
+
+    report.outcomes = [outcome({ metrics: { memoryRecall: {
+      recallDurationMs: [10], queryLatencyMs: [], diagnosticSamples: 0,
+    } } })]
+    expect(summarizeBenchReport(report).memoryRecall).toMatchObject({
+      samples: 1, diagnosticSamples: 0, ftsHits: null, jsonlReadbackDropped: null,
+    })
+  })
+
   it("旧报告里的本地 LME verdict 不出现在官方主评分视图 [bench-report-lme-pending-official]", () => {
     const report = longMemEvalReport() as Record<string, any>
     report.scores.officialScoring = { status: "pending_official" }

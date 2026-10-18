@@ -6,7 +6,7 @@ import type { Entry, JsonlSessionMetadata } from "@earendil-works/pi-agent-core"
 import { createHash, randomUUID } from "node:crypto"
 import { getHostBridge } from "@/services/host"
 import { MEMORY_LIMITS } from "./protocol"
-import type { ConversationClearFence, ConversationIndexBatch, ConversationIndexEntry, ConversationSearchEntry, ConversationSearchResult } from "@/services/agent/memory/protocol"
+import type { ConversationClearFence, ConversationIndexBatch, ConversationIndexEntry, ConversationSearchEntry, ConversationSearchResult, MemorySource } from "@/services/agent/memory/protocol"
 import type { FileInfoPayload } from "@/services/tool/pi/native-execution-env"
 import { estimateContextTokens } from "@/services/context/budget"
 import { BaseDirs, relativeWithinRoot } from "@/services/paths"
@@ -16,6 +16,8 @@ import { messageEventId } from "@/services/engine/runtime"
 import { getPiSessionRepo, listPiSessionMetadata, readPiSessionEntriesOnce, readVisibleSessionTranscript, withPiSessionFileLock } from "@/services/session"
 import type { MemoryProjection } from "./provider"
 import { deriveMemoryQueryPlan } from "./query"
+import { fuseRankedLists } from "./fusion"
+import { normalizeMemoryQueryText } from "./query"
 import type { MemoryQueryPlan } from "./query"
 
 const log = createLogger("ConversationMemory")
@@ -46,6 +48,7 @@ export interface ConversationCandidateRequest {
   before?: number
   recentFallback?: boolean
   queryPlan?: MemoryQueryPlan
+  observe?: boolean
 }
 
 export type ConversationSourceRef = NonNullable<MemoryProjection["conversation"]>
@@ -55,6 +58,15 @@ export type ConversationEvidenceEntry = ConversationSearchEntry & { matchedText:
 export type ConversationEvidenceResult = Omit<ConversationSearchResult, "entries"> & {
   entries: ConversationEvidenceEntry[]
   revisionChanged?: boolean
+  /** Independent query ranks survive late rewrite batches; JSONL-invalid hits are excluded. */
+  queryRanking?: string[][]
+  diagnostics?: {
+    duplicateEvents: number
+    jsonlReadbackCandidates: number
+    jsonlReadbackDropped: number
+    coldIndexMs: number
+    coldIndexSessions: number
+  }
 }
 
 /** Expand only selected, governed session hits; pagination is an I/O batch, not a recall quota. */
@@ -80,6 +92,9 @@ export async function expandConversationSessions(
     }
   }
   const transcripts = new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>()
+  const readbackStats = snapshot.diagnostics
+    ? { candidates: 0, validated: 0 }
+    : undefined
   while (cursors.size && remaining > 0 && !request.signal.aborted) {
     // One page per matched evidence turn per round keeps a large session from masking other hits.
     for (const [cursorId, cursor] of cursors) {
@@ -108,7 +123,10 @@ export async function expandConversationSessions(
         && (!request.recordTime || timestampMatchesRecordTime(entry.timestamp, request.recordTime))
         && !seen.has(`${entry.sessionId}\0${entry.entryId}`))
         .map(entry => ({ ...entry, score: cursor.anchor.score / 2 }))
-      const expanded = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before, transcripts)
+      const expanded = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before, {
+        transcripts,
+        ...(readbackStats ? { diagnostics: readbackStats } : {}),
+      })
       const anchors = uniqueSeeds.filter(entry => entry.sessionId === cursor.sessionId)
       for (const turn of orderEvidenceTurns(expanded, anchors)) {
         const fullCost = turn.reduce((sum, entry) => sum + estimateContextTokens(entry.text), 0)
@@ -125,20 +143,71 @@ export async function expandConversationSessions(
       }
     }
   }
-  return { ...snapshot, entries: request.signal.aborted ? [] : entries }
+  return {
+    ...snapshot,
+    entries: request.signal.aborted ? [] : entries,
+    ...(snapshot.diagnostics && readbackStats ? { diagnostics: {
+      ...snapshot.diagnostics,
+      jsonlReadbackCandidates: snapshot.diagnostics.jsonlReadbackCandidates + readbackStats.candidates,
+      jsonlReadbackDropped: snapshot.diagnostics.jsonlReadbackDropped
+        + Math.max(0, readbackStats.candidates - readbackStats.validated),
+    } } : {}),
+  }
 }
 
-function orderEvidenceTurns(
-  entries: readonly ConversationEvidenceEntry[],
-  anchors: readonly ConversationEvidenceEntry[],
-): ConversationEvidenceEntry[][] {
+/** Resolve admitted fact lineage to original turns, never treating the audit preview as transcript text. */
+export async function readConversationSources(
+  snapshot: ConversationEvidenceResult,
+  sources: readonly MemorySource[],
+  request: { signal: AbortSignal; tokenBudget: number; before?: number },
+): Promise<ConversationEvidenceResult> {
+  const entries: ConversationEvidenceEntry[] = []
+  const seen = new Set(snapshot.entries.map(entry => `${entry.sessionId}\0${entry.entryId}`))
+  const transcripts = new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>()
+  let remaining = request.tokenBudget
+  const stats = snapshot.diagnostics ? { candidates: 0, validated: 0 } : undefined
+  for (const source of sources) {
+    if (request.signal.aborted) return { ...snapshot, entries: [] }
+    const key = `${source.sessionId}\0${source.entryId}`
+    if (remaining <= 0 || seen.has(key) || source.origin !== "user" || source.taint !== "trusted_user" || !source.eligibleForMemory) continue
+    seen.add(key)
+    const page = await getHostBridge().request("conversation_context", {
+      sessionId: source.sessionId, anchorEntryId: source.entryId, afterSeq: source.seq - 1,
+      limit: CONVERSATION_SEARCH_LIMIT, ...(request.before === undefined ? {} : { before: request.before }),
+    }, { signal: request.signal })
+    if (request.signal.aborted) return { ...snapshot, entries: [] }
+    if (page.revision !== snapshot.revision || page.memoryRevision !== snapshot.memoryRevision || page.forgetEpoch !== snapshot.forgetEpoch)
+      return { ...snapshot, entries: [], revisionChanged: true }
+    const rows = page.entries.filter(entry => entry.sessionId === source.sessionId && entry.chunk === 0
+      && (entry.entryId === source.entryId || entry.anchorEntryId === source.entryId || entry.anchorEventId === source.eventId))
+    const verified = await expandSearchEntriesFromJsonl(rows, request.signal, request.before, { transcripts, ...(stats ? { diagnostics: stats } : {}) })
+    const original = verified.find(entry => entry.entryId === source.entryId && entry.role === "user" && entry.seq === source.seq && entry.eventId === source.eventId)
+    // User-source admission hashes the full trimmed user text, not its bounded preview.
+    if (!original || createHash("sha256").update(original.text.trim()).digest("hex") !== source.contentHash) continue
+    const cost = verified.reduce((sum, entry) => sum + estimateContextTokens(entry.text), 0)
+    if (cost > remaining) continue
+    entries.push(...verified)
+    remaining -= cost
+  }
+  return { ...snapshot, entries: request.signal.aborted ? [] : entries,
+    ...(snapshot.diagnostics && stats ? { diagnostics: { ...snapshot.diagnostics,
+      jsonlReadbackCandidates: snapshot.diagnostics.jsonlReadbackCandidates + stats.candidates,
+      jsonlReadbackDropped: snapshot.diagnostics.jsonlReadbackDropped + Math.max(0, stats.candidates - stats.validated),
+    } } : {}),
+  }
+}
+
+function orderEvidenceTurns<T extends ConversationSearchEntry>(
+  entries: readonly T[],
+  anchors: readonly ConversationSearchEntry[],
+): T[][] {
   const aliases = new Map<string, string>()
   for (const entry of [...anchors, ...entries]) {
     if (entry.role !== "user") continue
     aliases.set(`${entry.sessionId}:entry:${entry.entryId}`, entry.entryId)
     if (entry.eventId) aliases.set(`${entry.sessionId}:event:${entry.eventId}`, entry.entryId)
   }
-  const turnKey = (entry: ConversationEvidenceEntry): string => {
+  const turnKey = (entry: ConversationSearchEntry): string => {
     if (entry.role === "user") return `${entry.sessionId}:turn:${entry.entryId}`
     const anchor = entry.anchorEntryId
       ? aliases.get(`${entry.sessionId}:entry:${entry.anchorEntryId}`) ?? entry.anchorEntryId
@@ -147,21 +216,21 @@ function orderEvidenceTurns(
         : entry.entryId
     return `${entry.sessionId}:turn:${anchor}`
   }
-  const turns = new Map<string, ConversationEvidenceEntry[]>()
+  const turns = new Map<string, T[]>()
   for (const entry of entries) {
     const key = turnKey(entry)
     const turn = turns.get(key) ?? []
     turn.push(entry)
     turns.set(key, turn)
   }
-  return [...turns.values()]
-    .map(turn => turn.sort((left, right) => left.seq - right.seq))
-    .sort((left, right) => {
-      const distance = (turn: ConversationEvidenceEntry[]) => Math.min(...turn.flatMap(entry => anchors.map(anchor => Math.abs(entry.seq - anchor.seq))))
+  const groups = [...turns.values()].map(turn => turn.sort((left, right) => left.seq - right.seq))
+  if (!anchors.length) return groups
+  return groups.sort((left, right) => {
+      const distance = (turn: readonly ConversationSearchEntry[]) => Math.min(...turn.flatMap(entry => anchors.map(anchor => Math.abs(entry.seq - anchor.seq))))
       const leftDistance = distance(left)
       const rightDistance = distance(right)
       if (leftDistance !== rightDistance) return leftDistance - rightDistance
-      const side = (turn: ConversationEvidenceEntry[]) => {
+      const side = (turn: readonly ConversationSearchEntry[]) => {
         const nearest = turn.flatMap(entry => anchors.map(anchor => ({ delta: entry.seq - anchor.seq, distance: Math.abs(entry.seq - anchor.seq) })))
           .sort((a, b) => a.distance - b.distance || a.delta - b.delta)[0]
         return nearest?.delta ?? 0
@@ -243,10 +312,17 @@ export async function searchConversationCandidates(request: ConversationCandidat
   }
 
   const indexedBySession = new Map(currentStatus.sessions.map(item => [item.sessionId, item.fingerprint]))
+  let coldIndexMs = 0
+  let coldIndexSessions = 0
   for (const session of sessions) {
     if (request.signal.aborted) return { revision: currentStatus.revision, memoryRevision: 0, forgetEpoch: currentStatus.forgetEpoch, entries: [] }
     if (indexedBySession.get(session.metadata.id) === session.fingerprint) continue
+    const started = request.observe ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
     await ensureSessionIndex(session, indexedBySession.get(session.metadata.id) ?? null, currentStatus.forgetEpoch, request.signal)
+    if (request.observe) {
+      coldIndexSessions += 1
+      coldIndexMs += (typeof performance === "undefined" ? Date.now() : performance.now()) - started
+    }
   }
   if (request.signal.aborted) return { revision: currentStatus.revision, memoryRevision: 0, forgetEpoch: currentStatus.forgetEpoch, entries: [] }
 
@@ -258,10 +334,18 @@ export async function searchConversationCandidates(request: ConversationCandidat
       ...(queryPlan.timeConstraint.calendarDate === undefined ? {} : { calendarDate: queryPlan.timeConstraint.calendarDate }),
     }
     : undefined
-  const uniqueQueries = [...new Set(request.queries.map(query => query.trim()).filter(Boolean))]
+  const uniqueQueries: string[] = []
+  const seenQueries = new Set<string>()
+  for (const rawQuery of request.queries) {
+    const query = rawQuery.trim()
+    const key = normalizeMemoryQueryText(query)
+    if (!key || seenQueries.has(key)) continue
+    seenQueries.add(key)
+    uniqueQueries.push(query)
+  }
   if (recordTime && queryPlan?.recallIntent === "overview") {
     const followupQueries = uniqueQueries.filter(query => query !== queryPlan.originalQuery)
-    uniqueQueries.splice(0, uniqueQueries.length, "", ...followupQueries)
+    uniqueQueries.splice(0, uniqueQueries.length, queryPlan.originalQuery, "", ...followupQueries)
   }
   if (uniqueQueries.length === 0 && recordTime) uniqueQueries.push("")
   if (uniqueQueries.length === 0) return {
@@ -269,6 +353,7 @@ export async function searchConversationCandidates(request: ConversationCandidat
     memoryRevision: 0,
     forgetEpoch: currentStatus.forgetEpoch,
     entries: [],
+    ...(request.observe ? { diagnostics: { duplicateEvents: 0, jsonlReadbackCandidates: 0, jsonlReadbackDropped: 0, coldIndexMs, coldIndexSessions } } : {}),
   }
   const limit = Math.max(1, Math.min(CONVERSATION_SEARCH_LIMIT, Math.floor(request.limit ?? CONVERSATION_SEARCH_LIMIT)))
   let searchResults = await Promise.all(uniqueQueries.map(query => host.request("conversation_search", {
@@ -297,6 +382,7 @@ export async function searchConversationCandidates(request: ConversationCandidat
     memoryRevision: 0,
     forgetEpoch: currentStatus.forgetEpoch,
     entries: [],
+    ...(request.observe ? { diagnostics: { duplicateEvents: 0, jsonlReadbackCandidates: 0, jsonlReadbackDropped: 0, coldIndexMs, coldIndexSessions } } : {}),
   }
   if (request.signal.aborted) return { ...result, entries: [] }
 
@@ -309,41 +395,64 @@ export async function searchConversationCandidates(request: ConversationCandidat
     return compatible
   })
 
-  const fused = new Map<string, ConversationSearchEntry>()
-  const fusedOrder: ConversationSearchEntry[] = []
-  const maxRank = Math.max(0, ...compatibleResults.map(item => item.entries.length))
-  for (let rank = 0; rank < maxRank; rank += 1) {
+  let duplicateEvents = 0
+  if (request.observe) {
+    const allEventIdentities = new Set<string>()
+    let perQueryEventCount = 0
     for (const queryResult of compatibleResults) {
-      const entry = queryResult.entries[rank]
-      if (!entry) continue
-      const key = `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`
-      const previous = fused.get(key)
-      if (!previous) {
-        fused.set(key, entry)
-        fusedOrder.push(entry)
-      } else if (entry.score > previous.score) {
-        fused.set(key, entry)
-        const index = fusedOrder.findIndex(item => `conversation:${item.sessionId}:${item.entryId}:${item.chunk}` === key)
-        if (index >= 0) fusedOrder[index] = entry
-      }
+      const queryEventIdentities = queryResult.entries.map(entry => `${entry.sessionId}\0${entry.eventId ?? entry.entryId}`)
+      perQueryEventCount += queryEventIdentities.length
+      for (const identity of queryEventIdentities) allEventIdentities.add(identity)
     }
+    duplicateEvents = Math.max(0, perQueryEventCount - allEventIdentities.size)
   }
-  const eligible = fusedOrder
-    .map(entry => fused.get(`conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`) ?? entry)
+
+  const eventIdentity = (entry: Pick<ConversationSearchEntry, "sessionId" | "entryId" | "eventId">) =>
+    `conversation:${entry.sessionId}:${entry.eventId ?? entry.entryId}`
+  const fusedOrder = fuseRankedLists(compatibleResults.map(item => item.entries), eventIdentity,
+    !request.queryPlan || request.queries[0] === request.queryPlan.originalQuery)
+  const governed = fusedOrder
     .filter(entry => currentIds.has(entry.sessionId)
       && (request.recentFallback || usedRecentFallback || Boolean(recordTime) || entry.score > 0))
-    .slice(0, limit)
-  const entries = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before)
+  const units = orderEvidenceTurns(governed, [])
+  const admittedIds = new Set<string>()
+  for (const unit of units) {
+    if (admittedIds.size + unit.length > limit) continue
+    for (const entry of unit) admittedIds.add(eventIdentity(entry))
+  }
+  // Preserve lexical rank while admitting whole user/reply groups across queries.
+  const eligible = governed.filter(entry => admittedIds.has(eventIdentity(entry)))
+  const readbackStats = request.observe ? { candidates: 0, validated: 0 } : undefined
+  const entries = await expandSearchEntriesFromJsonl(eligible, request.signal, request.before, { diagnostics: readbackStats })
   if (request.signal.aborted) return { ...result, entries: [] }
-  return { ...result, entries, ...(revisionChanged ? { revisionChanged: true } : {}) }
+  const admitted = new Set(entries.map(eventIdentity))
+  const queryRanking = compatibleResults.map(search => [...new Set(search.entries
+    .map(eventIdentity).filter(id => admitted.has(id)))])
+  return {
+    ...result,
+    entries,
+    queryRanking,
+    ...(request.observe ? { diagnostics: {
+      duplicateEvents,
+      jsonlReadbackCandidates: readbackStats?.candidates ?? 0,
+      jsonlReadbackDropped: Math.max(0, (readbackStats?.candidates ?? 0) - (readbackStats?.validated ?? 0)),
+      coldIndexMs,
+      coldIndexSessions,
+    } } : {}),
+    ...(revisionChanged ? { revisionChanged: true } : {}),
+  }
 }
 
 async function expandSearchEntriesFromJsonl(
   entries: readonly ConversationSearchEntry[],
   signal: AbortSignal,
   before?: number,
-  transcripts = new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>(),
+  options: {
+    transcripts?: Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>
+    diagnostics?: { candidates: number; validated: number }
+  } = {},
 ): Promise<ConversationEvidenceEntry[]> {
+  const transcripts = options.transcripts ?? new Map<string, Promise<Awaited<ReturnType<typeof readVisibleSessionTranscript>>>>()
   const rankByEntry = new Map<string, number>()
   entries.forEach((entry, rank) => {
     const key = `${entry.sessionId}\0${entry.entryId}`
@@ -375,6 +484,7 @@ async function expandSearchEntriesFromJsonl(
 
     for (const candidate of candidates) {
       if (signal.aborted) return []
+      if (options.diagnostics) options.diagnostics.candidates += 1
       const source = sourceEntries.get(candidate.entryId)
       const message = visible.get(candidate.entryId)
       if (!source || source.type !== "message" || source.message.role !== candidate.role
@@ -400,6 +510,7 @@ async function expandSearchEntriesFromJsonl(
         if (chunk.chunk > candidate.chunk) break
       }
       if (!indexedChunkMatches) continue
+      if (options.diagnostics) options.diagnostics.validated += 1
 
       const key = `${candidate.sessionId}\0${candidate.entryId}`
       const previous = bestByEntry.get(key)
@@ -852,7 +963,7 @@ export function conversationProjection(
 
 /** Only short, explicit references to prior conversation can ask search for recent fallback. */
 export function shouldUseRecentConversationFallback(query: string): boolean {
-  const normalized = query.trim().toLocaleLowerCase()
+  const normalized = normalizeMemoryQueryText(query.trim())
   if (!normalized) return false
   const referential = /(?:刚才|刚刚|前面|之前|上次|刚提到|刚说|我说过|我之前|我们聊过|你还记得|那件事|那个|这件事|回到刚才|what did i say|what did we discuss|earlier|previously|just said|we talked about)/iu
   if (!referential.test(normalized)) return false

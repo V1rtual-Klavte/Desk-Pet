@@ -1072,7 +1072,9 @@ function createRequestViewHook(args: {
               - estimateMessageTokens(createMemoryRecallMessage("")),
           )
           const focused = await args.memory.recall(memoryBudget)
-          const rendered = renderMemoryRecall(focused.projections, memoryBudget, focused.guide)
+          const rendered = renderMemoryRecall(focused.projections, memoryBudget, focused.guide, {
+            preserveCandidates: focused.noteStatus === "partial",
+          })
           if (rendered.text) {
             // 注记恒为末条（缓存差异点落在「本来就是新的」那一段），记忆块插在它之前。
             const note = prepared[prepared.length - 1]
@@ -1974,8 +1976,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           sessionId: turnSessionId,
           traceContext,
           timeoutMs: loopConfig.turnTimeoutMs,
-        }, async (queryPlan, signal) => {
-          const followupRequest: MemoryRecallRequest = { ...memoryRequest, queryPlan, skipRerank: true, signal }
+        }, async (queryPlan, signal, contextSourceIds) => {
+          const followupRequest: MemoryRecallRequest = { ...memoryRequest, queryPlan, contextSourceIds, skipRerank: true, signal }
           const projections = await recallMemory(followupRequest)
           if (signal.aborted) return { projections: [], readRevision: followupRequest.readRevision }
           assertCurrent()

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { applyMemoryReadingNotes, parseMemoryReadingNotes } from "@/services/agent/memory/reader"
-import { deduplicateMemoryEvidence, hasNewMemoryEvidence, memoryRecallTokens, selectMemoryReadingEvidence } from "@/services/agent/memory/projection"
+import { applyMemoryReadingNotes, isGroundedMemorySearch, parseMemoryReadingNotes } from "@/services/agent/memory/reader"
+import { deduplicateMemoryEvidence, hasNewMemoryEvidence, memoryRecallTokens, selectMemoryAnswerEvidence, selectMemoryReadingEvidence } from "@/services/agent/memory/projection"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
 
 const source = { id: "conv:1", text: "I already bought a power bank for the trip." }
@@ -76,6 +76,26 @@ describe("query-focused memory reading", () => {
     const core = projection({ sourceId: "core", tier: "core", conversation: undefined })
     expect(selectMemoryReadingEvidence([user, reply, unrelated, core], [reply.sourceId])).toEqual([user, reply, core])
   })
+
+  it("keeps every checked citation and its turn context without reviving unchecked facts [memory-reading-answer-evidence-scope]", () => {
+    const required = projection({ sourceId: "required", conversation: undefined, readingNote: note })
+    const supporting = projection({ sourceId: "supporting", conversation: undefined, readingNote: note })
+    const anchor = projection({ sourceId: "anchor", text: "我选了蓝色路线。", conversation: { ...projection().conversation!, entryId: "anchor", role: "user", seq: 1 } })
+    const turnReply = projection({ sourceId: "turn-reply", text: "原因是信号故障。", readingNote: note, conversation: { ...anchor.conversation!, entryId: "turn-reply", role: "assistant", seq: 2 } })
+    const unrelated = projection({ sourceId: "unrelated", text: "The blue route is sunny.", conversation: { ...anchor.conversation!, entryId: "later", seq: 3 } })
+    const uncheckedCore = projection({ sourceId: "core", tier: "core", conversation: undefined })
+    const guide = {
+      questionChecks: [
+        { kind: "detail" as const, obligation: "required" as const, condition: "The historical reason for choosing the blue route", status: "supported" as const, sourceIds: [turnReply.sourceId, required.sourceId] },
+        { kind: "detail" as const, obligation: "supporting" as const, condition: "An optional blue route corroboration", status: "supported" as const, sourceIds: [supporting.sourceId] },
+      ],
+    }
+    expect(selectMemoryAnswerEvidence([required, supporting, anchor, turnReply, unrelated, uncheckedCore], guide).map(item => item.sourceId)).toEqual([required.sourceId, supporting.sourceId, anchor.sourceId, turnReply.sourceId])
+    expect(selectMemoryAnswerEvidence([required, supporting, unrelated], {
+      questionChecks: [{ kind: "detail", obligation: "required", condition: "The requested field", status: "missing", sourceIds: [] }],
+    })).toEqual([])
+  })
+
   it("retains exact notes independently and drops invalid ids, stitched quotes, and duplicates [memory-reading-partial-validation]", () => {
     const second = { id: "conv:2", text: "The wireless charging pad is already in my bag." }
     const legalSecond = { id: second.id, quote: "wireless charging pad is already in my bag", relevance: "已有无线充电板可用于建议" }
@@ -128,6 +148,8 @@ describe("query-focused memory reading", () => {
   })
 
   it("keeps grounded follow-up searches and drops invented entities without discarding valid notes [memory-reading-grounded-followup-search]", () => {
+    expect(isGroundedMemorySearch("would preferences", "Would Nora likely enjoy hiking?")).toBe(false)
+    expect(isGroundedMemorySearch("Nora preferences", "Would Nora likely enjoy hiking?")).toBe(true)
     const query = "What should I do with my power bank?"
     const parsed = parseMemoryReadingNotes(JSON.stringify({
       notes: [note],

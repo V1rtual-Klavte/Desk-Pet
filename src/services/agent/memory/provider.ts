@@ -9,20 +9,22 @@
 // 不能引入候选之外的 id，也不能把否定句裁掉。
 
 import type { MessageTaint } from "@/services/engine/runtime"
-import { publishRuntimeTrace } from "@/services/engine/runtime"
+import { hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { DEFAULT_CONTEXT_WINDOW, estimateContextTokens, sliceByTokenBudget } from "@/services/context/budget"
 import { completePiText } from "@/services/engine/harness"
 import { memoryConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { getMemoryRecallCandidates } from "./ipc"
-import type { MemoryEventTime, MemoryItem, MemoryOrigin, MemoryRecallCandidateSnapshot } from "./ipc"
+import { getMemoryRecallCandidates, memorySourceEvidence } from "./ipc"
+import type { MemoryEventTime, MemoryItem, MemoryOrigin, MemoryRecallCandidateSnapshot, MemoryRecallDiagnostics } from "./ipc"
 import { DERIVED_BEHAVIOR_ORIGIN } from "./sources"
 import { parseRerankSelection } from "./rerank"
-import { deriveMemoryQueryPlan, planMemoryQueries, recordOptionalFailure } from "./query"
+import { fuseRankedLists } from "./fusion"
+import { deriveMemoryQueryPlan, normalizeMemoryQueryText, planMemoryQueries, recordOptionalFailure } from "./query"
+import { hasExplicitConversationReference, memoryEvidenceReviewKind } from "./query-shape"
 import type { MemoryQueryPlan, MemoryRecallFailureChannel, MemoryRecallOptionalFailure, MemoryRerankMode, QueryRewriteMode } from "./query"
-import { conversationProjection, expandConversationSessions, searchConversationCandidates } from "./conversation"
+import { conversationProjection, expandConversationSessions, readConversationSources, searchConversationCandidates } from "./conversation"
 import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "./conversation"
 import { MEMORY_LIMITS } from "./protocol"
 import { reconcileDerivedMemoryEvidence } from "./evidence"
@@ -55,6 +57,8 @@ export interface MemoryRecallRequest {
   queryRewriteMode?: QueryRewriteMode
   rerankMode?: MemoryRerankMode
   queryPlan?: MemoryQueryPlan
+  /** Host-only canonical references selected by a validated reader for gap-driven context expansion. */
+  contextSourceIds?: readonly string[]
   optionalFailures?: MemoryRecallOptionalFailure[]
   /** Internal validated projections used only if the global recall deadline wins. */
   localFallback?: MemoryProjection[]
@@ -72,6 +76,9 @@ export interface MemoryRecallRequest {
   traceContext?: RuntimeTraceContext
   fallbackReason?: string
   droppedCandidateIds?: string[]
+  recallDiagnostics?: MemoryRecallDiagnostics
+  conversationDiagnostics?: Pick<MemoryRecallDiagnostics,
+    "duplicateEvents" | "jsonlReadbackCandidates" | "jsonlReadbackDropped" | "coldIndexMs" | "coldIndexSessions">
 }
 
 export interface MemoryProjection {
@@ -366,8 +373,15 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
     ? request.queryPlan
     : undefined
   const retrievalPlan = suppliedPlan ?? deriveMemoryQueryPlan(request.query, request.timeAnchor ?? request.before)
-  const baseQueries = exactTargetMode ? [request.query]
+  const requestedBaseQueries = exactTargetMode ? [request.query]
     : queryRewriteEnabled || suppliedPlan ? retrievalPlan.queries : [request.query]
+  const seenBaseQueries = new Set<string>()
+  const baseQueries = requestedBaseQueries.filter(query => {
+    const key = normalizeMemoryQueryText(query)
+    if (seenBaseQueries.has(key)) return false
+    seenBaseQueries.add(key)
+    return true
+  })
   // Keep each lexical query independent. Joining rewrites into one string turns
   // a complementary query set into a single phrase/term mix and loses which
   // wording produced each candidate. The first query remains the authoritative
@@ -380,20 +394,20 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
       ...(retrievalPlan.timeConstraint.calendarDate === undefined ? {} : { calendarDate: retrievalPlan.timeConstraint.calendarDate }),
     }
     : undefined
+  request.conversationDiagnostics = undefined
+  const observe = Boolean(request.traceContext) && hasRuntimeTraceSubscribers()
+  const readFactCandidates = (query: string, targetsForQuery: Array<{ id: string; version: number }>, allowExpired: boolean) => {
+    if (eventTime || observe || retrievalPlan.entities.length) {
+      return getMemoryRecallCandidates(query, request.cardId, request.sessionId, targetsForQuery, allowExpired, eventTime, observe, retrievalPlan.entities)
+    }
+    return getMemoryRecallCandidates(query, request.cardId, request.sessionId, targetsForQuery, allowExpired)
+  }
 
   // Start the original-query local reads before query rewriting. They become a safe,
   // already-budgeted fallback if a later optional model call consumes the recall deadline.
-  const baseFactsPromise = Promise.all(baseFactQueries.map(query => getMemoryRecallCandidates(
-    query,
-    request.cardId,
-    request.sessionId,
-    targets,
-    request.allowExpiredTargets ?? proactive,
-    eventTime,
+  const baseFactsPromise = Promise.all(baseFactQueries.map(query => readFactCandidates(
+    query, targets, request.allowExpiredTargets ?? proactive,
   ))).then(
-    snapshots => snapshots.reduce((merged, snapshot) => mergeMemorySnapshots(merged, snapshot)),
-    error => { throw error },
-  ).then(
     value => ({ ok: true as const, value }),
     error => ({ ok: false as const, error }),
   )
@@ -404,7 +418,9 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
 
   const factRead = await baseFactsPromise
   if (!factRead.ok) throw factRead.error
-  let snapshot = factRead.value
+  const factSnapshots = factRead.value
+  let snapshot = fuseMemorySnapshots(factSnapshots)
+  request.recallDiagnostics = combineRecallDiagnostics(snapshot.diagnostics, request.conversationDiagnostics)
   if (request.signal.aborted) return []
   request.readRevision = snapshot.revision
   // Publish a fact-only fallback immediately. A cold transcript backfill must not make
@@ -430,6 +446,7 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   })
 
   let conversationSnapshot = await baseConversationPromise
+  request.recallDiagnostics = combineRecallDiagnostics(snapshot.diagnostics, request.conversationDiagnostics)
   if (request.signal.aborted) return []
   if (conversationSnapshot && conversationSnapshot.memoryRevision !== snapshot.revision) {
     conversationSnapshot = undefined
@@ -448,15 +465,15 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   const queryPlan = await queryPlanPromise
   if (request.signal.aborted) return []
   request.queryPlan = queryPlan
+  const baseQueryKeys = new Set(baseQueries.map(normalizeMemoryQueryText))
   const extraQueries = exactTargetMode
     ? []
-    : queryPlan.queries.filter(query => !baseQueries.includes(query))
+    : queryPlan.queries.filter(query => !baseQueryKeys.has(normalizeMemoryQueryText(query)))
 
   if (extraQueries.length > 0) {
     request.localFallbackFailureChannel = "conversation"
     const [extraFacts, extraConversation] = await Promise.all([
-      Promise.all(extraQueries.map(query => getMemoryRecallCandidates(query, request.cardId, request.sessionId, [], false, eventTime)))
-        .then(values => values.reduce((merged, snapshot) => mergeMemorySnapshots(merged, snapshot)))
+      Promise.all(extraQueries.map(query => readFactCandidates(query, [], false)))
         .then(value => ({ value }), error => ({ error })),
       searchConversationChannel(request, extraQueries, queryPlan)
         .then(value => ({ value }), error => ({ error })),
@@ -464,8 +481,11 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
     if (request.signal.aborted) return []
 
     if ("value" in extraFacts) {
-      if (extraFacts.value.revision === snapshot.revision) snapshot = mergeMemorySnapshots(snapshot, extraFacts.value)
-      else recordOptionalFailure(request, "query_rewrite", "revision_changed")
+      for (const extra of extraFacts.value) {
+        if (extra.revision === snapshot.revision) factSnapshots.push(extra)
+        else recordOptionalFailure(request, "query_rewrite", "revision_changed")
+      }
+      snapshot = fuseMemorySnapshots(factSnapshots)
     } else {
       recordOptionalFailure(request, "query_rewrite", "failed")
       log.warn("Query rewrite fact extension failed; retaining original-query candidates:", formatError(extraFacts.error))
@@ -477,7 +497,9 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
           || conversationSnapshot.forgetEpoch !== extraConversation.value.forgetEpoch)) {
           recordOptionalFailure(request, "conversation", "revision_changed")
         } else {
-          conversationSnapshot = mergeConversationSnapshots(conversationSnapshot, extraConversation.value)
+          const merged = mergeConversationSnapshots(conversationSnapshot, extraConversation.value)
+          addConversationMergeDiagnostics(request, conversationSnapshot, extraConversation.value, merged)
+          conversationSnapshot = merged
         }
       } else {
         recordOptionalFailure(request, "conversation", "revision_changed")
@@ -486,6 +508,7 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
       recordOptionalFailure(request, "conversation", "failed")
       log.warn("Query rewrite conversation extension failed; retaining original-query candidates:", formatError(extraConversation.error))
     }
+    request.recallDiagnostics = combineRecallDiagnostics(snapshot.diagnostics, request.conversationDiagnostics)
   }
 
   request.readRevision = snapshot.revision
@@ -498,9 +521,14 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   let selectedDynamic = await selectRecallCandidates(localDynamic, request, rerankMode)
   if (request.signal.aborted) return []
   const evidencePlan = request.queryPlan ?? retrievalPlan
+  const wholeContext = evidencePlan.recallIntent === "overview" || hasExplicitConversationReference(request.query)
+  const contextIds = new Set(request.contextSourceIds ?? [])
   if (!proactive && !exactTargetMode && conversationSnapshot
-    && evidencePlan.evidenceNeeds.length > 0) {
-    const seeds = selectedDynamic.flatMap(candidate => candidate.channel === "conversation" ? [candidate.entry] : [])
+    && (wholeContext || contextIds.size > 0)) {
+    // First read matched complete turns. Only explicit session review or validated
+    // gap references authorize paging other turns; spare headroom is not a demand.
+    const seeds = selectedDynamic.flatMap(candidate => candidate.channel === "conversation"
+      && (wholeContext || contextIds.has(candidate.id)) ? [candidate.entry] : [])
     if (seeds.length) {
       request.localFallbackFailureChannel = "conversation"
       try {
@@ -516,6 +544,16 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
           localDynamic = localDynamic.filter(candidate => candidate.channel !== "conversation")
           conversationSnapshot = undefined
         } else {
+          if (expanded.diagnostics) {
+            request.conversationDiagnostics = {
+              duplicateEvents: expanded.diagnostics.duplicateEvents,
+              jsonlReadbackCandidates: expanded.diagnostics.jsonlReadbackCandidates,
+              jsonlReadbackDropped: expanded.diagnostics.jsonlReadbackDropped,
+              coldIndexMs: expanded.diagnostics.coldIndexMs,
+              coldIndexSessions: expanded.diagnostics.coldIndexSessions,
+            }
+            request.recallDiagnostics = combineRecallDiagnostics(snapshot.diagnostics, request.conversationDiagnostics)
+          }
           const selectedIds = new Set(selectedDynamic.map(candidateId))
           const localIds = new Set(localDynamic.map(candidateId))
           const selectedEntries = new Set(seeds.map(entry => `${entry.sessionId}\0${entry.entryId}`))
@@ -537,6 +575,55 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
         if (request.signal.aborted) return []
         recordOptionalFailure(request, "conversation", "failed")
         log.warn("Matched-session context read failed; retaining verified search hits:", formatError(error))
+      }
+    }
+  }
+  const inference = evidencePlan.recallIntent !== "none" && memoryEvidenceReviewKind(request.query, evidencePlan.recallIntent) === "inference"
+  if (!proactive && !exactTargetMode && conversationSnapshot && (inference || contextIds.size > 0)) {
+    const admittedProjections = projectCandidateSet(snapshot, conversationSnapshot, request, false, selectedDynamic)
+    const admitted = new Set(admittedProjections.map(item => item.sourceId))
+    const recallBudget = request.budget ?? deriveMemoryRecallBudget(request.contextWindow ?? DEFAULT_CONTEXT_WINDOW, request.purpose, request.tokenBudget)
+    const remaining = Math.max(0, Math.min(
+      recallBudget.recall - admittedProjections.filter(item => item.tier !== "core").reduce((sum, item) => sum + estimateContextTokens(item.text), 0),
+      Math.min(request.tokenBudget, recallBudget.total) - memoryRecallTokens(admittedProjections, request.projectionFormat),
+    ))
+    const factItems = uniqueMemoryItems([...snapshot.pinned, ...snapshot.targeted,
+      ...selectedDynamic.flatMap(candidate => candidate.channel === "memory" ? [candidate.item] : [])])
+      .filter(item => item.origin === "user" && admitted.has(`${item.id}@${item.version}`) && (inference || contextIds.has(`${item.id}@${item.version}`)))
+    const sourceIds = [...new Set(factItems.flatMap(item => item.draft.sourceIds))]
+    if (sourceIds.length && remaining > 0) {
+      request.localFallbackFailureChannel = "conversation"
+      try {
+        const reads = await Promise.allSettled(sourceIds.map(id => memorySourceEvidence(id, request.signal)))
+        if (request.signal.aborted) return []
+        const failure = reads.find(result => result.status === "rejected")
+        if (failure?.status === "rejected") throw failure.reason
+        const sources = reads.flatMap(result => result.status === "fulfilled" && result.value ? [result.value] : [])
+        const originals = await readConversationSources(conversationSnapshot, sources, {
+          signal: request.signal, tokenBudget: remaining, before: request.before,
+        })
+        if (request.signal.aborted) return []
+        if (originals.revisionChanged) {
+          recordOptionalFailure(request, "conversation", "revision_changed")
+          selectedDynamic = selectedDynamic.filter(candidate => candidate.channel !== "conversation")
+          conversationSnapshot = undefined
+        } else {
+          const selectedIds = new Set(selectedDynamic.map(candidateId))
+          const declined = new Set(localDynamic.filter(candidate => candidate.channel === "conversation" && !selectedIds.has(candidate.id)).map(candidateId))
+          const additions = interleaveCandidates([], originals.entries).filter(candidate => !selectedIds.has(candidate.id) && !declined.has(candidate.id))
+          selectedDynamic.push(...additions)
+          conversationSnapshot = { ...originals, entries: [...conversationSnapshot.entries, ...originals.entries] }
+          if (originals.diagnostics) {
+            request.conversationDiagnostics = originals.diagnostics
+            request.recallDiagnostics = combineRecallDiagnostics(snapshot.diagnostics, request.conversationDiagnostics)
+          }
+        }
+        request.localFallback = projectCandidateSet(snapshot, conversationSnapshot, request, false, selectedDynamic)
+        request.localFallbackFailures = [...(request.optionalFailures ?? [])]
+      } catch (error) {
+        if (request.signal.aborted) return []
+        recordOptionalFailure(request, "conversation", "failed")
+        log.warn("Fact source original read failed; retaining admitted evidence:", formatError(error))
       }
     }
   }
@@ -710,20 +797,73 @@ function projectCandidateSet(
   return result
 }
 
-function mergeMemorySnapshots(base: MemoryRecallCandidateSnapshot, extension: MemoryRecallCandidateSnapshot): MemoryRecallCandidateSnapshot {
-  if (base.revision !== extension.revision) return base
-  const merge = (left: MemoryItem[], right: MemoryItem[]) => [...new Map([...left, ...right].map(item => [item.id, item])).values()]
+function fuseMemorySnapshots(snapshots: readonly MemoryRecallCandidateSnapshot[]): MemoryRecallCandidateSnapshot {
+  const base = snapshots[0]!
+  const compatible = snapshots.filter(snapshot => snapshot.revision === base.revision)
+  const identity = (item: MemoryItem) => `${item.id}\0${item.version}`
+  const fuse = (lists: readonly MemoryItem[][]) => fuseRankedLists(lists, identity)
+  const diagnostics = compatible.some(snapshot => snapshot.diagnostics) ? emptyRecallDiagnostics() : undefined
+  if (diagnostics) {
+    for (const snapshot of compatible) {
+      if (snapshot.diagnostics) {
+        for (const key of Object.keys(diagnostics) as Array<keyof MemoryRecallDiagnostics>) {
+          diagnostics[key] += snapshot.diagnostics[key]
+        }
+      }
+    }
+  }
   return {
     revision: base.revision,
     candidatesByScope: {
-      user: merge(base.candidatesByScope.user, extension.candidatesByScope.user),
-      card: merge(base.candidatesByScope.card, extension.candidatesByScope.card),
-      session: merge(base.candidatesByScope.session, extension.candidatesByScope.session),
+      user: fuse(compatible.map(snapshot => snapshot.candidatesByScope.user)),
+      card: fuse(compatible.map(snapshot => snapshot.candidatesByScope.card)),
+      session: fuse(compatible.map(snapshot => snapshot.candidatesByScope.session)),
     },
-    candidates: merge(base.candidates, extension.candidates),
-    pinned: merge(base.pinned, extension.pinned),
-    targeted: merge(base.targeted, extension.targeted),
+    candidates: fuse(compatible.map(snapshot => snapshot.candidates)),
+    pinned: fuse(compatible.map(snapshot => snapshot.pinned)),
+    targeted: fuse(compatible.map(snapshot => snapshot.targeted)),
+    ...(diagnostics ? { diagnostics } : {}),
   }
+}
+
+function emptyRecallDiagnostics(): MemoryRecallDiagnostics {
+  return {
+    ftsHits: 0, likeFallbacks: 0, timeFilterBefore: 0, timeFilterAfter: 0, queryLatencyMs: 0,
+    duplicateEvents: 0, jsonlReadbackCandidates: 0, jsonlReadbackDropped: 0, coldIndexMs: 0, coldIndexSessions: 0,
+  }
+}
+
+function combineRecallDiagnostics(
+  facts: MemoryRecallDiagnostics | undefined,
+  conversation: MemoryRecallRequest["conversationDiagnostics"],
+): MemoryRecallDiagnostics | undefined {
+  if (!facts && !conversation) return undefined
+  const combined = facts ?? emptyRecallDiagnostics()
+  if (!conversation) return { ...combined }
+  return {
+    ...combined,
+    duplicateEvents: combined.duplicateEvents + conversation.duplicateEvents,
+    jsonlReadbackCandidates: combined.jsonlReadbackCandidates + conversation.jsonlReadbackCandidates,
+    jsonlReadbackDropped: combined.jsonlReadbackDropped + conversation.jsonlReadbackDropped,
+    coldIndexMs: combined.coldIndexMs + conversation.coldIndexMs,
+    coldIndexSessions: combined.coldIndexSessions + conversation.coldIndexSessions,
+  }
+}
+
+function conversationEntryIdentity(entry: ConversationEvidenceEntry): string {
+  return `conversation:${entry.sessionId}:${entry.eventId ?? entry.entryId}`
+}
+
+function addConversationMergeDiagnostics(
+  request: MemoryRecallRequest,
+  base: ConversationEvidenceResult | undefined,
+  extension: ConversationEvidenceResult,
+  merged: ConversationEvidenceResult,
+): void {
+  const diagnostics = request.conversationDiagnostics
+  if (!diagnostics || !base) return
+  diagnostics.duplicateEvents += (merged.diagnostics?.duplicateEvents ?? 0)
+    - (base.diagnostics?.duplicateEvents ?? 0) - (extension.diagnostics?.duplicateEvents ?? 0)
 }
 
 function mergeConversationSnapshots(
@@ -735,14 +875,41 @@ function mergeConversationSnapshots(
     || base.memoryRevision !== extension.memoryRevision
     || base.forgetEpoch !== extension.forgetEpoch) return base
   const byEntry = new Map<string, ConversationEvidenceEntry>()
-  for (const entry of [...base.entries, ...extension.entries]) {
-    const key = `conversation:${entry.sessionId}:${entry.entryId}`
-    const previous = byEntry.get(key)
-    if (!previous || entry.score > previous.score
-      || (entry.score === previous.score && entry.chunk < previous.chunk)) byEntry.set(key, entry)
+  for (const entry of base.entries) {
+    const key = conversationEntryIdentity(entry)
+    byEntry.set(key, entry)
   }
-  const entries = [...byEntry.values()]
-  return { ...extension, revision: Math.max(base.revision, extension.revision), entries }
+  for (const entry of extension.entries) {
+    const key = conversationEntryIdentity(entry)
+    if (!byEntry.has(key)) byEntry.set(key, entry)
+  }
+  const queryRanking = [...(base.queryRanking ?? [base.entries.map(conversationEntryIdentity)]),
+    ...(extension.queryRanking ?? [extension.entries.map(conversationEntryIdentity)])]
+  const entries = fuseRankedLists(queryRanking, id => id)
+    .flatMap(id => { const entry = byEntry.get(id); return entry ? [entry] : [] })
+  const diagnosticsEnabled = Boolean(base.diagnostics || extension.diagnostics)
+  let duplicateEvents = 0
+  if (diagnosticsEnabled) {
+    const baseEvents = new Set(base.entries.map(entry => `${entry.sessionId}\0${entry.eventId ?? entry.entryId}`))
+    const extensionEvents = new Set(extension.entries.map(entry => `${entry.sessionId}\0${entry.eventId ?? entry.entryId}`))
+    duplicateEvents = [...extensionEvents].filter(identity => baseEvents.has(identity)).length
+  }
+  const baseDiagnostics = base.diagnostics
+  const extensionDiagnostics = extension.diagnostics
+  const diagnostics = diagnosticsEnabled ? {
+    duplicateEvents: (baseDiagnostics?.duplicateEvents ?? 0) + (extensionDiagnostics?.duplicateEvents ?? 0) + duplicateEvents,
+    jsonlReadbackCandidates: (baseDiagnostics?.jsonlReadbackCandidates ?? 0) + (extensionDiagnostics?.jsonlReadbackCandidates ?? 0),
+    jsonlReadbackDropped: (baseDiagnostics?.jsonlReadbackDropped ?? 0) + (extensionDiagnostics?.jsonlReadbackDropped ?? 0),
+    coldIndexMs: (baseDiagnostics?.coldIndexMs ?? 0) + (extensionDiagnostics?.coldIndexMs ?? 0),
+    coldIndexSessions: (baseDiagnostics?.coldIndexSessions ?? 0) + (extensionDiagnostics?.coldIndexSessions ?? 0),
+  } : undefined
+  return {
+    ...extension,
+    revision: Math.max(base.revision, extension.revision),
+    entries,
+    queryRanking,
+    ...(diagnostics ? { diagnostics } : {}),
+  }
 }
 
 function uniqueMemoryItems(items: readonly MemoryItem[]): MemoryItem[] {
@@ -764,9 +931,27 @@ async function searchConversationChannel(
       before: request.before,
       queryPlan,
       limit: MEMORY_LIMITS.conversation.maxSearchResults,
+      observe: Boolean(request.traceContext) && hasRuntimeTraceSubscribers(),
     })
+    if (result.diagnostics) {
+      const current = request.conversationDiagnostics ?? {
+        duplicateEvents: 0,
+        jsonlReadbackCandidates: 0,
+        jsonlReadbackDropped: 0,
+        coldIndexMs: 0,
+        coldIndexSessions: 0,
+      }
+      request.conversationDiagnostics = {
+        duplicateEvents: current.duplicateEvents + result.diagnostics.duplicateEvents,
+        jsonlReadbackCandidates: current.jsonlReadbackCandidates + result.diagnostics.jsonlReadbackCandidates,
+        jsonlReadbackDropped: current.jsonlReadbackDropped + result.diagnostics.jsonlReadbackDropped,
+        coldIndexMs: current.coldIndexMs + result.diagnostics.coldIndexMs,
+        coldIndexSessions: current.coldIndexSessions + result.diagnostics.coldIndexSessions,
+      }
+    }
     if (result.revisionChanged) recordOptionalFailure(request, "conversation", "revision_changed")
-    return result.entries.length > 0 ? result : undefined
+    // An empty governed snapshot still fences fact-source backfill after a lexical miss.
+    return result
   } catch (error) {
     if (request.signal.aborted) return undefined
     recordOptionalFailure(request, "conversation", "failed")
@@ -818,6 +1003,7 @@ export async function recallMemory(
     const providerRequest: MemoryRecallRequest = {
       ...request,
       ...(request.queryPlan ? { queryPlan: { ...request.queryPlan, queries: [...request.queryPlan.queries] } } : {}),
+      ...(request.contextSourceIds ? { contextSourceIds: [...request.contextSourceIds] } : {}),
       optionalFailures: request.optionalFailures ? [...request.optionalFailures] : [],
       signal: controller.signal,
     }
@@ -844,6 +1030,7 @@ export async function recallMemory(
       request.optionalFailures = providerRequest.optionalFailures
       request.fallbackReason = providerRequest.fallbackReason
       request.droppedCandidateIds = providerRequest.droppedCandidateIds
+      request.recallDiagnostics = providerRequest.recallDiagnostics
     }
     // 预算裁决留在端口这一层：provider 可以有自己的取舍，但「声明的预算」必须真的是
     // 「实际占用的 token」—— 单条取「请求剩余」与「该条声明」的严格者，逐条扣减。
@@ -882,6 +1069,7 @@ export async function recallMemory(
         optionalFailureCount: providerRequest.optionalFailures?.length ?? 0,
         // 通道失败明细：此前只有计数进 trace，跑批后无法归因；channel/reason 必须可审计。
         optionalFailures: (providerRequest.optionalFailures ?? []).map(failure => ({ channel: failure.channel, reason: failure.reason })),
+        ...(providerRequest.recallDiagnostics ?? {}),
         durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - started,
       }))
     }

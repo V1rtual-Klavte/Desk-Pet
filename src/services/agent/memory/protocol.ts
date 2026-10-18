@@ -387,12 +387,26 @@ export interface MemoryEventTime {
   calendarDate?: { "year"?: number; "month": number; "day": number }
 }
 
+export interface MemoryRecallDiagnostics {
+  ftsHits: number
+  likeFallbacks: number
+  timeFilterBefore: number
+  timeFilterAfter: number
+  queryLatencyMs: number
+  duplicateEvents: number
+  jsonlReadbackCandidates: number
+  jsonlReadbackDropped: number
+  coldIndexMs: number
+  coldIndexSessions: number
+}
+
 export interface MemoryRecallCandidateSnapshot {
   revision: number
   candidatesByScope: { "user": Array<MemoryItem>; "card": Array<MemoryItem>; "session": Array<MemoryItem> }
   candidates: Array<MemoryItem>
   pinned: Array<MemoryItem>
   targeted: Array<MemoryItem>
+  diagnostics?: MemoryRecallDiagnostics
 }
 
 export interface MemoryJobListItem {
@@ -631,5 +645,89 @@ export const MEMORY_LIMITS = Object.freeze({
   "conversation": {
     "batchChunks": 512,
     "maxSearchResults": 50
+  },
+  "query": {
+    "englishStopWords": [
+      "a",
+      "an",
+      "and",
+      "are",
+      "as",
+      "at",
+      "be",
+      "been",
+      "being",
+      "but",
+      "by",
+      "can",
+      "could",
+      "did",
+      "do",
+      "does",
+      "for",
+      "from",
+      "had",
+      "has",
+      "have",
+      "he",
+      "her",
+      "hers",
+      "him",
+      "his",
+      "how",
+      "i",
+      "if",
+      "in",
+      "is",
+      "it",
+      "its",
+      "me",
+      "my",
+      "of",
+      "on",
+      "or",
+      "our",
+      "ours",
+      "she",
+      "should",
+      "so",
+      "than",
+      "that",
+      "the",
+      "their",
+      "them",
+      "then",
+      "there",
+      "these",
+      "they",
+      "this",
+      "those",
+      "to",
+      "us",
+      "was",
+      "we",
+      "were",
+      "what",
+      "when",
+      "where",
+      "which",
+      "who",
+      "why",
+      "will",
+      "with",
+      "would",
+      "you",
+      "your",
+      "yours",
+      "answer",
+      "using",
+      "according",
+      "based",
+      "previously",
+      "remember",
+      "please",
+      "about",
+      "likely"
+    ]
   }
 } as const)

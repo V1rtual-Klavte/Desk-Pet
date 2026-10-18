@@ -10,7 +10,8 @@ use super::schema;
 use super::ConversationClearFence;
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
-use chrono::{Datelike, Local, NaiveDate, TimeZone};
+use crate::rust_warn;
+use chrono::{Local, NaiveDate, TimeZone};
 use rusqlite::{
     backup, params, params_from_iter, Connection, OpenFlags, OptionalExtension, Transaction,
     TransactionBehavior,
@@ -20,7 +21,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use unicode_normalization::UnicodeNormalization;
 
 pub const WATERMARK_RULE_VERSION: i64 = 1;
 /// 单批 Light 抽取的来源上限：批大小是资源边界，不是调优旋钮。
@@ -66,14 +68,55 @@ pub(crate) const RECALL_LIMIT_DEFAULT: i64 = 50;
 pub(crate) const JOB_LIST_LIMIT_DEFAULT: i64 = 50;
 
 /// 相关度权重：整串短语命中高于短词命中，且 content > summary > aliases。
-/// `relevance_order`（SQL 排序）与 `relevance_score`（本地重排）必须共用这一份，
-/// 两处各自硬编码会在改权重时静默漂移。
+/// SQL 生成与跨 scope 合并都消费同一 retrieval_score，不再重复计算另一套本地分数。
 const PHRASE_CONTENT_WEIGHT: i64 = 8;
 const PHRASE_SUMMARY_WEIGHT: i64 = 6;
 const PHRASE_ALIASES_WEIGHT: i64 = 4;
 const TERM_CONTENT_WEIGHT: i64 = 3;
 const TERM_SUMMARY_WEIGHT: i64 = 2;
 const TERM_ALIASES_WEIGHT: i64 = 1;
+// 确定性命中优先级高于有界 bm25：整串短语 > 全关键词覆盖 > 实体覆盖。
+const EXACT_PHRASE_BONUS: i64 = 256;
+const ALL_TERMS_BONUS: i64 = 64;
+const ENTITY_COVERAGE_BONUS: i64 = 32;
+// memory_fts 列顺序是 item_id/version（不索引）、正文、摘要、显式别名。
+const FTS_FIELD_WEIGHTS: [f64; 5] = [0.0, 0.0, 3.0, 2.0, 1.0];
+
+pub(crate) fn normalize_memory_text(value: &str) -> String {
+    value.nfkc().flat_map(char::to_lowercase).collect()
+}
+
+pub(super) fn backfill_memory_search_projection(conn: &Connection) -> AppResult<()> {
+    let mut statement = conn.prepare(
+        "SELECT id,version,content,summary,aliases_json,event_at_json FROM memory_items
+         WHERE content_norm IS NULL OR summary_norm IS NULL OR aliases_norm IS NULL
+            OR (event_at_json IS NOT NULL AND event_at_date IS NULL AND event_at_ms IS NULL)",
+    ).map_err(db_err)?;
+    let rows = statement.query_map([], |row| Ok((
+        row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?,
+        row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<String>>(5)?,
+    ))).map_err(db_err)?.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+    drop(statement);
+    for (id, version, content, summary, aliases, event_at) in rows {
+        let anchor = event_at.and_then(|value| serde_json::from_str::<Value>(&value).ok());
+        let (event_at_ms, event_at_date) = event_at_projection(anchor.as_ref());
+        conn.execute(
+            "UPDATE memory_items SET content_norm=?3,summary_norm=?4,aliases_norm=?5,
+               event_at_ms=COALESCE(event_at_ms,?6),event_at_date=COALESCE(event_at_date,?7)
+             WHERE id=?1 AND version=?2",
+            params![id, version, normalize_memory_text(&content), normalize_memory_text(&summary),
+                normalize_memory_text(&aliases), event_at_ms, event_at_date],
+        ).map_err(db_err)?;
+    }
+    Ok(())
+}
+
+type FactRanks = std::collections::HashMap<(String, i64), f64>;
+struct FactQueryResult {
+    items: Vec<Value>,
+    ranks: FactRanks,
+    diagnostics: RecallDiagnostics,
+}
 
 /// 查询词条截断上限：参与 LIKE 回退与相关度评分的词最多保留 16 个。
 const QUERY_TERM_LIMIT: usize = 16;
@@ -85,6 +128,35 @@ const DEFAULT_CONFIDENCE: f64 = 0.5;
 /// 单条合并候选最多吸收的旧条目数：与 protocol.json 的 `maxItems` 及 Node 侧分组上限同值
 /// （同一口径的三处消费点，改值要三处一起改）。
 const SUPERSEDES_MAX: usize = 4;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RecallDiagnostics {
+    fts_hits: i64,
+    like_fallbacks: i64,
+    time_filter_before: i64,
+    time_filter_after: i64,
+    query_latency_ms: f64,
+    duplicate_events: i64,
+    jsonl_readback_candidates: i64,
+    jsonl_readback_dropped: i64,
+    cold_index_ms: f64,
+    cold_index_sessions: i64,
+}
+
+impl RecallDiagnostics {
+    fn add_assign(&mut self, other: Self) {
+        self.fts_hits += other.fts_hits;
+        self.like_fallbacks += other.like_fallbacks;
+        self.time_filter_before += other.time_filter_before;
+        self.time_filter_after += other.time_filter_after;
+        self.query_latency_ms += other.query_latency_ms;
+        self.duplicate_events += other.duplicate_events;
+        self.jsonl_readback_candidates += other.jsonl_readback_candidates;
+        self.jsonl_readback_dropped += other.jsonl_readback_dropped;
+        self.cold_index_ms += other.cold_index_ms;
+        self.cold_index_sessions += other.cold_index_sessions;
+    }
+}
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -328,54 +400,45 @@ impl MemoryEventTime {
         Ok(())
     }
 
-    fn matches_event_at(&self, event_at: Option<&Value>) -> bool {
-        let Some(anchor) = event_at else { return false };
-        let precision = anchor.get("precision").and_then(Value::as_str);
-        match precision {
-            Some("minute") => {
-                let Some(instant) = anchor.get("instant").and_then(Value::as_i64) else { return false };
-                self.matches_instant(instant) && self.matches_calendar_instant(instant)
+    fn sql_predicate(&self, first_param: usize) -> (String, Vec<Value>) {
+        let mut minute = vec!["i.event_at_ms IS NOT NULL".to_owned()];
+        let mut day = vec!["i.event_at_ms IS NULL".to_owned(), "i.event_at_date IS NOT NULL".to_owned()];
+        let mut values = Vec::new();
+        let mut add = |column: &str, operator: &str, value: Value, clauses: &mut Vec<String>| {
+            let param = first_param + values.len();
+            clauses.push(format!("{column} {operator} ?{param}"));
+            values.push(value);
+        };
+        if let Some(start) = self.start {
+            add("i.event_at_ms", ">=", json!(start), &mut minute);
+            if let Some(date) = Local.timestamp_millis_opt(start).single().map(|value| value.date_naive()) {
+                add("i.event_at_date", ">=", json!(date.format("%Y-%m-%d").to_string()), &mut day);
             }
-            Some("day") => {
-                let Some(local_date) = anchor.get("localDate").and_then(Value::as_str)
-                    .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
-                else { return false };
-                self.matches_calendar_date(local_date) && self.matches_date_range(local_date)
+        }
+        if let Some(end) = self.end {
+            add("i.event_at_ms", "<", json!(end), &mut minute);
+            if let Some(date) = Local.timestamp_millis_opt(end).single().map(|value| value.date_naive()) {
+                add("i.event_at_date", "<", json!(date.format("%Y-%m-%d").to_string()), &mut day);
             }
-            _ => false,
         }
-    }
-
-    fn matches_instant(&self, instant: i64) -> bool {
-        self.start.map_or(true, |start| instant >= start)
-            && self.end.map_or(true, |end| instant < end)
-    }
-
-    fn matches_calendar_instant(&self, instant: i64) -> bool {
-        if self.calendar_date.is_none() {
-            return true;
+        if let Some(expected) = &self.calendar_date {
+            add("substr(i.event_at_date,6,5)", "=", json!(format!("{:02}-{:02}", expected.month, expected.day)), &mut minute);
+            add("substr(i.event_at_date,6,5)", "=", json!(format!("{:02}-{:02}", expected.month, expected.day)), &mut day);
+            if let Some(year) = expected.year {
+                add("substr(i.event_at_date,1,4)", "=", json!(format!("{year:04}")), &mut minute);
+                add("substr(i.event_at_date,1,4)", "=", json!(format!("{year:04}")), &mut day);
+            }
         }
-        let Some(local) = Local.timestamp_millis_opt(instant).single() else { return false };
-        self.matches_calendar_date(local.date_naive())
-    }
-
-    fn matches_calendar_date(&self, date: NaiveDate) -> bool {
-        self.calendar_date.as_ref().map_or(true, |expected| {
-            expected.year.map_or(true, |year| date.year() == year)
-                && date.month() == expected.month
-                && date.day() == expected.day
-        })
-    }
-
-    fn matches_date_range(&self, date: NaiveDate) -> bool {
-        let start_date = self.start.and_then(|value| Local.timestamp_millis_opt(value).single()).map(|value| value.date_naive());
-        let end_date = self.end.and_then(|value| Local.timestamp_millis_opt(value).single()).map(|value| value.date_naive());
-        start_date.map_or(true, |start| date >= start) && end_date.map_or(true, |end| date < end)
+        let minute_sql = minute.join(" AND ");
+        let day_sql = day.join(" AND ");
+        (format!(" AND (({minute_sql}) OR ({day_sql}))"), values)
     }
 }
 
 /// Chinese natural questions need concept n-grams in addition to whole-phrase LIKE.
 pub(super) fn memory_query_terms(query: &str) -> Vec<String> {
+    let normalized_query = normalize_memory_text(query);
+    let query = normalized_query.as_str();
     // 停用词：疑问词、指代词与功能词；切出的短词命中它们不代表内容相关。
     const QUERY_STOP_WORDS: &[&str] = &[
         "你",
@@ -446,7 +509,9 @@ pub(super) fn memory_query_terms(query: &str) -> Vec<String> {
     }
     flush_chinese(&mut chinese, &mut terms);
     flush_latin(&mut latin, &mut terms);
-    terms.retain(|term| !QUERY_STOP_WORDS.contains(&term.as_str()) && term.chars().count() >= 2);
+    terms.retain(|term| !QUERY_STOP_WORDS.contains(&term.as_str())
+        && !super::protocol::MEMORY_QUERY_ENGLISH_STOP_WORDS.contains(&term.as_str())
+        && term.chars().count() >= 2);
     terms.sort();
     terms.dedup();
     terms.truncate(QUERY_TERM_LIMIT);
@@ -459,62 +524,51 @@ fn query_token_clause(terms: &[String], first_param: usize) -> (String, Vec<Valu
     for (index, term) in terms.iter().enumerate() {
         let p = first_param + index;
         let pattern = format!("%{}%", escape_like(term));
-        clauses.push(format!("(i.content LIKE ?{p} ESCAPE '\\' OR i.summary LIKE ?{p} ESCAPE '\\' OR i.aliases_json LIKE ?{p} ESCAPE '\\')"));
+        clauses.push(format!("(i.content_norm LIKE ?{p} ESCAPE '\\' OR i.summary_norm LIKE ?{p} ESCAPE '\\' OR i.aliases_norm LIKE ?{p} ESCAPE '\\')"));
         values.push(json!(pattern));
     }
     (clauses.join(" OR "), values)
 }
 
-fn relevance_order(terms: &[String], first_param: usize) -> String {
-    let phrase = format!("(CASE WHEN i.content LIKE ?2 ESCAPE '\\' THEN {PHRASE_CONTENT_WEIGHT} ELSE 0 END + CASE WHEN i.summary LIKE ?2 ESCAPE '\\' THEN {PHRASE_SUMMARY_WEIGHT} ELSE 0 END + CASE WHEN i.aliases_json LIKE ?2 ESCAPE '\\' THEN {PHRASE_ALIASES_WEIGHT} ELSE 0 END)");
-    let token_scores = terms.iter().enumerate().map(|(index, _)| {
-        let p = first_param + index;
-        format!(
-            "(CASE WHEN i.content LIKE ?{p} ESCAPE '\\' THEN {TERM_CONTENT_WEIGHT} WHEN i.summary LIKE ?{p} ESCAPE '\\' THEN {TERM_SUMMARY_WEIGHT} WHEN i.aliases_json LIKE ?{p} ESCAPE '\\' THEN {TERM_ALIASES_WEIGHT} ELSE 0 END)"
-        )
-    }).collect::<Vec<_>>();
-    if token_scores.is_empty() {
-        phrase
-    } else {
-        format!("{phrase} + {}", token_scores.join(" + "))
+fn relevance_order(terms: &[String], entities: &[String], first_param: usize) -> String {
+    let matches = |p: usize| format!("(i.content_norm LIKE ?{p} ESCAPE '\\' OR i.summary_norm LIKE ?{p} ESCAPE '\\' OR i.aliases_norm LIKE ?{p} ESCAPE '\\')");
+    let phrase = format!("(CASE WHEN {} THEN {EXACT_PHRASE_BONUS} ELSE 0 END + CASE WHEN i.content_norm LIKE ?2 ESCAPE '\\' THEN {PHRASE_CONTENT_WEIGHT} ELSE 0 END + CASE WHEN i.summary_norm LIKE ?2 ESCAPE '\\' THEN {PHRASE_SUMMARY_WEIGHT} ELSE 0 END + CASE WHEN i.aliases_norm LIKE ?2 ESCAPE '\\' THEN {PHRASE_ALIASES_WEIGHT} ELSE 0 END)", matches(2));
+    let mut scores = vec![phrase];
+    if !terms.is_empty() {
+        let all_terms = (0..terms.len()).map(|index| matches(first_param + index)).collect::<Vec<_>>().join(" AND ");
+        scores.push(format!("CASE WHEN {all_terms} THEN {ALL_TERMS_BONUS} ELSE 0 END"));
+        scores.extend(terms.iter().enumerate().map(|(index, _)| {
+            let p = first_param + index;
+            format!("CASE WHEN i.content_norm LIKE ?{p} ESCAPE '\\' THEN {TERM_CONTENT_WEIGHT} WHEN i.summary_norm LIKE ?{p} ESCAPE '\\' THEN {TERM_SUMMARY_WEIGHT} WHEN i.aliases_norm LIKE ?{p} ESCAPE '\\' THEN {TERM_ALIASES_WEIGHT} ELSE 0 END")
+        }));
+    }
+    if !entities.is_empty() {
+        let coverage = (0..entities.len()).map(|index| format!("CASE WHEN {} THEN 1.0 ELSE 0 END", matches(first_param + terms.len() + index))).collect::<Vec<_>>().join(" + ");
+        scores.push(format!("{ENTITY_COVERAGE_BONUS} * ({coverage}) / {}", entities.len()));
+    }
+    format!("({})", scores.join(" + "))
+}
+
+pub(crate) fn event_at_projection(value: Option<&Value>) -> (Option<i64>, Option<String>) {
+    let Some(anchor) = value else { return (None, None) };
+    match anchor.get("precision").and_then(Value::as_str) {
+        Some("minute") => {
+            let instant = anchor.get("instant").and_then(Value::as_i64);
+            let date = instant.and_then(|value| Local.timestamp_millis_opt(value).single())
+                .map(|value| value.date_naive().format("%Y-%m-%d").to_string());
+            (instant, date)
+        }
+        Some("day") => (None, anchor.get("localDate").and_then(Value::as_str).map(str::to_owned)),
+        _ => (None, None),
     }
 }
 
-fn relevance_score(item: &Value, query: &str) -> i64 {
-    let draft = item.get("draft").unwrap_or(&Value::Null);
-    let content = s(draft, "content").to_lowercase();
-    let summary = s(draft, "summary").to_lowercase();
-    let aliases = draft
-        .get("aliases")
-        .map(Value::to_string)
-        .unwrap_or_default()
-        .to_lowercase();
-    let phrase = query.trim().to_lowercase();
-    let mut score = (if content.contains(&phrase) {
-        PHRASE_CONTENT_WEIGHT
-    } else {
-        0
-    }) + (if summary.contains(&phrase) {
-        PHRASE_SUMMARY_WEIGHT
-    } else {
-        0
-    }) + (if aliases.contains(&phrase) {
-        PHRASE_ALIASES_WEIGHT
-    } else {
-        0
-    });
-    for term in memory_query_terms(query) {
-        score += if content.contains(&term) {
-            TERM_CONTENT_WEIGHT
-        } else if summary.contains(&term) {
-            TERM_SUMMARY_WEIGHT
-        } else if aliases.contains(&term) {
-            TERM_ALIASES_WEIGHT
-        } else {
-            0
-        };
-    }
-    score
+fn fact_fts_query(text: &str, terms: &[String]) -> String {
+    let mut phrases = vec![fts_phrase(text)];
+    phrases.extend(terms.iter().filter(|term| term.chars().count() >= 3).map(|term| fts_phrase(term)));
+    phrases.sort();
+    phrases.dedup();
+    phrases.join(" OR ")
 }
 
 /// SQL 参数：用 rusqlite 自己的值类型，避免把 serde_json::Value 直接塞进语句。
@@ -566,12 +620,12 @@ fn validate_draft(draft: &Value) -> AppResult<()> {
             "working 条目必须带 open/completed/cancelled 状态".into(),
         ));
     }
-    if kind != "working"
-        && (draft.get("eventAt").is_some_and(|v| !v.is_null())
-            || draft.get("dueAt").is_some_and(|v| !v.is_null())
-            || draft.get("workingState").is_some_and(|v| !v.is_null()))
+    if (kind != "working" && (draft.get("dueAt").is_some_and(|v| !v.is_null())
+        || draft.get("workingState").is_some_and(|v| !v.is_null())))
+        || (!matches!(kind.as_str(), "working" | "episode")
+            && draft.get("eventAt").is_some_and(|v| !v.is_null()))
     {
-        return Err(AppError::Memory("仅 working 条目可带事项时间和状态".into()));
+        return Err(AppError::Memory("仅 episode/working 条目可带 eventAt，dueAt 和 workingState 仅适用于 working".into()));
     }
     for key in ["eventAt", "dueAt"] {
         if let Some(anchor) = draft.get(key).filter(|value| !value.is_null()) {
@@ -1346,18 +1400,7 @@ impl MemoryStore {
         limit: i64,
     ) -> AppResult<Vec<Value>> {
         let conn = self.lock()?;
-        Self::query_on(&conn, query, scope, scope_id, session_id, limit)
-    }
-
-    fn query_on(
-        conn: &Connection,
-        query: &str,
-        scope: Option<&str>,
-        scope_id: Option<&str>,
-        session_id: Option<&str>,
-        limit: i64,
-    ) -> AppResult<Vec<Value>> {
-        Self::query_on_with_event_time(conn, query, scope, scope_id, session_id, limit, None)
+        Ok(Self::query_on_with_event_time(&conn, query, scope, scope_id, session_id, limit, None, false, &[])?.items)
     }
 
     fn query_on_with_event_time(
@@ -1368,126 +1411,102 @@ impl MemoryStore {
         session_id: Option<&str>,
         limit: i64,
         event_time: Option<&MemoryEventTime>,
-    ) -> AppResult<Vec<Value>> {
-        let text = query.trim();
+        observe: bool,
+        entities: &[String],
+    ) -> AppResult<FactQueryResult> {
+        let started = observe.then(Instant::now);
+        let mut diagnostics = RecallDiagnostics::default();
+        let normalized_text = normalize_memory_text(query.trim());
+        let text = normalized_text.as_str();
         if text.is_empty() {
-            return Ok(Vec::new());
+            return Ok(FactQueryResult { items: Vec::new(), ranks: FactRanks::new(), diagnostics });
         }
         let limit = limit.clamp(LIMIT_MIN, QUERY_LIMIT_MAX);
-        let like = format!("%{}%", escape_like(text));
         let terms = memory_query_terms(text);
-        let (term_sql, term_args) = query_token_clause(&terms, 4);
-        let term_sql = if term_sql.is_empty() {
-            String::new()
-        } else {
-            format!(" OR ({term_sql})")
-        };
-        // Compute FTS hits once; a correlated EXISTS repeats MATCH for every item.
-        // Keep the version in the join so a stale index row cannot match a newer fact.
-        let mut sql = format!(
-            "SELECT {} FROM memory_items i WHERE i.status='active' \
-             AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
-             AND (i.valid_to IS NULL OR i.valid_to > ?1) \
-             AND (i.expires_at IS NULL OR i.expires_at > ?1) \
-             AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\' \
-                  OR (i.id,i.version) IN (SELECT item_id,item_version FROM memory_fts WHERE memory_fts MATCH ?3){term_sql})",
-            Self::ITEM_COLUMNS
-        );
-        let mut args: Vec<Value> = vec![json!(now_ms()), json!(like), json!(fts_phrase(text))];
-        args.extend(term_args);
-        if let Some(scope) = scope {
-            args.push(json!(scope));
-            sql.push_str(&format!(" AND i.scope=?{}", args.len()));
-        }
-        if let Some(scope_id) = scope_id {
-            args.push(json!(scope_id));
-            sql.push_str(&format!(" AND i.scope_id=?{}", args.len()));
-        }
-        if let Some(session_id) = session_id {
-            args.push(json!(session_id));
-            sql.push_str(&format!(
-                " AND (?{} IS NULL OR i.scope <> 'session' OR i.scope_id=?{})",
-                args.len(),
-                args.len()
-            ));
-        }
-        sql.push_str(&format!(" ORDER BY {} DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id", relevance_order(&terms, 4)));
-        if event_time.is_none() {
-            sql.push_str(" LIMIT ?");
-            args.push(json!(limit));
-        }
-        let mut rows = {
-            let mut statement = conn.prepare(&sql).map_err(db_err)?;
-            let mapped = statement
-                .query_map(
-                    rusqlite::params_from_iter(params_of(&args)),
-                    Self::row_to_item,
-                )
-                .map_err(db_err)?
-                .collect::<Result<Vec<_>, _>>();
-            match mapped {
-                Ok(items) => items,
-                // FTS 语法在极端输入下可能被拒（例如只剩标点）：退回纯 LIKE，不让整次召回失败。
-                Err(_) => {
-                    let (fallback_terms, fallback_term_args) = query_token_clause(&terms, 3);
-                    let fallback_terms = if fallback_terms.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" OR ({fallback_terms})")
-                    };
-                    let mut fallback = format!(
-                        "SELECT {} FROM memory_items i WHERE i.status='active' \
-                         AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
-             AND (i.valid_to IS NULL OR i.valid_to > ?1) \
-             AND (i.expires_at IS NULL OR i.expires_at > ?1) \
-                         AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\'{fallback_terms})",
-                        Self::ITEM_COLUMNS
-                    );
-                    let mut fallback_args: Vec<Value> = vec![json!(now_ms()), json!(like)];
-                    fallback_args.extend(fallback_term_args);
-                    if let Some(scope) = scope {
-                        fallback_args.push(json!(scope));
-                        fallback.push_str(&format!(" AND i.scope=?{}", fallback_args.len()));
-                    }
-                    if let Some(scope_id) = scope_id {
-                        fallback_args.push(json!(scope_id));
-                        fallback.push_str(&format!(" AND i.scope_id=?{}", fallback_args.len()));
-                    }
-                    if let Some(session_id) = session_id {
-                        fallback_args.push(json!(session_id));
-                        fallback.push_str(&format!(
-                            " AND (?{} IS NULL OR i.scope <> 'session' OR i.scope_id=?{})",
-                            fallback_args.len(),
-                            fallback_args.len()
-                        ));
-                    }
-                    fallback.push_str(&format!(" ORDER BY {} DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id", relevance_order(&terms, 3)));
-                    if event_time.is_none() {
-                        fallback.push_str(" LIMIT ?");
-                        fallback_args.push(json!(limit));
-                    }
-                    let mut statement = conn.prepare(&fallback).map_err(db_err)?;
-                    let rows = statement
-                        .query_map(
-                            rusqlite::params_from_iter(params_of(&fallback_args)),
-                            Self::row_to_item,
-                        )
-                        .map_err(db_err)?
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(db_err)?;
-                    rows
+        let entities = entities.iter().map(|entity| normalize_memory_text(entity.trim()))
+            .filter(|entity| !entity.is_empty()).take(QUERY_TERM_LIMIT).collect::<Vec<_>>();
+        let now = now_ms();
+        let build_query = |use_fts: bool, apply_event_time: bool| {
+            let first_term = if use_fts { 4 } else { 3 };
+            let (term_sql, term_args) = query_token_clause(&terms, first_term);
+            let token_clause = if term_sql.is_empty() { String::new() } else { format!(" OR ({term_sql})") };
+            let deterministic_score = relevance_order(&terms, &entities, first_term);
+            let (prefix, join, fts_match, fts_score, fts_hit) = if use_fts {
+                let weights = FTS_FIELD_WEIGHTS.iter().map(f64::to_string).collect::<Vec<_>>().join(",");
+                (format!("WITH fts_hits AS MATERIALIZED (SELECT item_id,item_version,bm25(memory_fts,{weights}) AS fts_rank FROM memory_fts WHERE memory_fts MATCH ?3) "),
+                 " LEFT JOIN fts_hits f ON f.item_id=i.id AND f.item_version=i.version", " OR f.item_id IS NOT NULL",
+                 "COALESCE(-f.fts_rank / (1.0 - f.fts_rank), 0.0)", "f.item_id IS NOT NULL")
+            } else {
+                (String::new(), "", "", "0.0", "0")
+            };
+            let mut sql = format!(
+                "{prefix}SELECT {}, {deterministic_score} + {fts_score} AS retrieval_score, {fts_hit} AS fts_hit \
+                 FROM memory_items i{join} WHERE i.status='active' \
+                 AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
+                 AND (i.valid_to IS NULL OR i.valid_to > ?1) \
+                 AND (i.expires_at IS NULL OR i.expires_at > ?1) \
+                 AND (i.content_norm LIKE ?2 ESCAPE '\\' OR i.summary_norm LIKE ?2 ESCAPE '\\' OR i.aliases_norm LIKE ?2 ESCAPE '\\'{fts_match}{token_clause})",
+                Self::ITEM_COLUMNS
+            );
+            let mut args = vec![json!(now), json!(format!("%{}%", escape_like(text)))];
+            if use_fts { args.push(json!(fact_fts_query(text, &terms))); }
+            args.extend(term_args);
+            args.extend(entities.iter().map(|entity| json!(format!("%{}%", escape_like(entity)))));
+            for (column, value) in [("scope", scope), ("scope_id", scope_id)] {
+                if let Some(value) = value {
+                    args.push(json!(value));
+                    sql.push_str(&format!(" AND i.{column}=?{}", args.len()));
                 }
             }
+            if let Some(session_id) = session_id {
+                args.push(json!(session_id));
+                sql.push_str(&format!(" AND (i.scope <> 'session' OR i.scope_id=?{})", args.len()));
+            }
+            if apply_event_time {
+                if let Some(event_time) = event_time {
+                    let (time_sql, time_args) = event_time.sql_predicate(args.len() + 1);
+                    sql.push_str(&time_sql);
+                    args.extend(time_args);
+                }
+            }
+            sql.push_str(" ORDER BY retrieval_score DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id");
+            if event_time.is_none() {
+                args.push(json!(limit));
+                sql.push_str(&format!(" LIMIT ?{}", args.len()));
+            }
+            (sql, args)
         };
-        if let Some(event_time) = event_time {
-            rows.retain(|item| {
-                event_time.matches_event_at(
-                    item.get("draft").and_then(|draft| draft.get("eventAt")),
-                )
-            });
-            rows.truncate(limit as usize);
+        let read = |use_fts, apply_event_time| -> AppResult<Vec<(Value, f64, bool)>> {
+            let (sql, args) = build_query(use_fts, apply_event_time);
+            let mut statement = conn.prepare(&sql).map_err(db_err)?;
+            let rows = statement.query_map(params_from_iter(params_of(&args)), |row| {
+                Ok((Self::row_to_item(row)?, row.get("retrieval_score")?, row.get("fts_hit")?))
+            }).map_err(db_err)?.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+            Ok(rows)
+        };
+        let (ranked, used_fts) = match read(true, true) {
+            Ok(rows) => (rows, true),
+            Err(error) => {
+                rust_warn!("Memory FTS lookup failed; using lexical fallback: {}", error);
+                (read(false, true)?, false)
+            }
+        };
+        if let Some(started) = started {
+            diagnostics.query_latency_ms = started.elapsed().as_secs_f64() * 1_000.0;
         }
-        Self::attach_sources(conn, rows)
+        if observe {
+            if event_time.is_some() {
+                diagnostics.time_filter_before = read(used_fts, false)?.len() as i64;
+            }
+            diagnostics.time_filter_after = ranked.len() as i64;
+            diagnostics.fts_hits = ranked.iter().filter(|(_, _, fts_hit)| *fts_hit).count() as i64;
+            diagnostics.like_fallbacks = ranked.len() as i64 - diagnostics.fts_hits;
+        }
+        let mut ranked = ranked;
+        ranked.truncate(limit as usize);
+        let ranks = ranked.iter().map(|(item, score, _)| ((s(item, "id"), i(item, "version").unwrap_or_default()), *score)).collect();
+        let rows = Self::attach_sources(conn, ranked.into_iter().map(|(item, _, _)| item).collect())?;
+        Ok(FactQueryResult { items: rows, ranks, diagnostics })
     }
 
     /// All conversational recall inputs share one SQLite read snapshot and revision.
@@ -1521,6 +1540,31 @@ impl MemoryStore {
         allow_expired_targets: bool,
         event_time: Option<&MemoryEventTime>,
     ) -> AppResult<Value> {
+        self.recall_candidates_with_event_time_observed(
+            query,
+            card_id,
+            session_id,
+            limit,
+            targets,
+            allow_expired_targets,
+            event_time,
+            false,
+            &[],
+        )
+    }
+
+    pub(crate) fn recall_candidates_with_event_time_observed(
+        &self,
+        query: &str,
+        card_id: Option<&str>,
+        session_id: &str,
+        limit: i64,
+        targets: &[Value],
+        allow_expired_targets: bool,
+        event_time: Option<&MemoryEventTime>,
+        observe: bool,
+        entities: &[String],
+    ) -> AppResult<Value> {
         if session_id.is_empty() {
             return Err(AppError::Memory("召回缺少当前 sessionId".into()));
         }
@@ -1533,29 +1577,20 @@ impl MemoryStore {
                 |row| row.get(0),
             )
             .map_err(db_err)?;
-        let user = Self::query_on_with_event_time(&tx, query, Some("user"), None, Some(session_id), limit, event_time)?;
+        let user_result = Self::query_on_with_event_time(&tx, query, Some("user"), None, Some(session_id), limit, event_time, observe, entities)?;
+        let mut diagnostics = user_result.diagnostics;
+        let mut ranks = user_result.ranks;
+        let user = user_result.items;
         let card = if let Some(card_id) = card_id {
-            Self::query_on_with_event_time(
-                &tx,
-                query,
-                Some("card"),
-                Some(card_id),
-                Some(session_id),
-                limit,
-                event_time,
-            )?
-        } else {
-            Vec::<Value>::new()
-        };
-        let session = Self::query_on_with_event_time(
-            &tx,
-            query,
-            Some("session"),
-            Some(session_id),
-            Some(session_id),
-            limit,
-            event_time,
-        )?;
+            let result = Self::query_on_with_event_time(&tx, query, Some("card"), Some(card_id), Some(session_id), limit, event_time, observe, entities)?;
+            diagnostics.add_assign(result.diagnostics);
+            ranks.extend(result.ranks);
+            result.items
+        } else { Vec::new() };
+        let session_result = Self::query_on_with_event_time(&tx, query, Some("session"), Some(session_id), Some(session_id), limit, event_time, observe, entities)?;
+        diagnostics.add_assign(session_result.diagnostics);
+        ranks.extend(session_result.ranks);
+        let session = session_result.items;
         let now = now_ms();
         let mut targeted = Vec::new();
         let mut targeted_seen = std::collections::HashSet::new();
@@ -1606,8 +1641,8 @@ impl MemoryStore {
             .cloned()
             .collect::<Vec<_>>();
         candidates.sort_by(|left, right| {
-            relevance_score(right, query)
-                .cmp(&relevance_score(left, query))
+            let rank = |item: &Value| ranks.get(&(s(item, "id"), i(item, "version").unwrap_or_default())).copied().unwrap_or(0.0);
+            rank(right).total_cmp(&rank(left))
                 .then_with(|| {
                     number(
                         right.get("draft").unwrap_or(&Value::Null),
@@ -1625,9 +1660,28 @@ impl MemoryStore {
         });
         let pinned = Self::pinned_on(&tx, card_id, session_id, QUERY_LIMIT_MAX)?;
         tx.commit().map_err(db_err)?;
-        Ok(
-            json!({ "revision": revision, "candidatesByScope": { "user": user, "card": card, "session": session }, "candidates": candidates, "pinned": pinned, "targeted": targeted }),
-        )
+        let mut snapshot = json!({
+            "revision": revision,
+            "candidatesByScope": { "user": user, "card": card, "session": session },
+            "candidates": candidates,
+            "pinned": pinned,
+            "targeted": targeted,
+        });
+        if observe {
+            snapshot["diagnostics"] = json!({
+                "ftsHits": diagnostics.fts_hits,
+                "likeFallbacks": diagnostics.like_fallbacks,
+                "timeFilterBefore": diagnostics.time_filter_before,
+                "timeFilterAfter": diagnostics.time_filter_after,
+                "queryLatencyMs": diagnostics.query_latency_ms,
+                "duplicateEvents": diagnostics.duplicate_events,
+                "jsonlReadbackCandidates": diagnostics.jsonl_readback_candidates,
+                "jsonlReadbackDropped": diagnostics.jsonl_readback_dropped,
+                "coldIndexMs": diagnostics.cold_index_ms,
+                "coldIndexSessions": diagnostics.cold_index_sessions,
+            });
+        }
+        Ok(snapshot)
     }
 
     pub fn get_items(&self, ids: &[String]) -> AppResult<Vec<Value>> {
@@ -2002,8 +2056,8 @@ impl MemoryStore {
                     .map_err(|e| AppError::Memory(e.to_string()))?;
                 transaction
                     .execute(
-                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state) \
-                         VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17,?18,?19,?20)",
+                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state,event_at_ms,event_at_date,content_norm,summary_norm,aliases_norm) \
+                         VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
                         params![
                             id,
                             version,
@@ -2025,6 +2079,11 @@ impl MemoryStore {
                             draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
                             draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
                             opt_s(draft, "workingState"),
+                            event_at_projection(draft.get("eventAt").filter(|value| !value.is_null())).0,
+                            event_at_projection(draft.get("eventAt").filter(|value| !value.is_null())).1,
+                            normalize_memory_text(&s(draft, "content")),
+                            normalize_memory_text(&s(draft, "summary")),
+                            normalize_memory_text(&aliases),
                         ],
                     )
                     .map_err(db_err)?;
@@ -2039,7 +2098,7 @@ impl MemoryStore {
                 transaction
                     .execute(
                         "INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) VALUES (?1,?2,?3,?4,?5)",
-                        params![id, version, s(draft, "content"), s(draft, "summary"), aliases],
+                        params![id, version, normalize_memory_text(&s(draft, "content")), normalize_memory_text(&s(draft, "summary")), normalize_memory_text(&aliases)],
                     )
                     .map_err(db_err)?;
             }
@@ -2506,8 +2565,8 @@ impl MemoryStore {
                 .map_err(|e| AppError::Memory(e.to_string()))?;
             transaction
                 .execute(
-                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state) \
-                     VALUES (?1,1,'active',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16,?17,?18,?19)",
+                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state,event_at_ms,event_at_date,content_norm,summary_norm,aliases_norm) \
+                     VALUES (?1,1,'active',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16,?17,?18,?19,?20,?21,?22,?23,?24)",
                     params![
                         id,
                         s(&draft, "content"),
@@ -2528,6 +2587,11 @@ impl MemoryStore {
                         draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
                         draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
                         opt_s(&draft, "workingState"),
+                        event_at_projection(draft.get("eventAt").filter(|value| !value.is_null())).0,
+                        event_at_projection(draft.get("eventAt").filter(|value| !value.is_null())).1,
+                        normalize_memory_text(&s(&draft, "content")),
+                        normalize_memory_text(&s(&draft, "summary")),
+                        normalize_memory_text(&aliases),
                     ],
                 )
                 .map_err(db_err)?;
@@ -2542,7 +2606,7 @@ impl MemoryStore {
             transaction
                 .execute(
                     "INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) VALUES (?1,1,?2,?3,?4)",
-                    params![id, s(&draft, "content"), s(&draft, "summary"), aliases],
+                    params![id, normalize_memory_text(&s(&draft, "content")), normalize_memory_text(&s(&draft, "summary")), normalize_memory_text(&aliases)],
                 )
                 .map_err(db_err)?;
             // 合并候选：被吸收的旧条目逐个失效（插入前已复核仍在库、同范围同类别；行与
@@ -2772,7 +2836,7 @@ impl MemoryStore {
         conn.execute("DELETE FROM memory_fts", []).map_err(db_err)?;
         conn.execute(
             "INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) \
-             SELECT i.id,i.version,i.content,i.summary,i.aliases_json FROM memory_items i \
+             SELECT i.id,i.version,i.content_norm,i.summary_norm,i.aliases_norm FROM memory_items i \
              WHERE i.status='active'",
             [],
         )
@@ -2936,7 +3000,7 @@ impl MemoryStore {
             conn.execute("DELETE FROM memory_fts", []).map_err(db_err)?;
             conn.execute(
             "INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) \
-             SELECT i.id,i.version,i.content,i.summary,i.aliases_json FROM memory_items i WHERE i.status='active'",
+             SELECT i.id,i.version,i.content_norm,i.summary_norm,i.aliases_norm FROM memory_items i WHERE i.status='active'",
             [],
         )
         .map_err(db_err)?;

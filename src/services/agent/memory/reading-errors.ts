@@ -14,6 +14,8 @@ export const MEMORY_READING_ERROR_CATEGORIES = [
   "duplicate_check",
   "invalid_check_source",
   "invalid_search_query",
+  "missing_evidence_review",
+  "invalid_evidence_review",
 ] as const
 
 export type ReadingErrorCategory = typeof MEMORY_READING_ERROR_CATEGORIES[number]

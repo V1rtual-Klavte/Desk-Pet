@@ -89,11 +89,13 @@ pub fn memory_recall_candidates(
     targets: Option<Vec<Value>>,
     allow_expired_targets: Option<bool>,
     event_time: Option<Value>,
+    observe: Option<bool>,
+    entities: Option<Vec<String>>,
 ) -> AppResult<Value> {
     let event_time = event_time
         .map(MemoryEventTime::from_value)
         .transpose()?;
-    state.0.recall_candidates_with_event_time(
+    state.0.recall_candidates_with_event_time_observed(
         &query,
         card_id.as_deref(),
         &session_id,
@@ -101,6 +103,8 @@ pub fn memory_recall_candidates(
         targets.as_deref().unwrap_or(&[]),
         allow_expired_targets.unwrap_or(false),
         event_time.as_ref(),
+        observe.unwrap_or(false),
+        entities.as_deref().unwrap_or(&[]),
     )
 }
 

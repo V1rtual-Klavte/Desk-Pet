@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
-import { userInputMessage } from "@/services/engine/runtime"
+import { inputEventId, sha256Text, userInputMessage } from "@/services/engine/runtime"
 import { acquirePiSession, createPiSession, PI_LANE, releasePiSession } from "@/services/session"
 import type { MemorySource } from "@/services/agent/memory"
 import { getActiveCard, saveCardText } from "@/services/personality"
@@ -40,7 +40,7 @@ export async function buildLocomoHistory(conversation: LocomoConversation, evide
           throw new Error(`LoCoMo ${conversation.sampleId}/${turn.diaId}: unknown participant ${turn.speaker}`)
         const role = turn.speaker === a ? "user" : "assistant"
         const observedAt = (session.observedAt ?? 0) + index * 1_000
-        const eventId = `bench-locomo-${conversation.sampleId}-${turn.diaId}`
+        const eventId = inputEventId(`bench-locomo-${conversation.sampleId}-${turn.diaId}`)
         const body = renderLocomoDialogueEntry({ ...turn, dateText: session.dateText })
         const message = role === "user"
           ? { ...userInputMessage(body, eventId, {
@@ -48,13 +48,13 @@ export async function buildLocomoHistory(conversation: LocomoConversation, evide
           }), timestamp: observedAt }
           : fauxAssistantMessage(body, { timestamp: observedAt })
         const entryId = await branch.appendMessage(message, BACKGROUND_CONTEXT)
-        const sourceId = `${conversation.sampleId}:${turn.diaId}`
+        const sourceId = `${fixture.id}:${entryId}`
         const sourceMeta: LocomoSourceMeta = { observedAt, sessionId: fixture.id, turnIndex: index, diaId: turn.diaId, role }
         meta.set(`conversation:${fixture.id}:${entryId}`, sourceMeta)
         meta.set(sourceId, sourceMeta)
         // Participant B is quoted dialogue, never admitted as the user's own fact.
         if (role === "user") sessionSources.push({ sourceId, sessionId: fixture.id, entryId, eventId,
-          seq: 0, contentHash: "", evidence: body.slice(0, evidenceChars), sourceLength: body.length,
+          seq: 0, contentHash: await sha256Text(body.trim()), evidence: body.trim().slice(0, evidenceChars), sourceLength: body.trim().length,
           eligibleForMemory: true, taint: "trusted_user", origin: "user", observedAt })
       }
       const entries = await handle.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)

@@ -22,10 +22,12 @@ import type {
   MemoryScope,
   MemoryRestorePreview,
   MemoryRecallCandidateSnapshot,
+  MemoryRecallDiagnostics,
   MemoryEventTime,
   MemorySource,
   MemorySourceAudit,
   MemoryStatus,
+  TemporalAnchor,
   WorkingState,
   ConversationClearFence,
 } from "./protocol"
@@ -42,12 +44,14 @@ export type {
   MemoryKind,
   MemoryOrigin,
   MemoryRecallCandidateSnapshot,
+  MemoryRecallDiagnostics,
   MemoryEventTime,
   MemoryRestorePreview,
   MemoryScope,
   MemorySource,
   MemorySourceAudit,
   MemoryStatus,
+  TemporalAnchor,
   WorkingState,
 }
 
@@ -117,6 +121,8 @@ export async function getMemoryRecallCandidates(
   targets: Array<{ id: string; version: number }> = [],
   allowExpiredTargets = false,
   eventTime?: MemoryEventTime,
+  observe = false,
+  entities: readonly string[] = [],
 ): Promise<MemoryRecallCandidateSnapshot> {
   if (!sessionId) throw new Error("记忆召回缺少当前会话身份")
   return getHostBridge().request("memory_recall_candidates", {
@@ -127,6 +133,8 @@ export async function getMemoryRecallCandidates(
     targets,
     allowExpiredTargets,
     ...(eventTime ? { eventTime } : {}),
+    ...(observe ? { observe: true } : {}),
+    ...(entities.length ? { entities: [...entities] } : {}),
   })
 }
 
@@ -208,9 +216,9 @@ export async function pendingMemorySourceCount(origin?: MemoryOrigin): Promise<n
   return getHostBridge().request("memory_pending_source_count", { origin: origin ?? null })
 }
 
-/** UI-only readback of bounded evidence; forgotten or suppressed sources return null. */
-export async function memorySourceEvidence(sourceId: string): Promise<MemorySource | null> {
-  return getHostBridge().request("memory_source_evidence", { sourceId })
+/** Governed metadata and bounded audit preview. Recall uses metadata, then verifies full JSONL. */
+export async function memorySourceEvidence(sourceId: string, signal?: AbortSignal): Promise<MemorySource | null> {
+  return getHostBridge().request("memory_source_evidence", { sourceId }, { signal })
 }
 
 export async function addMemoryCandidates(jobId: string, candidates: MemoryCandidateDraft[]): Promise<number> {

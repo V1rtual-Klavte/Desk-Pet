@@ -25,6 +25,7 @@ serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # 线协议信封（ipc/protocol.rs）与单元测试的 JSON 往返
 serde_json = "1"
+unicode-normalization = "0.1"
 # Bundled SQLite keeps macOS and Windows on the same SQLite/FTS5 runtime.
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 # 记忆来源准入与作业协议的内容哈希

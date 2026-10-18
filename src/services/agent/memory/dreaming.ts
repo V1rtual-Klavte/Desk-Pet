@@ -37,7 +37,7 @@ import {
   memoryList, memoryStatus, pendingMemorySourceCount, reserveMemoryDreamingBudget, resumeMemoryJob,
   settleMemoryDreamingBudget, startMemoryJob,
 } from "./ipc"
-import type { MemoryCandidateDraft, MemoryDraft, MemoryItem, MemoryJob, MemorySource } from "./ipc"
+import type { MemoryCandidateDraft, MemoryDraft, MemoryItem, MemoryJob, MemorySource, TemporalAnchor } from "./ipc"
 
 const log = createLogger("MemoryDreaming")
 
@@ -122,6 +122,7 @@ const REVIEW_SYSTEM_PROMPT = [
   "4. 称呼、稳定的表达偏好可以置 pinned=true；一次性的经历或临时安排置 false。",
   "5. 有明显时效的说法写 expiresAt（毫秒时间戳，可省略）；不要把临时状态写成永久偏好。",
   "6. kind=working 只用于用户明确的待办或约定（临时让你做的事不算），必须带 workingState：open|completed|cancelled（拿不准就 open）。",
+  "6a. kind=episode 可带 eventAt，但只在来源原话明确给出事件日期或时间时填写；不得用记录时间猜事件时间，精度按 day/minute 保留。",
   "7. 只有用户明确表达、跨会话仍然成立的事实或偏好才值得记录：要能从原话直接读出来（如「我习惯…」「我喜欢…」「以后都…」这类明确表述）。",
   "8. 请求句不是偏好：「帮我 / 看看 / 猜猜 / 查一下 / 截个图」这类当场需求，即使重复几次也只说明在聊天或测试，不记；调试与测试性质的任务（让你临时建个文件、试试某功能）不记。",
   "9. 同一批输入里，同一类内容最多产出一条候选；没有新信息就少产出。",
@@ -191,6 +192,7 @@ export function parseReviewCandidates(
     const workingState = kind === "working"
       ? (typeof record.workingState === "string" && WORKING_STATES.has(record.workingState) ? record.workingState : "open")
       : undefined
+    const eventAt = kind === "episode" || kind === "working" ? parseEventAnchor(record.eventAt) : undefined
     // 只有称呼类的稳定事实才允许 pinned，避免模型把所有东西都塞进核心画像。
     const cardId = batch.find(source => sourceIds.includes(source.sourceId))?.cardId
     out.push({
@@ -206,6 +208,7 @@ export function parseReviewCandidates(
         confidence: typeof record.confidence === "number" ? Math.min(1, Math.max(0, record.confidence)) : 0.5,
         observedAt: Date.now(),
         ...(typeof record.expiresAt === "number" ? { expiresAt: record.expiresAt } : {}),
+        ...(eventAt ? { eventAt } : {}),
         ...(workingState ? { workingState: workingState as MemoryDraft["workingState"] } : {}),
         sourceIds,
       },
@@ -218,6 +221,19 @@ export function parseReviewCandidates(
     }
   }
   return out
+}
+
+function parseEventAnchor(value: unknown): TemporalAnchor | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const anchor = value as Record<string, unknown>
+  if (anchor.precision === "day" && typeof anchor.localDate === "string"
+    && /^\d{4}-\d{2}-\d{2}$/.test(anchor.localDate) && typeof anchor.timezone === "string") {
+    return { precision: "day", localDate: anchor.localDate, timezone: anchor.timezone }
+  }
+  if (anchor.precision === "minute" && Number.isSafeInteger(anchor.instant) && typeof anchor.timezone === "string") {
+    return { precision: "minute", instant: anchor.instant as number, timezone: anchor.timezone }
+  }
+  return undefined
 }
 
 function buildReviewPrompt(batch: readonly MemorySource[]): string {

@@ -11,6 +11,9 @@
 - 报告 `schemaVersion = desk-pet-memory-bench/v1`，顶层 `source: "external"`、`status: "observational"`，
   `qualityThresholds: null`。宿主对本次运行的 `PASS` 只表示「完整跑完」，不表示质量达标。
 - **不冒充官方榜单成绩**：判分是「基于官方脚本/模板的自适配结果」，口径差异逐项列在下面。
+- LoCoMo 诊断和重跑证据保存在 `test/.tmp/`；进入 `test/reports/bench/final/` 须由用户明确认定终态，见 [测试 AGENTS 的产物边界](../AGENTS.md)。目前没有用户认定的 LoCoMo 终态结果。
+
+报告 `memoryRecall` 区分全部 recall 样本数与带完整诊断的样本数；没有完整诊断时 FTS、LIKE、时间过滤、去重、JSONL 淘汰和冷索引计数为空值，不解释为零。`recallP95Ms` 是整次召回耗时的 p95，`queryP95Ms` 是每次召回内事实 SQL 查询耗时累加值的 p95；FTS 等计数汇总各 scope 与每条查询的候选命中。`coldIndexMs` 记录本次新建或刷新会话索引的耗时，不代表 OS 冷缓存实测。
 
 预算对比读取 manifest 的 `memoryConfig.budgetPolicy=request-headroom` 与逐题 `memory_recall_start`（总预算、core/recall 额度、实际窗口）；`memory_recall_rendered` 核对真正进入请求的证据集合，`memory_recall_reference_page` 补齐该 render 的完整来源 ID 与角色/时间锚。记忆额度统一按请求剩余输入空间自动派生，不提供手动分层配置；额度提升本身不代表质量或费用收益，须保持题集、模型与判分口径一致对比。
 
@@ -267,3 +270,5 @@ Zep 的 LongMemEval 灌库量级远高于其 per-query 数字，Mem0 架构文�
 - 不冒充官方榜单成绩；报告写明「基于官方脚本/模板的自适配结果」及全部口径差异。
 - 下载一律固定 revision + SHA-256，防上游漂移静默改分。
 - judge 异构于被测模型，不允许被测模型自评。
+
+历史夹具的存储来源身份沿用生产 `sessionId:entryId`，上游对话编号只留在评测 meta 映射，不再作为第二套存储主键。用户事件身份复用生产 `inputEventId` 构造；来源 hash 取完整 trim 正文，`evidence` 仍是有界预览，不能拿预览 hash 冒充完整正文。LoCoMo 的 L3 原话接线同时核对真实 JSONL 的事件身份及长正文 hash。2026-10-17 之前未带 `:user` 后缀的夹具运行不能验证基于事件身份的事实来源原话补读；修正不改上游正文、题目、角色适配、任务规则或官方评分。

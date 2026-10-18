@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const fixture = vi.hoisted(() => ({
@@ -38,10 +39,11 @@ vi.mock("@/services/observation", () => ({ clearSilentUnderstanding: async () =>
 
 import type { HostBridge } from "@/services/host"
 import { setHostBridge } from "@/services/host"
-import { captureConversationClearFences, expandConversationSessions, invalidateConversationSession, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
+import { captureConversationClearFences, expandConversationSessions, invalidateConversationSession, readConversationSources, recallConversation, searchConversationCandidates } from "@/services/agent/memory/conversation"
 import type { ConversationEvidenceEntry, ConversationEvidenceResult } from "@/services/agent/memory/conversation"
 import { estimateContextTokens } from "@/services/context/budget"
 import { applyMemoryChange } from "@/services/agent/memory/ipc"
+import type { MemorySource } from "@/services/agent/memory/ipc"
 import type { MemoryQueryPlan } from "@/services/agent/memory/query"
 import type { Entry } from "@earendil-works/pi-agent-core"
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
@@ -342,6 +344,30 @@ describe("会话原文索引", () => {
     expect(result.entries.every(entry => entry.text === entry.matchedText)).toBe(true)
   })
 
+  it("跨query候选上限整组舍弃尾部回合，不留下失去user锚的回复 [conversation-query-complete-turn-cap]", async () => {
+    const current = session("whole-turn-cap")
+    fixture.metadata = [current]
+    const singles: ConversationEvidenceEntry[] = Array.from({ length: 48 }, (_, index) => ({
+      sessionId: current.id, entryId: `single-${index}`, eventId: `single-event-${index}`,
+      seq: index + 1, chunk: 0, role: "user", timestamp: 100 + index,
+      text: `alpha detail ${index}`, matchedText: `alpha detail ${index}`, score: 1,
+    }))
+    const user: ConversationEvidenceEntry = { ...singles[0]!, entryId: "tail-user", eventId: "tail-event", seq: 49, timestamp: 200, text: "beta user", matchedText: "beta user" }
+    const replies: ConversationEvidenceEntry[] = [50, 51].map(seq => ({ ...user, entryId: `tail-reply-${seq}`, eventId: `tail-reply-event-${seq}`,
+      seq, role: "assistant", timestamp: 200 + seq, text: `beta reply ${seq}`, matchedText: `beta reply ${seq}`, anchorEntryId: user.entryId, anchorEventId: user.eventId }))
+    const all = [...singles, user, ...replies]
+    fixture.transcripts.set(current.id, {
+      entries: all.map(row => messageEntry(row.entryId, row.seq, row.role, row.timestamp, row.eventId ?? undefined)),
+      messages: all.map(row => ({ id: row.entryId, eventId: row.eventId, role: row.role, text: row.text, timestamp: row.timestamp, ...(row.role === "user" ? { isUserInput: true } : {}) })),
+    })
+    const snapshot = { revision: 1, memoryRevision: 7, forgetEpoch: 0 }
+    fixture.searchSnapshots.set("alpha", { ...snapshot, entries: singles })
+    fixture.searchSnapshots.set("beta", { ...snapshot, entries: [...replies, user] })
+    installBridge()
+    const result = await searchConversationCandidates({ sessionId: current.id, queries: ["alpha", "beta"], signal: new AbortController().signal, limit: 50 })
+    expect(result.entries.map(row => row.entryId)).toEqual(singles.map(row => row.entryId))
+  })
+
   it("不同记忆修订代的query结果不会混合 [conversation-query-snapshot-fence]", async () => {
     const current = session("query-snapshot-session")
     fixture.metadata = [current]
@@ -397,7 +423,7 @@ describe("会话原文索引", () => {
     expect(searches.map(call => call.args.recordTime)).toEqual(queries.map(() => recordTime))
   })
 
-  it("纯日期概览以空词查询执行记录时间召回，事件日期不变成记录时间过滤 [conversation-temporal-only-and-event-time]", async () => {
+  it("纯日期概览独立查询原问题与空词记录时间扫描，事件日期不变成记录时间过滤 [conversation-temporal-only-and-event-time]", async () => {
     installBridge()
     const signal = new AbortController().signal
     const datePlan = {
@@ -407,10 +433,9 @@ describe("会话原文索引", () => {
     } satisfies MemoryQueryPlan
     await searchConversationCandidates({ sessionId: "date-only", queries: [], queryPlan: datePlan, signal })
     const dateSearch = fixture.calls.filter(call => call.method === "conversation_search")
-    expect(dateSearch).toHaveLength(1)
-    expect(dateSearch[0]?.args.query).toBe("")
+    expect(dateSearch.map(call => call.args.query)).toEqual([datePlan.originalQuery, ""])
     const recordDate = { calendarDate: datePlan.timeConstraint!.calendarDate }
-    expect(dateSearch[0]?.args.recordTime).toEqual(recordDate)
+    expect(dateSearch.map(call => call.args.recordTime)).toEqual([recordDate, recordDate])
 
     fixture.calls.length = 0
     const eventPlan = {
@@ -445,8 +470,9 @@ describe("会话原文索引", () => {
     })
 
     const searches = fixture.calls.filter(call => call.method === "conversation_search")
-    expect(searches.map(call => call.args.query)).toEqual(["", "项目A迁移步骤"])
+    expect(searches.map(call => call.args.query)).toEqual([originalQuery, "", "项目A迁移步骤"])
     expect(searches.map(call => call.args.recordTime)).toEqual([
+      { calendarDate: { year: 2026, month: 10, day: 2 } },
       { calendarDate: { year: 2026, month: 10, day: 2 } },
       { calendarDate: { year: 2026, month: 10, day: 2 } },
     ])
@@ -661,5 +687,48 @@ describe("命中会话的治理上下文展开", () => {
     const controller = new AbortController()
     fixture.onContext = () => { controller.abort(); return { ...snapshot, entries: rows } }
     expect((await expandConversationSessions(snapshot, { signal: controller.signal, tokenBudget: 5_000 })).entries).toEqual([])
+  })
+})
+
+
+function sourceFor(row: ConversationEvidenceEntry): MemorySource {
+  return { sourceId: `source:${row.entryId}`, sessionId: row.sessionId, entryId: row.entryId,
+    eventId: row.eventId!, seq: row.seq, contentHash: createHash("sha256").update(row.text.trim()).digest("hex"),
+    evidence: "bounded preview must never become transcript evidence", eligibleForMemory: true,
+    taint: "trusted_user", origin: "user", observedAt: row.timestamp }
+}
+
+describe("事实来源的原话回读", () => {
+  it("沿来源精确补回未命中原话，预览不参与正文且不读整段历史 [conversation-fact-source-original]", async () => {
+    const { snapshot, rows } = contextFixture(4)
+    const result = await readConversationSources(snapshot, [sourceFor(rows[0]!)], { signal: new AbortController().signal, tokenBudget: 1_000, before: 200 })
+    expect(result.entries.map(row => [row.entryId, row.text])).toEqual([["view-0", "I viewed distinct property 00."]])
+    expect(fixture.calls.filter(call => call.method === "conversation_context").map(call => call.args)).toEqual([
+      { sessionId: "matched-history", anchorEntryId: "view-0", afterSeq: -1, limit: 50, before: 200 },
+    ])
+    expect(fixture.transcriptReads).toEqual(["matched-history"])
+  })
+
+  it("来源信任、完整正文hash与预算均须通过，不裁剪伪造可用原话 [conversation-fact-source-governance]", async () => {
+    const { snapshot, rows } = contextFixture(4)
+    const source = sourceFor(rows[0]!)
+    const signal = new AbortController().signal
+    expect((await readConversationSources(snapshot, [{ ...source, taint: "untrusted" }, { ...source, eligibleForMemory: false }], { signal, tokenBudget: 1_000 })).entries).toEqual([])
+    expect(fixture.calls).toEqual([])
+    expect((await readConversationSources(snapshot, [{ ...source, contentHash: "stale-hash" }], { signal, tokenBudget: 1_000 })).entries).toEqual([])
+    expect((await readConversationSources(snapshot, [source], { signal, tokenBudget: 1 })).entries).toEqual([])
+  })
+
+  it("遗忘代变化和取消均不发布迟到的事实来源正文 [conversation-fact-source-fence-cancel]", async () => {
+    const { snapshot, rows } = contextFixture(4)
+    const source = sourceFor(rows[0]!)
+    fixture.onContext = () => ({ ...snapshot, forgetEpoch: 2, entries: rows })
+    const result = await readConversationSources(snapshot, [source], { signal: new AbortController().signal, tokenBudget: 1_000 })
+    expect(result).toMatchObject({ entries: [], revisionChanged: true })
+    expect(fixture.transcriptReads).toEqual([])
+    const controller = new AbortController()
+    fixture.onContext = () => { controller.abort(); return { ...snapshot, entries: rows } }
+    expect((await readConversationSources(snapshot, [source], { signal: controller.signal, tokenBudget: 1_000 })).entries).toEqual([])
+    expect(fixture.transcriptReads).toEqual([])
   })
 })

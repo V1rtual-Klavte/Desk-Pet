@@ -158,6 +158,7 @@ E2E 宿主（`run_e2e` / `E2eDispatcher`）只跑测试协议与产品命令矩�
 
 ## 报告在哪、怎么看
 
+- **LoCoMo 诊断与终态**：未获用户终态认定的诊断、试跑和重跑证据放在 `test/.tmp/`，不放入 `test/reports/bench/final/`；归档规则以 [AGENTS.md 的产物边界](./AGENTS.md) 为准。
 - **终端**：默认 `--report terminal`，全局结论与逐 case 结果直接打在运行终端；`--report markdown` 是终端文本的 markdown 版。
 - **文件**：Scene runner 把结果经 `e2e_complete` 交给原生宿主，写入数据根的 `e2e-result.txt`（首行 `PASS` / `FAIL`）；宿主进程退出码是协议的另一半（0 = 完成且关停干净，1 = 报告失败，2 = Node 完成前退出，3 = 报告通过但关停未干净），启动脚本要求两者同时成立才判通过（丢结果、超时、关停未干净都不得标通过）。启动脚本在清理临时数据根之前把它复制进仓库内的 `test/reports/`（已在 `.gitignore` 排除），文件名是 ISO 时间戳。`--report` 决定副本的扩展名：`json`→`.json`、`html`→`.html`、其余（terminal / markdown）→`.txt`。保留最近 **3 场**日期戳报告（外部基准与自建评测分池：`test/reports/bench/`、`test/reports/quality/`，各自独立淘汰），累计体积上限 **200 MiB**，最新一份始终保留；日期戳报告的审阅/评分包（`<报告名>.review.json`、`<报告名>.scored.json`）与父报告算**同一保留单元**：字节计入 200 MiB、组内最新时间作为排序时间、父报告被淘汰时一并删除，父报告已不在的孤儿包在下一次淘汰时清除；`caseids-*.json`（全量 L4 收尾的跨层对账输入）与 `flaky.json` 不参与淘汰。
   **临时数据根也在 `test/.tmp/e2e-<随机>/`** —— 它承载整个 data_root（sessions / logs / personality / …），跑完即删；启动时残留根按 `.pid` 判主人：`process.kill(pid, 0)` 仍存活（或 EPERM）说明另一个 L4 正在跑，直接拒绝启动并指名 pid 与根名（并发第二个 L4 不会再把在跑者的数据根当残留删掉）；无主（无 `.pid` 或进程已死）才抢救残留 trace（含未结束场景与半行）再清理，抢救失败保留该根留待人工处理、不中断启动。`test/.tmp/memory-perf-*` 残留在性能脚本下次启动时回收（前缀匹配 + 目录年龄 ≥3 小时 + 无存活 pid）；清扫只针对已知前缀的运行根，不碰人工放置的输入（如 `proactive-calendar/`），无归属的人工临时文件属可弃物、不设自动清理。L4 的 Node runner bundle 构建产物在 `test/.tmp/native-host-e2e/`（每次运行重建、下次覆盖，不进报告保留链；前缀刻意不是 `e2e-`，不会被残留根回收逻辑当成数据根）。**测试产物一律在 `test/` 下，不落仓库外。**
@@ -167,6 +168,8 @@ E2E 宿主（`run_e2e` / `E2eDispatcher`）只跑测试协议与产品命令矩�
 - **别拿文件名当证据**：归档文档引用报告时写可核对标识（runId / commit / dataset 版本 / cases 与 trials 计数），不写文件名 —— 报告目录的保留策略会淘汰旧文件，按路径引用会悬空。报告与 trace 是两条独立保留链，同一 stamp 一般成对存亡但允许单侧先淘汰（无 trace 运行、启动救援组、性能子运行都会让两侧计数漂移），引用一律以标识为准。
 
 ## Trace、记忆质量与性能门禁
+
+有 trace 订阅时，`memory_recall_end` 可附记忆检索的标量诊断（FTS/LIKE、事件时间筛选前后数量、重复事件、JSONL 回读淘汰、查询耗时与冷索引耗时）；未订阅时不执行这组额外统计。诊断不含查询词或原文。外部 memory-bench 报告显示诊断样本数和 recall/query p95，没有诊断样本的计数显示为未知。
 
 **测试侧模型配置**：被测模型默认继承隔离副本的合成 CONFIG（随仓 `CONFIG.yaml` 模板 + `test/host/native/fixtures/config-overrides.yaml` 覆盖，不含凭据；不再复制真实 `CONFIG-DEV.yaml`）；显式覆盖分两层——[test/eval-models.json](eval-models.json)（进 git，**不得含 apiKey**，出现即显式报错）与本地专属 `test/eval-models.local.json`（已 gitignore、不进 git，可含 `underTest.apiKey` / `underTest.endpoint` / `underTest.reviewMaxTokens`（显式压低/调大 Review 输出上限；缺省按模型输出预算自动推导）等字段）。解析优先级：环境变量 `DESKPET_EVAL_PROVIDER` / `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_JUDGE_MODEL` > 本地文件 > 进 git 文件 > 内置默认；bench 的 `--bench-judge-model` 参数仍最高。真实 Provider 凭据只经上述两层环境入口写进隔离副本（`setOverrides` + 原子保存，含 endpoint / apiKey）；judge 继承测试侧网关的 endpoint / apiKey，只换模型。**judge 必须不同于被测模型**（同模型在开跑前报错）。
 

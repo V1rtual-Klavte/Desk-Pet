@@ -500,12 +500,18 @@ impl MemoryStore {
 
     fn finish_conversation_replace_tx(tx: &Transaction<'_>, session_id: &str) -> AppResult<i64> {
         delete_suppressed_session_tx(tx, session_id)?;
-        tx.execute(
-            "INSERT INTO conversation_fts(rowid,text)
-             SELECT rowid,text FROM conversation_index_entries WHERE session_id=?1",
-            [session_id],
-        )
-        .map_err(db_err)?;
+        let entries = {
+            let mut statement = tx.prepare("SELECT rowid,text FROM conversation_index_entries WHERE session_id=?1")
+                .map_err(db_err)?;
+            let rows = statement.query_map([session_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                .map_err(db_err)?.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+            rows
+        };
+        for (rowid, text) in entries {
+            tx.execute("INSERT INTO conversation_fts(rowid,text) VALUES (?1,?2)",
+                params![rowid, super::store::normalize_memory_text(&text)])
+                .map_err(db_err)?;
+        }
         tx.execute(
             "UPDATE conversation_index_meta SET revision=revision+1 WHERE id=1",
             [],
@@ -859,7 +865,7 @@ impl MemoryStore {
         } else {
             let mut sql = format!(
                 "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
-                 FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}",
+                 FROM conversation_index_entries e JOIN conversation_fts nf ON nf.rowid=e.rowid WHERE {CLEAR_CUTOFF_PREDICATE}",
             );
             let mut values = vec![rusqlite::types::Value::Integer(clear_cutoff)];
             if let Some(before) = before {
@@ -876,7 +882,7 @@ impl MemoryStore {
             }
             for term in &terms {
                 let p = values.len() + 1;
-                conditions.push(format!("e.text LIKE ?{p} ESCAPE '\\'"));
+                conditions.push(format!("nf.text LIKE ?{p} ESCAPE '\\'"));
                 values.push(rusqlite::types::Value::Text(like_pattern(term)));
             }
             sql.push_str(&conditions.join(" OR "));
@@ -885,7 +891,7 @@ impl MemoryStore {
             let found = statement
                 .query_map(params_from_iter(values), Self::read_conversation_row)
                 .map_err(db_err)?;
-            let query_lower = query.trim().to_lowercase();
+            let query_lower = super::store::normalize_memory_text(query.trim());
             // Score every governed hit while retaining only the requested top limit (<= 50).
             // SQL's recency order remains the deterministic tie order, but must not become a
             // hidden candidate ceiling that excludes older exact matches before scoring.
@@ -894,7 +900,7 @@ impl MemoryStore {
                 if record_time.map_or(false, |filter| !filter.matches(row.timestamp)) {
                     continue;
                 }
-                let text = row.text.to_lowercase();
+                let text = super::store::normalize_memory_text(&row.text);
                 let matched = terms
                     .iter()
                     .filter(|term| text.contains(&term.to_lowercase()))
@@ -1186,42 +1192,51 @@ impl MemoryStore {
     ) -> AppResult<Vec<IndexedEntry>> {
         let mut output = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        let append =
-            |entry: IndexedEntry,
-             output: &mut Vec<IndexedEntry>,
-             seen: &mut std::collections::HashSet<(String, String, i64)>| {
-                let key = (
-                    entry.session_id.clone(),
-                    entry.entry_id.clone(),
-                    entry.chunk,
-                );
-                if output.len() < SEARCH_LIMIT_MAX as usize && seen.insert(key) {
-                    output.push(entry);
-                }
-            };
         for hit in matches {
+            let mut unit = Vec::new();
             if hit.role == "user" {
                 for mut assistant in
                     Self::anchored_assistant_chunks(conn, &hit, clear_cutoff, before)?
                 {
                     assistant.score = hit.score + 0.01;
-                    append(assistant, &mut output, &mut seen);
+                    unit.push(assistant);
                 }
-                append(hit, &mut output, &mut seen);
+                unit.push(hit);
             } else {
                 if let Some(mut user) = Self::anchor_user_chunk(conn, &hit, clear_cutoff, before)? {
                     user.score = hit.score;
-                    append(hit.clone(), &mut output, &mut seen);
+                    unit.push(hit.clone());
                     if let Some(mut next) =
                         Self::next_assistant_chunk(conn, &hit, clear_cutoff, before)?
                     {
                         next.score = hit.score;
-                        append(next, &mut output, &mut seen);
+                        unit.push(next);
                     }
-                    append(user, &mut output, &mut seen);
+                    unit.push(user);
                 } else {
-                    append(hit, &mut output, &mut seen);
+                    unit.push(hit);
                 }
+            }
+            // The candidate ceiling must never orphan an anchored reply.
+            let mut unit_seen = std::collections::HashSet::new();
+            unit.retain(|entry| {
+                let key = (
+                    entry.session_id.clone(),
+                    entry.entry_id.clone(),
+                    entry.chunk,
+                );
+                !seen.contains(&key) && unit_seen.insert(key)
+            });
+            if output.len() + unit.len() > SEARCH_LIMIT_MAX as usize {
+                continue;
+            }
+            for entry in unit {
+                seen.insert((
+                    entry.session_id.clone(),
+                    entry.entry_id.clone(),
+                    entry.chunk,
+                ));
+                output.push(entry);
             }
             if output.len() >= SEARCH_LIMIT_MAX as usize {
                 break;
@@ -1406,6 +1421,104 @@ mod tests {
     }
 
     #[test]
+    fn english_conversation_queries_ignore_function_word_substrings() {
+        let fixture = Fixture::new();
+        fixture.replace(
+            "english-context",
+            "fp-english",
+            None,
+            vec![
+                entry(
+                    "study",
+                    Some("study:user"),
+                    1,
+                    "user",
+                    "Nora plans to study geology.",
+                    None,
+                ),
+                entry(
+                    "noise",
+                    Some("noise:user"),
+                    2,
+                    "user",
+                    "I have been thinking about being a better person.",
+                    None,
+                ),
+            ],
+            0,
+        );
+        let result = fixture
+            .1
+            .conversation_search(
+                "Answer using our conversation history: What would Nora likely study?",
+                "english-context",
+                Some(10),
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let rows = result["entries"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["entryId"], "study");
+        assert!(fixture
+            .1
+            .conversation_search("to in be", "english-context", Some(10), None, false, None)
+            .unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn conversation_candidate_ceiling_keeps_complete_anchored_turns() {
+        let fixture = Fixture::new();
+        let mut entries = Vec::new();
+        for index in 0..17 {
+            let user = format!("bounded-user-{index}");
+            let event = format!("bounded-event-{index}");
+            entries.push(entry(
+                &user,
+                Some(&event),
+                index * 3,
+                "user",
+                "lexical-anchor",
+                None,
+            ));
+            for offset in 1..=2 {
+                entries.push(entry(
+                    &format!("bounded-reply-{index}-{offset}"),
+                    None,
+                    index * 3 + offset,
+                    "assistant",
+                    "neutral follow-up",
+                    Some(&user),
+                ));
+            }
+        }
+        fixture.replace("bounded-context", "bounded-fp", None, entries, 0);
+        let result = fixture
+            .1
+            .conversation_search(
+                "lexical-anchor",
+                "bounded-context",
+                Some(50),
+                None,
+                false,
+                None,
+            )
+            .unwrap();
+        let rows = result["entries"].as_array().unwrap();
+        assert_eq!(rows.len(), 48);
+        assert_eq!(rows.iter().filter(|row| row["role"] == "user").count(), 16);
+        for reply in rows.iter().filter(|row| row["role"] == "assistant") {
+            assert!(rows
+                .iter()
+                .any(|user| user["role"] == "user" && user["entryId"] == reply["anchorEntryId"]));
+        }
+    }
+
+    #[test]
     fn trigram_search_keeps_assistant_role_and_cross_session_hits() {
         let fixture = Fixture::new();
         fixture.replace(
@@ -1443,6 +1556,26 @@ mod tests {
             result["memoryRevision"], 0,
             "会话索引写入不能推进事实记忆 revision"
         );
+    }
+
+    #[test]
+    fn conversation_search_normalizes_fullwidth_text_without_rewriting_source() {
+        let fixture = Fixture::new();
+        fixture.replace(
+            "s1",
+            "fp1",
+            None,
+            vec![entry("u1", Some("u1:user"), 1, "user", "我喜欢 ＣＡＦＥ", None)],
+            0,
+        );
+
+        let result = fixture
+            .1
+            .conversation_search("cafe", "s1", Some(10), None, false, None)
+            .expect("NFKC search");
+        let rows = result["entries"].as_array().expect("entries array");
+        assert_eq!(rows.len(), 1, "ASCII query should match normalized fullwidth text");
+        assert_eq!(rows[0]["text"], json!("我喜欢 ＣＡＦＥ"), "indexing must preserve source text");
     }
 
     #[test]

@@ -96,6 +96,43 @@ describe("Runtime trace [trace-runtime]", () => {
     expect(JSON.stringify(observed), "memory正文进入 trace").not.toContain("private memory content")
   })
 
+  it("only emits bounded recall counters and durations, never the query [trace-memory-recall-diagnostics]", () => {
+    const context = createRuntimeTraceContext("session-test", "request-test")
+    let observed: RuntimeTraceEvent | undefined
+    unsubscribes.push(subscribeRuntimeTrace(event => { observed = event }))
+    publishRuntimeTrace(context, "memory_recall_end", () => ({
+      status: "completed",
+      ftsHits: 4,
+      likeFallbacks: 1,
+      timeFilterBefore: 8,
+      timeFilterAfter: 3,
+      queryLatencyMs: 2.75,
+      duplicateEvents: 2,
+      jsonlReadbackCandidates: 6,
+      jsonlReadbackDropped: 1,
+      coldIndexMs: 12.5,
+      coldIndexSessions: 2,
+      query: "这段私密查询不能进入轨迹",
+      arbitraryMetric: "must-drop",
+    }))
+
+    expect(observed?.payload).toEqual({
+      status: "completed",
+      ftsHits: 4,
+      likeFallbacks: 1,
+      timeFilterBefore: 8,
+      timeFilterAfter: 3,
+      queryLatencyMs: 2.75,
+      duplicateEvents: 2,
+      jsonlReadbackCandidates: 6,
+      jsonlReadbackDropped: 1,
+      coldIndexMs: 12.5,
+      coldIndexSessions: 2,
+    })
+    expect(JSON.stringify(observed)).not.toContain("私密查询")
+    expect(JSON.stringify(observed)).not.toContain("must-drop")
+  })
+
   it("limits behavior and proactive governance events to structural fields [trace-proactive-behavior-schema]", () => {
     const context = createRuntimeTraceContext("session-test")
     const observed: RuntimeTraceEvent[] = []

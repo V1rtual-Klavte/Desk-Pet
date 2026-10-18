@@ -161,7 +161,7 @@ describe("Runtime trace 持久化锚点", () => {
         questionChecks: Array<{ condition: string; status: string; sourceIds: string[] }>
       }
       const rendered = trace.events.find(event => event.kind === "memory_recall_rendered")
-      expect(packet.evidence[0]?.text, "原始证据仍须完整进入主请求").toBe("I own a portable power bank.")
+      expect(packet.evidence, "全部必要条件缺失时不将未核对候选带入主请求").toEqual([])
       expect(packet.questionChecks).toEqual([{
         kind: "detail", obligation: "required", condition: "Specific phone accessory already owned", status: "missing", sourceIds: [],
       }])
@@ -169,10 +169,7 @@ describe("Runtime trace 持久化锚点", () => {
       expect(rendered?.payload.questionCheckCount).toBe(1)
       expect(rendered?.payload.readingNoteSourceIds).toEqual([])
       const pages = trace.events.filter(event => event.kind === "memory_recall_reference_page")
-      expect(pages).toHaveLength(1)
-      expect(pages[0]?.payload.renderId).toBe(rendered?.traceId)
-      expect(pages[0]?.payload.total).toBe(4)
-      expect(pages[0]?.payload.sourceIds).toEqual(packet.evidence.map(item => item.id))
+      expect(pages).toHaveLength(0)
       expect(provider.payloads[provider.payloads.length - 1]?.messages.length).toBeGreaterThan(0)
     } finally {
       trace.unsubscribe()

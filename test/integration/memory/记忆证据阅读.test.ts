@@ -90,6 +90,7 @@ describe("记忆证据阅读接线", () => {
     const signal = new AbortController().signal
     mocks.completePiText.mockResolvedValueOnce(readingResponse())
     await focusMemoryEvidence(input(raw, { signal }))
+    expect(mocks.completePiText.mock.calls[0]![0].systemPrompt).toContain("每个文本字段均不得超过320个Unicode字符")
     // Reordering sources changes S1 to S2. No new quote must not erase the
     // earlier verified quote or carry forward its supported interpretation.
     mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
@@ -345,7 +346,9 @@ describe("记忆证据阅读接线", () => {
     })
 
     const focused = await focusMemoryEvidence(input(raw))
-    const rendered = renderMemoryRecall(focused.projections, 12_000, focused.guide)
+    const rendered = renderMemoryRecall(focused.projections, 12_000, focused.guide, {
+      preserveCandidates: focused.noteStatus === "partial",
+    })
     const packet = JSON.parse(rendered.text.slice(rendered.text.indexOf("\n{") + 1)) as {
       evidence: Array<{ id: string; text: string }>
       questionChecks: Array<{ condition: string; status: string; sourceIds: string[] }>
@@ -457,4 +460,26 @@ describe("记忆证据阅读接线", () => {
     expect(packet.questionChecks[0]?.status).toBe("missing")
     expect(rendered.readingNoteSourceIds).toEqual([])
   })
+  it("读者自报推断完整也保留遗漏原话供最终复核 [memory-reading-inference-original-reserve]", async () => {
+    const [first, second] = evidence()
+    const broad = { ...first!, sourceId: "fact:broad@1", conversation: undefined, text: "Nora cares about her community." }
+    const goal = { ...second!, text: "Nora: I am training to become a local park ranger." }
+    mocks.completePiText.mockResolvedValueOnce({ stopReason: "stop", text: JSON.stringify({
+      notes: [{ id: "S1", quote: broad.text, relevance: "宽泛价值依据" }],
+      questionChecks: [{ kind: "premise", obligation: "required", condition: "Nora's personal values", status: "supported", sourceIds: ["S1"] }],
+      evidenceReview: { kind: "inference", complete: true, items: [{ disposition: "answer", conclusion: "Nora may stay locally",
+        basis: "Her community matters", status: "supported", sourceIds: ["S1"], counterSourceIds: [] }] },
+    }) })
+    const focused = await focusMemoryEvidence(input([broad, goal], { query: "Answer using our conversation history: Would Nora move abroad?" }))
+    expect(focused.noteStatus).toBe("complete")
+    expect(focused.projections.map(item => item.sourceId)).toEqual([broad.sourceId, goal.sourceId])
+    expect(focused.projections[1]!.text).toBe(goal.text)
+    const rendered = renderMemoryRecall(focused.projections, 12_000, focused.guide)
+    const packet = JSON.parse(rendered.text.split("\n").slice(1).join("\n"))
+    expect(packet.evidence.map((item: { text: string }) => item.text)).toEqual([broad.text, goal.text])
+    expect(packet.answerMode).toBe("inference")
+    expect(packet).not.toHaveProperty("answerSourceIds")
+    expect(packet).not.toHaveProperty("evidenceReview")
+  })
+
 })

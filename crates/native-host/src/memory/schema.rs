@@ -59,6 +59,11 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           observed_at INTEGER,
           valid_from INTEGER,
           valid_to INTEGER,
+          event_at_ms INTEGER,
+          event_at_date TEXT,
+          content_norm TEXT,
+          summary_norm TEXT,
+          aliases_norm TEXT,
           event_at_json TEXT,
           due_at_json TEXT,
           working_state TEXT,
@@ -69,6 +74,7 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           PRIMARY KEY(id, version)
         ) STRICT;
         CREATE INDEX IF NOT EXISTS memory_items_active ON memory_items(status, scope, scope_id);
+        CREATE INDEX IF NOT EXISTS memory_items_event_time ON memory_items(status, event_at_ms, event_at_date);
 
         CREATE TABLE IF NOT EXISTS memory_item_sources (
           item_id TEXT NOT NULL,
@@ -939,18 +945,25 @@ fn virtual_shadow_names(conn: &Connection, base: &str) -> AppResult<HashSet<Stri
 }
 
 fn fts_content_valid(conn: &Connection, name: &str) -> bool {
+    if name == "conversation_fts" {
+        let indexed = conn.prepare("SELECT rowid,text FROM conversation_fts ORDER BY rowid")
+            .and_then(|mut statement| statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()))
+            .ok();
+        let source = conn.prepare("SELECT rowid,text FROM conversation_index_entries ORDER BY rowid")
+            .and_then(|mut statement| statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()))
+            .ok();
+        return indexed.zip(source).is_some_and(|(indexed, source)| indexed == source.into_iter()
+            .map(|(rowid, text)| (rowid, super::store::normalize_memory_text(&text))).collect::<Vec<_>>());
+    }
     let sql = match name {
         "memory_fts" => {
             "SELECT (SELECT COUNT(*) FROM memory_fts)=(SELECT COUNT(*) FROM memory_items WHERE status='active')
              AND NOT EXISTS(SELECT item_id,CAST(item_version AS TEXT),content,summary,aliases FROM memory_fts
-               EXCEPT SELECT id,CAST(version AS TEXT),content,summary,aliases_json FROM memory_items WHERE status='active')
-             AND NOT EXISTS(SELECT id,CAST(version AS TEXT),content,summary,aliases_json FROM memory_items WHERE status='active'
+               EXCEPT SELECT id,CAST(version AS TEXT),content_norm,summary_norm,aliases_norm FROM memory_items WHERE status='active')
+             AND NOT EXISTS(SELECT id,CAST(version AS TEXT),content_norm,summary_norm,aliases_norm FROM memory_items WHERE status='active'
                EXCEPT SELECT item_id,CAST(item_version AS TEXT),content,summary,aliases FROM memory_fts)"
-        }
-        "conversation_fts" => {
-            "SELECT (SELECT COUNT(*) FROM conversation_fts)=(SELECT COUNT(*) FROM conversation_index_entries)
-             AND NOT EXISTS(SELECT rowid,text FROM conversation_fts EXCEPT SELECT rowid,text FROM conversation_index_entries)
-             AND NOT EXISTS(SELECT rowid,text FROM conversation_index_entries EXCEPT SELECT rowid,text FROM conversation_fts)"
         }
         _ => return false,
     };
@@ -1568,7 +1581,7 @@ fn rebuild_fts_contents(conn: &Connection, name: &str) -> AppResult<()> {
                 .map_err(|error| sql_error("清空 memory_fts 缓存失败", error))?;
             conn.execute(
                 "INSERT INTO memory_fts(item_id,item_version,content,summary,aliases)
-                 SELECT id,version,content,summary,aliases_json FROM memory_items WHERE status='active'",
+                 SELECT id,version,content_norm,summary_norm,aliases_norm FROM memory_items WHERE status='active'",
                 [],
             )
             .map_err(|error| sql_error("从 memory_items 重建 memory_fts 失败", error))?;
@@ -1576,12 +1589,20 @@ fn rebuild_fts_contents(conn: &Connection, name: &str) -> AppResult<()> {
         "conversation_fts" => {
             conn.execute("DELETE FROM conversation_fts", [])
                 .map_err(|error| sql_error("清空 conversation_fts 缓存失败", error))?;
-            conn.execute(
-                "INSERT INTO conversation_fts(rowid,text)
-                 SELECT rowid,text FROM conversation_index_entries",
-                [],
-            )
-            .map_err(|error| sql_error("从会话索引重建 conversation_fts 失败", error))?;
+            let entries = {
+                let mut statement = conn.prepare("SELECT rowid,text FROM conversation_index_entries ORDER BY rowid")
+                    .map_err(|error| sql_error("读取会话 FTS 回填数据失败", error))?;
+                let rows = statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                    .map_err(|error| sql_error("读取会话 FTS 回填数据失败", error))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| sql_error("读取会话 FTS 回填数据失败", error))?;
+                rows
+            };
+            for (rowid, text) in entries {
+                conn.execute("INSERT INTO conversation_fts(rowid,text) VALUES (?1,?2)",
+                    rusqlite::params![rowid, super::store::normalize_memory_text(&text)])
+                    .map_err(|error| sql_error("从会话索引重建 conversation_fts 失败", error))?;
+            }
         }
         _ => return Err(AppError::Memory(format!("未知 FTS 缓存: {name}"))),
     }
@@ -1890,6 +1911,7 @@ fn repair_transaction(
     repair_virtual_tables(conn, expected, plan)?;
     create_authoritative_objects(conn)?;
     initialize_meta_values(conn, fresh_database)?;
+    super::store::backfill_memory_search_projection(conn)?;
     crate::proactive::schema::initialize_rows(conn)?;
     initialize_conversation_metadata(
         conn,
@@ -2013,6 +2035,11 @@ pub fn ensure(
         }
         Err(error) => return Err(error),
     };
+    if version.is_some_and(|value| value < SCHEMA_VERSION) {
+        plan.rebuild_fts.insert("memory_fts".to_owned());
+        plan.rebuild_fts.insert("conversation_fts".to_owned());
+        plan.changed = true;
+    }
     let current_journal_mode: String = conn
         .query_row("PRAGMA journal_mode", [], |row| row.get(0))
         .map_err(|error| sql_error("读取 SQLite journal mode 失败", error))?;

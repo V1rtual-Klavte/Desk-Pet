@@ -10,11 +10,12 @@ import { currentTimeNote } from "@/services/context"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import type { MemoryProjection } from "./provider"
-import { deduplicateMemoryEvidence, memoryRecallTokens, selectMemoryReadingEvidence } from "./projection"
+import { deduplicateMemoryEvidence, memoryRecallTokens, selectMemoryReadingEvidence, selectMemoryAnswerEvidence } from "./projection"
 import type { MemoryQuestionCheck, MemoryQuestionGuide } from "./projection"
-import { deriveMemoryQueryPlan } from "./query-shape"
+import { deriveMemoryQueryPlan, memoryEvidenceReviewKind, MEMORY_QUERY_STOP_WORDS } from "./query-shape"
 import type { MemoryQueryPlan } from "./query"
 import type { ReadingErrorCategory } from "./reading-errors"
+import { MEMORY_REVIEW_TEXT_LIMIT, parseMemoryEvidenceReview } from "./evidence-review"
 
 const log = createLogger("MemoryReader")
 // One evidence set per active turn, without retaining complete private
@@ -30,12 +31,16 @@ const readingCache = new WeakMap<AbortSignal, {
 
 const SYSTEM_PROMPT = `你是只读证据阅读器。只根据给定 sources，为当前 query 建立短小、可核对的阅读索引。
 输出严格 JSON：{"notes":[{"id":"sourceId","quote":"source.text 中逐字连续出现的最短充分片段","relevance":"简短、暂定的关联解释"}],"questionChecks":[{"kind":"premise|detail","obligation":"required|supporting","condition":"需要核对的条件","status":"supported|missing|conflicting","sourceIds":["仅引用本输出中通过校验的note id"]}]}。
+输入reviewKind为count或inference时，必须另给evidenceReview，所有sourceIds/counterSourceIds仅引用本次或previousNotes的合法短id。
+evidenceReview的scope、subject、event、time、basis、conclusion等每个文本字段均不得超过${MEMORY_REVIEW_TEXT_LIMIT}个Unicode字符；basis只写最短充分联系，不重复引文或列举整段背景。
+count格式：{"kind":"count","scope":"所问人物、事件类型与时间范围","complete":true,"items":[{"id":"E1","subject":"当事人","event":"一次具体经历","time":"事件时间及记录锚，未知则注明","disposition":"counted|duplicate|planned|frequency|out_of_scope|not_occurred|uncertain","basis":"归属、时间范围和与其他实例相同/不同的原文依据","sourceIds":["S1"]}]}。逐项检查相关来源，先列符合范围且已发生的不同经历，再列排除项和未决项；重复提及用duplicate并给sameAs指向此前counted的E编号，说明为何同一次。不同sourceId、记录日期或相似话题不自动代表不同/同一经历；同一原文明确描述两次也可支持两个实例。频率陈述不是经历实例，不能用一年一两次将已明确的两次经历改成1或2；照片发表时间不是照片中事件时间。决定或开始计划只证明决定/计划发生，不证明旅行等后续行动发生。时间或同一性仍不明列uncertain，不能随意合并或强行计数；complete只指已核对本次相关证据，存在未决项或范围缺口时false，不宣称历史已穷尽。not_occurred仅用于明确否定所问主体在范围内发生过该事件的原文；没有counted且没有这种否定时，频率/计划不能证明0次，complete=false。不要输出总数，宿主按counted实例汇总。
+inference格式：{"kind":"inference","complete":true,"items":[{"conclusion":"本题一个具体候选结论，保留可能性限定","disposition":"answer|excluded","basis":"所问选择与该人物具体偏好/计划/限制之间的有据联系","status":"supported|missing|conflicting","sourceIds":["S1"],"counterSourceIds":[]}]}。disposition=answer只用于题目实际索求的回答项目；yes/no或意愿问题的否定结论本身也是answer。what/which多项目列表中，只用于排除其他候选的否定结论标excluded，它是核对边界，不能追加为答案项目；excluded缺失不强制补查。逐项保留原文支持的具体回答项目及必要条件，不能用宽泛价值观或类别替代具体依据；通读相关个人计划、偏好、限制及反例后再判complete。反向偏好可以支持否定结论，反例与限制放counterSourceIds并在basis解释；不能把相邻话题兴趣硬添成所问项目。items不是一般常识备选列表，只保留与本题有据关联的结论和影响其成立的未决项。仅支持人物归属不代表每个具体结论已覆盖；有必要缺口则complete=false。该推断表仅供宿主决定是否补查，不是主答结论或唯一答案范围；主答独立核对实际原话。不要要求人物曾直接讨论假设选项，也不要将不存在直接提及当成否定。
 notes只摘录回答所需原文，每个id最多一条；quote必须逐字连续复制，不得拼接、改写或补全。
 id只复制sources给出的短sourceId（如S1），不要生成会话ID或把其他字段当作id。先区分历史事实与假设/倾向问题。只有问已发生的经历及其感受、原因、时间或结果时，才先核对指定主体是否亲历指定事件；不得把听说、安慰或评论他人的经历当成本人经历。摘出相关原文用于核对，保留speaker和事件归属。
 第一项questionCheck用kind=premise独立核对题意真正需要的主体/事件/范围：历史经历题核对事件归属；假设、未来意愿或倾向题核对相关偏好/限制属于所问人物，不要求假设事件已发生或人物曾明确讨论该选项。其他所求细节用kind=detail。premise和conflicting一律required，至少有一个required。只有逐字原文明确显示所问历史前提与原文冲突（如特定事件实际属于另一个人）才把premise标conflicting并引用该原文；仅未找到对应事件时用missing，不把检索不到当作证伪。已证伪的历史前提不再为它寻找感受等细节。
 obligation区分必要事实required与额外佐证supporting。先按query本身区分直接历史问题与倾向推断，queryPlan的specific_fact等检索提示不能覆盖题意。问是否明确说过、是否经历/拥有/听过/购买过、具体事件/日期/数量/范围时，对应直接历史证据全部required，不得降为supporting。问“是否可能喜欢/是否适合/会不会愿意”、would或likely所表达的假设选择、未来意愿时，属于所问人物的相关偏好、价值取向或限制是required；目标对象或选项的直接历史提及只是额外佐证，可列detail+supporting+missing，不把它当作必要前提。没有相关依据时必须列required+missing；遇到反向偏好或明确反例仍摘录核对，不能用supporting藏起矛盾。反向偏好可以支持否定的倾向结论，不等于题面历史前提冲突。身份、诊断等事实不能靠未提及或一般偏好推断。倾向结论交主模型作有限推断，notes只给原文依据。
 previousNotes若存在，是同一问题前轮经宿主逐字校验、且当前来源身份和正文仍未变化的临时引文，不是新事实。可在questionChecks.sourceIds中引用其短id，无须在notes重复摘录；需改选同一来源引文时在notes覆盖该id。每轮仍须结合全部sources重新核对条件及新出现的反例，不沿用旧supported状态；不得因本轮没有新增相关引文而遗忘已有引文或删掉题面必要条件。计数题始终保留原时间窗、事件类型和去重范围，补查不到新项不代表已穷尽全部历史。
-queryPlan给出统一的检索意图、实体、发言角色、时间约束和检索证据提示，结合题意核对其evidenceNeeds。sourceRoles指出优先核对谁的发言，配对的另一角色提供语境，不能把助手建议当作用户做过的事。缺少原因、步骤或前后文时不要把缺少检索证据说成历史没有；可在JSON顶层附加searchQueries数组，用空格分隔短检索词，供宿主补查，仅针对required未满足项，不为supporting缺失补查。实体和内容词只能逐字取自query或本次合法notes.quote，可组合原因、步骤、方法、过程、前后文、日期、时间、记录、建议、偏好、经历及对应英文检索词，不能猜测人名、作品或事件。已支持全部required条件时searchQueries为空。
+queryPlan给出统一的检索意图、实体、发言角色、时间约束和检索证据提示，结合题意核对其evidenceNeeds。sourceRoles指出优先核对谁的发言，配对的另一角色提供语境，不能把助手建议当作用户做过的事。缺少原因、步骤或前后文时不要把缺少检索证据说成历史没有；可在JSON顶层附加searchQueries数组，用空格分隔短检索词，供宿主补查，仅针对required未满足项或evidenceReview必要缺口，不为supporting缺失补查。实体和内容词只能逐字取自query或本次合法notes.quote，可组合原因、步骤、方法、过程、前后文、日期、时间、记录、建议、偏好、经历及对应英文检索词，不能猜测人名、作品或事件。已支持全部required条件且所需evidenceReview完整时searchQueries为空。
 记录只给日期时不推断时段，timestamp只是检索的记录锚，不证明正文里的事件发生在凌晨或其他具体时段；事件相对日期以所在记录为锚，缺年份的日期保留可能的多个年份。日期概览核对当天不同话题，不能用单条末尾总结代替整天。问历史说法时保留当时助手说法的归属，不用一般知识改写历史。
 questionChecks把当前问题拆成不可偷换的回答义务：保留实体/特定事件、时间窗、事件已发生还是仅计划、计数范围，以及个人建议所需的已有物品/选择/限制。每项用supported、missing或conflicting表示现有原文支持状态，并仅引用对应notes的id；没有合格原文时用missing和空sourceIds。不得把相似实体、相邻事件、助手建议或计划替换成问题指定对象后继续作答。直接历史问题限定的对象、范围或时间窗在原文里没有对应项时标required+missing，并在condition写明缺的是哪一项。第一人称已完成或进行中的动作（did/started/decided 配 today/yesterday 一类具体时间，或 currently doing / 正在做 这类持续表述）算已发生；只有 thinking of / about to / 打算 / 计划 才算未发生。
 同一事实或事件有多条记录时不直接标conflicting：先按各条记录的发生时间排序，更晚出现的确认记录更新先前值（用户随后明确纠正的除外）；此时标supported，并在condition中写明本次采用哪条记录、被更新的是哪条。仅当同一时点互斥、或先后无法判定时才标conflicting。
@@ -145,7 +150,7 @@ function parseQuestionGuide(value: unknown, validNoteIds: ReadonlySet<string>, e
  * while a valid exact quote remains usable. Question checks are validated
  * against the surviving note ids and fail as one separate guide block.
  */
-export function parseMemoryReadingNotes(text: string, sources: readonly { id: string; text: string; sourceId?: string }[], query = "", previousNotes: readonly ParsedReadingNote[] = []): ParsedMemoryReading {
+export function parseMemoryReadingNotes(text: string, sources: readonly { id: string; text: string; sourceId?: string }[], query = "", previousNotes: readonly ParsedReadingNote[] = [], recallIntent?: MemoryQueryPlan["recallIntent"]): ParsedMemoryReading {
   let value: unknown
   const errors: Partial<Record<ReadingErrorCategory, number>> = {}
   try { value = JSON.parse(text) } catch {
@@ -209,6 +214,18 @@ export function parseMemoryReadingNotes(text: string, sources: readonly { id: st
     guideStatus = guide ? "valid" : "invalid"
   }
   const searches = (value as { searchQueries?: unknown }).searchQueries
+  const canonicalIds = new Map(sources.map(source => [source.id, source.sourceId ?? source.id]))
+  const reviewKind = memoryEvidenceReviewKind(query, recallIntent ?? deriveMemoryQueryPlan(query).recallIntent)
+  if (guide && reviewKind) {
+    const reviewValue = (value as { evidenceReview?: unknown }).evidenceReview
+    const review = parseMemoryEvidenceReview(reviewValue, reviewKind, new Set(notes.map(note => note.id)), id => canonicalIds.get(id)!)
+    if (!review) increment(errors, reviewValue === undefined ? "missing_evidence_review" : "invalid_evidence_review")
+    // A legal broad checklist cannot bypass a missing/malformed semantic review.
+    // Keep its individually valid quotes and allow bounded gap completion.
+    guide.evidenceReview = review ?? (reviewKind === "count"
+      ? { kind: "count", scope: "Question subject, event and time range remain to be checked", complete: false, items: [], observedCount: 0 }
+      : { kind: "inference", complete: false, items: [] })
+  }
   if (guide && searches !== undefined) {
     if (!Array.isArray(searches)) increment(errors, "invalid_search_query")
     else {
@@ -224,7 +241,8 @@ export function parseMemoryReadingNotes(text: string, sources: readonly { id: st
 
   const noteErrors = Object.entries(errors).filter(([category]) => !category.startsWith("invalid_question_checks")
     && !category.startsWith("missing_question_checks") && !category.startsWith("invalid_check")
-    && !category.startsWith("duplicate_check") && category !== "invalid_search_query")
+    && !category.startsWith("duplicate_check") && category !== "invalid_search_query"
+    && category !== "missing_evidence_review" && category !== "invalid_evidence_review")
   const noteStatus: ParsedMemoryReading["noteStatus"] = notes.length === 0
     ? (noteErrors.length ? "invalid" : "empty")
     : noteErrors.length ? "partial" : "complete"
@@ -234,7 +252,6 @@ export function parseMemoryReadingNotes(text: string, sources: readonly { id: st
   }, emptyCheckCounts()) ?? emptyCheckCounts()
   // Resolve only this request's validated wire ids. Real source ids never become
   // an alternate acceptance path for the model's output.
-  const canonicalIds = new Map(sources.map(source => [source.id, source.sourceId ?? source.id]))
   return {
     notes: notes.map(note => ({ ...note, id: canonicalIds.get(note.id)! })),
     ...(guide ? { guide: { ...guide, questionChecks: guide.questionChecks.map(check => ({
@@ -256,7 +273,7 @@ export function isGroundedMemorySearch(value: unknown, groundedText: string): va
   const corpus = groundedText.toLocaleLowerCase()
   return terms.length > 0 && terms.every(term => SEARCH_CUES.has(term) || corpus.includes(term))
     && terms.some(term => [...term].length >= 2 && !SEARCH_CUES.has(term)
-      && !/^(?:the|and|for|from|what|which|when|where|why|how|my|me|we|我们|什么|为什么|怎么|如何)$/u.test(term)
+      && !MEMORY_QUERY_STOP_WORDS.has(term) && !/^(?:我们|什么|为什么|怎么|如何)$/u.test(term)
       && corpus.includes(term))
 }
 
@@ -285,11 +302,14 @@ function fitReading(raw: readonly MemoryProjection[], parsed: ParsedMemoryReadin
       guideStatus: parsed.guideStatus, checkCounts: emptyCheckCounts(),
     }
   }
-  // Only a fully validated reading can narrow the main request. Partial/invalid
-  // readings retain every original as a fallback; the retrieval pool stays intact
-  // in coverage.ts for follow-ups regardless of this request-local selection.
-  const selected = parsed.guide && parsed.noteStatus === "complete" && noteSourceIds.length
-    ? selectMemoryReadingEvidence(base, noteSourceIds) : base
+  // Validation checks returned quotes, not whether the model selected every
+  // relevant source. Inference keeps original conversations available for the
+  // final model; direct history retains its checked-source boundary. The raw
+  // retrieval pool stays intact in coverage.ts for follow-ups.
+  const selected = parsed.guide?.evidenceReview?.kind === "inference"
+    ? parsed.noteStatus === "partial" ? base : selectMemoryAnswerEvidence(base, parsed.guide)
+    : parsed.guide && parsed.noteStatus === "complete" && noteSourceIds.length
+      ? selectMemoryReadingEvidence(base, noteSourceIds) : base
   const annotated = applyMemoryReadingNotes(selected, parsed.notes, Number.MAX_SAFE_INTEGER)
   const withGuideCost = memoryRecallTokens(annotated, "reference", parsed.guide)
   if (withGuideCost <= tokenBudget) {
@@ -298,6 +318,15 @@ function fitReading(raw: readonly MemoryProjection[], parsed: ParsedMemoryReadin
       noteSourceIds: noteSourceIds.filter(id => annotated.some(item => item.sourceId === id && item.readingNote)),
       errors: parsed.errors, noteStatus: parsed.noteStatus, guideStatus: parsed.guideStatus,
       checkCounts: parsed.guide ? parsed.checkCounts : emptyCheckCounts(),
+    }
+  }
+
+  if (parsed.guide?.evidenceReview?.kind === "inference") {
+    // Only the host's answer mode travels to the final request, not this guide's
+    // conclusions. Leave whole-turn admission to the renderer at final headroom.
+    return {
+      projections: selected, guide: parsed.guide, noteSourceIds: [], errors: parsed.errors,
+      noteStatus: "omitted_budget", guideStatus: parsed.guideStatus, checkCounts: parsed.checkCounts,
     }
   }
 
@@ -424,6 +453,7 @@ export async function focusMemoryEvidence(input: FocusMemoryEvidenceInput): Prom
   const wireIds = new Map(raw.map((item, index) => [item.sourceId, sources[index]!.sourceId]))
   const previousNotes = retained.map(({ note }) => ({ ...note, id: wireIds.get(note.id)! }))
   const userText = JSON.stringify({ query: input.query, queryPlan, currentTimeNote: timeAnchor, sources,
+    reviewKind: memoryEvidenceReviewKind(input.query, queryPlan.recallIntent) ?? null,
     ...(previousNotes.length ? { previousNotes } : {}),
   })
   if (estimateRequestTokens(SYSTEM_PROMPT, [{ role: "user", content: userText }]) > contextBudget(input.contextWindow).normalInputTarget) {
@@ -449,7 +479,7 @@ export async function focusMemoryEvidence(input: FocusMemoryEvidenceInput): Prom
       return fallback
     }
 
-    const parsed = parseMemoryReadingNotes(result.text, raw.map((item, index) => ({ id: sources[index]!.sourceId, sourceId: item.sourceId, text: item.text })), input.query, previousNotes)
+    const parsed = parseMemoryReadingNotes(result.text, raw.map((item, index) => ({ id: sources[index]!.sourceId, sourceId: item.sourceId, text: item.text })), input.query, previousNotes, queryPlan.recallIntent)
     const current = readingCache.get(input.signal)
     if (current?.key === cacheKey) {
       current.parsed = parsed

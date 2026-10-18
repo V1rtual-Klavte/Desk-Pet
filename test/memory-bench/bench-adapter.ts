@@ -26,7 +26,7 @@ import { publishedUiEventRecords } from "../host/ui-event-tap"
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
 import { acquirePiSession, createPiSession, createNewSession, deleteSession, PI_LANE, readPiSessionEntries, releasePiSession } from "@/services/session"
-import { userInputMessage } from "@/services/engine/runtime"
+import { inputEventId, userInputMessage } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { standardSetup } from "../host/standard-setup"
@@ -125,7 +125,23 @@ export interface BenchCellOutcome {
   storeGeneration: string
   ingest?: { registeredSources: number; processedSources: number; oversizedSources: number;
     scopeNormalized: number; sweeps: number }
-  metrics?: { firstDeliveredTextDeltaMs?: number }
+  metrics?: {
+    firstDeliveredTextDeltaMs?: number
+    memoryRecall?: {
+      recallDurationMs: number[]
+      queryLatencyMs: number[]
+      diagnosticSamples: number
+      ftsHits: number
+      likeFallbacks: number
+      timeFilterBefore: number
+      timeFilterAfter: number
+      duplicateEvents: number
+      jsonlReadbackCandidates: number
+      jsonlReadbackDropped: number
+      coldIndexMs: number
+      coldIndexSessions: number
+    }
+  }
   usage?: ReturnType<typeof summarizeMemoryQualityUsage>["usage"]
   readerUsage?: { inputTokens: number; outputTokens: number; calls: number }
   cache?: { status: "hit" | "miss" | "unknown" }
@@ -195,7 +211,7 @@ async function longMemEvalSources(caseDef: BenchCase): Promise<{ sources: Memory
       if (turn.role !== "user" && turn.role !== "assistant") throw new Error(`未知 LongMemEval 历史角色: ${turn.role}`)
       seq += 1
       const observedAt = session.observedAt + turn.turnIndex * 1_000
-      const eventId = `bench-lme-${caseDef.caseId}-${seq}`
+      const eventId = inputEventId(`bench-lme-${caseDef.caseId}-${seq}`)
       const message = turn.role === "assistant"
         ? fauxAssistantMessage(turn.content, { timestamp: observedAt })
         : { ...userInputMessage(turn.content, eventId, {
@@ -207,8 +223,8 @@ async function longMemEvalSources(caseDef: BenchCase): Promise<{ sources: Memory
       meta.set(`conversation:${fixture.id}:${entryId}`, sourceMeta)
       if (turn.role !== "user") continue // Assistant is searchable dialogue, never a user fact.
       const source: MemorySource = { sourceId, sessionId: fixture.id, entryId,
-        eventId, seq, contentHash: "",
-        evidence: turn.content.slice(0, EVIDENCE_CHARS), sourceLength: turn.content.length,
+        eventId, seq, contentHash: await sha256(turn.content.trim()),
+        evidence: turn.content.trim().slice(0, EVIDENCE_CHARS), sourceLength: turn.content.trim().length,
         eligibleForMemory: true, taint: "trusted_user", origin: "user",
         observedAt }
       sessionSources.push(source)
@@ -249,16 +265,16 @@ async function memoryBankSources(persona: { name: string;
       for (const turn of day.turns) {
         seq += 1
         const observedAt = day.observedAt + turn.turnIndex * 1_000
-        const eventId = `bench-membank-${seq}`
+        const eventId = inputEventId(`bench-membank-${seq}`)
         const userEntryId = await branch.appendMessage({ ...userInputMessage(turn.query, eventId, {
           origin: "user", querySource: "chat", priority: "now", taint: "trusted_user", eligibleForMemory: true,
         }), timestamp: observedAt }, BACKGROUND_CONTEXT)
-        const sourceId = `${day.date}#${turn.turnIndex}`
+        const sourceId = `${fixture.id}:${userEntryId}`
         const sourceMeta: SourceMeta = { observedAt, sessionId: fixture.id, turnIndex: turn.turnIndex, role: "user" }
         meta.set(`conversation:${fixture.id}:${userEntryId}`, sourceMeta)
         meta.set(sourceId, sourceMeta)
-        daySources.push({ sourceId, sessionId: fixture.id, entryId: userEntryId, eventId, seq, contentHash: "",
-          evidence: turn.query.slice(0, EVIDENCE_CHARS), sourceLength: turn.query.length,
+        daySources.push({ sourceId, sessionId: fixture.id, entryId: userEntryId, eventId, seq, contentHash: await sha256(turn.query.trim()),
+          evidence: turn.query.trim().slice(0, EVIDENCE_CHARS), sourceLength: turn.query.trim().length,
           eligibleForMemory: true, taint: "trusted_user", origin: "user", observedAt })
         // 助手轮只进对话（可检索），不登记 MemorySource：准入只收用户本人陈述。
         const assistantEntryId = await branch.appendMessage(fauxAssistantMessage(turn.response, { timestamp: observedAt + 500 }), BACKGROUND_CONTEXT)
@@ -281,7 +297,6 @@ async function memoryBankSources(persona: { name: string;
 
 async function registerAll(sources: MemorySource[]): Promise<void> {
   if (sources.length === 0) return
-  for (const source of sources) source.contentHash = await sha256(source.evidence ?? "")
   await registerMemorySources(sources)
 }
 
@@ -372,6 +387,35 @@ function candidateSessionIds(traces: unknown[], itemById: Map<string, MemoryItem
   return [...sessions]
 }
 
+function memoryRecallMetrics(traces: unknown[]) {
+  const result = {
+    recallDurationMs: [] as number[], queryLatencyMs: [] as number[],
+    diagnosticSamples: 0,
+    ftsHits: 0, likeFallbacks: 0, timeFilterBefore: 0, timeFilterAfter: 0,
+    duplicateEvents: 0, jsonlReadbackCandidates: 0, jsonlReadbackDropped: 0,
+    coldIndexMs: 0, coldIndexSessions: 0,
+  }
+  for (const event of traces as Array<{ kind?: string; payload?: Record<string, unknown> }>) {
+    if (event.kind !== "memory_recall_end") continue
+    const payload = event.payload ?? {}
+    if (typeof payload.ftsHits === "number" && typeof payload.queryLatencyMs === "number") {
+      result.diagnosticSamples += 1
+    }
+    for (const key of ["durationMs", "queryLatencyMs"] as const) {
+      const value = payload[key]
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+        (key === "durationMs" ? result.recallDurationMs : result.queryLatencyMs).push(value)
+      }
+    }
+    for (const key of ["ftsHits", "likeFallbacks", "timeFilterBefore", "timeFilterAfter", "duplicateEvents",
+      "jsonlReadbackCandidates", "jsonlReadbackDropped", "coldIndexMs", "coldIndexSessions"] as const) {
+      const value = payload[key]
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) result[key] += value
+    }
+  }
+  return result
+}
+
 /**
  * judge 模型解析：走网关公开的按 id 解析入口（与主链路同一份 endpoint / api_key / provider
  * 与窗口推导），不用被测模型的预算冒充 judge 模型。
@@ -432,6 +476,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
     const itemById = new Map(items.map(item => [item.id, item]))
     const evidence = evidenceFromTraceEvents(traces, group.sourceMeta, itemById)
     const measured = summarizeMemoryQualityUsage(traces)
+    const recallMetrics = memoryRecallMetrics(traces)
     return captured = { caseId: String(caseDef.caseId),
       questionId: typeof caseDef.questionId === "string" ? caseDef.questionId : null,
       status: "complete", answer: result.reply,
@@ -441,7 +486,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
       toolCalls: result.toolCalls,
       evidence, candidateSessionIds: candidateSessionIds(traces, itemById, group.sourceMeta),
       groupReused, storeGeneration: group.storeGeneration, ingest: group.ingest,
-      metrics: { firstDeliveredTextDeltaMs }, usage: measured.usage, cache: { status: measured.cache } }
+      metrics: { firstDeliveredTextDeltaMs, memoryRecall: recallMetrics }, usage: measured.usage, cache: { status: measured.cache } }
   } finally {
     setCurrentTimeNoteAnchor(null)
     // A previous benchmark answer is not evidence for another question in the group.

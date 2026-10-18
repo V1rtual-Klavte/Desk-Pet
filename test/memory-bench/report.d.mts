@@ -60,6 +60,21 @@ export interface BenchSummary {
   firstTextSamples: number
   ingest: { registeredSources: number; processedSources: number; oversizedSources: number; sweeps: number }
   retrieval: Record<string, unknown> | null
+  memoryRecall: {
+    samples: number
+    diagnosticSamples: number
+    recallP95Ms: number | null
+    queryP95Ms: number | null
+    ftsHits: number | null
+    likeFallbacks: number | null
+    timeFilterBefore: number | null
+    timeFilterAfter: number | null
+    duplicateEvents: number | null
+    jsonlReadbackCandidates: number | null
+    jsonlReadbackDropped: number | null
+    coldIndexMs: number | null
+    coldIndexSessions: number | null
+  }
   externalAdjudication: {
     judge: string
     method: string

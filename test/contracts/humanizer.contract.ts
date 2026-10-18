@@ -1,3 +1,5 @@
+// 2026-10-16 定向复核：runtime 仅传递 partial 记忆候选保留选项；
+// hz-01..04 的解析、沉默护栏、分泡揭示和顶栏释放链路未变，按现源码刷新 hash。
 // 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
 // 2026-10-09 最终静态复核：输入去重和空工具选项不改变分泡、提交与顶栏所有权，覆盖点静态对照；未执行测试。
 // 2026-10-05 本批复查与刷新：契约 sourceFiles 里 runtime.ts 由另一会话同批写入
@@ -84,7 +86,7 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "de065e1cbd3d148486a8a9787614baab60867b27145eb1634bc77b4d9cd9d51e",
+  sourceHash: "4ea146aa1af2d942e3b3afc424ed586b04a6d19ece0f9d2f241a98c0050a6f74",
   coverage: [
     {
       id: "hz-01",

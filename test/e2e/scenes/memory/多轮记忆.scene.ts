@@ -1,10 +1,12 @@
+import { createHash } from "node:crypto"
 import type { SceneDef } from "../../../e2e/types"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, countTexts, entryMessageText, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
 import { createNewSession, getActiveSessionId } from "@/services/session"
 import { sendMessage } from "@/services/agent/runner"
 import { getHostBridge } from "@/services/host"
-import { MemoryService, sqliteMemoryProvider } from "@/services/agent/memory"
+import { applyMemoryChange, collectMemorySources, memorySourceEvidence, memoryStatus, registerMemorySources, MemoryService, sqliteMemoryProvider } from "@/services/agent/memory"
+import { messageEventId } from "@/services/engine/runtime"
 import { searchConversationCandidates } from "@/services/agent/memory/conversation"
 
 // 多轮会话正文的真相源是 pi 会话条目：换行正文必须完整保留（没有 300 字预览副本），
@@ -29,7 +31,7 @@ async function assertExpandedConversationRecall(): Promise<void> {
     && entryMessageText(entry.message).includes("我叫小明"))
   const seed = entries.find(entry => entry.type === "message" && entry.message.role === "user"
     && entryMessageText(entry.message).includes("姓名确认单七一"))
-  if (!firstUser || firstUser.type !== "message" || !seed || seed.type !== "message") {
+  if (!firstUser || firstUser.type !== "message" || firstUser.message.role !== "user" || !seed || seed.type !== "message") {
     throw new Error("隔离会话中缺少原话或检索锚点")
   }
 
@@ -55,6 +57,22 @@ async function assertExpandedConversationRecall(): Promise<void> {
     throw new Error("只命中后轮关键词时，conversation_context 没有扩展回早轮用户原话")
   }
 
+  const lookupRequest = {
+    requestId: `memory-context-demand-${sessionId}`, sessionId,
+    query: "What was my 姓名确认单七一?", tokenBudget: 6_000,
+    queryRewriteMode: "off" as const, rerankMode: "off" as const, signal,
+  }
+  const initial = await sqliteMemoryProvider.recall(lookupRequest)
+  if (initial.some(item => item.conversation?.entryId === firstUser.id)) {
+    throw new Error("普通lookup在没有证据缺口引用时扩读了无关键词的早轮")
+  }
+  const contextAnchor = initial.find(item => item.conversation?.entryId === seed.id)
+  if (!contextAnchor) throw new Error("按需扩读缺少规范的命中引用")
+  const completed = await sqliteMemoryProvider.recall({ ...lookupRequest, contextSourceIds: [contextAnchor.sourceId] })
+  if (!completed.some(item => item.conversation?.entryId === firstUser.id && item.text.includes("小明"))) {
+    throw new Error("规范引用驱动的conversation_context没有恢复早轮可信原话")
+  }
+
   // before 是排他上界；锚点本身不再可见时，不应由扩展把它或更晚证据补回来。
   // The index uses the message's event time, not the JSONL envelope's later commit time.
   const seedTime = seed.message.timestamp
@@ -62,6 +80,50 @@ async function assertExpandedConversationRecall(): Promise<void> {
   const beforeSeed = await recall(seedTime)
   if (beforeSeed.some(item => item.conversation?.entryId === seed.id)) {
     throw new Error("before 上界未排除检索锚点")
+  }
+
+  // 事实可命中而源原话没有词面命中：经真实SQLite来源治理及JSONL回读补齐。
+  const inferredQuery = "Would the user be likely to enjoy a typed-programming workshop?"
+  const originalText = entryMessageText(firstUser.message)
+  const originalEvent = messageEventId(firstUser.message)
+  if (!originalEvent) throw new Error("首轮可信用户消息缺少稳定事件ID")
+  const sourceId = `${sessionId}:${firstUser.id}`
+  await collectMemorySources(sessionId)
+  const recollected = await collectMemorySources(sessionId)
+  if (!recollected.some(source => source.sourceId === sourceId && source.eventId === originalEvent)) {
+    throw new Error("夹具来源身份与生产收集器不一致，重复登记未复用同一来源")
+  }
+  const previewText = "我叫小明"
+  if (await registerMemorySources([{
+    sourceId, sessionId, entryId: firstUser.id, eventId: originalEvent, seq: firstUser.seq,
+    contentHash: createHash("sha256").update(originalText.trim()).digest("hex"),
+    evidence: previewText, sourceLength: originalText.length, eligibleForMemory: true,
+    taint: "trusted_user", origin: "user", observedAt: firstUser.message.timestamp,
+  }]) !== 1) throw new Error("原话回读fixture未登记可信来源")
+  const storedSource = await memorySourceEvidence(sourceId)
+  if (!storedSource || storedSource.evidence !== previewText || storedSource.evidence === originalText) {
+    throw new Error("来源预览负对照未生效，不能证明召回从JSONL补回完整原话")
+  }
+  const factId = `${sessionId}:typed-programming`
+  await applyMemoryChange({
+    operationId: `${sessionId}:add-typed-fact`, baseRevision: (await memoryStatus()).revision,
+    action: "add", actor: "internal", itemId: factId,
+    draft: { content: "The user writes typed programming languages, particularly TypeScript.",
+      summary: "The user writes typed programming languages", kind: "fact", scope: "user", aliases: [],
+      pinned: false, importance: 5, confidence: 1, sourceIds: [sourceId] },
+  })
+  const lexical = await searchConversationCandidates({ sessionId, queries: [inferredQuery], signal })
+  if (lexical.entries.some(entry => entry.entryId === firstUser.id)) {
+    throw new Error("事实原话已被词面搜索命中，来源回读负对照无效")
+  }
+  const grounded = await sqliteMemoryProvider.recall({
+    requestId: `memory-fact-original-${sessionId}`, sessionId, query: inferredQuery,
+    tokenBudget: 6_000, queryRewriteMode: "off", rerankMode: "off", signal,
+  })
+  if (!grounded.some(item => item.sourceId === `${factId}@1`)) throw new Error("来源回读fixture的事实未进入统一召回")
+  const original = grounded.find(item => item.conversation?.entryId === firstUser.id)
+  if (!original || original.text !== FIRST_TEXT || original.conversation?.eventId !== originalEvent) {
+    throw new Error("事实来源未经真实IPC补回完整原话，或误用了有界预览")
   }
 
   if (!await MemoryService.clear()) throw new Error("隔离场景清空会话来源失败")

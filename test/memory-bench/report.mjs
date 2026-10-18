@@ -38,6 +38,12 @@ function tokenSum(rows, key) {
   return { total, seen }
 }
 
+function percentile(values, fraction) {
+  const sorted = values.filter(value => typeof value === "number" && Number.isFinite(value)).sort((a, b) => a - b)
+  if (!sorted.length) return null
+  return sorted[Math.ceil(fraction * sorted.length) - 1]
+}
+
 /** 报告文件可能带一行 PASS/FAIL 前缀；解析时从第一个 `{` 开始。 */
 export function parseBenchReportPayload(text) {
   const index = text.indexOf("{")
@@ -141,6 +147,28 @@ export function summarizeBenchReport(report) {
   const finished = Date.parse(report?.finishedAt ?? "")
   const durationMs = Number.isFinite(started) && Number.isFinite(finished) ? finished - started : null
   const firstText = outcomes.map(outcome => outcome?.metrics?.firstDeliveredTextDeltaMs).filter(value => typeof value === "number")
+  const memoryRecallRows = outcomes.map(outcome => outcome?.metrics?.memoryRecall).filter(Boolean)
+  const recallDurations = memoryRecallRows.flatMap(row => row.recallDurationMs ?? [])
+  const queryLatencies = memoryRecallRows.flatMap(row => row.queryLatencyMs ?? [])
+  const diagnosticSamples = memoryRecallRows.reduce((sum, row) => sum + (row.diagnosticSamples ?? 0), 0)
+  const diagnosticTotal = key => diagnosticSamples > 0
+    ? memoryRecallRows.reduce((sum, row) => sum + (row[key] ?? 0), 0)
+    : null
+  const memoryRecall = {
+    samples: recallDurations.length,
+    diagnosticSamples,
+    recallP95Ms: percentile(recallDurations, 0.95),
+    queryP95Ms: percentile(queryLatencies, 0.95),
+    ftsHits: diagnosticTotal("ftsHits"),
+    likeFallbacks: diagnosticTotal("likeFallbacks"),
+    timeFilterBefore: diagnosticTotal("timeFilterBefore"),
+    timeFilterAfter: diagnosticTotal("timeFilterAfter"),
+    duplicateEvents: diagnosticTotal("duplicateEvents"),
+    jsonlReadbackCandidates: diagnosticTotal("jsonlReadbackCandidates"),
+    jsonlReadbackDropped: diagnosticTotal("jsonlReadbackDropped"),
+    coldIndexMs: diagnosticTotal("coldIndexMs"),
+    coldIndexSessions: diagnosticTotal("coldIndexSessions"),
+  }
 
   const ingestTotals = { registeredSources: 0, processedSources: 0, oversizedSources: 0, sweeps: 0 }
   const ingestSource = scores.ingest ?? null
@@ -202,6 +230,7 @@ export function summarizeBenchReport(report) {
     firstTextSamples: firstText.length,
     ingest: ingestTotals,
     retrieval: scores.retrieval ?? null,
+    memoryRecall,
     externalAdjudication,
     failures: failures.map(failure => ({ caseId: failure?.caseId ?? null, kind: failure?.kind ?? "unknown", message: failure?.message ?? "" })),
     rows,
@@ -214,6 +243,10 @@ export function formatBenchSummary(summary, options = {}) {
   const head = `记忆基准 · ${summary.splitLabel}${summary.judgeModel ? `   judge: ${summary.judgeModel}` : ""}`
   lines.push(head)
   lines.push(`跑完 ${summary.completedCells ?? "?"}/${summary.plannedCells ?? "?"} · 失败 ${summary.failures.length} · 状态 ${summary.status}`)
+  if (summary.memoryRecall.samples > 0) {
+    const metrics = summary.memoryRecall
+    lines.push(`召回观测：${metrics.diagnosticSamples}/${metrics.samples} 次有完整诊断 · FTS ${num(metrics.ftsHits)} · LIKE 回退 ${num(metrics.likeFallbacks)} · 时间过滤 ${num(metrics.timeFilterBefore)}→${num(metrics.timeFilterAfter)} · 重复 ${num(metrics.duplicateEvents)} · JSONL 回读淘汰 ${num(metrics.jsonlReadbackDropped)}/${num(metrics.jsonlReadbackCandidates)} · p95 recall/query ${num(metrics.recallP95Ms, 1)}/${num(metrics.queryP95Ms, 1)}ms · 冷索引 ${num(metrics.coldIndexSessions)} 会话/${num(metrics.coldIndexMs, 1)}ms`)
+  }
   const overall = summary.quality?.overall
   const metric = summary.quality?.kind === "locomo" ? "LoCoMo 官方类别分" : "正确率"
   if (overall && overall.accuracy !== null && overall.accuracy !== undefined) {
@@ -347,6 +380,7 @@ export function renderBenchHtmlReport(report, options = {}) {
     }</tbody></table></section>`
     : ""
   const retrieval = summary.retrieval
+  const memoryRecall = summary.memoryRecall
   const retrievalHtml = retrieval
     ? `<section><h2>检索（本仓适配口径）</h2><table><tbody>${
       Object.entries(retrieval).filter(([, value]) => typeof value === "number")
@@ -429,6 +463,14 @@ export function renderBenchHtmlReport(report, options = {}) {
   </tbody></table></section>
   ${stageHtml}
   ${retrievalHtml}
+  ${memoryRecall.samples ? `<section><h2>记忆召回观测（${memoryRecall.samples} 次；完整诊断 ${memoryRecall.diagnosticSamples} 次）</h2><table><tbody>
+    <tr><td>FTS / LIKE 回退</td><td>${num(memoryRecall.ftsHits)} / ${num(memoryRecall.likeFallbacks)}</td></tr>
+    <tr><td>时间过滤前 / 后</td><td>${num(memoryRecall.timeFilterBefore)} / ${num(memoryRecall.timeFilterAfter)}</td></tr>
+    <tr><td>重复事件</td><td>${num(memoryRecall.duplicateEvents)}</td></tr>
+    <tr><td>JSONL 回读淘汰 / 候选</td><td>${num(memoryRecall.jsonlReadbackDropped)} / ${num(memoryRecall.jsonlReadbackCandidates)}</td></tr>
+    <tr><td>p95 recall / query</td><td>${num(memoryRecall.recallP95Ms, 1)}ms / ${num(memoryRecall.queryP95Ms, 1)}ms</td></tr>
+    <tr><td>冷索引会话 / 耗时</td><td>${num(memoryRecall.coldIndexSessions)} / ${num(memoryRecall.coldIndexMs, 1)}ms</td></tr>
+  </tbody></table></section>` : ""}
   ${failureHtml}
   <section><h2>逐题（${summary.rows.length}）</h2>${rowHtml || "<div class='note'>没有逐题结果。</div>"}</section>
   <div class="note">

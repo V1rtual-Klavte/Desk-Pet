@@ -76,6 +76,7 @@
   `<stamp>.json.verdicts-judge-<judge-hash>-<verdict-log-hash>.jsonl` 与
   `<stamp>.json.scored-judge-<judge-hash>-<verdict-log-hash>.json/.html`，均按父报告卫星归组，原始 run 文件保持只读；
   理想稿只由用户编写、不被清理，见 [ideal-traces/README.md](ideal-traces/README.md)。
+- **LoCoMo 终态归档**：诊断、试跑和重跑证据保存在 `test/.tmp/`；只有用户明确认定为终态的结果才能放入 `test/reports/bench/final/`。完整跑完、官方判分或代码门禁通过都不能代替用户认定；目前没有用户认定的 LoCoMo 终态结果。
 
 ## 维护义务（改了什么 → 必须同步什么）
 

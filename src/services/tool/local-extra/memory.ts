@@ -209,8 +209,9 @@ const memoryChangeTool: ToolDef = defineTool({
       ...(target?.draft.supersedesId ? { supersedesId: target.draft.supersedesId } : {}),
       sourceIds,
     }
-    if (kind !== "working" && (eventAt !== undefined && eventAt !== null || dueAt !== undefined && dueAt !== null || state !== undefined)) {
-      return { success: false, content: "", error: "只有 working 事项可以包含事项时间或 workingState" }
+    if ((kind !== "working" && (dueAt !== undefined && dueAt !== null || state !== undefined))
+      || (kind !== "working" && kind !== "episode" && eventAt !== undefined && eventAt !== null)) {
+      return { success: false, content: "", error: "只有 episode/working 记忆可包含 eventAt，dueAt 和 workingState 仅适用于 working" }
     }
     const revision = await applyMemoryChange({
       operationId: ctx.operationId ?? ctx.toolCallId ?? crypto.randomUUID(),

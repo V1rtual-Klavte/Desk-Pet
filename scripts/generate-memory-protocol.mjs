@@ -49,7 +49,7 @@ fs.writeFileSync(path.join(root, "src/services/proactive/protocol.ts"), `// Gene
 // 域名段与常量前缀 `PROACTIVE_` 重复，省略该段（tiers.proactive.low.wakeMinMs →
 // PROACTIVE_TIERS_LOW_WAKE_MIN_MS）；`silent` / `dreaming` 段保留 —— 两域有同名字段
 // （如 dailyTokens），省略会撞名。标量叶子只接受有限数值，数组叶子（钟点表 hours）只接受
-// 整数并发射为 `&[i64]` 切片常量，其它一律显式抛错（不静默产出垃圾）。
+// 整数或字符串并发射为对应切片常量，其它一律显式抛错（不静默产出垃圾）。
 function rustSegment(name) {
   return name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`).toUpperCase()
 }
@@ -66,8 +66,12 @@ function emitRustConstants(node, path, prefix = "PROACTIVE") {
       continue
     }
     if (Array.isArray(value)) {
+      if (value.length > 0 && value.every(item => typeof item === "string")) {
+        lines.push(emitRustStringSlice(`${prefix}_${rustConstantName(childPath)}`, value))
+        continue
+      }
       if (value.length === 0 || !value.every(item => Number.isInteger(item))) {
-        throw new Error(`Rust 常量发射器的数组叶子只接受非空整数数组：${childPath.join(".")} = ${JSON.stringify(value)}`)
+        throw new Error(`Rust 常量发射器的数组叶子只接受非空整数或字符串数组：${childPath.join(".")} = ${JSON.stringify(value)}`)
       }
       lines.push(`pub const ${prefix}_${rustConstantName(childPath)}: &[i64] = &[${value.join(", ")}];`)
       continue

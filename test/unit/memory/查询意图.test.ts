@@ -3,13 +3,23 @@ import { deriveMemoryQueryPlan } from "@/services/agent/memory/query"
 import { hasAdaptiveQueryShape, hasPersonalRecallIntent } from "@/services/agent/memory/query-shape"
 
 describe("记忆检索意图", () => {
+  it("英文功能词不占实体名额，推断与历史的证据需求共用阅读分类 [memory-query-plan-inference-fields]", () => {
+    const plan = deriveMemoryQueryPlan("Answer using our conversation history:\nWhat fields would Caroline be likely to pursue in her educaton?")
+    expect(plan.entities).toEqual(["fields", "Caroline", "pursue", "educaton"])
+    expect(plan.evidenceNeeds).toEqual(["preferences", "reason"])
+    expect(deriveMemoryQueryPlan("What history books did Nora recommend?").entities).toEqual(["history", "books", "Nora"])
+    expect(deriveMemoryQueryPlan("Answer using our conversation history:\nWhat did Nora say she would do?").evidenceNeeds).toEqual(["specific_fact"])
+    expect(deriveMemoryQueryPlan("What did I say in 姓名确认单七一?").evidenceNeeds).toEqual(["source", "specific_fact"])
+    expect(deriveMemoryQueryPlan("Answer using our conversation history:\nWhen did Caroline go to the LGBTQ support group?").evidenceNeeds).toEqual(["specific_fact"])
+  })
+
   it("第三人称经历和明确对话任务进入召回，一般知识仍跳过 [memory-query-plan-third-person-history]", () => {
     for (const question of ["What book did Nora recommend to Eli?", "When is Eli planning on going camping?",
       "How did she feel after the accident?", "她上次说过什么？", "林晓之前推荐什么书？"])
       expect(deriveMemoryQueryPlan(question).recallIntent, question).toBe("lookup")
     expect(deriveMemoryQueryPlan("Why did Nora choose the blue route?").recallIntent).toBe("explanation")
     expect(deriveMemoryQueryPlan("Answer using our conversation history:\nWould Eli enjoy classical music?"))
-      .toMatchObject({ recallIntent: "lookup", entities: ["Would", "Eli", "enjoy", "classical", "music"] })
+      .toMatchObject({ recallIntent: "lookup", entities: ["Eli", "enjoy", "classical", "music"], evidenceNeeds: ["preferences", "reason"] })
     for (const question of ["Who is Ed Sheeran?", "When is Christmas?", "What did the telescope discover?",
       "How many planets are in the solar system?", "为什么地球是圆的？"])
       expect(deriveMemoryQueryPlan(question).recallIntent, question).toBe("none")
@@ -153,5 +163,17 @@ describe("记忆检索意图", () => {
     expect(deriveMemoryQueryPlan("上周末我分享了什么？", new Date(2026, 9, 10, 12).getTime()).timeConstraint).toMatchObject({
       start: new Date(2026, 9, 3).getTime(), end: new Date(2026, 9, 5).getTime(),
     })
+  })
+})
+
+
+describe("个人假设与普通would知识题", () => {
+  it("个人偏好和具名假设复用个人查询计划，普通知识及助手指令不扩大召回 [memory-query-personal-hypothetical-boundary]", () => {
+    for (const query of ["Would Nora enjoy a programming workshop?", "Would I prefer the quieter route?", "Would the user be likely to enjoy typed programming?", "我会不会更喜欢安静的路线？"]) {
+      expect(deriveMemoryQueryPlan(query)).toMatchObject({ recallIntent: "lookup", evidenceNeeds: ["preferences", "reason"] })
+    }
+    for (const query of ["Would wet roads affect braking distance?", "Would you explain braking distance?", "海水会不会结冰？"]) {
+      expect(deriveMemoryQueryPlan(query)).toMatchObject({ recallIntent: "none", evidenceNeeds: [] })
+    }
   })
 })

@@ -922,6 +922,8 @@ impl NativeDispatcher {
                 args.get("eventTime")
                     .filter(|value| !value.is_null())
                     .cloned(),
+                arg_opt_bool(args, "observe")?,
+                arg_opt_strings(args, "entities")?,
             ),
             "memory_get_items" => ser(memory_commands::memory_get_items(
                 self.memory()?,

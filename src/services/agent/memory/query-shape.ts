@@ -1,4 +1,7 @@
 // Shared local query cues; no model call or runtime dependencies.
+import { MEMORY_LIMITS } from "./protocol"
+
+export const MEMORY_QUERY_STOP_WORDS: ReadonlySet<string> = new Set(MEMORY_LIMITS.query.englishStopWords)
 
 export type MemoryRecallIntent = "none" | "lookup" | "overview" | "explanation" | "procedure" | "advice" | "count"
 
@@ -28,8 +31,12 @@ export function hasExplicitRewriteHint(query: string): boolean {
     || /(?:刚才|刚刚|之前|以前|上次|前面|提过|说过|我们聊过|某天聊了什么|那天聊了什么|你还记得|那个(?:偏好|习惯|东西|人|事情)?|那件事|那位|这件事|我喜欢|我的偏好|用户偏好|我的习惯|个人资料|画像|remember|previous|earlier|what did i (?:say|tell you)|my preference|about me)/iu.test(query)
 }
 
-function hasConversationHistoryContext(query: string): boolean {
-  return /\b(?:using|from|according to|based on) (?:our |the |previous |past )?(?:conversation|chat) (?:history|records)\b|根据(?:我们(?:的)?|之前的|过去的)?(?:聊天|对话)(?:记录|历史)/iu.test(query)
+const CONVERSATION_HISTORY_CONTEXT = /\b(?:using|from|according to|based on) (?:our |the |previous |past )?(?:conversation|chat) (?:history|records)\b|根据(?:我们(?:的)?|之前的|过去的)?(?:聊天|对话)(?:记录|历史)/iu
+
+function hasConversationHistoryContext(query: string): boolean { return CONVERSATION_HISTORY_CONTEXT.test(query) }
+
+export function hasExplicitConversationReference(query: string): boolean {
+  return /\bwhat did (?:i|we|you|[\p{Lu}][\p{L}'’-]*) (?:say|tell|discuss|mention)\b.{0,40}\bin\b|(?:那次|那段|这段|那个|这个)(?:会话|对话|聊天)/iu.test(query)
 }
 
 /** Personal actions and plans, not every third-person/general-knowledge question. */
@@ -48,9 +55,20 @@ const PERSONAL_EVENT_QUESTION = /(?:\b(?:how many|how much|why|how|what|which|wh
 const FIRST_PERSON_CHINESE_QUESTION = /我(?:的)?[^。？！?！]{0,100}(?:什么|哪些|哪(?:个|些|档|种|部|本|次|里|儿|时)|什么时候|何时|为什么|为何|怎么|如何|多少|几(?:次|个|部|本|种|件|年|月|天)?|是否|吗|呢)/u
 const CURRENT_ADVICE_REQUEST = /(?:我(?:应该|该|要不要|该不该)|给我.{0,12}(?:推荐|建议)|(?:what should i|what do you recommend|can you recommend|could you recommend|any advice|any tips))/iu
 
+/** A personal hypothetical, rather than every general-knowledge question containing would. */
+function hasPersonalHypotheticalCue(query: string): boolean {
+  const namedActor = /\b[Ww]ould\s+([\p{Lu}][\p{L}'’-]*)\b/u.exec(query)?.[1]
+  const personalActor = /\bwould\s+(?:i|we|he|she|they|the user)\b/iu.test(query)
+    || Boolean(namedActor && !MEMORY_QUERY_STOP_WORDS.has(namedActor.toLowerCase()))
+  const choice = /\b(?:enjoy|like|prefer|choose|pursue|study|want|consider|accept|avoid|moving|move|interested|willing|likely)\b|\bopen to\b/iu.test(query)
+  return (personalActor && choice)
+    || /[我他她](?:们)?[^。？！?！]{0,80}(?:会不会|可能会|是否可能|愿不愿意|是否愿意|是否适合)[^。？！?！]{0,60}(?:喜欢|考虑|选择|学习|参加|搬|适合|更想|倾向)/u.test(query)
+}
+
 /** Personal history and advice require recall even when a few keyword facts already match. */
 export function hasPersonalRecallIntent(query: string): boolean {
   return PERSONAL_HISTORY_QUESTION.test(query) || PERSONAL_ADVICE.test(query) || CURRENT_ADVICE_REQUEST.test(query)
+    || hasPersonalHypotheticalCue(query)
 }
 
 /** Derive a conservative, deterministic retrieval plan from the user's exact wording. */
@@ -77,13 +95,17 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
     ? ["user"]
     : /你[^。？！?！]{0,20}(?:推荐|解释|说)/u.test(text) ? ["assistant"] : ["user", "assistant"]
   const entities = extractEntities(text)
+  const inference = memoryEvidenceReviewKind(text, recallIntent) === "inference"
+  const contextualSource = hasExplicitConversationReference(text)
   const evidenceNeeds = recallIntent === "none" ? [] : [
     ...(count ? ["count"] : []),
     ...(procedure ? ["steps"] : []),
     ...(explanation ? ["reason"] : []),
     ...(overview ? ["coverage"] : []),
-    ...(advice ? ["preferences"] : []),
-    ...(!count && !procedure && !explanation && !advice && !overview ? ["specific_fact"] : []),
+    ...(advice || inference ? ["preferences"] : []),
+    ...(inference ? ["reason"] : []),
+    ...(contextualSource ? ["source"] : []),
+    ...(!count && !procedure && !explanation && !advice && !overview && !inference ? ["specific_fact"] : []),
   ]
   const timeConstraint = parseTimeConstraint(text, before)
   return { recallIntent, sourceRoles, entities, evidenceNeeds, ...(timeConstraint ? { timeConstraint } : {}) }
@@ -98,6 +120,17 @@ export function deriveMemoryQueryPlan(originalQuery: string, before?: number): D
   }
 }
 
+/** The retrieval plan and reader share one distinction between history and inference. */
+export function memoryEvidenceReviewKind(query: string, intent?: MemoryRecallIntent): "count" | "inference" | undefined {
+  if (intent === "count") {
+    if (/\b(?:times?|visits?|trips?)\s+(?:a|per|each|every)\s+(?:day|week|month|year)\b|\bper\s+(?:day|week|month|year)\b|每(?:天|周|月|年|个?星期)/iu.test(query)) return undefined
+    return /\b(?:times?|occasions?|visits?|trips?|events?|experiences?)\b|(?:几次|多少次|次数|经历)/iu.test(query) ? "count" : undefined
+  }
+  if (intent === "advice") return undefined
+  if (/\b(?:what|whether)\s+(?:did|has|had)\b.{0,80}\b(?:say|said|mention|mentioned|tell|told)\b|(?:说过|明确表示过|提到过)/iu.test(query)) return undefined
+  return /\b(?:would|likely)\b|(?:可能会|是否可能|会不会|愿不愿意|是否愿意|是否适合)/iu.test(query) ? "inference" : undefined
+}
+
 function isDatedConversationOverview(query: string): boolean {
   const calendar = findCalendarDate(query)
   if (!calendar || !isRecordDateQuestion(query, calendar.index, calendar.length)) return false
@@ -105,14 +138,14 @@ function isDatedConversationOverview(query: string): boolean {
 }
 
 function extractEntities(query: string): string[] {
-  const chineseNormalized = query
+  const chineseNormalized = query.replace(CONVERSATION_HISTORY_CONTEXT, " ")
     .replace(/[？?！!，,。；;：:“”"'‘’()（）\[\]【】]/gu, " ")
     .replace(/(?:放在哪里|放哪儿|在哪里|哪儿|是什么|哪些|哪类|怎么做|怎么用|如何做|为什么|原因|几(?:本|个|次|件|条|种|项)|多少).*$/u, " ")
     .replace(/(?:我(?:们)?|你|曾经|之前|以前|上次|某天|什么|怎么|如何|为什么|原因|推荐过|推荐|建议过|建议|分享过|分享|告诉过|告诉|说过|说|提过|聊过|记得|回忆|总结|概括|所有|全部|有哪些|多少|几个|几次|的|了|吗|呢|啊|嘛)/gu, " ")
-  const normalized = chineseNormalized.replace(/\b(?:answer|using|from|according|based|on|our|conversation|chat|history|records|how|what|when|where|why|did|you|we|i|my|me|previously|recommend(?:ed)?|suggest(?:ed)?|share(?:d)?|tell|told|say|said|discuss(?:ed)?|remember|all|list|summari[sz]e|please|about|for|the|a|an|is|are|was|were|do|does|have|has|had|many|much|steps?|process|reason|advice|tips)\b/giu, " ")
+  const normalized = chineseNormalized.replace(/\b(?:recommend(?:ed)?|suggest(?:ed)?|share(?:d)?|tell|told|say|said|discuss(?:ed)?|all|list|summari[sz]e|many|much|steps?|process|reason|advice|tips)\b/giu, " ")
     .split(/\s+/u)
     .map(value => value.trim())
-    .filter(value => [...value].length >= 2)
+    .filter(value => [...value].length >= 2 && !MEMORY_QUERY_STOP_WORDS.has(value.toLowerCase()))
   return [...new Set(normalized)].slice(0, 8)
 }
 

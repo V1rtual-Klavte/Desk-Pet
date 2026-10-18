@@ -608,10 +608,14 @@ fn event_time_recall_filters_half_open_ranges_and_calendar_dates() {
     let range = MemoryEventTime::from_value(json!({ "start": 1_000i64, "end": 2_000i64 }))
         .expect("合法事件范围被拒绝");
     let ranged = store
-        .recall_candidates_with_event_time("旅行纪念日", None, "s1", 50, &[], false, Some(&range))
+        .recall_candidates_with_event_time_observed(
+            "旅行纪念日", None, "s1", 50, &[], false, Some(&range), true, &[],
+        )
         .expect("事件范围召回失败");
     let ranged_items = ranged["candidates"].as_array().unwrap();
     assert_eq!(ranged_items.len(), 1, "范围应包含 start，不应包含 end");
+    assert_eq!(ranged["diagnostics"]["timeFilterBefore"], json!(3));
+    assert_eq!(ranged["diagnostics"]["timeFilterAfter"], json!(1));
     assert_eq!(
         ranged_items[0]["draft"]["eventAt"]["instant"],
         json!(1_000i64)
@@ -632,6 +636,124 @@ fn event_time_recall_filters_half_open_ranges_and_calendar_dates() {
     );
 
     assert!(MemoryEventTime::from_value(json!({ "start": 2_000i64, "end": 2_000i64 })).is_err());
+}
+
+#[test]
+fn memory_query_nfkc_and_exact_phrase_rank_are_applied_before_fallback() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("exact-source", "exact-entry", "exact-hash"),
+            source("term-source", "term-entry", "term-hash"),
+        ])
+        .unwrap();
+
+    add(
+        &store,
+        "exact-query-add",
+        0,
+        &draft("favorite Ｃａｆｅ", vec!["exact-source"]),
+    );
+    add(
+        &store,
+        "term-query-add",
+        1,
+        &draft("cafe maker", vec!["term-source"]),
+    );
+
+    let matches = store.query("ＦＡＶＯＲＩＴＥ　ＣＡＦＥ", None, None, None, 10).unwrap();
+
+    assert_eq!(matches.len(), 2);
+    assert_eq!(matches[0]["draft"]["content"], json!("favorite Ｃａｆｅ"));
+    assert_eq!(
+        super::store::normalize_memory_text("ＡＢＣ　Ｃａｆｅ"),
+        "abc cafe"
+    );
+}
+
+#[test]
+fn english_query_function_words_do_not_admit_unrelated_facts() {
+    assert_eq!(
+        super::store::memory_query_terms(
+            "Answer using our conversation history: What would Nora likely study?"
+        ),
+        vec!["conversation", "history", "nora", "study"]
+    );
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("study-source", "study-entry", "study-hash"),
+            source("noise-source", "noise-entry", "noise-hash"),
+        ])
+        .unwrap();
+    add(
+        &store,
+        "study-add",
+        0,
+        &draft("Nora plans to study geology.", vec!["study-source"]),
+    );
+    add(
+        &store,
+        "noise-add",
+        1,
+        &draft(
+            "I have been thinking about being a better person.",
+            vec!["noise-source"],
+        ),
+    );
+    let matches = store
+        .query("What would Nora likely study?", None, None, None, 10)
+        .unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(
+        matches[0]["draft"]["content"],
+        json!("Nora plans to study geology.")
+    );
+}
+
+#[test]
+fn memory_query_weights_content_before_summary_before_aliases() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("content-source", "content-entry", "content-hash"),
+            source("summary-source", "summary-entry", "summary-hash"),
+            source("alias-source", "alias-entry", "alias-hash"),
+        ])
+        .unwrap();
+
+    let mut content = draft("rare phrase", vec!["content-source"]);
+    content["summary"] = json!("unrelated summary");
+    content["aliases"] = json!([]);
+    let mut summary = draft("unrelated body", vec!["summary-source"]);
+    summary["summary"] = json!("rare phrase");
+    summary["aliases"] = json!([]);
+    let mut alias = draft("unrelated body", vec!["alias-source"]);
+    alias["summary"] = json!("unrelated summary");
+    alias["aliases"] = json!(["rare phrase"]);
+
+    add(&store, "content-rank", 0, &content);
+    add(&store, "summary-rank", 1, &summary);
+    add(&store, "alias-rank", 2, &alias);
+
+    let matches = store.query("rare phrase", None, None, None, 10).unwrap();
+    let ranked_fields = matches.iter().map(|item| {
+        let draft = &item["draft"];
+        if draft["content"] == "rare phrase" {
+            "content"
+        } else if draft["summary"] == "rare phrase" {
+            "summary"
+        } else if draft["aliases"].as_array().is_some_and(|aliases| aliases.iter().any(|value| value == "rare phrase")) {
+            "alias"
+        } else {
+            "unexpected"
+        }
+    }).collect::<Vec<_>>();
+    assert_eq!(
+        ranked_fields,
+        vec!["content", "summary", "alias"],
+        "正文权重大于摘要，摘要权重大于显式别名"
+    );
 }
 
 #[test]

@@ -32,7 +32,8 @@ function followupQueries(plan: MemoryQueryPlan, focused: FocusedMemoryEvidence, 
     : plan.recallIntent === "procedure" ? ["步骤", "方法", "过程"]
     : plan.recallIntent === "overview" ? ["记录", "前后文"]
     : plan.recallIntent === "count" ? ["经历", "时间"]
-    : plan.recallIntent === "advice" ? ["偏好", "经历", "方法"] : ["记录", "前后文"]
+    : plan.recallIntent === "advice" ? ["偏好", "经历", "方法"]
+    : plan.evidenceNeeds.includes("preferences") ? ["偏好", "preferences", "reason"] : ["记录", "前后文"]
   const proposed = [
     ...(focused.guide?.searchQueries ?? []),
   ]
@@ -46,6 +47,28 @@ function followupQueries(plan: MemoryQueryPlan, focused: FocusedMemoryEvidence, 
     if (!searched.has(key) && isGroundedMemorySearch(query, corpus)) result.set(key, query.trim())
   }
   return [...result.values()]
+}
+
+/** Known gap anchors take precedence over notes about already resolved or excluded items. */
+function contextGapSourceIds(focused: FocusedMemoryEvidence): string[] {
+  const gapIds = new Set(focused.guide?.questionChecks.flatMap(check =>
+    check.obligation === "required" && check.status !== "supported" ? check.sourceIds : []) ?? [])
+  const review = focused.guide?.evidenceReview
+  if (review?.kind === "count") {
+    for (const item of review.items) {
+      if (item.disposition === "uncertain") for (const id of item.sourceIds) gapIds.add(id)
+    }
+  } else if (review?.kind === "inference") {
+    for (const item of review.items) {
+      if (item.disposition === "answer" && item.status !== "supported") {
+        for (const id of [...item.sourceIds, ...item.counterSourceIds]) gapIds.add(id)
+      }
+    }
+  }
+  // A missing fact may have no source yet (e.g. a reason absent from a matched
+  // decision). Keep the existing note-based fallback only in that case, not
+  // when the known anchors have already been expanded.
+  return gapIds.size ? focused.noteSourceIds.filter(id => gapIds.has(id)) : focused.noteSourceIds
 }
 
 /** Admit complete user/reply units, keeping previously admitted evidence within headroom. */
@@ -93,7 +116,7 @@ async function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T |
 /** Stop on coverage, exhaustion/no progress, headroom, cancellation or deadline, never a round quota. */
 export async function completeMemoryEvidence(
   input: CompleteMemoryEvidenceInput,
-  retrieve: (plan: MemoryQueryPlan, signal: AbortSignal) => Promise<EvidenceSnapshot>,
+  retrieve: (plan: MemoryQueryPlan, signal: AbortSignal, contextSourceIds: readonly string[]) => Promise<EvidenceSnapshot>,
   validate: (projections: MemoryProjection[], signal: AbortSignal) => Promise<EvidenceSnapshot>,
 ): Promise<FocusedMemoryEvidence> {
   let raw = deduplicateMemoryEvidence(unannotated(input.projections))
@@ -103,6 +126,7 @@ export async function completeMemoryEvidence(
   }
   let retrievalCount = 0
   const searched = new Set(input.queryPlan.queries.map(query => query.trim().toLocaleLowerCase().replace(/\s+/gu, " ")))
+  const expandedSources = new Set<string>()
   const controller = new AbortController()
   const abort = () => controller.abort(input.signal.reason)
   if (input.signal.aborted) abort()
@@ -125,16 +149,20 @@ export async function completeMemoryEvidence(
       if (input.signal.aborted) { clear(); return finish("cancelled") }
       if (!focused.guide) return finish("reader_unavailable")
       if (focused.guide.questionChecks.some(check => check.kind === "premise" && check.status === "conflicting")) return finish("premise_conflicting")
-      if (!focused.guide.questionChecks.some(check => check.obligation === "required" && check.status !== "supported")) return finish("satisfied")
+      if (!focused.guide.questionChecks.some(check => check.obligation === "required" && check.status !== "supported")
+        && (!focused.guide.evidenceReview || focused.guide.evidenceReview.complete)) return finish("satisfied")
       if (memoryRecallTokens(raw) >= input.tokenBudget) return finish("budget")
       if (controller.signal.aborted || Date.now() >= input.deadlineAt) return finish("deadline")
       const queries = followupQueries(input.queryPlan, focused, searched)
-      if (!queries.length) return finish("exhausted")
+      const contextSourceIds = contextGapSourceIds(focused).filter(id => !expandedSources.has(id)
+        && raw.some(item => item.sourceId === id && (item.conversation || item.origin === "user")))
+      if (!queries.length && !contextSourceIds.length) return finish("exhausted")
       for (const query of queries) searched.add(query.trim().toLocaleLowerCase().replace(/\s+/gu, " "))
+      for (const id of contextSourceIds) expandedSources.add(id)
       const before = raw
       // Every follow-up keeps the original intent, entities and temporal constraint.
       // Cancellation also bounds providers that cannot finish a request promptly.
-      const snapshot = await untilAbort(retrieve({ ...input.queryPlan, queries: [input.queryPlan.originalQuery, ...queries] }, controller.signal), controller.signal)
+      const snapshot = await untilAbort(retrieve({ ...input.queryPlan, queries: [input.queryPlan.originalQuery, ...queries] }, controller.signal, contextSourceIds), controller.signal)
       retrievalCount += 1
       if (input.signal.aborted) { clear(); return finish("cancelled") }
       if (!snapshot || controller.signal.aborted) return finish("deadline")
