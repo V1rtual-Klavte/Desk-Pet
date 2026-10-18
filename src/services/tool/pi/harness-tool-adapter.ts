@@ -4,7 +4,7 @@
 // execute 只执行已放行的工具；工具结果映射与失败语义由本适配器统一表达。
 
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core"
-import type { ToolDef } from "../types"
+import type { TaskToolAuthorization, ToolDef } from "../types"
 import { executeToolDefinition } from "../router"
 import { toolPolicyHash } from "../policy"
 import { getSimpleStage } from "@/services/personality/stages-cache"
@@ -17,6 +17,8 @@ export interface HarnessToolRun {
   sessionId?: string
   runGeneration?: number
   trustedUserEventId?: string
+  taskAuthorization?: TaskToolAuthorization
+  permissionMode?: "interactive" | "background"
   proactiveTurnContext?: import("@/services/proactive").ProactiveTurnContext
   /** 当前回合仍是代际所有者且未取消。 */
   isCurrent: () => boolean
@@ -50,6 +52,8 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
           sessionId: run.sessionId,
           runGeneration: run.runGeneration,
           ...(run.trustedUserEventId ? { trustedUserEventId: run.trustedUserEventId } : {}),
+          ...(run.taskAuthorization ? { taskAuthorization: run.taskAuthorization } : {}),
+          ...(run.permissionMode ? { permissionMode: run.permissionMode } : {}),
           ...(run.proactiveTurnContext ? { proactiveTurnContext: run.proactiveTurnContext } : {}),
           isCurrent: run.isCurrent,
           toolCallId,

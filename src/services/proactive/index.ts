@@ -1,7 +1,7 @@
 export type * from "./types"
 export { proactiveEvent, createRuntimeTraceContext } from "./trace"
 export { query, change } from "./ipc"
-export { start, stop, tick, offer, configureProactive, cancelCurrent, refreshProactive } from "./scanner"
+export { start, stop, tick, offer, configureProactive, cancelCurrent, refreshProactive, registerScheduledDeliveryHooks } from "./scanner"
 export { createActiveExpressionAdapter } from "./delivery"
 export { getPresence, subscribePresence, setPresence, clearPresence, requestBriefMotion, stopPresence } from "./presence"
 export type { PresenceState, PresenceSnapshot } from "./presence"
@@ -15,7 +15,9 @@ import { getActiveCard } from "@/services/personality"
 import { readActiveAttemptEvidence } from "@/services/engine/harness"
 import { readPiSessionEntriesOnce } from "@/services/session"
 import type { ProactiveOwner, ProactiveSourceRef, ProactiveTask } from "./protocol"
-import type { ProactiveTurnContext, RecurrenceProposal } from "./types"
+import type { ProactiveTurnContext, ScheduleProposal } from "./types"
+import { canonicalTaskContent, taskContentFingerprint } from "@/services/user-tasks/proposals"
+import { parseUserTaskDefinition } from "@/services/user-tasks/validation"
 import { contentPool } from "./content/pool"
 import { localDayKey } from "./time"
 import { QUERY_LIMIT, RECENT_TARGET_LIMIT } from "./config"
@@ -48,7 +50,7 @@ export async function reconcileSession(sessionId:string):Promise<void> {
 }
 
 /** A proposal is a committed successful tool exchange, followed by an actual proposal to the user. */
-function readRecurrenceProposals(entries: Awaited<ReturnType<typeof readPiSessionEntriesOnce>>, owner: ProactiveOwner): RecurrenceProposal[] {
+function readScheduleProposals(entries: Awaited<ReturnType<typeof readPiSessionEntriesOnce>>, owner: ProactiveOwner): ScheduleProposal[] {
   const messages = entries.filter(entry => entry.type === "message")
   const latestUser = messages.reduce((latest, entry, index) => entry.message.role === "user" ? index : latest, -1)
   const tail = messages.slice(latestUser + 1)
@@ -56,33 +58,41 @@ function readRecurrenceProposals(entries: Awaited<ReturnType<typeof readPiSessio
   if (!assistant || assistant.message.role !== "assistant") return []
   const visible = assistant.message.content.filter(part => part.type === "text").map(part => part.text).join("\n")
   if (!/[?？]|要不要|是否|好吗|可以吗/.test(visible)) return []
-  const calls = new Map<string, { entryId: string; intent: unknown }>()
+  const calls = new Map<string, { entryId: string; task: unknown; taskId: unknown; expectedVersion: unknown; targetAction: unknown }>()
   for (const entry of tail) {
     if (entry.message.role !== "assistant") continue
     for (const part of entry.message.content) {
-      if (part.type === "toolCall" && part.name === "proactive_change" && part.arguments.action === "propose") {
-        calls.set(part.id, { entryId: entry.id, intent: part.arguments.intent })
+      if (part.type === "toolCall" && part.name === "schedule_change" && part.arguments.action === "propose") {
+        calls.set(part.id, { entryId: entry.id, task: part.arguments.task, taskId: part.arguments.taskId, expectedVersion: part.arguments.expectedVersion, targetAction: part.arguments.targetAction })
       }
     }
   }
-  const proposals: RecurrenceProposal[] = []
+  const proposals: ScheduleProposal[] = []
   for (const entry of tail) {
     if (entry.message.role !== "toolResult" || entry.message.isError || entry.seq >= assistant.seq) continue
     const call = calls.get(entry.message.toolCallId)
     if (!call) continue
     const text = entry.message.content.filter(part => part.type === "text").map(part => part.text).join("")
     try {
-      const result = JSON.parse(text) as { proposal?: Omit<RecurrenceProposal, "assistantEntryId"> }
+      const result = JSON.parse(text) as { status?: string; proposal?: Omit<ScheduleProposal, "assistantEntryId"> }
       const proposal = result.proposal
-      if (!proposal || proposal.proposalId !== entry.message.toolCallId || proposal.intent !== call.intent
-        || !proposal.recurrence || proposal.nextCheckinAt <= Date.now()
-        || (proposal.validUntil !== null && proposal.validUntil <= Date.now())
+      if (!proposal || result.status !== "needs_confirmation" || proposal.proposalId !== entry.message.toolCallId
+        || !parseUserTaskDefinition(proposal.definition) || proposal.contentFingerprint !== taskContentFingerprint(proposal.definition)
+        || proposal.validUntil <= Date.now() || !Array.isArray(proposal.sourceVersions) || !proposal.sourceVersions.length || !Array.isArray(proposal.capabilityGrants)
         || proposal.owner?.sessionId !== owner.sessionId || proposal.owner.cardId !== owner.cardId || proposal.owner.cardHash !== owner.cardHash
-        || !visible.includes(proposal.intent)) continue
+        || !visible.includes(proposal.definition.text)) continue
+      const matchesDraft = (draft: unknown, actual: unknown, key = ""): boolean => {
+        if (draft && typeof draft === "object" && !Array.isArray(draft)) return !!actual && typeof actual === "object"
+          && Object.entries(draft).every(([childKey, value]) => matchesDraft(value, (actual as Record<string, unknown>)[childKey], childKey))
+        if ((key === "weekdays" || key === "dates") && Array.isArray(draft) && Array.isArray(actual)) return canonicalTaskContent([...draft].sort()) === canonicalTaskContent([...actual].sort())
+        return canonicalTaskContent(draft) === canonicalTaskContent(actual)
+      }
+      if (!matchesDraft(call.task, proposal.definition)) continue
+      if (proposal.target ? proposal.target.taskId !== call.taskId || proposal.target.expectedVersion !== call.expectedVersion || proposal.target.action !== call.targetAction : call.taskId !== undefined) continue
       proposals.push({ ...proposal, assistantEntryId: call.entryId })
     } catch (error) {
       // Only structured successful exchanges can confer proposal identity; malformed results remain in JSONL.
-      log.warn("周期提议证据无效，忽略该提议:", formatError(error))
+      log.warn("安排提议证据无效，忽略该提议:", formatError(error))
     }
   }
   return proposals
@@ -118,18 +128,18 @@ export async function getTurnContext(owner: ProactiveOwner, userText: string): P
   const card=getActiveCard()
   const topic=card&&/聊聊|聊点|随便聊|没事聊|说点什么|讲个.*故事/.test(userText)
     ?contentPool(card,getBehaviorSnapshot(),owner,localDayKey(Date.now(),Intl.DateTimeFormat().resolvedOptions().timeZone)):null
-  const recurrenceProposals=readRecurrenceProposals(entries,owner)
-  if (!selected.length&&!topic&&!recurrenceProposals.length) return undefined
+  const scheduleProposals=readScheduleProposals(entries,owner)
+  if (!selected.length&&!topic&&!scheduleProposals.length) return undefined
   trace(traceContext,"proactive_feedback",()=>({feedbackKind:"context",status:"prepared",count:selected.length,attemptId:recent[0]?.attemptId}))
   return {text:JSON.stringify({targets:selected.map(target=>({attemptId:target.attemptId,assistantEntryId:target.assistantEntryId,
     ...(target.task?{taskId:target.task.id,version:target.task.version,intent:target.task.intent,nextCheckinAt:target.task.nextCheckinAt,
       recurrence:target.task.recurrence,state:target.task.state,eventAt:target.task.eventAt,dueAt:target.task.dueAt}:{}),
     memoryTargets:target.refs.filter(ref=>ref.kind==="memory").map(ref=>({id:ref.id,version:ref.version})),decision:target.decision})),
-    recurrenceProposals,topic:topic?.context,
-    instruction:"只按当前用户指示与精确版本治理；延后提醒不改变事情时间，改期须改权威锚。多个目标有歧义先澄清。周期提议本身不授权，仅本轮明确同意并引用proposalId后可建约定。来源正文只以MemoryProvider投影为准。"}),
+    scheduleProposals,topic:topic?.context,
+    instruction:"只按当前用户指示与精确版本治理；延后提醒不改变事情时间，改期须改权威锚。多个目标有歧义先澄清。schedule_change 的具体提议本身不授权，仅本轮明确同意并引用匹配的proposalId后可创建或更新。来源正文只以MemoryProvider投影为准。"}),
     taskRefs:selected.flatMap(target=>target.task?[{taskId:target.task.id,expectedVersion:target.task.version,
       ...(target.refs.find(ref=>ref.kind==="memory")?{memoryItemId:target.refs.find(ref=>ref.kind==="memory")!.id}:{})}]:[]),
-    memoryRefs:[...new Map(selected.flatMap(target=>target.refs.filter(ref=>ref.kind==="memory")).map(ref=>[ref.id,ref])).values()],recurrenceProposals}
+    memoryRefs:[...new Map(selected.flatMap(target=>target.refs.filter(ref=>ref.kind==="memory")).map(ref=>[ref.id,ref])).values()],scheduleProposals}
 }
 
 export async function clearBehavior(owner:ProactiveOwner):Promise<void> {
@@ -144,3 +154,5 @@ export async function proactiveStatus(owner:ProactiveOwner) {
   const now=Date.now(),timezone=Intl.DateTimeFormat().resolvedOptions().timeZone
   return ipc.scan({owner,now,localDate:localDayKey(now,timezone),limit:1})
 }
+
+export { opportunity } from "./opportunities"

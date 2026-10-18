@@ -97,10 +97,34 @@ describe("请求内语义证据核对", () => {
     expect(parse({ kind: "inference", complete: true, items: [{ ...conclusion, basis: "字".repeat(320) }] }, "inference")).toMatchObject({ complete: true })
   })
 
+  it("行政区归属走 inference 包，地点原文保留且不被 answerSourceIds 门槛丢弃 [memory-review-inference-geography]", () => {
+    const evidence = [
+      { id: "S1", sourceId: "james-stamford", text: "James: I adopted a pup from a shelter in Stamford last week." },
+    ]
+    const parsed = parseMemoryReadingNotes(JSON.stringify({
+      notes: [{ id: "S1", quote: evidence[0]!.text, relevance: "地点 Stamford" }],
+      questionChecks: [{ kind: "premise", obligation: "required", condition: "James's place of residence", status: "supported", sourceIds: ["S1"] }],
+      evidenceReview: { kind: "inference", complete: true, items: [
+        { disposition: "answer", conclusion: "James likely lives in Connecticut", basis: "Stamford is a well-known Connecticut city", status: "supported", sourceIds: ["S1"], counterSourceIds: [] },
+      ] },
+    }), evidence, "Answer using our conversation history:\nDoes James live in Connecticut?", [], "lookup")
+    expect(parsed.guide?.evidenceReview).toMatchObject({ kind: "inference", complete: true })
+    const projections = evidence.map(source => ({ sourceId: source.sourceId, text: source.text, memoryVersion: "v1", provenance: "conversation",
+      taint: "trusted_user", tokenBudget: 100, tier: "recall", origin: "user",
+    } satisfies MemoryProjection))
+    const selected = selectMemoryAnswerEvidence(projections, parsed.guide!)
+    expect(selected.map(item => item.sourceId)).toEqual(["james-stamford"])
+    const packet = JSON.parse(memoryRecallText(selected, parsed.guide).split("\n").slice(1).join("\n"))
+    expect(packet.answerMode).toBe("inference")
+    expect(packet.advisoryReview.items[0]).toMatchObject({ conclusion: "James likely lives in Connecticut", status: "supported" })
+    expect(packet).not.toHaveProperty("answerSourceIds")
+  })
+
   it("数量或倾向缺少核对表时保留合法引文，但广义supported不能绕过缺口 [memory-review-missing-work-sheet]", () => {
     for (const [query, intent, kind] of [
       ["How many times did Nora hike in 2025?", "count", "count"],
       ["Would Nora likely enjoy hiking?", "lookup", "inference"],
+      ["What would you recommend for me?", "advice", "inference"],
     ] as const) {
       const parsed = parseMemoryReadingNotes(JSON.stringify({ notes, questionChecks: [check] }), sources, query, [], intent)
       expect(parsed.noteStatus).toBe("complete")
@@ -108,7 +132,9 @@ describe("请求内语义证据核对", () => {
       expect(parsed.errors).toEqual({ missing_evidence_review: 1 })
     }
     expect(memoryEvidenceReviewKind("What did Nora say she would do?", "lookup")).toBeUndefined()
-    expect(memoryEvidenceReviewKind("What would you recommend for me?", "advice")).toBeUndefined()
+    expect(memoryEvidenceReviewKind("What would you recommend for me?", "advice")).toBe("inference")
+    expect(memoryEvidenceReviewKind("Does James live in Connecticut?", "lookup")).toBe("inference")
+    expect(memoryEvidenceReviewKind("Which US state did Jolene visit during her internship?", "lookup")).toBe("inference")
   })
 
   it("直接频率与静态数量不强迫实例化，明确发生次数才要求计数表 [memory-review-count-vs-direct-quantity]", () => {

@@ -101,7 +101,7 @@ describe("子代理工具面", () => {
       fakeToolCall(delegateNames[0]!, { task: "再派生一个子代理" }, "subagent-delegate-call"),
       fakeText(SUBAGENT_REPLY),
     ])
-    const fork = await runForkAgent({ task: TASK })
+    const fork = await runForkAgent({ task: TASK, owner: { kind: "conversation", runId: crypto.randomUUID(), sessionId: "fork-test", runGeneration: 1, isCurrent: () => true } })
     // 子运行自己的请求：fork 跑完立刻切片，场景回合的请求（本层没有）不会混进来。
     const subAgentPayloads = [...provider.payloads]
     const sortedWhitelist = [...whitelistNames].sort()

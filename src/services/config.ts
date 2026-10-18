@@ -663,6 +663,8 @@ async function refreshConfigConsumers(): Promise<void> {
     log.warn("导入配置后静默了解未重应用（配置已落盘；失败项在下次启动时生效）", formatError(error))
   }
   await refreshProactiveConsumer()
+  const { internalScheduler } = await import("@/services/scheduler")
+  internalScheduler.refreshAll()
 }
 
 /**
@@ -820,6 +822,8 @@ export async function setProactiveFrequency(tier: FrequencyTier): Promise<void> 
   setOverride("ai.proactive.frequency", tier)
   await flushConfig()
   await refreshProactiveConsumer()
+  const { internalScheduler } = await import("@/services/scheduler")
+  internalScheduler.refreshAll()
 }
 
 export const silentAccessConfig = {

@@ -316,7 +316,8 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
     )
     .map_err(|e| AppError::Memory(format!("建表失败: {e}")))?;
 
-    crate::proactive::schema::create_objects(conn)
+    crate::proactive::schema::create_objects(conn)?;
+    crate::scheduler::schema::create_objects(conn)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1951,6 +1952,7 @@ fn repair_transaction(
     initialize_meta_values(conn, fresh_database)?;
     super::store::backfill_memory_search_projection(conn)?;
     crate::proactive::schema::initialize_rows(conn)?;
+    crate::scheduler::schema::initialize_rows(conn)?;
     initialize_conversation_metadata(
         conn,
         fresh_database,
@@ -2019,6 +2021,9 @@ pub fn ensure(
 
     let credentials_table_missing =
         !fresh_database && object_type(conn, "mcp_credentials")?.is_none();
+    if !fresh_database {
+        crate::scheduler::schema::validate_inventory(conn, false)?;
+    }
     if credentials_table_missing {
         rust_warn!(
             "MCP credential table is missing; restoring structure only. Existing credentials cannot be reconstructed and must be re-entered or restored from a backup"

@@ -87,7 +87,7 @@ const handlers = new WeakMap<ToolDef, ToolHandler>()
 export function defineTool(definition: ToolDef, handler: ToolHandler): ToolDef {
   const policy = validateToolPolicy(definition.policy, definition.id)
   validateRiskDeclaration(definition)
-  const tool = Object.freeze({ ...definition, policy })
+  const tool = Object.freeze({ ...definition, policy, ...(definition.mcpAnnotations ? { mcpAnnotations: Object.freeze({ ...definition.mcpAnnotations }) } : {}) })
   handlers.set(tool, handler)
   return tool
 }
@@ -118,6 +118,8 @@ export function toolPolicyFingerprint(tool: ToolDef): string {
     historyCompaction: policy.context.historyCompaction,
     safetyLevel: tool.safetyLevel,
     actionCategory: tool.actionCategory,
+    parameters: tool.parameters,
+    mcpAnnotations: tool.mcpAnnotations ?? null,
   })
 }
 

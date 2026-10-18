@@ -1,3 +1,4 @@
+// 2026-10-18 统一调度与子运行：手工 analyze/generate 声明修订；测试已写未运行，sourceHash 留统一验收复算。
 // 2026-10-18 B2C 记忆邻接补全：共享 trace.ts 的 memory_recall_end 白名单新增可选 neighborEntries；
 // trace 校验、保留、性能与回合调度行为面不变，仅按当前源码刷新 sourceHash。
 // 2026-10-16 回答证据范围复核：runtime 仅将 partial 阅读的 preserveCandidates 传给记忆渲染；
@@ -75,7 +76,7 @@
 // 受理计数与 isTurnActive / isAIGenerating 推导，无定时器；stoppedAtToolLimit 改名
 // stoppedByToolGovernance；afterTool 返回类型增 terminate）、agent/runner.ts（三个回合入口在
 // begin() 成功后受理、三处 finally 交回；src/services/cooldown.ts 整模块删除）；
-// 子代理轮数映射在 agent/sub-agent.ts（ai.loop.subAgentRounds），不在本契约 sourceFiles。
+// 子代理调用上限映射在 agent/sub-agent.ts（ai.loop.subAgentRounds），由 ar-41 纳入本契约 sourceFiles。
 // 新增 ar-27（unit：病理检测阈值与重置）、ar-28（integration：计数上限口径 = 主回合无、子运行
 // 保留）、ar-29（integration：软提示与两条硬终止路径的接线）、ar-30（integration：AI 生成锁由
 // 回合状态推导），共登记 14 条新 caseId（unit 4 / integration 10）。ar-01..ar-26 为描述与来源
@@ -83,7 +84,7 @@
 // L4 侧本批只改三个 memory 场景的载荷与注释（meta 未动），既有 L4 引用不失效；rules 不动
 // （新增四点均不入 L4 计数）。sourceHash 按当前源码复算。
 // 2026-10-06 证据缺口补漏（本批登记）：ar-29 增补 scenario `tool-loop-subagent-guard`
-// （test/integration/agent-runtime/工具循环治理.test.ts：runPiSubAgent 在 maxRounds=10 下同参
+// （test/integration/agent-runtime/工具循环治理.test.ts：runPiSubAgent 在 maxToolCalls=10 下同参
 // 连续第 5 次于调用门硬终止 —— 前 4 次执行、第 5 次不执行且不再发请求；子运行的请求投影关闭，
 // 软提示不附进请求视图，硬终止两条路径照常生效）。ar-30 增补 `ai-lock-resume-pairing` /
 // `ai-lock-resume-error-pairing` / `ai-lock-active-pairing`（test/integration/agent-runtime/
@@ -203,6 +204,10 @@ export const agentRuntimeContract: ModuleContract = {
   sourceFiles: [
     "src/services/engine/plan/checkpoint-store.ts",
     "src/services/agent/runner.ts",
+    // ar-41: host delegation orchestration, shared execution defaults and child context adapter.
+    "src/services/agent/sub-agent.ts",
+    "src/services/agent/timeouts.ts",
+    "src/services/tool/pi/harness-tool-adapter.ts",
     "src/services/debug.ts",
     "src/services/error/failure-kind.ts",
     "src/services/engine/harness/delivery.ts",
@@ -243,12 +248,19 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "7fbc24faff848d53dae6ddcc7a6b90b92bc58c504f5e734ff4438c820afe6aaa",
+  sourceHash: "c9ebec417fbcaa157e2cf1eb72d566d12d9e68c9b2b7a37f16962a9343d0c5a5",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
   // (ar-16/ar-26/ar-34/ar-37). Domain-specific transformations stay covered by their owning modules.
   coverage: [
+    {
+      id: "ar-41", feature: "统一子运行 owner、产物验收与工具证据",
+      description: "runPiSubAgent 是 fork/team、Plan、主动规划和定时工作的唯一内核。host 必须给定 conversation/plan/proactive/scheduled owner；预取消和过期 deadline 在 Provider 前返回 cancelled/timed_out。maxToolCalls 只表示工具调用次数，保留各业务默认上限。运行状态 completed 与业务 success 分离：空正文、非法 JSON 或治理中止没有成功兜底。必需能力缺失不开工，定时任务明确要求的思考档位不受模型支持时拒绝；resolved 记录模型/provider/期望档位与映射适配、deadline 和冻结工具名。后台持久授权拒绝以 needs_input 收口，不打开用户确认；父取消中止正在执行的工具。工具证据来自真实 after_tool 回执，只提取有界安全 URL、获取时间及同一 JSON 对象中的 URL/发布日期配对；助手自报来源不进证据。audit.runId 与 host owner 一致；team 保留成员状态，lead 空结果不能包装成功。MCP 按本 run 借用并在所有收尾路径释放（真实连接生命周期仍由 tool-execution 的相关 L4 契约验证）。",
+      why: "临时 owner、空正文成功、team 字符串包装成功会把未完成工作伪装成已交付；背景任务等待交互或把模型来源自报当真证据同样不可接受。",
+      layer: "integration", depth: "deep",
+      scenarios: ["subrun-output-acceptance", "subrun-owner-preflight", "subrun-required-capabilities", "subrun-tool-source-evidence", "subrun-background-authorization", "subrun-inflight-cancel", "subrun-team-lead-failure"],
+    },
     {
       id: "ar-40",
       feature: "独立回合冻结空工具面",
@@ -523,7 +535,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-28",
       feature: "工具调用计数上限的口径（主回合无 / 子运行保留）",
-      description: "主聊天回合不再有工具调用计数硬上限：回合驱动（`runPiAgentTurn` 的回合 spec）与中断续跑（`continueInterruptedRun`）都不给 createTurnSpec 传 maxToolCalls，超过旧默认值（5）的连续调用全部真实执行、以模型正文自然收尾（不是 toolLoopMaxRounds 兜底文案）、工具历史没有 blocked —— 自然出口 = 模型不再调工具，兜底防线是 ar-27 / ar-29 的病理检测。无人值守子运行保留计数封顶：runPiSubAgent（计划步骤 / 主动规划 / fork·team 的共同出口）仍传 maxToolCalls = input.maxRounds ?? 3，达到上限的那次调用在调用门被拦下（记 blocked）、不再发起下一次请求，运行按 completed 收口（子运行自身收尾走无结果兜底；toolLoopMaxRounds 是主回合的治理文案）。agent 子代理的轮数映射在 `agent/sub-agent.ts`（取 `ai.loop.subAgentRounds`，原 `ai.loop.maxToolCallsPerTurn` 改名、默认值 5 不变），不在本契约 sourceFiles",
+      description: "主聊天回合不再有工具调用计数硬上限：回合驱动（`runPiAgentTurn` 的回合 spec）与中断续跑（`continueInterruptedRun`）都不给 createTurnSpec 传 maxToolCalls，超过旧默认值（5）的连续调用全部真实执行、以模型正文自然收尾（不是 toolLoopMaxRounds 兜底文案）、工具历史没有 blocked —— 自然出口 = 模型不再调工具，兜底防线是 ar-27 / ar-29 的病理检测。无人值守子运行保留计数封顶：runPiSubAgent（计划步骤 / 主动规划 / fork·team 的共同出口）仍传 maxToolCalls = input.maxToolCalls ?? 3，达到上限的那次调用在调用门被拦下（记 blocked）、不再发起下一次请求，运行按 completed 收口（子运行返回 completed + success=false 和空正文，不把无结果文案当成功；toolLoopMaxRounds 是主回合的治理文案）。agent 子代理的轮数映射在 `agent/sub-agent.ts`（取 `ai.loop.subAgentRounds`，原 `ai.loop.maxToolCallsPerTurn` 改名、默认值 5 不变），不在本契约 sourceFiles",
       why: "上限口径从「所有回合的计数封顶」改成「只给无人值守子运行封顶」是行为反转：主回合误留封顶会把长任务掐断（旧默认 5 次），子运行误删封顶则让无人值守的调用失去上界",
       layer: "integration",
       depth: "deep",
@@ -532,7 +544,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-29",
       feature: "病理检测的接线（软提示与两条硬终止路径）",
-      description: "createTurnSpec 每回合新建 guard 与 toolLoopNotices（回合级内存态、不落盘；子运行也吃这套检测）：软档（同参或失败连击第 3 次起）产出的中性提示（非 Card 台词）经投影出口与地址标注同一通道附到该条工具结果正文，跨请求持续存在（后续每一笔请求里的同一结果都带），多 text 块结果整条只拼在最后一个 text 块一次（不逐块重复），阈值之前的结果不带提示；硬档两条路都置同一枚 stoppedByToolGovernance 停止标志，主回合由 settleMainTurn 早退到 Card 的 toolLoopMaxRounds 兜底收尾（子运行收尾走自身出口）：同参连击在调用门 block + terminate（该次调用不执行、历史记 blocked、不再发下一次请求），失败连击在结果侧经 after_tool 的 terminate 立即终止（失败工具照常走到 after_tool；批内全部调用都带该标记时上游在当前批次后结束运行，混批时标志已记下、模型再调工具由下一次调用门拦下，第 5 次失败后不再发请求、历史不出现调用门的 blocked 记录）。每回合重置由新建实例承载：同一会话两个回合各自从零累计，第二回合不继承第一回合的连击。子运行（runPiSubAgent）的请求投影关闭（projectToolResults=false）：软提示不在请求视图里附着（无处可附），但判据与硬终止照常生效 —— maxRounds 封顶够不着时，同参连续第 5 次在调用门被 block + terminate（先于子运行轮数封顶收口）",
+      description: "createTurnSpec 每回合新建 guard 与 toolLoopNotices（回合级内存态、不落盘；子运行也吃这套检测）：软档（同参或失败连击第 3 次起）产出的中性提示（非 Card 台词）经投影出口与地址标注同一通道附到该条工具结果正文，跨请求持续存在（后续每一笔请求里的同一结果都带），多 text 块结果整条只拼在最后一个 text 块一次（不逐块重复），阈值之前的结果不带提示；硬档两条路都置同一枚 stoppedByToolGovernance 停止标志，主回合由 settleMainTurn 早退到 Card 的 toolLoopMaxRounds 兜底收尾（子运行收尾走自身出口）：同参连击在调用门 block + terminate（该次调用不执行、历史记 blocked、不再发下一次请求），失败连击在结果侧经 after_tool 的 terminate 立即终止（失败工具照常走到 after_tool；批内全部调用都带该标记时上游在当前批次后结束运行，混批时标志已记下、模型再调工具由下一次调用门拦下，第 5 次失败后不再发请求、历史不出现调用门的 blocked 记录）。每回合重置由新建实例承载：同一会话两个回合各自从零累计，第二回合不继承第一回合的连击。子运行（runPiSubAgent）的请求投影关闭（projectToolResults=false）：软提示不在请求视图里附着（无处可附），但判据与硬终止照常生效 —— maxToolCalls 封顶够不着时，同参连续第 5 次在调用门被 block + terminate（先于子运行轮数封顶收口）",
       why: "判据之外，提示与终止都由接线承载：提示挂错出口模型看不到、终止漏挂则该停不停（fail-open）、每回合重置若丢则正常会话会被跨回合累计冤枉硬终止；after_tool 的 terminate 是「模型不再调工具时也能收手」的唯一出口",
       layer: "integration",
       depth: "deep",

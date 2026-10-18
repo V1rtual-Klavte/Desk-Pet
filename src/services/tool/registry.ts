@@ -104,7 +104,7 @@ export async function registerDefaultTools(): Promise<void> {
   const { registerClipboardTools } = await import("./local-extra/clipboard")
   const { registerAgentSpawnTool } = await import("./local-extra/agent-tool")
   const { registerMemoryTools } = await import("./local-extra/memory")
-  const { registerProactiveTools } = await import("./local-extra/proactive")
+  const { registerScheduleTools } = await import("./local-extra/schedule")
   const { registerPlanTool } = await import("./local-extra/plan")
   const { registerAskUserTool } = await import("./local-extra/ask")
 
@@ -116,7 +116,7 @@ export async function registerDefaultTools(): Promise<void> {
   registerClipboardTools()
   registerAgentSpawnTool()
   registerMemoryTools()
-  registerProactiveTools()
+  registerScheduleTools()
   registerPlanTool()
   registerAskUserTool()
 

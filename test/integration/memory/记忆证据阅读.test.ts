@@ -22,7 +22,7 @@ import { deriveMemoryQueryPlan } from "@/services/agent/memory/query"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 
-const QUERY = "What would you recommend for me based on my preferences?"
+const QUERY = "What did I say about my ThinkPad earlier?"
 
 function evidence(): MemoryProjection[] {
   return Array.from({ length: 4 }, (_, index) => ({
@@ -584,7 +584,9 @@ describe("记忆证据阅读接线", () => {
     const sent = JSON.parse(call.userText) as { sources: Array<{ sourceId: string; role: string; text: string }> }
     const rendered = renderMemoryRecall(focused.projections, 12_000, focused.guide)
     const packet = JSON.parse(rendered.text.slice(rendered.text.indexOf("\n{") + 1)) as {
-      questionChecks: Array<{ condition: string; status: string; sourceIds: string[] }>
+      answerMode?: string
+      advisoryReview?: { kind: string; complete: boolean }
+      evidence: Array<{ id: string; text: string }>
       readingNotes: Array<{ sourceId: string; quote: string }>
     }
 
@@ -611,8 +613,10 @@ describe("记忆证据阅读接线", () => {
     expect(sent.sources.find(item => item.sourceId === wireId(plannedId))).toMatchObject({ role: "user", text: raw[1]?.text })
     expect(sent.sources.find(item => item.sourceId === wireId(assistantId))).toMatchObject({ role: "assistant", text: raw[2]?.text })
     expect(focused.guide?.questionChecks.map(check => check.status)).toEqual(["supported", "missing", "missing"])
-    expect(packet.questionChecks.map(check => check.status)).toEqual(["supported", "missing", "missing"])
-    expect(packet.readingNotes.map(item => item.sourceId)).toEqual([ownedId, preferenceId])
+    expect(packet.answerMode).toBe("inference")
+    expect(packet.advisoryReview).toMatchObject({ kind: "inference", complete: false })
+    expect(packet.evidence.map(item => item.text)).toEqual(raw.map(item => item.text))
+    expect(packet.readingNotes.map(item => item.sourceId)).toEqual([wireId(ownedId), wireId(preferenceId)])
   })
 
   it("无目标前提时可输出无引用的missing核对项，且不升级为事实 [memory-reading-missing-premise-guide]", async () => {

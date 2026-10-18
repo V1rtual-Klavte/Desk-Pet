@@ -1,4 +1,5 @@
 import { watch } from "vue"
+import { internalScheduler } from "@/services/scheduler"
 import { activeSessionId, unansweredCount, getUnansweredPolicyHistory, readPiSessionEntriesOnce } from "@/services/session"
 import { getActiveCard, getActivePersonalityId, subscribeVariableCommits, getPoolSnapshot } from "@/services/personality"
 import { getBehaviorSnapshot, IDLE_ACTIVE_LIMIT_MS } from "@/services/behavior"
@@ -30,7 +31,7 @@ export interface SchedulerAdapters {
   cancelExpression:(owner:ProactiveOwner)=>Promise<unknown>
   reconcileSession:(sessionId:string)=>Promise<void>
 }
-let adapters:SchedulerAdapters|undefined,started=false,busy=false,wakeTimer:ReturnType<typeof setTimeout>|undefined,activeTick:Promise<void>|undefined
+let adapters:SchedulerAdapters|undefined,started=false,busy=false,removeJob:(()=>void)|undefined,activeTick:Promise<void>|undefined
 let aborter:AbortController|undefined,jobOwner:ProactiveOwner|undefined,jobRequiresWindow=false
 const cleanups:Array<()=>void>=[],offered=new Map<string,Opportunity>()
 let windowIdentity="",windowSince=0,lastWindowGeneration=-1,lastWindowSequence=-1,lastWindowOfferAt=0,offeringWindow=false
@@ -40,6 +41,13 @@ let lastWindowState:string|null=null
 /** 最近一次观察时系统 idle 是否已达关键阈值；用于 idle 跨阈值唤醒。 */
 let wasSystemIdle=false
 const previousVars=new Map<string,Record<string,string|number|boolean>>()
+export interface ScheduledDeliveryHooks {
+  canDeliver: (item: Opportunity, attemptId?: string) => Promise<boolean>
+  beforeAttempt: (item: Opportunity, attemptId: string) => Promise<boolean>
+  committed: (item: Opportunity, attemptId: string, assistantEntryId: string) => Promise<void>
+}
+let scheduledDeliveryHooks: ScheduledDeliveryHooks | undefined
+export function registerScheduledDeliveryHooks(hooks: ScheduledDeliveryHooks): void { scheduledDeliveryHooks=hooks }
 function seedVariables():void {
   const card=getActiveCard()
   if(card)previousVars.set(card.id,Object.fromEntries(Object.entries(getPoolSnapshot().card).map(([name,state])=>[name,state.value as string|number|boolean])))
@@ -65,32 +73,25 @@ function proactiveActive():boolean {return proactiveFrequency()!=="off"}
  * 左闭右开口径 —— 注入的 random 取 [0,1)，因此永远小于上界；`Math.random()` 满足该约定。
  */
 export function wakeDelayMs(minMs:number,maxMs:number,random:number):number {return Math.floor(minMs+random*(maxMs-minMs))}
-function clearWakeTimer():void {if(wakeTimer){clearTimeout(wakeTimer);wakeTimer=undefined}}
-/**
- * 调度下一次随机唤醒 —— 全模块唯一的「下一次调度点」。
- * 先取消旧定时器（不留双定时器），再按当前档位区间抽一次；off / 未启动不调度。
- * 一次性 setTimeout 递归（契约 §2.3「随机点，不形成固定节拍」），不用 setInterval。
- */
-function scheduleNextWake():void {
-  clearWakeTimer()
-  if(!started)return
-  const tier=proactiveFrequency()
-  if(tier==="off")return
-  const limits=proactiveTierLimits(tier)
-  wakeTimer=setTimeout(()=>{wakeTimer=undefined;enqueueTick()},wakeDelayMs(limits.wakeMinMs,limits.wakeMaxMs,Math.random()))
-}
 function enqueueTick():void {
   if(!started||!proactiveActive())return
-  if(activeTick)return
-  clearWakeTimer()
-  const run=tick().catch(error=>log.warn("主动扫描失败:",formatError(error))).finally(()=>{if(activeTick===run)activeTick=undefined;scheduleNextWake()})
-  activeTick=run
+  internalScheduler.wake("proactive_scan")
 }
 
 export function start():void {
   if(started)return
   if(!adapters)throw new Error("proactive adapters not configured")
   started=true;seedVariables()
+  removeJob=internalScheduler.register({id:"proactive_scan",nextAt:now=>{
+    const tier=proactiveFrequency()
+    if(!started||tier==="off")return null
+    const limits=proactiveTierLimits(tier)
+    return now+wakeDelayMs(limits.wakeMinMs,limits.wakeMaxMs,Math.random())
+  },run:async now=>{
+    const run=tick(now)
+    activeTick=run
+    try {await run} finally {if(activeTick===run)activeTick=undefined}
+  },cancel:()=>cancelCurrent("scheduler_stopped")})
   cleanups.push(watch(activeSessionId,()=>{cancelCurrent("session_changed");offered.clear();enqueueTick()}))
   cleanups.push(watch(()=>getActivePersonalityId(),(value,previous)=>{cancelCurrent("card_changed");if(previous)stopPresence(`planner:${previous}`);offered.clear();discardDerivedSources();wasWorking=false;lastReliableActive=0;lastWindowState=null;wasSystemIdle=false;seedVariables();enqueueTick()}))
   cleanups.push(subscribeWindowObservations(observation=>{
@@ -161,13 +162,13 @@ export function start():void {
       enqueueTick()
     }).catch(error=>log.warn("变量机会构造失败:",formatError(error)))
   }))
-  // 引导期下发档位投影；下一次随机唤醒由 enqueueTick 的收尾统一重排（唯一调度点）。
+  // 引导期下发档位投影；下一次随机唤醒由统一调度器在扫描收尾重排。
   void pushProactiveLimits()
   enqueueTick()
 }
 export async function stop():Promise<void> {
   if(!started){await activeTick;return}
-  started=false;cancelCurrent("scheduler_stopped");clearWakeTimer()
+  started=false;cancelCurrent("scheduler_stopped");removeJob?.();removeJob=undefined
   for(const dispose of cleanups.splice(0))dispose()
   offered.clear();previousVars.clear();stopPresence("window-observation");const card=getActiveCard();if(card)stopPresence(`planner:${card.id}`)
   await activeTick
@@ -185,14 +186,14 @@ export function refreshProactive():void {
     offered.clear()
     stopPresence("window-observation")
     const card=getActiveCard();if(card)stopPresence(`planner:${card.id}`)
-    clearWakeTimer()
+    internalScheduler.refresh("proactive_scan")
     return
   }
   void pushProactiveLimits()
   enqueueTick()
 }
 
-export async function tick(now=Date.now()):Promise<void> {
+export async function tick(now=Date.now(),mode?:{remindersOnly:boolean}):Promise<void> {
   if(!started||!adapters)return
   const context=createRuntimeTraceContext(activeSessionId.value??undefined)
   if(!proactiveActive()){trace(context,"proactive_skipped",()=>({reason:"proactive_off"}));return}
@@ -227,14 +228,23 @@ export async function tick(now=Date.now()):Promise<void> {
     }
     topic=contentPool(card,behavior,owner,day,scan.usedTopicKeys)
     trace(context,"proactive_tick",()=>({status:"scanned",count:tasks.length,sourceRevision:scan.sourceRevision,controlRevision:scan.control.revision,hasMore:scan.hasMore}))
-    const rules=collectOpportunities({owner,now,timezone,tasks,memoryTargets,memoryEnabled:memoryConfig.enabled,behavior,topic})
-    if(qualifiesFinishedWork({workEndedAt,restingSince,now,wasWorking,reliable:behavior.quality.status==="reliable"}))
+    const rules=collectOpportunities({owner,now,timezone,tasks:tasks.filter(task=>!task.intent.schedule),memoryTargets:mode?.remindersOnly?[]:memoryTargets,memoryEnabled:memoryConfig.enabled,behavior,topic:mode?.remindersOnly?null:topic}).filter(item=>!mode?.remindersOnly||item.ruleId==="scheduled_task")
+    if(!mode?.remindersOnly&&qualifiesFinishedWork({workEndedAt,restingSince,now,wasWorking,reliable:behavior.quality.status==="reliable"}))
       rules.push(opportunity(owner,"rhythm",`${day}:finish`,[source("behavior",`finish:${day}`,behavior.revision,`${workEndedAt}:${restingSince}`,owner)],restingSince,restingSince+2*60*60_000,40,"可靠工作段结束后已连续观察到至少10分钟休闲或空闲，邀请放松，不声称完成了现实成果。"))
-    if(reunionAt&&now-reunionAt<2*60*60_000)rules.push(opportunity(owner,"rhythm",`${day}:reunion`,[source("behavior",`reunion:${day}`,1,`${reunionAt}`,owner)],reunionAt,reunionAt+2*60*60_000,50,"可靠活跃信号相隔至少24小时后的重逢；不要推测离开原因。"))
+    if(!mode?.remindersOnly&&reunionAt&&now-reunionAt<2*60*60_000)rules.push(opportunity(owner,"rhythm",`${day}:reunion`,[source("behavior",`reunion:${day}`,1,`${reunionAt}`,owner)],reunionAt,reunionAt+2*60*60_000,50,"可靠活跃信号相隔至少24小时后的重逢；不要推测离开原因。"))
     const busyForProactive=behavior.focus.currentCategory==="media"
       ||(behavior.focus.currentContinuousMs>=WORK_SILENCE_MS&&["work","development"].includes(behavior.focus.currentCategory??""))
-    const eligible=selectOpportunities([...offered.values(),...rules],new Set(scan.evaluatedFingerprints),now,busyForProactive)
+    let eligible=selectOpportunities([...offered.values()].filter(item=>!mode?.remindersOnly||item.ruleId==="scheduled_task").concat(rules),new Set(scan.evaluatedFingerprints),now,busyForProactive)
     if(!eligible.length)return
+    // 过期/已取消/静默中的定时机会不能霸占本轮：先确认可交付，不可交付就移除并尝试下一条。
+    while(eligible[0]?.task?.intent.schedule){
+      const candidate=eligible[0]
+      if(scheduledDeliveryHooks&&await scheduledDeliveryHooks.canDeliver(candidate))break
+      offered.delete(candidate.fingerprint)
+      eligible=eligible.slice(1)
+      if(!eligible.length)return
+    }
+    if(eligible[0]?.task?.intent.schedule)eligible=eligible.slice(0,1)
     const selected=eligible[0]!
     const respectRandomInterval=usesRandomFallbackInterval(selected.ruleId)
     jobRequiresWindow=eligible.some(item=>item.ruleId==="window_context")
@@ -315,6 +325,7 @@ export async function tick(now=Date.now()):Promise<void> {
       if(planned.kind!=="speak_now")return
       intent=planned.intent+"\n"+intent
     }
+    if(selected.task?.intent.schedule && (!scheduledDeliveryHooks||!await scheduledDeliveryHooks.canDeliver(selected))){offered.delete(selected.fingerprint);enqueueTick();return}
     const expressionAttempt=crypto.randomUUID(),requestId=crypto.randomUUID()
     let claimed=false
     const result=await adapters.expression.express({text:intent,owner,requestId,attemptId:expressionAttempt,ruleId:selected.ruleId,intent:selected.intentKey,
@@ -332,9 +343,11 @@ export async function tick(now=Date.now()):Promise<void> {
           sourceRevision:scan.sourceRevision,controlRevision:scan.control.revision,occurrenceIds,now:Date.now(),localDate:day,reservedTokens,unansweredThresholdDate,unansweredClearedDate,ruleId:selected.ruleId})
         claimed=receipt.claimed
         trace(context,"proactive_claim",()=>({attemptId:expressionAttempt,status:claimed?"claimed":"denied",reason:receipt.reason}),{requestId})
+        if(claimed && selected.task?.intent.schedule && (!scheduledDeliveryHooks || !await scheduledDeliveryHooks.beforeAttempt(selected,expressionAttempt)))return false
         return claimed
       },isCurrent:async actual=>{
         if(!current(actual)){trace(context,"proactive_skipped",()=>({reason:"owner_changed",ruleId:selected.ruleId}),{requestId});return false}
+        if(selected.task?.intent.schedule&&(!scheduledDeliveryHooks||!await scheduledDeliveryHooks.canDeliver(selected,expressionAttempt)))return false
         const activity=await getRuntimeActivity(),time=Date.now()
         // 与主门禁同口径：locked（用户离开）不额外加严，只有 unavailable 才是观察不可用。
         const screenUsable=activity.screenState==="observed"||activity.screenState==="locked"
@@ -364,6 +377,7 @@ export async function tick(now=Date.now()):Promise<void> {
         catch(error){log.warn("主动送达回执待对账:",formatError(error));return "unresolved"}
       }})
     if(result.status==="committed") {
+      if(selected.task?.intent.schedule) await scheduledDeliveryHooks?.committed(selected,expressionAttempt,result.assistantEntryId)
       // 冷却起点不在这里：Rust 账本按最近一条 committed 表达 occurrence 的 updated_at（正常路径即 settle 时刻）+ 档位 cooldownMs 推导进 scan.budget。
       for(const item of eligible)offered.delete(item.fingerprint)
       trace(context,"proactive_settled",()=>({attemptId:expressionAttempt,status:"committed",assistantEntryId:result.assistantEntryId}),{requestId})

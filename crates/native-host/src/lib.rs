@@ -29,6 +29,7 @@ pub mod monitor;
 pub mod paths;
 pub mod proactive;
 pub mod render;
+pub mod scheduler;
 // 单实例守卫（2026-10-06）：同一数据根只允许一个宿主进程（`main::run` 早期取锁）。
 pub mod single_instance;
 // W5 原生 UI 域（窗口/托盘/快捷键/呼出收回状态机/音效接口）。

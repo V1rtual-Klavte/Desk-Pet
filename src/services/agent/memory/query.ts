@@ -192,6 +192,7 @@ function validCachedPlan(plan: MemoryQueryPlan | undefined, originalQuery: strin
   if (plan.entities.some(entity => !planSearchText.includes(entity.toLowerCase()))) return undefined
   if (plan.timeConstraint !== undefined && !isTimeConstraint(plan.timeConstraint)) return undefined
   if (JSON.stringify(plan.timeConstraint) !== JSON.stringify(localPlan.timeConstraint)) return undefined
+  if (plan.temporalOrder !== localPlan.temporalOrder) return undefined
   return plan
 }
 
@@ -308,6 +309,7 @@ function parsePlanOutput(
     evidenceNeeds,
     ...(base.aspectCategories?.length ? { aspectCategories: base.aspectCategories } : {}),
     ...(timeConstraint ? { timeConstraint } : {}),
+    ...(base.temporalOrder ? { temporalOrder: base.temporalOrder } : {}),
     ...(base.aspectQueries?.length ? { aspectQueries: base.aspectQueries } : {}),
   }
 }

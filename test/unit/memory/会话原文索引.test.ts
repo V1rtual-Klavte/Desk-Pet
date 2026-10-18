@@ -635,27 +635,33 @@ describe("会话原文索引", () => {
     expect(relativeRow.eventAtMs).toBe(new Date(2026, 9, 4).getTime())
   })
 
-  it("计数/概览扫描意图发送 scan 且上限500，普通查询保持50 [memory-conversation-scan-mode]", async () => {
+  it("计数/概览/枚举/建议扫描意图发送 scan 且上限500，普通查询保持50 [memory-conversation-scan-mode]", async () => {
     installBridge()
     const signal = new AbortController().signal
     // 不含「刚才/之前/我们聊过」等短指代词，避免命中零结果后的近期回退分支。
-    const planFor = (recallIntent: MemoryQueryPlan["recallIntent"]): MemoryQueryPlan => ({
+    const planFor = (recallIntent: MemoryQueryPlan["recallIntent"], evidenceNeeds: string[] = []): MemoryQueryPlan => ({
       originalQuery: "旅行一共几次",
       queries: ["旅行一共几次"],
       rewriteStatus: "not_needed",
       recallIntent,
       sourceRoles: ["user", "assistant"],
       entities: [],
-      evidenceNeeds: [],
+      evidenceNeeds,
     })
 
-    for (const recallIntent of ["count", "overview"] as const) {
+    for (const recallIntent of ["count", "overview", "advice"] as const) {
       fixture.calls.length = 0
       const plan = planFor(recallIntent)
       await searchConversationCandidates({ sessionId: "scan-session", queries: plan.queries, queryPlan: plan, signal })
       const scans = fixture.calls.filter(call => call.method === "conversation_search")
       expect(scans.map(call => [call.args.scan, call.args.limit])).toEqual([[true, 500]])
     }
+
+    fixture.calls.length = 0
+    const enumeration = planFor("lookup", ["enumeration"])
+    await searchConversationCandidates({ sessionId: "scan-session", queries: enumeration.queries, queryPlan: enumeration, signal })
+    const enumerationScans = fixture.calls.filter(call => call.method === "conversation_search")
+    expect(enumerationScans.map(call => [call.args.scan, call.args.limit])).toEqual([[true, 500]])
 
     fixture.calls.length = 0
     const lookup = planFor("lookup")

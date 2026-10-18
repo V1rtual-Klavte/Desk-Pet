@@ -185,8 +185,8 @@ export async function planningInput(opportunities:Opportunity[],owner:ProactiveO
 
 export async function plan(input:Awaited<ReturnType<typeof planningInput>>,owner:ProactiveOwner,now:number,signal:AbortSignal,
   isCurrent:()=>boolean,run:(input:PiSubAgentInput)=>Promise<PiSubAgentOutput>,beforeProvider:(reservation:ProviderReservation)=>Promise<boolean>):Promise<PlanningResult> {
-  const result=await run({systemPrompt:PLANNER_SYSTEM,task:input.task,tools:plannerTools(),maxRounds:PLANNING_TOOL_ROUNDS,timeoutMs:PLANNING_TIMEOUT_MS,
-    thinkingEffort:"low",maxOutputTokens:PLANNING_OUTPUT_RESERVE,disableAutomaticCompaction:true,beforeProvider,scope:{sessionId:owner.sessionId,runGeneration:owner.runGeneration,isCurrent,signal}})
+  const result=await run({systemPrompt:PLANNER_SYSTEM,task:input.task,tools:plannerTools(),maxToolCalls:PLANNING_TOOL_ROUNDS,timeoutMs:PLANNING_TIMEOUT_MS,
+    thinkingEffort:"low",maxOutputTokens:PLANNING_OUTPUT_RESERVE,disableAutomaticCompaction:true,beforeProvider,outputContract:{kind:"json"},owner:{kind:"proactive",runId:`proactive-plan-${crypto.randomUUID()}`,cardId:owner.cardId,sessionId:owner.sessionId,runGeneration:owner.runGeneration,isCurrent,signal}})
   const usage=result.usage??null
   if(!result.success||signal.aborted||!isCurrent())return {kind:"decline",reason:result.error??"planning_cancelled",intent:"",projections:input.projections,usage}
   try { return {...parsePlanningDecision(result.reply,now),projections:input.projections,usage} }

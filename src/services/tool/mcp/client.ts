@@ -62,9 +62,11 @@ interface McpToolSchema {
   description?: string
   inputSchema?: {
     type: string
-    properties?: Record<string, { type: string; description?: string; enum?: string[] }>
+    properties?: Record<string, unknown>
     required?: string[]
+    [key: string]: unknown
   }
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean }
 }
 
 /** `connect` 的结果：成功布尔 + 失败原因（配置性错误原样带回；连接失败由调用方统一收成「连接失败」）。 */
@@ -222,6 +224,7 @@ export class McpClient {
         name: tool.name,
         description: tool.description,
         inputSchema: tool.inputSchema as McpToolSchema["inputSchema"],
+        annotations: tool.annotations ? { readOnlyHint: tool.annotations.readOnlyHint, destructiveHint: tool.annotations.destructiveHint } : undefined,
       }))
     } catch (error) {
       log.error("tools/list 失败:", formatError(error))
@@ -253,22 +256,17 @@ export class McpClient {
   toToolDefs(serverId: string, tools: McpToolSchema[]): ToolDef[] {
     const client = this
     return tools.map(t => {
-      const props: Record<string, { type: string; description: string; enum?: string[] }> = {}
-      if (t.inputSchema?.properties) {
-        for (const [k, v] of Object.entries(t.inputSchema.properties)) {
-          props[k] = { type: v.type, description: v.description ?? k }
-          if (v.enum) props[k].enum = v.enum
-        }
-      }
       return defineTool({
         id: `mcp-${serverId}-${t.name}`,
         name: `mcp_${serverId}_${t.name.replace(/[^a-zA-Z0-9_]/g, "_")}`,
         description: t.description ?? `MCP 工具: ${t.name}`,
         parameters: {
+          ...t.inputSchema,
           type: "object" as const,
-          properties: props,
+          properties: t.inputSchema?.properties ?? {},
           required: (t.inputSchema?.required as string[]) ?? [],
         },
+        ...(t.annotations ? { mcpAnnotations: { ...t.annotations } } : {}),
         safetyLevel: "DANGER" as const,
         // MCP 发现只提供能力描述，不能把协议身份变成默认授权。
         // PermissionKernel 必须继续把 passthrough 收敛为最终裁决。

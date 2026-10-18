@@ -1,3 +1,4 @@
+// 2026-10-18 统一调度与子运行：手工 analyze/generate 声明修订；测试已写未运行，sourceHash 留统一验收复算。
 // 2026-10-09 最终静态复核：会话管理新增转写读取与删除索引闭包，不改变确认身份、冻结策略或授权裁决；未执行测试。
 // 2026-10-05 本批复查与刷新：契约 sourceFiles 里仅 runtime.ts 变化（另一会话同批写入：
 // 工具过程文案新增 emitToolStageTitlebar 改推顶栏）；sf-01..sf-22 逐点核对实现点仍在、
@@ -136,8 +137,12 @@ import type { ModuleContract } from "../host/types"
 export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/engine/user-wait.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/paths/security.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
-  sourceHash: "8f17c4a45de81ca4b89946c83fabb7288d6d6d8e4debd29d81741eaf8e1aa3be",
+  sourceHash: "95139d46c746c472b5af3630acad7dd852d2183388b8775a0192ac7f517f09c2",
   coverage: [
+    { id: "sf-25", feature: "持久任务授权与后台非交互权限",
+      description: "PermissionKernel 接收 host 绑定的 TaskToolAuthorization，NOWAY 与工具 deny 仍先裁决，不能被任务授权覆盖；其余每件工具（含 SAFE）都校验精确工具/参数范围及 inputHash/policyHash，并在授权 await 后复查任务生命周期。有效持久授权可满足已授权任务的 ask；范围外返回 ask，需要额外输入。permissionMode=background 的 ask 立即返回，不创建交互确认等待；没有 taskAuthorization 的主回合保持原确认与会话授权语义。",
+      why: "工具预过滤不能代替参数授权，后台也不能无限等待无人可答的面板；任务修改或取消后旧授权不得继续放行。",
+      layer: "integration", depth: "deep", scenarios: ["permission-task-grant-deny-first", "permission-task-grant-exact-scope", "permission-task-grant-stale", "permission-background-no-wait"] },
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 的工具经生产裁决入口 evaluateToolPermission（标准决策层即 allow）直接放行，不生成确认请求；同一分支现在也接住 NORMAL，会话信任与安全裁决只有 permission.ts 一份实现", why: "安全等级体系基础，且放行结论必须来自唯一裁决点", layer: "integration", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "统一裁决表（SAFE / NORMAL 一律放行）", description: "标准决策是安全等级到裁决结果的唯一映射：NOWAY → deny（最前置，先于安全模式与工具侧策略）；SAFE 与 NORMAL → allow（与安全模式无关，也不看命令是否在白名单里 —— 白名单只决定 NORMAL/DANGER 的归属，是免确认通道而不是拒绝依据）；DANGER → 交给回合冻结的安全模式（let_me_tk → ask、just_do_it → allow、其余含缺省 → ask）。工具与运行模式不再参与裁决：pet/assistant 双模式、lightweightPolicy、`ToolDef.mode`/`ToolContext.mode` 已全链删除，而旧助手下 NORMAL 没有任何 allow 路径、一律 ask —— 这条收紧的消失正是 sf-21 必须逐工具重定级的原因", why: "常规工具需要安全评估，且裁决表必须唯一：NORMAL 的归属翻转后若仍留旧描述，重定级与确认通道的场景会照着已不存在的分支写断言", layer: "integration", depth: "shallow", scenarios: ["safety-normal"] },
     // sf-03 原把「裁决 + 拒绝通道 + 放行通道」合成一点（跨层混搭）；按层拆开：

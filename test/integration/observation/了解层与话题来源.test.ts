@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { installSchedulerSlotFixture } from "../../host/scheduler-slot-fixture"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { initPaths, runtimePath } from "@/services/paths"
@@ -46,6 +47,8 @@ beforeAll(async () => {
 beforeEach(async () => {
   vi.clearAllMocks()
   await clearSilentUnderstanding()
+  rmSync(join(root, "scheduler-slots.fixture.json"), { force: true })
+  installSchedulerSlotFixture(join(root, "scheduler-slots.fixture.json"))
   startSilentUnderstanding()
 })
 
@@ -53,6 +56,7 @@ afterEach(async () => {
   restoreProvider?.()
   restoreProvider = undefined
   await stopSilentUnderstanding()
+  vi.restoreAllMocks()
 })
 
 afterAll(() => {

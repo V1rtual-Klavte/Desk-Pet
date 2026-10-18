@@ -26,7 +26,7 @@ import { estimateContextTokens } from "@/services/context/budget"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
-import { scheduledSlotDue } from "@/services/proactive/schedule"
+import { internalScheduler, nextFixedWake, dueFixedSlot, claimFixedSlot, settleFixedSlot } from "@/services/scheduler"
 import { dreamingTier, dreamingTierLimits } from "@/services/proactive/tiers"
 import { createRuntimeTraceContext, hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/runtime/trace"
 import { conclusionSlotOf, isDerivedBehaviorSource, understandingSourceOf, UNDERSTANDING_ALIAS_LABEL, UNDERSTANDING_ALIAS_PREFIX, UNDERSTANDING_MAX_ENTRIES } from "./sources"
@@ -49,7 +49,6 @@ const MAX_BATCHES_PER_RUN = 3
 /** 评审输出上限的防呆下限；未配置时按模型输出预算自动推导（见 runDreamingSweep）。 */
 const REVIEW_MAX_TOKENS_FLOOR = 256
 const LEASE_OWNER = "memory-dreaming"
-const IDLE_TICK_MS = 15_000
 
 /**
  * 派生结论（系统观察）的记忆形态：kind=fact 的可复算结论，权重低于用户事实默认值（5），
@@ -90,9 +89,7 @@ export interface MergeCohort {
   items: MemoryItem[]
 }
 
-let sweepTimer: ReturnType<typeof setInterval> | null = null
-/** 上一次自动整理尝试时刻（仅内存节流，不新增记账文件；跨重启的重复由前置水位查询兜住）。 */
-let lastSweepRunAt = 0
+let removeDreamingJob: (() => void) | undefined
 let sweepController: AbortController | null = null
 let sweepRun: Promise<unknown> | null = null
 function localDate(): string {
@@ -920,55 +917,43 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
   return mergeDreamingOutcomes(outcomes)
 }
 
-/**
- * 定时模式的轻量调度器（2026-10-06 用户裁决：固定钟点，不再要求系统空闲）：
- * 只负责触发可取消的离线作业，作业完成后由 Rust 事务自动提交。
- * 状态保存在本模块仅作为节流（最近一次尝试时刻；不是第二份记账文件）；
- * 真正的租约、游标和候选正文都在 Rust 库里。
- *
- * 触发判定（与静默了解共用 `proactive/schedule.ts` 的同一张钟点表，各自独立记账）：
- * - 档位语义 = 每天的钟点数（低 2 / 中 4 / 高 6，钟点表在 `proactive/protocol.json`）；
- * - 到点：本地时刻落在钟点表的追赶窗口内，且该钟点本轮未尝试过；
- * - 最小间隔防重：距上一轮未满 `minIntervalMinutes` 不开（钟点间隔已大于它，这里是兜底）；
- * - 单飞：上一轮未收口不开下一轮；
- * - 开跑前先查「水位之后有无待处理来源」，没有就跳过（runDreamingSweep 内，debug 一条）。
- * 档位 off = 本调度器早退（不自动跑），手动入口 `action.memorySweep` 不受档位影响。
- */
-export function startIdleDreamingScheduler(): () => void {
-  if (sweepTimer) return () => stopIdleDreamingScheduler()
-  const tick = (): void => {
+/** Automatic dreaming uses the private scheduler and a durable slot claim before work. */
+export function startDreaming(): void {
+  if (removeDreamingJob) return
+  const hours = () => {
     const tier = dreamingTier()
-    if (tier === "off" || !memoryConfig.enabled) return
-    if (sweepRun) return
-    const now = Date.now()
-    const limits = dreamingTierLimits(tier)
-    if (!scheduledSlotDue(limits.hours, now, lastSweepRunAt)) return
-    if (now - lastSweepRunAt < Math.max(1, limits.minIntervalMinutes) * 60_000) return
-    lastSweepRunAt = now
-    const controller = new AbortController()
-    sweepController = controller
-    const run = runDreamingSweep({ automatic: true, signal: controller.signal })
-      .catch(error => log.warn("定时记忆整理失败:", formatError(error)))
-      .finally(() => {
-        if (sweepRun === run) {
-          sweepRun = null
-          sweepController = null
-        }
-      })
-    sweepRun = run
+    return tier === "off" || !memoryConfig.enabled ? [] : dreamingTierLimits(tier).hours
   }
-  sweepTimer = setInterval(tick, IDLE_TICK_MS)
-  tick()
-  return () => stopIdleDreamingScheduler()
+  removeDreamingJob = internalScheduler.register({
+    id: "dreaming",
+    nextAt: now => nextFixedWake(hours(), now),
+    cancel: () => sweepController?.abort(new Error("应用正在关停")),
+    run: async now => {
+      const tier = dreamingTier()
+      if (tier === "off" || !memoryConfig.enabled || sweepRun) return
+      const limits = dreamingTierLimits(tier)
+      const slot = await dueFixedSlot("dreaming", limits.hours, Math.max(1, limits.minIntervalMinutes) * 60_000, now)
+      if (!slot) return
+      const claim = await claimFixedSlot("dreaming", slot)
+      if (!claim) return
+      const controller = new AbortController()
+      sweepController = controller
+      const run = runDreamingSweep({ automatic: true, signal: controller.signal })
+      sweepRun = run
+      try {
+        const result = await run
+        await settleFixedSlot(claim, result.status === "failed" ? "failed" : result.status === "cancelled" ? "unresolved" : "succeeded", result.jobId)
+      } catch (error) {
+        await settleFixedSlot(claim, "unresolved")
+        throw error
+      } finally { if (sweepRun === run) { sweepRun = null; sweepController = null } }
+    },
+  })
+  internalScheduler.wake("dreaming")
 }
-
-export function stopIdleDreamingScheduler(): void {
-  if (sweepTimer) clearInterval(sweepTimer)
-  sweepTimer = null
+export async function stopDreaming(): Promise<void> {
+  removeDreamingJob?.()
+  removeDreamingJob = undefined
   sweepController?.abort(new Error("应用正在关停"))
-}
-
-export async function stopIdleDreamingSchedulerAndWait(): Promise<void> {
-  stopIdleDreamingScheduler()
   await sweepRun
 }

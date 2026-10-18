@@ -323,9 +323,9 @@ export interface ExecutePlanConfig {
   /** 逐步门：`each` 时每步执行前经 `onStepGate` 取得继续/中止；`none` 或缺该回调时不做门。 */
   stepGate?: "each" | "none"
   /** 子运行归属：透传给 `runPiSubAgent`（许可身份绑定父会话与代际、挂到父槽下随父取消）。 */
-  scope?: PiSubAgentScope
+  scope: PiSubAgentScope
   /** 计划身份：与 `sessionId` 一起给出时，步骤子运行的请求快照按计划步骤归属落盘。 */
-  planId?: string
+  planId: string
   sessionId?: string
 }
 
@@ -411,7 +411,14 @@ export async function executePlan(
       log.warn("步骤执行失败:", { planId: config.planId ?? plan.summary, stepId: step.id }, errMsg)
       stepResults.push({
         step, durationMs: Date.now() - stepStart,
-        output: { reply: "", toolCallsMade: 0, success: false, error: errMsg },
+        output: {
+          status: "failed", success: false, reply: "", toolCallsMade: 0, error: errMsg,
+          evidence: { tools: [], incomplete: [], unconfirmedEffects: false },
+          audit: {
+            runId: config.planId ?? "plan", requestId: String(step.id), ownerKind: "plan",
+            stepId: String(step.id), ...(config.planId ? { planId: config.planId } : {}),
+          },
+        },
       })
       if (config.onStepFailure === "abort") { overallSuccess = false; break }
       if (config.onStepFailure === "ask") {
@@ -453,7 +460,12 @@ async function executeStep(
       // 未限定工具逐步打字是刷屏噪音，只留进度事件与日志）。
       log.warn(`步骤 ${step.id} 指定的工具不存在: ${missing.join("、")}`)
       await callbacks.onStepNotice?.(step, { kind: "missing_tools", names: missing })
-      return { reply: "", toolCallsMade: 0, success: false, error: `指定的工具不存在: ${missing.join("、")}` }
+      const runId = `plan-${config.planId}-${step.id}-${crypto.randomUUID()}`
+      return {
+        status: "failed", reply: "", toolCallsMade: 0, success: false, error: `指定的工具不存在: ${missing.join("、")}`,
+        evidence: { tools: [], incomplete: missing, unconfirmedEffects: false },
+        audit: { runId, requestId: `sub-agent-${runId}`, ownerKind: "plan", sessionId: config.scope.sessionId, ...(config.planId ? { planId: config.planId } : {}), stepId: String(step.id) },
+      }
     }
   } else {
     // 未限定工具 = 放大到全部已注册工具：例行情形（多数步骤本就不写 allowedTools），
@@ -471,10 +483,14 @@ async function executeStep(
     task: step.description,
     tools,
     systemPrompt: stepPrompt,
-    maxRounds: config.stepMaxRounds,
+    maxToolCalls: config.stepMaxRounds,
     timeoutMs: config.stepTimeoutMs,
     thinkingEffort: config.stepThinkingEffort,
-    ...(config.scope ? { scope: config.scope } : {}),
+    owner: {
+      ...config.scope, kind: "plan", runId: `plan-${config.planId}-${step.id}-${crypto.randomUUID()}`,
+      planId: config.planId, stepId: String(step.id),
+    },
+    ...(step.allowedTools?.length ? { capabilities: { requiredToolNames: step.allowedTools } } : {}),
     ...(audit ? { audit } : {}),
     onToolStart: (toolName, toolCallId) => callbacks.onToolStart?.(step, toolName, toolCallId),
     onToolDone: (toolName, toolCallId, success) => callbacks.onToolDone?.(step, toolName, toolCallId, success),

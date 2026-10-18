@@ -16,7 +16,7 @@ export const FINISH_WORK_DELAY_MS = 10 * 60_000
 export const PLANNING_TIMEOUT_MS = 90_000
 export const PLANNING_OUTPUT_RESERVE = 800
 export const SOURCE_CONTEXT_BUDGET = 1200
-/** 规划子运行的工具调用预算（runPiSubAgent 的 maxRounds = 最多几次工具调用，含其后的回灌请求）。 */
+/** 规划子运行的工具调用预算（runPiSubAgent 的 maxToolCalls = 最多几次工具调用，含其后的回灌请求）。 */
 export const PLANNING_TOOL_ROUNDS = 3
 /**
  * 规划输入里 Card 人设摘要的 token 上限。

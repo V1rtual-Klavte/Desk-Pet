@@ -12,8 +12,8 @@
 //    不再发第 6 次请求、收尾同样走兜底文案；
 // ⑤ 软提示跨请求持续存在；多 text 块结果整条只拼一次；
 // ⑥ 每回合重置：同一会话两个回合各 3 次同参调用都只停在软档（guard 不跨回合复用）；
-// ⑦ 无人值守子运行保留计数封顶：runPiSubAgent 在 maxRounds 处停下（第 3 次调用不再执行）；
-// ⑧ 子运行同吃病理检测：maxRounds=10（封顶够不着）时同参连续第 5 次在调用门被硬终止 ——
+// ⑦ 无人值守子运行保留计数封顶：runPiSubAgent 在 maxToolCalls 处停下（第 3 次调用不再执行）；
+// ⑧ 子运行同吃病理检测：maxToolCalls=10（封顶够不着）时同参连续第 5 次在调用门被硬终止 ——
 //    前 4 次真实执行、第 5 次不执行且不再发请求（去掉子运行这段接线、把硬阈值放宽、
 //    或丢掉 block 的 terminate，三种改法都会红）。子运行的请求投影关闭，软提示不附进请求视图，
 //    这条只钉硬终止的两条路径。
@@ -284,27 +284,28 @@ describe("工具循环治理", () => {
     expect(second.reply, "第二回合没有以模型正文收尾（疑似跨回合累计触发硬终止）").toContain("第二回合收尾")
   }, 60_000)
 
-  it("无人值守子运行保留计数封顶：runPiSubAgent 在 maxRounds 处停下 [tool-loop-subagent-cap-kept]", async () => {
+  it("无人值守子运行保留计数封顶：runPiSubAgent 在 maxToolCalls 处停下 [tool-loop-subagent-cap-kept]", async () => {
     const provider = installFakeProvider([
       ...Array.from({ length: 4 }, (_, at) => fakeToolCall(PROBE_NAME, { at: at + 1 }, `sub-call-${at + 1}`)),
       fakeText("子代理不应继续"),
     ])
 
     const result = await runPiSubAgent({
+      owner: { kind: "conversation", runId: crypto.randomUUID(), sessionId: "loop-subrun", runGeneration: 1, isCurrent: () => true },
       task: "连续调用探针。",
       tools: [probe],
       systemPrompt: "测试子代理",
-      maxRounds: 2,
+      maxToolCalls: 2,
       timeoutMs: 30_000,
     })
 
-    expect(executions.length, `子运行没有在 maxRounds=2 处停下（执行了 ${executions.length} 次）`).toBe(2)
+    expect(executions.length, `子运行没有在 maxToolCalls=2 处停下（执行了 ${executions.length} 次）`).toBe(2)
     expect(result.toolCallsMade, "子运行的已执行工具数与封顶不一致").toBe(2)
     expect(provider.state.callCount, "封顶后不应请求第 4 次（第 3 次调用被拦下即终止）").toBe(3)
   }, 60_000)
 
-  it("子运行同吃病理检测：同参第 5 次在调用门硬终止（先于 maxRounds 封顶） [tool-loop-subagent-guard]", async () => {
-    // maxRounds=10 刻意大于硬阈值 5：计数封顶在这条用例里不可能替 guard 解释收口。
+  it("子运行同吃病理检测：同参第 5 次在调用门硬终止（先于 maxToolCalls 封顶） [tool-loop-subagent-guard]", async () => {
+    // maxToolCalls=10 刻意大于硬阈值 5：计数封顶在这条用例里不可能替 guard 解释收口。
     // 三种变红方式：① 去掉子运行的 guard 接线 → 5 次全部执行、收尾步骤被消费（callCount 6）；
     // ② 硬阈值 5 放宽 → 执行数随阈值上浮；③ 丢掉 block 的 terminate → 第 5 次被拦但仍发
     // 下一次请求（callCount 6），执行数与 blocked 记录不变。
@@ -314,10 +315,11 @@ describe("工具循环治理", () => {
     ])
 
     const result = await runPiSubAgent({
+      owner: { kind: "conversation", runId: crypto.randomUUID(), sessionId: "loop-subrun", runGeneration: 1, isCurrent: () => true },
       task: "重复调用同一个工具。",
       tools: [probe],
       systemPrompt: "测试子代理",
-      maxRounds: 10,
+      maxToolCalls: 10,
       timeoutMs: 30_000,
     })
 

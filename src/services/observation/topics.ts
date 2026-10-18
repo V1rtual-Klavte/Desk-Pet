@@ -4,7 +4,7 @@ import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { reserveAuxiliaryBudget, settleAuxiliaryBudget } from "@/services/proactive/auxiliary-budget"
 import { silentAccessFrequency } from "@/services/proactive/tiers"
-import { appendTopicEvidence, hasTopicSource, invalidateTopicEvidence, isTopicSourceEligible, loadObservationStore, markAuxiliaryAttemptAt, readTopicClearWatermark } from "./store"
+import { appendTopicEvidence, hasTopicSource, invalidateTopicEvidence, isTopicSourceEligible, loadObservationStore, readTopicClearWatermark } from "./store"
 import { TOPIC_BATCH_TOKEN_CEILING } from "./config"
 import type { CommittedUserParticipation, TopicEvidence } from "./types"
 
@@ -130,7 +130,7 @@ export async function drainTopicIntake(): Promise<void> {
   await intakeQueue
 }
 
-export async function processTopicBatch(signal: AbortSignal): Promise<boolean> {
+export async function processTopicBatch(signal: AbortSignal, admit: (reservationId: string) => Promise<boolean> = async () => true): Promise<boolean> {
   if (!topicIntakeEnabled || silentAccessFrequency() === "off" || signal.aborted || pending.length === 0) return false
   const epoch = topicEpoch
   await loadObservationStore()
@@ -173,7 +173,11 @@ export async function processTopicBatch(signal: AbortSignal): Promise<boolean> {
     await settleAuxiliaryBudget({ reservationId, localDate: date, status: "failed", usage: { totalTokens: 0 }, now: Date.now() })
     return false
   }
-  try { await markAuxiliaryAttemptAt(Date.now()) }
+  try { if (!await admit(reservationId)) {
+    await settleAuxiliaryBudget({ reservationId, localDate: date, status: "failed", usage: { totalTokens: 0 }, now: Date.now() })
+    if (epoch === topicEpoch && !signal.aborted) pending.unshift(...rows)
+    return false
+  } }
   catch (error) {
     await settleAuxiliaryBudget({ reservationId, localDate: date, status: "failed", usage: { totalTokens: 0 }, now: Date.now() })
     throw error

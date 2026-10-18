@@ -1121,6 +1121,18 @@ impl NativeDispatcher {
             )?),
 
             // ── 主动陪伴（proactive/commands.rs；request: Value → Value）──
+            "scheduler_state" => crate::scheduler::commands::scheduler_state(
+                self.memory()?,
+                arg_value(args, "request")?,
+            ),
+            "schedule_query" => crate::scheduler::commands::schedule_query(
+                self.memory()?,
+                arg_value(args, "request")?,
+            ),
+            "schedule_change" => crate::scheduler::commands::schedule_change(
+                self.memory()?,
+                arg_value(args, "request")?,
+            ),
             "proactive_scan" => crate::proactive::commands::proactive_scan(
                 self.memory()?,
                 &self.proactive_limits,
@@ -1756,8 +1768,13 @@ mod tests {
         // 时由它落地；漏登记会让折叠结果写不出去、`too-large` 无声回归）—— 分项变为
         // 「107 冻结 + 29 扩展」。
         // 会话原文索引追加五条 conversation_*，分项为「107 冻结 + 34 扩展」。
-        assert_eq!(names.len(), 142, "HostCommandMap 条数（以 types.ts 为准）");
+        // 统一调度批次追加 scheduler_state / schedule_query / schedule_change
+        // （内部触发账本与用户任务受限命令）—— 计数更新为 145。
+        assert_eq!(names.len(), 145, "HostCommandMap 条数（以 types.ts 为准）");
         for name in [
+            "scheduler_state",
+            "schedule_query",
+            "schedule_change",
             "conversation_index_status",
             "conversation_index_replace",
             "conversation_index_prune",

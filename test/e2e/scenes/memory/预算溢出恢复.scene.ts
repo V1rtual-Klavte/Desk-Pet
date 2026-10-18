@@ -6,6 +6,7 @@ import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries, sessionMessages } from "../../../host/session-entries"
+import { unregister } from "@/services/tool"
 import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：硬预算超限走 Harness 的一次性溢出恢复 ──
@@ -171,6 +172,10 @@ export const 预算溢出恢复: SceneDef = {
   setup: async () => {
     requests.length = 0
     requestCosts.length = 0
+    // 本场景只验证压缩/预算；临时卸掉与本题无关的定时工具，避免工具 schema
+    // 随产品增长挤占重试余量。下一 trial 的 standardSetup 会重新注册。
+    unregister("local-schedule-query")
+    unregister("local-schedule-change")
     installFakeProvider([
       replyStep("第一轮回复完成。"),
       summaryStep(SUMMARY),

@@ -110,6 +110,25 @@ describe("记忆检索意图", () => {
     expect(deriveMemoryQueryPlan("我应该怎么办").recallIntent).toBe("advice")
   })
 
+  it("行政区/居住核对与潜在建议走推断，序数题保留 temporalOrder [memory-query-plan-inference-routing]", () => {
+    const history = (question: string) => `Answer using our conversation history:\n${question}`
+    for (const question of [
+      "Which US state did Jolene visit during her internship?",
+      "Does James live in Connecticut?",
+      "What can Andrew potentially do to improve his stress and accommodate his living situation with his dogs?",
+      "What is something that Andrew could do to make birdwatching hobby fit in his city schedule?",
+    ]) {
+      const plan = deriveMemoryQueryPlan(history(question))
+      expect(plan.recallIntent, question).not.toBe("none")
+      expect(plan.evidenceNeeds, question).toEqual(expect.arrayContaining(["preferences", "reason"]))
+      expect(plan.evidenceNeeds, question).not.toContain("specific_fact")
+    }
+    expect(deriveMemoryQueryPlan(history("When did Calvin plan on travelling to Tokyo the second time?")))
+      .toMatchObject({ recallIntent: "lookup", temporalOrder: "second" })
+    expect(deriveMemoryQueryPlan(history("What did Nora say she would do?"))).toMatchObject({ recallIntent: "lookup" })
+    expect(deriveMemoryQueryPlan(history("What did Nora say she would do?")).evidenceNeeds).toEqual(["specific_fact"])
+  })
+
   it("偏好来源角色，但保留含糊查询的双角色证据 [memory-query-plan-source-roles]", () => {
     expect(deriveMemoryQueryPlan("我分享过哪档美食节目？").sourceRoles).toEqual(["user"])
     expect(deriveMemoryQueryPlan("我经历过什么难题？").sourceRoles).toEqual(["user"])

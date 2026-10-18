@@ -24,13 +24,12 @@ interface StoreData {
   topicClearedAt: number
   /** Durable one-shot closure marker for derived memories from records without verified evidence. */
   unverifiedMemoryClosurePending: boolean
-  lastAuxiliaryAttemptAt: number
   /** 了解层宿主读取的滚动时间戳（毫秒），用于每小时读取上限记账。 */
   targetReadAttempts: number[]
 }
 
 function emptyStore(): StoreData {
-  return { schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0, unverifiedMemoryClosurePending: false, lastAuxiliaryAttemptAt: 0, targetReadAttempts: [] }
+  return { schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0, unverifiedMemoryClosurePending: false, targetReadAttempts: [] }
 }
 
 let data: StoreData = emptyStore()
@@ -158,7 +157,6 @@ export async function loadObservationStore(): Promise<void> {
           ? Math.max(Number.isSafeInteger(parsed.topicClearedAt) ? Number(parsed.topicClearedAt) : 0, now)
           : Number.isSafeInteger(parsed.topicClearedAt) ? Number(parsed.topicClearedAt) : 0,
         unverifiedMemoryClosurePending,
-        lastAuxiliaryAttemptAt: Number.isSafeInteger(parsed.lastAuxiliaryAttemptAt) ? Number(parsed.lastAuxiliaryAttemptAt) : 0,
         targetReadAttempts,
       }
       if (requiresPrune) await persist()
@@ -307,20 +305,7 @@ export function readTopicClearWatermark(): number {
   return data.topicClearedAt
 }
 
-export function getLastAuxiliaryAttemptAt(): number {
-  return data.lastAuxiliaryAttemptAt
-}
 
-export async function markAuxiliaryAttemptAt(at: number): Promise<void> {
-  await loadObservationStore()
-  await serialize(async () => {
-    data.lastAuxiliaryAttemptAt = Math.max(data.lastAuxiliaryAttemptAt, at)
-    revision += 1
-    await persist()
-  })
-}
-
-/** 滚动窗口内已发生的宿主读取次数（持久记账），供每小时上限判定。 */
 export function getRecentTargetReadAttempts(now = Date.now()): number[] {
   return data.targetReadAttempts.filter(at => at > now - READ_WINDOW_MS && at <= now)
 }
@@ -389,7 +374,7 @@ export async function clearObservationDomain(): Promise<void> {
   const loading = loadPromise
   if (loading) await loading.catch(error => log.warn("清除前等待了解层读取", formatError(error)))
   await serialize(async () => {
-    data = { ...emptyStore(), topicClearedAt: Date.now(), lastAuxiliaryAttemptAt: Date.now() }
+    data = { ...emptyStore(), topicClearedAt: Date.now() }
     loaded = true
     revision += 1
     await persist()

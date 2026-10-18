@@ -64,3 +64,15 @@
 | proactive_budgets | 每日预算与用量（规划/表达尝试、成功消息与上限、token 预留/已用/未知 —— 只记账观测，不参与准入、观察与话题尝试、下一次成功间隔） |
 | proactive_auxiliary_reservations | 辅助模型（observation/topic）调用租约：reserved/unresolved/committed/failed |
 | proactive_operations | operation_id 幂等账本（提交结果未知时先查，不盲重放） |
+
+
+内部调度侧（[scheduler/schema.rs](../../crates/native-host/src/scheduler/schema.rs)）共用 MemoryStore 连接与备份校验：
+
+| 表 | 职责 |
+|---|---|
+| scheduler_slots | dreaming／silent_understanding 的稳定钟点身份、认领/结算、尝试时间与业务引用 |
+| scheduler_periods | taskId/version/periodKey 唯一的随机次数与时间点，不允许重新抽样覆盖 |
+| scheduler_runs | occurrence/run 唯一的执行状态、租约、产物、证据与精确助手送达回执 |
+| scheduler_operations | 私有操作幂等回执与请求指纹；认领重放返回 claimed=false |
+
+扩展结构以 memory_meta 中 scheduler_schema_version 校验，缺表不能被假装成空账本；备份/恢复验证包含这些表。任务正文仍只在 proactive_tasks.intent，私有账本不保存第二份定义。遗忘、来源失效及恢复复用原有事务清除闭包。

@@ -1,7 +1,7 @@
 // ==========================================
 // 子代理 —— Fork（单代理）/ Team（多角色并行）
 //
-// 注意：runPiSubAgent 的 `maxRounds` 是工具轮上限（工具调用次数），映射到
+// 注意：runPiSubAgent 的 `maxToolCalls` 是工具轮上限（工具调用次数），映射到
 // createTurnSpec 的 maxToolCalls；它不是重试次数，取值为 loopConfig.subAgentRounds。
 // 主聊天回合已取消计数上限（2026-10-06 起走循环病理检测），这里的封顶保留 ——
 // 子代理无人值守，上限下沉到子运行范围（契约 Part 1）。
@@ -16,9 +16,10 @@
 
 import { listAll, type ToolDef } from "@/services/tool"
 import { runPiSubAgent } from "@/services/engine/harness"
-import type { PiSubAgentOutput, PiSubAgentScope } from "@/services/engine/harness"
+import type { PiSubAgentOutput, PiSubAgentOwner } from "@/services/engine/harness"
 import { loopConfig } from "@/services/config"
 import { SUB_AGENT_RUN_TIMEOUT_MS } from "./timeouts"
+import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("SubAgent")
@@ -32,7 +33,7 @@ export interface ForkAgentInput {
   /** 可选的角色提示（如 "代码审查员"），用于定制 systemPrompt */
   role?: string
   /** 父回合的取消域（agent_spawn 从工具上下文构造）：父取消/切会话立刻级联到子运行。 */
-  scope?: PiSubAgentScope
+  owner: Extract<PiSubAgentOwner, { kind: "conversation" }>
 }
 
 /**
@@ -41,7 +42,7 @@ export interface ForkAgentInput {
  * 独立上下文，不干扰主 Agent 状态。
  */
 export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOutput> {
-  const { task, role, scope } = input
+  const { task, role, owner } = input
 
   const tools = getSafeTools()
   const systemPrompt = role
@@ -54,9 +55,9 @@ export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOut
     task,
     tools,
     systemPrompt,
-    maxRounds: loopConfig.subAgentRounds,
+    maxToolCalls: loopConfig.subAgentRounds,
     timeoutMs: SUB_AGENT_RUN_TIMEOUT_MS,
-    ...(scope ? { scope } : {}),
+    owner,
   })
 }
 
@@ -69,7 +70,7 @@ export interface TeamAgentInput {
   /** 并行子代理数量，默认 2 */
   memberCount?: number
   /** 父回合的取消域；成员段与 lead 段共用（任一段被父取消即整体停止）。 */
-  scope?: PiSubAgentScope
+  owner: Extract<PiSubAgentOwner, { kind: "conversation" }>
 }
 
 /** 团队角色定义 */
@@ -83,63 +84,58 @@ const TEAM_ROLES = [
  * 创建并运行 Team 子代理。
  * 多角色并行执行各自的分析，最后由 lead 代理汇总。
  */
-export async function runTeamAgent(input: TeamAgentInput): Promise<string> {
-  const { task, memberCount = 2, scope } = input
-
-  const roles = TEAM_ROLES.slice(0, Math.min(memberCount, TEAM_ROLES.length))
-
-  log.info("Team 启动:", roles.length, "个成员", "| task:", task.substring(0, 80))
-
-  // ── 所有成员并行运行 ──
-  const memberResults = await Promise.allSettled(
-    roles.map(role =>
-      runForkAgent({
-        task: `${role.prompt}\n\n任务: ${task}`,
-        role: role.label,
-        ...(scope ? { scope } : {}),
-      })
-    )
-  )
-
-  const reports: { role: string; reply: string }[] = []
-  for (let i = 0; i < memberResults.length; i++) {
-    const r = memberResults[i]
-    const role = roles[i]
-    if (r.status === "fulfilled" && r.value.success) {
-      reports.push({ role: role.label, reply: r.value.reply })
-    } else if (r.status === "rejected") {
-      reports.push({ role: role.label, reply: `执行失败: ${String(r.reason)}` })
+export async function runTeamAgent(input: TeamAgentInput): Promise<PiSubAgentOutput> {
+  const { task, owner } = input
+  const memberCount = Number.isSafeInteger(input.memberCount) && input.memberCount! > 0 ? Math.min(input.memberCount!, TEAM_ROLES.length) : 2
+  const roles = TEAM_ROLES.slice(0, memberCount)
+  const results = await Promise.allSettled(roles.map(role => runForkAgent({
+    task: `${role.prompt}\n\n任务: ${task}`, role: role.label,
+    owner: { ...owner, runId: `${owner.runId}-${role.key}` },
+  })))
+  const members = results.map((result, index) => ({
+    role: roles[index]!.label,
+    output: result.status === "fulfilled" ? result.value : {
+      status: "failed" as const, success: false, reply: "", toolCallsMade: 0,
+      error: formatError(result.reason),
+      evidence: { tools: [], incomplete: [roles[index]!.label], unconfirmedEffects: false },
+      audit: { runId: `${owner.runId}-${roles[index]!.key}`, requestId: `sub-agent-${owner.runId}-${roles[index]!.key}`, ownerKind: owner.kind, sessionId: owner.sessionId },
+    },
+  }))
+  const incomplete = members.filter(member => !member.output.success).map(member => member.role)
+  const usable = members.filter(member => member.output.success)
+  const cancelled = owner.signal?.aborted || !owner.isCurrent()
+  if (cancelled || !usable.length) {
+    const failed = members.find(member => member.output.status === "cancelled")?.output ?? members[0]!.output
+    return {
+      ...failed, status: cancelled ? "cancelled" : failed.status === "completed" ? "failed" : failed.status,
+      success: false, members,
+      error: cancelled ? "团队已取消" : "团队所有成员均未完成任务",
+      evidence: { tools: members.flatMap(member => member.output.evidence.tools), incomplete, unconfirmedEffects: members.some(member => member.output.evidence.unconfirmedEffects) },
     }
   }
-
-  if (reports.length === 0) {
-    return "Team 执行失败: 所有成员均未返回结果"
-  }
-
-  // ── Lead 代理汇总 ──
-  const leadPrompt = [
-    "你是团队负责人，请基于以下成员报告，给出最终的综合结论。",
-    `原始任务: ${task}`,
-    "",
-    ...reports.map((r, i) => `[成员${i + 1}: ${r.role}]\n${r.reply}`),
-    "",
-    "请用简短中文总结团队结论。",
-  ].join("\n")
-
-  const leadResult = await runForkAgent({
-    task: leadPrompt,
-    role: "团队负责人",
-    ...(scope ? { scope } : {}),
+  const lead = await runForkAgent({
+    task: ["你是团队负责人，基于成员的真实状态给出综合结论；未完成部分必须明确说明。", `原始任务: ${task}`,
+      ...members.map(member => `[${member.role}: ${member.output.status}, success=${member.output.success}]\n${member.output.reply || member.output.error || "无结果"}`),
+    ].join("\n\n"),
+    role: "团队负责人", owner: { ...owner, runId: `${owner.runId}-lead` },
   })
-
-  const header = `Team 结果 (${reports.length} 位成员)\n`
-  const body = reports.map((r, i) =>
-    `${i + 1}. **${r.role}**: ${r.reply.substring(0, 150)}`
-  ).join("\n")
-  const footer = `\n\n综合结论:\n${leadResult.reply}`
-
-  log.info("Team 完成:", reports.length, "成员")
-  return header + body + (body.length + footer.length < 2000 ? footer : "\n\n(结论过长已截断)")
+  const usage = [...members.map(member => member.output), lead].reduce((sum, result) => ({
+    inputTokens: sum.inputTokens + (result.usage?.inputTokens ?? 0),
+    outputTokens: sum.outputTokens + (result.usage?.outputTokens ?? 0),
+    cacheRead: sum.cacheRead + (result.usage?.cacheRead ?? 0), cacheWrite: sum.cacheWrite + (result.usage?.cacheWrite ?? 0),
+  }), { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 })
+  const success = lead.success && incomplete.length === 0
+  log.info("Team 完成:", { members: members.length, success, incomplete })
+  return {
+    ...lead, success, members, usage,
+    toolCallsMade: lead.toolCallsMade + members.reduce((sum, member) => sum + member.output.toolCallsMade, 0),
+    ...(success ? {} : { error: lead.error ?? `团队部分完成，未完成成员: ${incomplete.join("、")}` }),
+    evidence: {
+      tools: [...members.flatMap(member => member.output.evidence.tools), ...lead.evidence.tools],
+      incomplete: [...incomplete, ...lead.evidence.incomplete],
+      unconfirmedEffects: lead.evidence.unconfirmedEffects || members.some(member => member.output.evidence.unconfirmedEffects),
+    },
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════

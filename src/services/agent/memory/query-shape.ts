@@ -14,6 +14,9 @@ export interface MemoryTimeConstraint {
 
 export type MemoryAspectCategory = "activity" | "food" | "book"
 
+/** Ordinal event questions need the matching occurrence, not merely a same-topic hit. */
+export type MemoryTemporalOrder = "first" | "second" | "third" | "last"
+
 export interface LocalMemoryQueryShape {
   recallIntent: MemoryRecallIntent
   sourceRoles: Array<"user" | "assistant">
@@ -22,6 +25,7 @@ export interface LocalMemoryQueryShape {
   /** Everyday categories whose concrete vocabulary is often absent from the question. */
   aspectCategories?: MemoryAspectCategory[]
   timeConstraint?: MemoryTimeConstraint
+  temporalOrder?: MemoryTemporalOrder
 }
 
 export interface DerivedMemoryQueryPlan extends LocalMemoryQueryShape {
@@ -214,6 +218,18 @@ export function hasPersonalRecallIntent(query: string): boolean {
     || hasPersonalHypotheticalCue(query)
 }
 
+const TEMPORAL_ORDINAL_CUES: ReadonlyArray<{ order: MemoryTemporalOrder; test: RegExp }> = [
+  { order: "first", test: /\b(?:first|1st)\s+time\b|第一次|首次/iu },
+  { order: "second", test: /\b(?:second|2nd)\s+time\b|第二次/iu },
+  { order: "third", test: /\b(?:third|3rd)\s+time\b|第三次/iu },
+  { order: "last", test: /\b(?:last|latest|most recent)\s+time\b|最后一次|最近一次/iu },
+]
+
+/** "the second time" must select the matching occurrence, not just any Tokyo mention. */
+function detectTemporalOrder(text: string): MemoryTemporalOrder | undefined {
+  return TEMPORAL_ORDINAL_CUES.find(item => item.test.test(text))?.order
+}
+
 /** Derive a conservative, deterministic retrieval plan from the user's exact wording. */
 export function deriveLocalMemoryQueryShape(query: string, before?: number): LocalMemoryQueryShape {
   const text = query.trim()
@@ -260,10 +276,12 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
   ]
   const timeConstraint = parseTimeConstraint(text, before)
   const aspectCategories = detectAspectCategories(text)
+  const temporalOrder = detectTemporalOrder(text)
   return {
     recallIntent, sourceRoles, entities, evidenceNeeds,
     ...(aspectCategories.length > 0 ? { aspectCategories } : {}),
     ...(timeConstraint ? { timeConstraint } : {}),
+    ...(temporalOrder ? { temporalOrder } : {}),
   }
 }
 
@@ -279,14 +297,29 @@ export function deriveMemoryQueryPlan(originalQuery: string, before?: number): D
   }
 }
 
+// A derived attribute is not a literal lookup: the answer often requires a
+// common-sense mapping (Stamford -> Connecticut, Mount Talkeetna -> Alaska).
+const DERIVED_LOCATION_ATTRIBUTE = /\b(?:which|what)\s+(?:us\s+)?(?:state|country|city|region|province|county|nationality|language)\b|\b(?:which|what)\s+\w+\s+(?:state|country|city|region)\b/iu
+const DERIVED_LOCATION_ATTRIBUTE_ZH = /(?:哪个|哪一|什么)(?:州|国家|城市|地区|省|国籍|语言)/u
+const LOCATION_VERIFICATION = /\b(?:does|do|did|is|are|was|were|has|have)\s+[^?]{0,80}\b(?:live|living|from|born|raised|grow(?:n)?\s+up|located|based|reside|residing)\b/iu
+const LOCATION_VERIFICATION_ZH = /(?:是不是|是否|有没有)[^。？！?！]{0,40}(?:住在|居住在|来自|出生于|家在)/u
+const POTENTIAL_ACTION = /\b(?:can|could|should|might|may)\s+[^?]{0,100}\b(?:do|try|help|improve|change|deal|handle|make|reduce|manage|accommodate|fit|arrange|adjust)\b/iu
+const POTENTIAL_ACTION_ZH = /(?:可以|能|应该|可能)[^。？！?！]{0,60}(?:怎么|如何|做|尝试|改善|缓解|改变|安排|调整)/u
+
 /** The retrieval plan and reader share one distinction between history and inference. */
 export function memoryEvidenceReviewKind(query: string, intent?: MemoryRecallIntent): "count" | "inference" | undefined {
   if (intent === "count") {
     if (/\b(?:times?|visits?|trips?)\s+(?:a|per|each|every)\s+(?:day|week|month|year)\b|\bper\s+(?:day|week|month|year)\b|每(?:天|周|月|年|个?星期)/iu.test(query)) return undefined
     return /\b(?:times?|occasions?|visits?|trips?|events?|experiences?)\b|(?:几次|多少次|次数|经历)/iu.test(query) ? "count" : undefined
   }
-  if (intent === "advice") return undefined
+  // "What did X say" is a direct historical quote, not an inference.
   if (/\b(?:what|whether)\s+(?:did|has|had)\b.{0,80}\b(?:say|said|mention|mentioned|tell|told)\b|(?:说过|明确表示过|提到过)/iu.test(query)) return undefined
+  // Advice questions ask for a bounded recommendation from preferences,
+  // constraints and counterexamples; they share the inference path.
+  if (intent === "advice") return "inference"
+  if (DERIVED_LOCATION_ATTRIBUTE.test(query) || DERIVED_LOCATION_ATTRIBUTE_ZH.test(query)
+    || LOCATION_VERIFICATION.test(query) || LOCATION_VERIFICATION_ZH.test(query)
+    || POTENTIAL_ACTION.test(query) || POTENTIAL_ACTION_ZH.test(query)) return "inference"
   return /\b(?:would|likely)\b|(?:可能会|是否可能|会不会|愿不愿意|是否愿意|是否适合)/iu.test(query) ? "inference" : undefined
 }
 

@@ -85,15 +85,29 @@ beforeAll(() => {
   const tmp = join(process.cwd(), "test", ".tmp")
   mkdirSync(tmp, { recursive: true })
   root = mkdtempSync(join(tmp, "observation-decision-inputs-"))
+  // 固定到档位钟点后的追赶窗口内，避免用例依赖真实运行时刻。
+  vi.spyOn(Date, "now").mockReturnValue(new Date(2026, 9, 5, 10, 5, 0).getTime())
 })
-afterAll(() => { rmSync(root, { recursive: true, force: true }) })
+afterAll(() => { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }) })
 
 const sleep = (ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms) })
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
+  const deadline = performance.now() + timeoutMs
   while (!predicate()) {
-    if (Date.now() > deadline) throw new Error("等待条件超时")
+    if (performance.now() > deadline) throw new Error("等待条件超时")
     await sleep(10)
+  }
+}
+
+/** 统一调度器由一个进程计时器驱动；L3 不赌真实定时器，显式 drain 到业务条件成立。 */
+async function drainSchedulerUntil(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const { internalScheduler } = await import("@/services/scheduler")
+  const deadline = performance.now() + timeoutMs
+  while (!predicate()) {
+    await internalScheduler.drain()
+    if (predicate()) return
+    if (performance.now() > deadline) throw new Error("等待调度超时")
+    await new Promise<void>(resolve => setTimeout(resolve, 10))
   }
 }
 
@@ -120,6 +134,10 @@ async function bootObservation() {
   installNodeHostBridge()
   const nodeIpc = await import("../../host/node-ipc")
   nodeIpc.setTestDataRoot(root)
+  const slotPath = join(root, "scheduler-slots.fixture.json")
+  rmSync(slotPath, { force: true })
+  const { installSchedulerSlotFixture } = await import("../../host/scheduler-slot-fixture")
+  installSchedulerSlotFixture(slotPath)
   const paths = await import("@/services/paths")
   await paths.initPaths()
   const config = await import("@/services/config")
@@ -130,7 +148,7 @@ async function bootObservation() {
   await getHostBridge().request("dir_create", { path: dir, recursive: true })
   await getHostBridge().request("file_write", { path, maxBytes: 256 * 1024, content: JSON.stringify({
     schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0,
-    lastAuxiliaryAttemptAt: 0, targetReadAttempts: [],
+    targetReadAttempts: [],
   }) })
   const observation = await import("@/services/observation")
   windowState.observation = observedWindow()
@@ -197,7 +215,7 @@ describe("静默了解决策输入补齐", () => {
 
     try {
       observation.startSilentUnderstanding()
-      await waitFor(() => fake.payloads.length >= 2)
+      await drainSchedulerUntil(() => fake.payloads.length >= 2)
       await waitFor(() => budget.settle.mock.calls.length > 0)
       const decisionText = payloadUserText(fake.payloads[0] as unknown as FakePayload)
       const decision = decisionOf(fake.payloads[0] as unknown as FakePayload)
@@ -265,7 +283,7 @@ describe("静默了解决策输入补齐", () => {
 
     try {
       observation.startSilentUnderstanding()
-      await waitFor(() => fake.payloads.length >= 2)
+      await drainSchedulerUntil(() => fake.payloads.length >= 2)
       await waitFor(() => budget.settle.mock.calls.some(([value]) => value.status === "committed"))
       const decision = decisionOf(fake.payloads[0] as unknown as FakePayload)
 
@@ -293,7 +311,7 @@ describe("静默了解决策输入补齐", () => {
 
     try {
       observation.startSilentUnderstanding()
-      await waitFor(() => fake.payloads.length >= 2)
+      await drainSchedulerUntil(() => fake.payloads.length >= 2)
       await waitFor(() => budget.settle.mock.calls.some(([value]) => value.status === "committed"))
       const decision = decisionOf(fake.payloads[0] as unknown as FakePayload)
 

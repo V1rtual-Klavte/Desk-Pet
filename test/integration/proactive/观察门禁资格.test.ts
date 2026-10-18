@@ -35,8 +35,6 @@ const hoisted = vi.hoisted(() => ({
   /** 主动扫描的 owner 布防：未布防时 captureOwner 返回 undefined（start() 的自动 tick 立即退出）。 */
   ownerArmed: false,
   expressCalls: 0,
-  /** 静默了解批次闸：让连续两批不受防重间隔影响（真实计入由 store 负责，本处只放开资格）。 */
-  lastAuxAt: 0,
 }))
 
 // 必须 mock **叶子模块**而不是 barrel：barrel 级 vi.mock（importOriginal 展开 + 覆盖）
@@ -55,15 +53,6 @@ vi.mock("@/services/window/listener", async importOriginal => {
   return {
     ...actual,
     getLatestWindowObservation: () => hoisted.latestObservation,
-  }
-})
-
-vi.mock("@/services/observation/store", async importOriginal => {
-  const actual = await importOriginal<typeof import("@/services/observation/store")>()
-  return {
-    ...actual,
-    // 只放开「两批至少隔一个档位间隔」的防重闸；其余 store 行为（落盘、滚动记账、快照）保持真实。
-    getLastAuxiliaryAttemptAt: () => hoisted.lastAuxAt,
   }
 })
 
@@ -106,6 +95,7 @@ vi.mock("@/services/proactive/ipc", () => {
   }
 })
 
+import { installSchedulerSlotFixture } from "../../host/scheduler-slot-fixture"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { standardSetup } from "../../host/standard-setup"
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
@@ -162,11 +152,12 @@ afterAll(() => {
 
 beforeEach(async () => {
   await standardSetup()
+  rmSync(join(root, "scheduler-slots.fixture.json"), { force: true })
+  installSchedulerSlotFixture(join(root, "scheduler-slots.fixture.json"))
   vi.clearAllMocks()
   traceEvents.length = 0
   hoisted.expressCalls = 0
   hoisted.ownerArmed = false
-  hoisted.lastAuxAt = 0
   hoisted.latestObservation = null
   unsubscribeTrace = subscribeRuntimeTrace(event => {
     if (event.kind === "proactive_skipped") {
@@ -190,6 +181,18 @@ function localNoon(): number {
   const date = new Date()
   date.setHours(12, 0, 0, 0)
   return date.getTime()
+}
+
+/** 统一调度器由一个进程计时器驱动；本文件 mock 了 Date.now，超时用真实单调时钟。 */
+async function drainSchedulerUntil(predicate: () => boolean, timeoutMs = 8_000): Promise<void> {
+  const { internalScheduler } = await import("@/services/scheduler")
+  const deadline = performance.now() + timeoutMs
+  while (!predicate()) {
+    await internalScheduler.drain()
+    if (predicate()) return
+    if (performance.now() > deadline) throw new Error("等待调度超时")
+    await new Promise<void>(resolve => setTimeout(resolve, 10))
+  }
 }
 
 /** 未触达即失败的可达性守卫（模块级 helper，不是测试体里的手写断言）。 */
@@ -274,6 +277,7 @@ describe("观察门禁资格", () => {
 
     // ── 静默了解链：locked 批次仍可跑，但不请求截图、只用最后一次窗口快照 ──
     await stop()
+    const clock = vi.spyOn(Date, "now").mockReturnValue(fixedNow)
     const observedAtBeforeLock = fixedNow - 5 * 60_000
     // idle 不再参与静默了解的批次资格（2026-10-06 固定钟点裁决，到点即跑）：
     // 这里保留一个「用户离开 3 小时」的样本值，只说明离开/锁屏不改变批次资格口径，
@@ -291,13 +295,16 @@ describe("观察门禁资格", () => {
     const bridge = getHostBridge() as unknown as {
       request: (method: string, args?: unknown, options?: unknown) => Promise<unknown>
     }
-    const realRequest = bridge.request.bind(bridge)
+    const fixtureImpl = (bridge.request as unknown as {
+      getMockImplementation?: () => ((method: string, args?: unknown, options?: unknown) => Promise<unknown>) | undefined
+    }).getMockImplementation?.()
     vi.spyOn(bridge, "request").mockImplementation(async (method, args, options) => {
       if (method === "observation_capture_screen") {
         captureCalls.push(method)
         return { data: "aGk=", mimeType: "image/png", width: 8, height: 8 }
       }
-      return realRequest(method, args, options)
+      expect(fixtureImpl, "scheduler slot fixture missing").toBeDefined()
+      return fixtureImpl!(method, args, options)
     })
 
     const fake = installFakeProvider([
@@ -307,7 +314,7 @@ describe("观察门禁资格", () => {
     restoreProvider = fake.restore
 
     startSilentUnderstanding()
-    await vi.waitFor(() => expect(fake.payloads.length).toBeGreaterThanOrEqual(2), { timeout: 8_000 })
+    await drainSchedulerUntil(() => fake.payloads.length >= 2)
     expect(captureCalls, "locked 时静默了解仍请求了截图").toEqual([])
     expect(budget.reserve.mock.calls.some(([request]) => request.kind === "observation"),
       "locked 时静默了解批次没有进入预算准入（批次根本没跑）").toBe(true)
@@ -321,11 +328,13 @@ describe("观察门禁资格", () => {
 
     // 正对照：observed 时同一调度路径必须真的请求截图（否则「locked 不请求」在「从不截图」的坏实现下也会绿）
     await stopSilentUnderstanding()
-    hoisted.latestObservation = { ...hoisted.latestObservation, observationState: "observed" }
+    // A second batch needs a different durable slot and the real minimum gap; restarting is not a bypass.
+    clock.mockReturnValue(fixedNow + 8 * 60 * 60_000)
+    hoisted.latestObservation = { ...hoisted.latestObservation, observationState: "observed", observedAt: Date.now() }
     hoisted.activity.screenState = "observed"
     hoisted.activity.observedAt = Date.now()
     startSilentUnderstanding()
-    await vi.waitFor(() => expect(fake.payloads.length).toBeGreaterThanOrEqual(4), { timeout: 8_000 })
+    await drainSchedulerUntil(() => fake.payloads.length >= 4)
     expect(captureCalls.length, "observed 时静默了解没有请求截图").toBeGreaterThanOrEqual(1)
     const observedDecision = requestText(fake.payloads[2])
     expect(observedDecision, "observed 决策被写成了锁屏快照").not.toContain("屏幕已锁定")

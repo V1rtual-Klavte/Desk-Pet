@@ -57,7 +57,7 @@ export type {
 export { collectAllMemorySources, collectBehaviorMemorySources, collectUnderstandingMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
 export { resolveCurrentTrustedMemorySource } from "./sources"
 export { DERIVED_BEHAVIOR_ORIGIN, isDerivedBehaviorSource, UNDERSTANDING_ALIAS_PREFIX, UNDERSTANDING_MAX_ENTRIES } from "./sources"
-export { buildDerivedCandidates, runDreamingSweep, startIdleDreamingScheduler, stopIdleDreamingScheduler, stopIdleDreamingSchedulerAndWait, type DreamingOutcome } from "./dreaming"
+export { buildDerivedCandidates, runDreamingSweep, startDreaming, stopDreaming, type DreamingOutcome } from "./dreaming"
 
 const log = createLogger("Memory")
 

@@ -2788,6 +2788,7 @@ impl MemoryStore {
         }
         let source = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(db_err)?;
+        crate::scheduler::schema::validate_inventory(&source, true)?;
         let integrity: String = source
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(db_err)?;
@@ -2887,6 +2888,7 @@ impl MemoryStore {
         }
         let source = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(db_err)?;
+        crate::scheduler::schema::validate_inventory(&source, true)?;
         let version: Option<String> = source
             .query_row(
                 "SELECT value FROM memory_meta WHERE key='schema_version'",
@@ -3051,6 +3053,7 @@ impl MemoryStore {
             .map_err(db_err)?;
             // A restore invalidates proactive content while leaving its control, daily
             // budgets and attempt receipts intact. Host snapshots repopulate fresh sources.
+            crate::scheduler::store::clear_content(&conn, now_ms())?;
             conn.execute("UPDATE proactive_tasks SET state=CASE WHEN state='active' THEN 'invalidated' ELSE state END,version=version+1,intent_json='{}',source_refs_json='[]',updated_at=?1,invalidation_epoch=invalidation_epoch+1", [now_ms()]).map_err(db_err)?;
             conn.execute("DELETE FROM proactive_evaluations", [])
                 .map_err(db_err)?;

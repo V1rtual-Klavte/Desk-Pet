@@ -99,3 +99,10 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 ## 主动表达与回执
 
 主动入口使用结构化 `sendActiveMessage(request)`，表达为无工具、无重试的真实 Harness 回合，Provider 前按最终请求预算准入。返回 committed 要求原生 operation 终态 assistant tip 与 SQLite 回执同时成立；未确认主动结果不显示。普通回合可读取最多两个相关约定作为预算内尾随 context。用户可信输入提交后直接通知取消所有者，业务守卫不依赖 trace 订阅。完整来源、任务、限频、恢复与控制见[主动陪伴](proactive.md)。
+
+
+## 统一子运行与用户定时工作
+
+fork/team、计划步骤、主动规划、用户定时工作共用 `runPiSubAgent`。请求必须提供宿主绑定的 owner、稳定 runId 和有效性守卫；用途不由模型参数选择。工具调用上限名为 maxToolCalls；统一冻结模型、思考映射、工具和 deadline，并返回 completed/cancelled/timed_out/needs_input/failed、独立业务 acceptance、实际用量、工具证据和审计。空正文、兜底或 team leader 失败不能包装为成功。team 只在宿主编排同一内核的成员和 leader，不开放子运行递归生成。
+
+scheduled owner 以 taskId/version/occurrenceId 为真相，与主聊天代际分离；切聊天不取消工作，编辑、取消、来源失效或关停撤销运行资格。工作完成和消息送达分别持久化，恢复先复核实际回执，不重复调用未知副作用。最终表达才核对活跃 Card/会话并复用主动消息链。一次性整理、压缩、话题与阶段文案仍走 completePiText。

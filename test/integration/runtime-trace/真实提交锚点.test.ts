@@ -151,7 +151,7 @@ describe("Runtime trace 持久化锚点", () => {
     await ensureSession()
     const trace = captureRuntimeTrace()
     try {
-      await runRuntimeTurn("我手机电池最近很困扰，有什么建议？")
+      await runRuntimeTurn("我之前说过手机电池是什么型号？")
       const payloadText = provider.payloads.flatMap(payload => payload.messages.map(message => typeof message.content === "string"
         ? message.content
         : message.content.map(part => part.type === "text" ? part.text : "").join("")))

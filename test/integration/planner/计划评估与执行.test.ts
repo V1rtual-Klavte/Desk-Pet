@@ -144,13 +144,13 @@ describe("计划评估与执行", () => {
       stepResults: [
         {
           step: { id: 1, description: "读取配置" },
-          output: { reply: "配置已读取", toolCallsMade: 0, success: true },
+          output: { status: "completed", evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { ownerKind: "plan", runId: "format-test", requestId: "format-test" }, reply: "配置已读取", toolCallsMade: 0, success: true },
           durationMs: 1234,
           resultEntryId: "entry-plan-step-1",
         },
         {
           step: { id: 2, description: "改写配置" },
-          output: { reply: "写失败：权限不足", toolCallsMade: 2, success: false, error: "权限不足" },
+          output: { status: "completed", evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { ownerKind: "plan", runId: "format-test", requestId: "format-test" }, reply: "写失败：权限不足", toolCallsMade: 2, success: false, error: "权限不足" },
           durationMs: 500,
         },
       ],
@@ -192,7 +192,7 @@ describe("计划评估与执行", () => {
     const notices: StepToolNotice[] = []
     const execution = await executePlan(
       plan,
-      { stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { planId: "integration-plan", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
       {
         onStepStart: step => { started.push(step.id) },
         onStepDone: step => { done.push(step.id) },
@@ -206,6 +206,9 @@ describe("计划评估与执行", () => {
     expect(done).toEqual([1, 2])
     expect(execution.stepResults).toHaveLength(2)
     expect(execution.overallSuccess).toBe(true)
+    expect(execution.stepResults.map(item => item.output.status)).toEqual(["completed", "completed"])
+    expect(execution.stepResults.map(item => item.output.audit.ownerKind)).toEqual(["plan", "plan"])
+    expect(execution.stepResults.map(item => item.output.audit.planId)).toEqual(["integration-plan", "integration-plan"])
 
     // 未限定 allowedTools = 工具面放大到全部已注册工具，必须逐步骤报告（不静默）
     expect(notices).toEqual([{ kind: "unbounded_tools" }, { kind: "unbounded_tools" }])
@@ -240,7 +243,7 @@ describe("计划评估与执行", () => {
     const missingDone: number[] = []
     const blocked = await executePlan(
       { steps: [{ id: 1, description: "用不存在的工具干活", allowedTools: ["live_missing_tool_probe"] }], summary: "缺工具", estimatedComplexity: 1 },
-      { stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { planId: "integration-plan", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
       {
         onStepStart: step => { missingStarted.push(step.id) },
         onStepDone: step => { missingDone.push(step.id) },
@@ -274,7 +277,7 @@ describe("计划评估与执行", () => {
     const derivedDone: number[] = []
     const derivedBlocked = await executePlan(
       { steps: [{ id: 1, description: "派个子代理去干活", allowedTools: ["agent_spawn"] }], summary: "派生工具", estimatedComplexity: 1 },
-      { stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { planId: "integration-plan", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
       {
         onStepStart: step => { derivedStarted.push(step.id) },
         onStepDone: step => { derivedDone.push(step.id) },

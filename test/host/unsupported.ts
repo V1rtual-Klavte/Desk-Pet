@@ -39,6 +39,7 @@ export const RUST_ONLY_COMMANDS = [
   // 读取（mcp_credential_get）由 node-ipc 以夹具形式提供（L3 的连接期展开优先级需要观测）。
   "mcp_credential_set", "mcp_credential_delete", "mcp_credential_status",
   "proactive_scan", "proactive_query", "proactive_change", "proactive_claim", "proactive_validate", "proactive_settle", "proactive_reconcile", "proactive_control",
+  "schedule_query", "schedule_change", "scheduler_state",
 ] as const
 
 export type RustOnlyCommand = (typeof RUST_ONLY_COMMANDS)[number]

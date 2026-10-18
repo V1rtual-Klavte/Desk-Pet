@@ -10,7 +10,7 @@ import { getBehaviorSnapshot } from "@/services/behavior"
 import { getActiveCard } from "@/services/personality"
 import { reserveAuxiliaryBudget, settleAuxiliaryBudget } from "@/services/proactive/auxiliary-budget"
 import { OBSERVATION_MAX_AGE_MS } from "@/services/proactive/config"
-import { scheduledSlotDue } from "@/services/proactive/schedule"
+import { internalScheduler, nextFixedWake, dueFixedSlot, claimFixedSlot, settleFixedSlot, type SchedulerSlotRecord } from "@/services/scheduler"
 import { silentAccessFrequency, silentTierLimits } from "@/services/proactive/tiers"
 import { getLatestWindowObservation, getRuntimeActivity } from "@/services/window"
 import type { RuntimeActivity } from "@/services/window"
@@ -20,13 +20,12 @@ import {
   parseDecidedTargets, readSlotsAvailable, type DecidedTarget,
 } from "./decide"
 import { clearPendingTopics, drainTopicIntake, processTopicBatch, setTopicIntakeEnabled } from "./topics"
-import { appendUnderstanding, clearObservationDomain, getLastAuxiliaryAttemptAt, getRecentTargetReadAttempts, getTopicWeights, getUnderstandingSnapshot, loadObservationStore, markAuxiliaryAttemptAt, pruneExpiredObservationData, recordTargetReadAttempts } from "./store"
+import { appendUnderstanding, clearObservationDomain, getRecentTargetReadAttempts, getTopicWeights, getUnderstandingSnapshot, loadObservationStore, pruneExpiredObservationData, recordTargetReadAttempts } from "./store"
 import { observationEvidenceHash, observationEvidenceId, observationWindowEvidenceId } from "./evidence"
 import { MAX_AUDIT_PATH_CHARS, MAX_TEXT_CHARS_PER_FILE, OBSERVATION_SOURCE_TTL_MS, READ_WINDOW_MS } from "./config"
 import type { ObservationKind, TargetReadResult, UnderstandingRecord } from "./types"
 
 const log = createLogger("SilentUnderstanding")
-const SCHEDULER_TICK_MS = 60_000
 const OBSERVATION_OUTPUT_TOKENS = 400
 const OBSERVATION_SYSTEM_PROMPT = [
   "用户明确开启了静默了解：把它得到的屏幕图像、目标目录/文件内容或窗口快照，整理成「关于这位用户的了解」—— 他在做的项目、关注的主题、使用的工具、笔记里的事，供了解层长期积累；目的是了解这个人，不是记录他此刻的活动流水。",
@@ -98,7 +97,7 @@ interface ObservationInput { sourceId: string; evidenceId: string; evidenceHash:
 type TargetReadOutcome = "ok" | "cancelled" | "unavailable"
 
 let started = false
-let timer: ReturnType<typeof setInterval> | undefined
+let removeJob: (() => void) | undefined
 let busy = false
 let controller: AbortController | undefined
 /** 上一次留痕过的未开跑关名：只在原因变化时再记一条，避免钟点小时内每分钟刷屏。 */
@@ -141,7 +140,7 @@ function screenUsable(state: RuntimeActivity["screenState"]): boolean {
  * - 应用运行（started）且本调度无在飞批次（busy）；
  * - 到点：本地时刻落在档位钟点表的追赶窗口内，且该钟点本轮未跑过（`scheduledSlotDue`，
  *   判定纯函数在 `proactive/schedule.ts`）；
- * - 防重间隔：距上一次辅助尝试（跨重启持久，见 store 的 `lastAuxiliaryAttemptAt`）
+ * - 防重间隔：距上一次辅助尝试（跨重启持久，见统一调度 SQLite slot claim）
  *   未满一个档位间隔不开（同钟点重复与时钟回拨的兜底）；
  * - 有「当前窗口观察」且屏幕可用（observed/locked；unavailable 跳过本轮），前台不是桌宠。
  * 「会话忙碌 / AI 生成中」的排除已随固定钟点裁决去掉：批次与主回合并发由各自通道
@@ -150,7 +149,7 @@ function screenUsable(state: RuntimeActivity["screenState"]): boolean {
  * 返回 `null` = 可以开跑；否则是**第一道没过**的关名 —— 过去每道关都直接 `return false`
  * 不留痕，实机验收时无从判断是「没到点」还是「被挡住了」。2026-10-08 实机踩到：档位 high、
  * 13:10 启动正落在 13:00 的追赶窗内，而 `understanding.json` 两天没动、
- * `lastAuxiliaryAttemptAt` 仍是 0，日志里却一个字都没有。关名交回调用方留痕
+ * 调度账本仍无尝试记录，日志里却一个字都没有。关名交回调用方留痕
  * （见 `runAvailableBatch`）。
  */
 async function batchSkipReason(): Promise<string | null> {
@@ -162,8 +161,7 @@ async function batchSkipReason(): Promise<string | null> {
   const limits = silentTierLimits(tier)
   if (!started) return "not_started"
   if (busy) return "busy"
-  if (!scheduledSlotDue(limits.hours, now, getLastAuxiliaryAttemptAt())) return "past_catchup"
-  if (now - getLastAuxiliaryAttemptAt() < limits.minBatchGapMs) return "min_gap"
+  if (!await dueFixedSlot("silent_understanding", limits.hours, limits.minBatchGapMs, now)) return "past_catchup"
   const observation = getLatestWindowObservation()
   if (!observation) return "no_window_observation"
   if (!isCurrentObservation(observation)) return `observation_${observation.observationState}`
@@ -187,9 +185,7 @@ async function gateSnapshot(): Promise<string> {
   const window = observation
     ? `${observation.appId || "?"}/${observation.observationState}`
     : "无"
-  const last = getLastAuxiliaryAttemptAt()
   return `窗口=${window} 屏幕=${activity.screenState} 观察龄=${Date.now() - activity.observedAt}ms`
-    + ` 上次尝试=${last ? new Date(last).toLocaleTimeString("zh-CN") : "从未"}`
 }
 
 function matchesObservationSource(current: ReturnType<typeof getLatestWindowObservation>, source: NonNullable<ReturnType<typeof getLatestWindowObservation>>): boolean {
@@ -265,10 +261,10 @@ async function readDecidedTargets(targets: DecidedTarget[], inputs: ObservationI
   return "ok"
 }
 
-async function observeBatch(signal: AbortSignal, generation: number): Promise<void> {
+async function observeBatch(signal: AbortSignal, generation: number, admit: (reservationId: string) => Promise<boolean>): Promise<boolean | undefined> {
   const window = getLatestWindowObservation()
   const tier = silentAccessFrequency()
-  // 这些早退**不会**执行到 `markAuxiliaryAttemptAt`（本函数末尾）—— 没有痕迹就无法解释
+  // 这些早退**不会**执行到 预算准入后的 slot claim（本函数末尾）—— 没有痕迹就无法解释
   // 「批批判开跑却不落盘」：2026-10-08 实机连续两轮报「门禁全过」，而 attempt 时间恒为 0、
   // 存储文件 mtime 未动，每 60 秒重来一次。只记「运行期真的不满足」的那几种；
   // 关停类（signal / started / generation）是正常路径，不记。
@@ -377,8 +373,10 @@ async function observeBatch(signal: AbortSignal, generation: number): Promise<vo
     await settleAuxiliaryBudget({ reservationId, localDate: date, status: "failed", usage: { totalTokens: 0 }, now: Date.now() })
     return
   }
-  const attemptedAt = Date.now()
-  try { await markAuxiliaryAttemptAt(attemptedAt) }
+  try { if (!await admit(reservationId)) {
+    await settleAuxiliaryBudget({ reservationId, localDate: date, status: "failed", usage: { totalTokens: 0 }, now: Date.now() })
+    return
+  } }
   catch (error) {
     await settleAuxiliaryBudget({ reservationId, localDate: date, status: "failed", usage: { totalTokens: 0 }, now: Date.now() })
     throw error
@@ -435,6 +433,7 @@ async function observeBatch(signal: AbortSignal, generation: number): Promise<vo
     || !matchesObservationSource(current, window)) return
   // 结算已完成：解析/落盘失败不改变已提交事实，异常按原有调度外层留痕。
   await appendUnderstanding(decodeObservations(summaryText, inputs))
+  return true
 }
 
 async function runAvailableBatch(): Promise<void> {
@@ -461,29 +460,45 @@ async function runAvailableBatch(): Promise<void> {
   const snapshot = getUnderstandingSnapshot()
   const runController = new AbortController()
   controller = runController
+  let claim: SchedulerSlotRecord | undefined
+  let succeeded = false
+  const admit = async (reservationId: string) => {
+    const tier = silentAccessFrequency()
+    if (tier === "off" || runController.signal.aborted) return false
+    const limits = silentTierLimits(tier)
+    const slot = await dueFixedSlot("silent_understanding", limits.hours, limits.minBatchGapMs)
+    if (!slot) return false
+    claim = await claimFixedSlot("silent_understanding", slot, reservationId)
+    return !!claim
+  }
+  const settle = async () => { if (claim) await settleFixedSlot(claim, succeeded && !runController.signal.aborted ? "succeeded" : "unresolved") }
   if (snapshot.quality === "thin") {
-    try { await observeBatch(runController.signal, generation) }
-    finally { if (controller === runController) { controller = undefined; busy = false } }
+    try { succeeded = await observeBatch(runController.signal, generation, admit) === true }
+    finally { await settle(); if (controller === runController) { controller = undefined; busy = false } }
     return
   }
   busy = true
   try {
-    await processTopicBatch(runController.signal)
+    succeeded = await processTopicBatch(runController.signal, admit)
   } catch (error) {
     log.warn("话题画像任务失败", formatError(error))
-  } finally { if (controller === runController) { controller = undefined; busy = false } }
+  } finally { await settle(); if (controller === runController) { controller = undefined; busy = false } }
 }
 
 export function startSilentUnderstanding(): void {
-  if (started || silentAccessFrequency() === "off") return
+  if (started) { internalScheduler.refresh("silent_understanding"); return }
+  if (silentAccessFrequency() === "off") return
   started = true
   lifecycleGeneration += 1
   setTopicIntakeEnabled(true)
   const generation = lifecycleGeneration
   void loadObservationStore().then(() => {
     if (!started || generation !== lifecycleGeneration) return
-    timer = setInterval(scheduleAvailableBatch, SCHEDULER_TICK_MS)
-    scheduleAvailableBatch()
+    removeJob = internalScheduler.register({id:"silent_understanding", nextAt:now=>{
+      const tier=silentAccessFrequency()
+      return tier==="off"?null:nextFixedWake(silentTierLimits(tier).hours,now)
+    },run:async()=>{scheduleAvailableBatch();await activeRun},cancel:()=>controller?.abort(new Error("应用正在关停"))})
+    internalScheduler.wake("silent_understanding")
   }).catch(error => {
     if (generation === lifecycleGeneration) { started = false; setTopicIntakeEnabled(false) }
     log.error("了解层初始化失败，观察暂停，普通聊天继续:", formatError(error))
@@ -498,8 +513,8 @@ function scheduleAvailableBatch(): void {
 }
 
 export async function stopSilentUnderstanding(): Promise<void> {
-  if (timer) clearInterval(timer)
-  timer = undefined
+  removeJob?.()
+  removeJob = undefined
   started = false
   lifecycleGeneration += 1
   controller?.abort(new Error("静默访问已关闭"))
@@ -522,8 +537,8 @@ export async function stopSilentUnderstanding(): Promise<void> {
  */
 export async function clearSilentUnderstandingOwned(): Promise<void> {
   const resumeScheduler = started && silentAccessFrequency() !== "off"
-  if (timer) clearInterval(timer)
-  timer = undefined
+  removeJob?.()
+  removeJob = undefined
   lifecycleGeneration += 1
   controller?.abort(new Error("静默了解来源已清除"))
   setTopicIntakeEnabled(false)
@@ -536,6 +551,7 @@ export async function clearSilentUnderstandingOwned(): Promise<void> {
   await clearObservationDomain()
   if (resumeScheduler && started && silentAccessFrequency() !== "off") {
     setTopicIntakeEnabled(true)
-    timer = setInterval(scheduleAvailableBatch, SCHEDULER_TICK_MS)
+    started = false
+    startSilentUnderstanding()
   }
 }

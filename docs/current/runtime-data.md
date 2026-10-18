@@ -43,7 +43,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 当前主保存路径为：原生设置窗控件（Rust 草稿）→ `SettingsPort`（[ui/ports.rs](../../crates/native-host/src/ui/ports.rs) 的 `settings_commit` 请求）→ Node `settingsCommit` → setOverrides → config 写队列 → `flushConfig` → `reapplyRuntimeSettings` → `pushNativeUiState`（快捷键/字体/主题/舞台/聊天列/图片预览/摆位/尺寸/自动呼出/音效十条推送，逐项口径见 [pushes.ts](../../src/services/native-ui/pushes.ts) 头部）。字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
 
-频率档位批（2026-10-05）的即时生效链：保存后 `reapplyRuntimeSettings` 的 `ai.proactive.*` 分支调 `refreshProactive()`（scanner 按新档重排随机唤醒、重算冷却并重推 Rust 投影），`ai.silentAccess.*` 分支按档位是否 `off` 起停观察总闸与静默了解；整份导入 YAML 由 `importConfigYaml()` 收尾的消费者刷新链补同样的刷新（失败只留痕，配置已落盘）。
+频率档位批（2026-10-05）的即时生效链：保存后 `reapplyRuntimeSettings` 的 `ai.proactive.*` 分支调 `refreshProactive()`（scanner 按新档重排随机唤醒、重算冷却并重推 Rust 投影），`ai.silentAccess.*` 分支按档位是否 `off` 起停观察总闸与静默了解；dreaming 档位与记忆总闸变化刷新内部 dreaming 期限；用户任务的交付仍复核当前设置，不改已保存周期样本。整份导入 YAML 由 `importConfigYaml()` 收尾的消费者刷新链补同样的刷新（失败只留痕，配置已落盘）。
 
 字段的显示单位与 CONFIG 存储单位不一定相同，换算必须落在宿主草稿边界、不能混入 getter 导致保存污染。例如（历史）：窗口冷却的 getter/CONFIG 用毫秒，原生设置窗按秒换算显示（读入除 1000、提交乘 1000；schema 只声明显示单位与按显示单位收口的范围）——2026-10-05 档位化后这两个冷却键随字段删除，`ui/settings/mod.rs` 的毫秒键表与换算机制一并退役（开发阶段不留无消费者的脚手架）；将来再出现显示单位差异时按同一规则在草稿边界新增唯一换算点。日志设置读取配置值，运行期才应用 dev 的 debug 覆盖，同属这类边界。
 

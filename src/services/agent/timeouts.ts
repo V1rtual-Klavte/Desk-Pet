@@ -21,3 +21,7 @@ export const SUB_AGENT_RUN_TIMEOUT_MS = 90_000
  * 一个工具声明覆盖 fork/team 两个模式，只能按最坏模式取。
  */
 export const AGENT_SPAWN_TOOL_TIMEOUT_MS = SUB_AGENT_RUN_TIMEOUT_MS * 2 + 30_000
+
+/** Generic child kernel defaults; business entries override from their own policy. */
+export const SUB_AGENT_DEFAULT_TIMEOUT_MS = 60_000
+export const SUB_AGENT_DEFAULT_MAX_TOOL_CALLS = 3

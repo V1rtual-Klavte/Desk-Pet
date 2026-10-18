@@ -197,10 +197,11 @@ describe("query-focused memory reading", () => {
     expect(parsed.noteStatus).toBe("complete")
     expect(parsed.guide).toEqual({
       questionChecks: [{ kind: "detail", obligation: "required", condition: "Use the specifically named owned item", status: "supported", sourceIds: [source.id] }],
+      evidenceReview: { kind: "inference", complete: false, items: [] },
       searchQueries: ["power bank advice"],
     })
     expect(parsed.guideStatus).toBe("valid")
-    expect(parsed.errors).toEqual({ invalid_search_query: 1 })
+    expect(parsed.errors).toEqual({ invalid_search_query: 1, missing_evidence_review: 1 })
   })
 
   it("rejects a guide that cites an unvalidated note but keeps valid exact notes [memory-reading-guide-isolation]", () => {

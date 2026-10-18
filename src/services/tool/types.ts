@@ -90,12 +90,28 @@ export type ActionCategory =
   | "agent.call"
   | "_default"
 
+/** Host-bound durable task grant; model parameters cannot create this proof. */
+export interface TaskToolAuthorization {
+  reference: string
+  taskId: string
+  taskVersion: number
+  /** Revalidate persisted authorization and exact tool/parameter scope on every call. */
+  authorize: (tool: ToolDef, params: Record<string, unknown>, evidence: {
+    inputHash: string
+    policyHash: string
+    signal?: AbortSignal
+  }) => Promise<boolean>
+}
+
 /** 工具执行上下文 */
 export interface ToolContext {
   /** 当前 Pi 工具调用 ID */
   toolCallId?: string
   /** 当前回合已提交的用户输入身份；记忆工具必须用它筛选可归属来源。 */
   trustedUserEventId?: string
+  taskAuthorization?: TaskToolAuthorization
+  /** Background work must return needs-input instead of opening an interactive waiter. */
+  permissionMode?: "interactive" | "background"
   /** Host-frozen proposals; model arguments cannot manufacture this evidence. */
   proactiveTurnContext?: import("@/services/proactive").ProactiveTurnContext
   /** 稳定的单次操作标识，用于审计和幂等关联。 */
@@ -161,6 +177,8 @@ export interface ToolDef {
   source: ToolSource
   /** 来源 ID（local → 空, mcp/skill → server/skill ID） */
   sourceId: string
+  /** Discovery hints only. They never change risk, isolation, replay, or permission decisions. */
+  mcpAnnotations?: Readonly<{ readOnlyHint?: boolean; destructiveHint?: boolean }>
   /** 操作类别，只用于阶段文案匹配（§7.1），不决定并行、权限或压缩 */
   actionCategory: ActionCategory
   /** 权限 / 执行 / 投影 / 摘要的统一策略；缺策略视为注册错误。 */

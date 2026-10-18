@@ -695,6 +695,14 @@ async function reapplyRuntimeSettings(changes: SettingChangePayload[]): Promise<
   const touched = (prefix: string): boolean =>
     changes.some((change) => typeof change.key === "string" && change.key.startsWith(prefix))
   const failures: string[] = []
+  if(touched("ai.")) {
+    try {
+      const {internalScheduler}=await import("@/services/scheduler")
+      if(touched("ai.memory."))internalScheduler.refresh("dreaming")
+      if(touched("ai.silentAccess."))internalScheduler.refresh("silent_understanding")
+      internalScheduler.wake("user_tasks")
+    } catch(error) {failures.push(`scheduler=${formatError(error)}`)}
+  }
   if (touched("ai.silentAccess.")) {
     try {
       const { setMonitorEnabled } = await import("@/services/window")

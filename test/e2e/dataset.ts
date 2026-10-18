@@ -68,7 +68,7 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
 // 2026-10-10.2：新增 memory-record-time-search，验证生产写入后真实 Rust IPC 的空词时间范围检索与 before 排他上界。
 // 2026-10-15.1：阅读夹具显式声明required，保持直接历史事实的证据义务。
 // 2026-10-16.1：新增 memory-event-time-recall，验证结构化 eventTime 经真实 Rust IPC 过滤事实。
-export const LIVE_DATASET_VERSION = "2026-10-17.4"
+export const LIVE_DATASET_VERSION = "2026-10-18.1"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

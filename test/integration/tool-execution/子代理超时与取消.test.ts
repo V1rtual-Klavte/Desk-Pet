@@ -25,16 +25,17 @@ import { getToolHandler } from "@/services/tool/policy"
 const HOISTED = vi.hoisted(() => ({
   forkInputs: [] as Array<Record<string, unknown>>,
   teamInputs: [] as Array<Record<string, unknown>>,
+  teamSuccess: true,
 }))
 
 vi.mock("@/services/agent/sub-agent", () => ({
   runForkAgent: async (input: Record<string, unknown>) => {
     HOISTED.forkInputs.push(input)
-    return { reply: "fork-ok", toolCallsMade: 0, success: true }
+    return { status: "completed", reply: "fork-ok", toolCallsMade: 0, success: true, evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { runId: "fork", requestId: "fork", ownerKind: "conversation" } }
   },
   runTeamAgent: async (input: Record<string, unknown>) => {
     HOISTED.teamInputs.push(input)
-    return "team-ok"
+    return { status: "completed", reply: HOISTED.teamSuccess ? "team-ok" : "", toolCallsMade: 0, success: HOISTED.teamSuccess, error: HOISTED.teamSuccess ? undefined : "lead 执行失败", evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { runId: "team", requestId: "team", ownerKind: "conversation" } }
   },
 }))
 
@@ -61,7 +62,7 @@ describe("agent_spawn 超时对齐与取消级联", () => {
     expect(tool!.policy.execution.timeoutMs!).toBeGreaterThanOrEqual(2 * SUB_AGENT_RUN_TIMEOUT_MS)
   })
 
-  it("handler 把取消域（signal/会话/代际）传给 fork 与 team；无会话时保持无 scope [agent-spawn-cancel-cascade]", async () => {
+  it("handler 把取消域（signal/会话/代际）传给 fork 与 team；无 owner 时拒绝启动 [agent-spawn-cancel-cascade]", async () => {
     const tool = getToolByName("agent_spawn")!
     const handler = getToolHandler(tool)
     expect(handler, "agent_spawn 的执行体未经 defineTool 构造").toBeDefined()
@@ -72,19 +73,31 @@ describe("agent_spawn 超时对齐与取消级联", () => {
     HOISTED.forkInputs.length = 0
     await handler!({ task: "查一下环境" }, ctx)
     expect(HOISTED.forkInputs, "fork 未执行").toHaveLength(1)
-    const forkScope = HOISTED.forkInputs[0]!.scope as { signal?: AbortSignal; sessionId?: string } | undefined
+    const forkScope = HOISTED.forkInputs[0]!.owner as { signal?: AbortSignal; sessionId?: string } | undefined
     expect(forkScope, "fork 没有收到取消域（父停止/切会话级联不到子运行）").toBeDefined()
     expect(forkScope!.signal, "取消信号没有传给 fork 子运行").toBe(controller.signal)
 
     HOISTED.teamInputs.length = 0
     await handler!({ task: "多角度分析", mode: "team" }, ctx)
     expect(HOISTED.teamInputs, "team 未执行").toHaveLength(1)
-    const teamScope = HOISTED.teamInputs[0]!.scope as { signal?: AbortSignal } | undefined
+    const teamScope = HOISTED.teamInputs[0]!.owner as { signal?: AbortSignal } | undefined
     expect(teamScope?.signal, "取消信号没有传给 team 子运行").toBe(controller.signal)
 
-    // 没有会话归属（如测试宿主直调）：不构造 scope，保持旧语义（不猜一个会话）。
     HOISTED.forkInputs.length = 0
-    await handler!({ task: "无会话直调" }, {})
-    expect(HOISTED.forkInputs[0]!.scope, "无会话时不应凭空构造 scope").toBeUndefined()
+    const rejected = await handler!({ task: "无会话直调" }, {})
+    expect(rejected.success).toBe(false)
+    expect(HOISTED.forkInputs).toHaveLength(0)
+
   })
+  it("team 汇总失败不会被工具层包装成功 [agent-team-no-false-success]", async () => {
+    const handler = getToolHandler(getToolByName("agent_spawn")!)!
+    HOISTED.teamSuccess = false
+    try {
+      const result = await handler({ task: "多角度分析", mode: "team" }, { sessionId: "team-session", runGeneration: 1, isCurrent: () => true })
+      expect(result.success).toBe(false)
+      expect(result.error).toBe("lead 执行失败")
+      expect(result.content).toBe("")
+    } finally { HOISTED.teamSuccess = true }
+  })
+
 })

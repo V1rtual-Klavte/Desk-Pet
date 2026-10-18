@@ -444,6 +444,8 @@ export async function searchConversationCandidates(request: ConversationCandidat
     }
     : undefined
   const scan = queryPlan?.recallIntent === "count" || queryPlan?.recallIntent === "overview"
+    || queryPlan?.evidenceNeeds?.includes("enumeration")
+    || queryPlan?.recallIntent === "advice"
   const entities = queryPlan?.entities ?? []
   const roles = queryPlan?.sourceRoles ?? []
   const uniqueQueries: string[] = []

@@ -34,7 +34,7 @@ import type { SimpleStageKey } from "@/services/personality/stages-cache"
 import { listTitlebarOwners, releaseTitlebarStatus, setTitlebarStatus } from "@/services/titlebar"
 import { clearRuntimeDataMissing, generateReply, hasLlmWritableCardVars, hasRuntimeDataReminder, markRuntimeDataMissing, parseRuntimeData, RUNTIME_DATA_REMINDER_TEXT, RUNTIME_DATA_TAG } from "@/services/reply"
 import { authorizeToolExecution, freezePermissionPolicy, invalidatePermissionScope } from "@/services/safety"
-import type { PermissionPolicySnapshot } from "@/services/safety"
+import type { PermissionPolicySnapshot, PermissionResult } from "@/services/safety"
 import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import {
@@ -42,7 +42,7 @@ import {
   createEnableToolsTool, defaultActiveToolNames,
   findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash,
 } from "@/services/tool"
-import type { HarnessToolRun, ToolDef } from "@/services/tool"
+import type { HarnessToolRun, ToolDef, TaskToolAuthorization } from "@/services/tool"
 import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool/local/screenshot-details"
 import { aiConfig, humanizerConfig, loopConfig, memoryConfig, planConfig, safetyConfig } from "@/services/config"
 import { silentAccessFrequency } from "@/services/proactive/tiers"
@@ -59,7 +59,7 @@ import {
   type HostEventMap,
   type NodeUiEventName,
 } from "@/services/host"
-import { resolvePiAuxModel, resolvePiTurnModel } from "./model-gateway"
+import { resolvePiAuxModel, resolvePiTurnModel, toPiReasoningLevel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
@@ -89,6 +89,8 @@ import { createLogger } from "@/services/logger"
 import { createMemoryRecallMessage, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishMemoryRecallReferences, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, TURN_NOTE_CUSTOM_TYPE, userInputMessage } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
+
+import { SUB_AGENT_DEFAULT_MAX_TOOL_CALLS, SUB_AGENT_DEFAULT_TIMEOUT_MS } from "@/services/agent/timeouts"
 
 const log = createLogger("PiRuntime")
 
@@ -303,60 +305,97 @@ export function turnFailureReply(
  */
 export { classifyFailureKind as classifyTurnFailure } from "@/services/error/failure-kind"
 
-/**
- * 子运行归属（PLAN-02 / PLAN-03）：子代理的许可身份绑定父会话与代际，并挂到父槽下随父取消。
- * 缺省时子代理是自持的一次性运行（fork/team 的独立子代理）：许可借用身份落在
- * `no-session:-1:…`，也不参与任何取消域。
- */
+/** Parent cancellation/permission identity shared by delegated and Plan work. */
 export interface PiSubAgentScope {
   sessionId: string
   runGeneration: number
-  /** Exact durable user event that authorized this task; omitted for derived/background work. */
   trustedUserEventId?: string
-  /** 父回合的代际与活跃会话判定：许可确认与工具执行都按它核对（切会话即失效）。 */
   isCurrent: () => boolean
-  /** 父取消通道：中止时当前正在跑的那一步也立刻停，而不是等步骤边界。 */
   signal?: AbortSignal
-  /** 父槽：注册为子槽，父槽 abort/close/dispose 时级联到本子运行。 */
   parentSlot?: HarnessSlot
 }
 
+/** Purpose and authority are bound by the host, never accepted from model arguments. */
+export type PiSubAgentOwner =
+  | (PiSubAgentScope & { kind: "conversation"; runId: string; parentRunId?: string })
+  | (PiSubAgentScope & { kind: "plan"; runId: string; planId: string; stepId: string; parentRunId?: string })
+  | (Omit<PiSubAgentScope, "trustedUserEventId" | "parentSlot"> & { kind: "proactive"; runId: string; cardId: string })
+  | {
+      kind: "scheduled"
+      runId: string
+      sessionId: string
+      cardId: string
+      taskId: string
+      taskVersion: number
+      occurrenceId: string
+      authorization: TaskToolAuthorization
+      isCurrent: () => boolean
+      signal?: AbortSignal
+    }
+
+export interface PiSubAgentAudit {
+  sessionId?: string
+  planId?: string
+  stepId?: string
+  /** Business-owned result location; the kernel does not create a second transcript. */
+  reference?: string
+}
+
 export interface PiSubAgentInput {
+  owner: PiSubAgentOwner
   task: string
   tools: ToolDef[]
   systemPrompt: string
-  maxRounds?: number
+  capabilities?: { requiredToolNames?: readonly string[] }
+  maxToolCalls?: number
   timeoutMs?: number
+  deadlineAt?: number
   thinkingEffort?: ThinkingEffort
-  /** Hard ceiling for this child run's actual provider output. */
   maxOutputTokens?: number
-  /** Called with the prepared request estimate immediately before its Provider call. */
   beforeProvider?: (reservation: ProviderReservation) => Promise<boolean>
-  /** Refuse hidden compaction model calls for scheduler/planning work. */
   disableAutomaticCompaction?: boolean
+  /** Runtime completion and acceptance are separate: this validator owns business success. */
+  outputContract?: {
+    kind: "text" | "json"
+    validate?: (output: { reply: string; artifact?: unknown; evidence: PiSubAgentEvidence }) => boolean | string | Promise<boolean | string>
+  }
   onToolStart?: (toolName: string, toolCallId: string) => Promise<void> | void
   onToolDone?: (toolName: string, toolCallId: string, success: boolean) => Promise<void> | void
-  /** 子运行归属：存在时填进 HarnessToolRun 与 createTurnSpec，并挂到父槽下随父取消。 */
-  scope?: PiSubAgentScope
-  /**
-   * 审计归属：有计划身份的子运行提供它，请求快照就落进父会话（步骤的请求视图可查）。
-   * 缺省（fork/team 的独立子代理）不落快照 —— 没有会话可归属。
-   */
-  audit?: { sessionId: string; planId?: string; stepId?: string }
+  audit?: PiSubAgentAudit
+}
+
+export interface PiSubAgentEvidence {
+  tools: Array<{ toolName: string; toolCallId?: string; status: string; reason?: string; sourceUrls?: string[]; sources?: Array<{ url: string; publishedAt?: string }>; completedAt?: number }>
+  incomplete: string[]
+  /** A failed/cancelled call may have changed an external system before its receipt. */
+  unconfirmedEffects: boolean
 }
 
 export interface PiSubAgentOutput {
-  reply: string
-  toolCallsMade: number
+  status: "completed" | "cancelled" | "timed_out" | "needs_input" | "failed"
+  /** Business acceptance; completed alone only means the Harness ended. */
   success: boolean
+  reply: string
+  artifact?: unknown
+  toolCallsMade: number
+  evidence: PiSubAgentEvidence
+  audit: PiSubAgentAudit & { runId: string; requestId: string; ownerKind: PiSubAgentOwner["kind"] }
+  resolved?: {
+    modelId: string
+    provider: string
+    requestedThinkingEffort: ThinkingEffort
+    reasoningLevel?: string
+    reasoningParameter?: string | null
+    thinkingAdaptation: "native" | "server_default" | "unsupported"
+    deadlineAt: number
+    maxToolCalls: number
+    maxOutputTokens: number
+    toolNames: string[]
+  }
   error?: string
-  /**
-   * 剥离 RUNTIME_DATA 之前的原始正文；只在确实被剥离过（`raw !== reply`）时才有值。
-   * 唯一的读取者是计划段写 `plan_step_result` 留证（PLAN-09④）——子代理不写变量，
-   * 但「写了却没生效」这件事要能查；不得进入主回合的结算路径（那里用内核留底）。
-   */
   rawReply?: string
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
+  members?: Array<{ role: string; output: PiSubAgentOutput }>
 }
 
 /** 一次运行的宿主侧共享上下文；主回合与子代理复用同一套投影/快照/审计。 */
@@ -1363,6 +1402,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
    * （2026-10-06 根因取证；参数类型缺字段 + 调用点用 spread ⇒ 静默丢弃）。
    */
   providerAdmission?: { beforeProvider: (reservation: ProviderReservation) => Promise<boolean>; maxOutputTokens: number }
+  onPermissionDecision?: (toolName: string, toolCallId: string, permission: PermissionResult) => void
+  onChildToolResult?: (result: Parameters<NonNullable<HarnessRunHooks["afterTool"]>>[0]) => void
 }): HarnessRunSpec {
   const state = kernel.state
   const toolsByName = new Map(kernel.tools.map(tool => [tool.name, tool]))
@@ -1429,7 +1470,10 @@ function createTurnSpec(kernel: TurnKernel, options: {
         isCurrent: options.isPermissionCurrent,
         // 回合冻结的策略：回合中改安全模式不改变本回合的裁决与 policyHash。
         policy: kernel.policy,
+        ...(kernel.toolRun.taskAuthorization ? { taskAuthorization: kernel.toolRun.taskAuthorization } : {}),
+        ...(kernel.toolRun.permissionMode ? { permissionMode: kernel.toolRun.permissionMode } : {}),
       })
+      options.onPermissionDecision?.(tool.name, toolCallId, permission)
       publishRuntimeTrace(kernel.traceContext, "permission_decided", () => ({ toolName: tool.name, decision: permission.decision, source: "authorization_outcome" }), { toolCallId })
       // 能力冻结的逐请求一半：本次裁决（含拒绝理由）折进快照的 capabilities.toolDecisions。
       kernel.capabilities.toolDecisions.push({
@@ -1440,11 +1484,13 @@ function createTurnSpec(kernel: TurnKernel, options: {
       if (permission.decision !== "allow") {
         const reason = permission.reason ?? "操作未获授权"
         kernel.toolRun.history.push({ toolName: tool.name, status: permission.request ? "denied" : "blocked", personalityMsg: reason })
-        return { block: { reason } }
+        return { block: { reason, ...(kernel.toolRun.permissionMode === "background" ? { terminate: true } : {}) } }
       }
       return undefined
     },
-    afterTool: ({ toolCallId, toolName, details, isError }) => {
+    afterTool: result => {
+      const { toolCallId, toolName, details, isError } = result
+      options.onChildToolResult?.(result)
       // show_to_user 的截图路径在这里进入回合状态，由提交链并入最终助手条目。
       collectScreenshotResult(state, toolName, details, isError)
       // 连续失败入账（成功清零连击）；命中软/硬阈值时把中性提示附到本条结果上。
@@ -3163,117 +3209,210 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   return intent === undefined ? outcome : { ...outcome, intent }
 }
 
-/** Used by planning and fork/team agents. It shares the same harness kernel, not a second loop. */
+/** Only actual successful tool receipts supply source references; never assistant prose. */
+function childResultSourceUrls(text: string): string[] {
+  const urls = new Set<string>()
+  for (const match of text.slice(0, 65_536).matchAll(/https?:\/\/[^\s<>"'`\\]+/g)) {
+    if (urls.size >= 32) break
+    const candidate = match[0].replace(/[),.;\]}]+$/, "")
+    if (candidate.length > 2048 || redactText(candidate).text !== candidate) continue
+    try {
+      const url = new URL(candidate)
+      if (url.username || url.password || [...url.searchParams.keys()].some(key => /token|secret|password|auth|(?:api[_-]?)?key|signature/i.test(key))) continue
+      urls.add(url.href)
+    } catch { /* A malformed URL is untrusted receipt text, not a source reference; the full tool receipt stays with its owner. */ }
+  }
+  return [...urls]
+}
+
+/** Publication dates require structured fields on the same actual receipt object as its URL. */
+function childResultSources(content: Parameters<NonNullable<HarnessRunHooks["afterTool"]>>[0]["content"]): Array<{ url: string; publishedAt?: string }> {
+  const sources = new Map<string, { url: string; publishedAt: string }>()
+  let visited = 0
+  const visit = (value: unknown, depth: number): void => {
+    if (++visited > 256 || depth > 6 || !value || typeof value !== "object") return
+    if (Array.isArray(value)) { for (const item of value.slice(0, 64)) visit(item, depth + 1); return }
+    const row = value as Record<string, unknown>
+    const rawUrl = typeof row.url === "string" ? row.url : typeof row.link === "string" ? row.link : undefined
+    const date = row.publishedAt ?? row.published_at ?? row.datePublished ?? row.pubDate
+    if (rawUrl && /^https?:\/\/[^\s]+$/.test(rawUrl) && typeof date === "string" && date.length <= 100) {
+      const publishedAt = Date.parse(date)
+      const url = childResultSourceUrls(rawUrl)[0]
+      if (url && Number.isFinite(publishedAt) && publishedAt >= 0 && sources.size < 32) sources.set(url, { url, publishedAt: new Date(publishedAt).toISOString() })
+    }
+    for (const nested of Object.values(row).slice(0, 64)) visit(nested, depth + 1)
+  }
+  for (const part of content) {
+    if (part.type !== "text" || part.text.length > 65_536) continue
+    try { visit(JSON.parse(part.text), 0) }
+    catch { /* Non-JSON receipt text still supplies URL evidence, but cannot establish a publication date. */ }
+  }
+  return [...sources.values()]
+}
+
+/** Sole child-run kernel for delegation, Plan, proactive and durable scheduled work. */
 export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentOutput> {
-  const thinkingEffort = input.thinkingEffort ?? "low"
-  // 子运行的模型取辅助模型（ai.auxModel；留空回落聊天模型）：agent_spawn 工具、计划步骤与
-  // 主动扫描规划共用这一个出口，模型路由只在这一处生效。
-  const baseModel = resolvePiAuxModel()
-  if (input.maxOutputTokens !== undefined && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1)) {
-    throw new Error("子运行 maxOutputTokens 必须是正整数")
-  }
-  const model = input.maxOutputTokens === undefined
-    ? baseModel
-    : { ...baseModel, maxTokens: Math.min(baseModel.maxTokens, input.maxOutputTokens) }
+  const owner = input.owner
+  if (!owner?.runId || !owner.sessionId || typeof owner.isCurrent !== "function" || !["conversation", "plan", "proactive", "scheduled"].includes(owner.kind)) throw new Error("子运行必须绑定有效 owner")
+  const requestId = `sub-agent-${owner.runId}`
+  const evidence: PiSubAgentEvidence = { tools: [], incomplete: [], unconfirmedEffects: false }
+  const audit = { ...(owner.kind === "plan" ? { planId: owner.planId, stepId: owner.stepId } : {}), ...input.audit, sessionId: input.audit?.sessionId ?? owner.sessionId, runId: owner.runId, requestId, ownerKind: owner.kind }
+  let output: PiSubAgentOutput = { status: "failed", success: false, reply: "", toolCallsMade: 0, evidence, audit }
   const history: PiAgentTurnOutput["toolCallHistory"] = []
-  const scope = input.scope
-  // 决策 16「子代理不派生」的唯一剥离点：派生型工具不下放到子代理，计划步骤与 fork/team
-  // 各自传什么都过这一道，不在调用点维护第二份名单。判定读工具自己声明的策略字段
-  // （`isolation: "delegate"` 只用于宿主编排工具，现只有 agent_spawn）—— 写死名字会把
-  // 工具身份抄成第二个定义点，也漏掉将来的派生型工具。
-  const tools = input.tools.filter(tool => tool.policy.execution.isolation !== "delegate")
-  const toolRun: HarnessToolRun = {
-    // 有 scope 时工具上下文带上父会话与代际：许可借用 requestId 从 `no-session:-1:…`
-    // 变成 `${sessionId}:${generation}:…`，会话内 grant 也随之按会话与代际失效（PLAN-03）。
-    sessionId: scope?.sessionId,
-    runGeneration: scope?.runGeneration,
-    ...(scope?.trustedUserEventId ? { trustedUserEventId: scope.trustedUserEventId } : {}),
-    isCurrent: scope?.isCurrent ?? (() => true),
-    history,
-    onToolStart: input.onToolStart,
-    onToolDone: input.onToolDone,
-  }
-  const kernel = createTurnKernel({
-    // 快照归属以 audit 为准（有计划身份的步骤请求落进父会话）；没有 audit 时沿用运行归属。
-    sessionId: input.audit?.sessionId ?? scope?.sessionId,
-    requestId: `sub-agent-${crypto.randomUUID()}`,
-    model,
-    thinkingEffort,
-    systemPrompt: input.systemPrompt,
-    tools,
-    transientUserInput: false,
-    // 有计划身份的子运行把请求快照落进父会话；没有归属就不落（fork/team 的独立子代理）。
-    persistSnapshots: input.audit !== undefined,
-    ...(input.audit?.planId
-      ? { plan: { planId: input.audit.planId, ...(input.audit.stepId ? { stepId: input.audit.stepId } : {}), version: 1 } }
-      : {}),
-    generation: scope?.runGeneration ?? 0,
-    toolRun,
-  })
-  // 子代理使用内存会话的一次性槽：不写聊天记录，也不占用 App 会话代际。
-  const slot = new HarnessSlot(`subagent-${crypto.randomUUID()}`, { transient: true })
-  // 取消域级联：挂到父槽下，父槽 abort/close/dispose 都会级联到这个子运行。
-  const detach = scope?.parentSlot?.attachChild(slot)
-  // 父取消通道（终止执行/会话切换/计划时限）：正在跑的那一步也要立刻停 ——
-  // 只在步骤边界检查信号会让「终止」等满一整步。
-  const abortFromScope = () => {
-    void slot.abort().catch(error => log.warn("子运行停止失败:", { sessionId: scope?.sessionId }, formatError(error)))
-  }
-  if (scope?.signal) {
-    if (scope.signal.aborted) abortFromScope()
-    else scope.signal.addEventListener("abort", abortFromScope, { once: true })
+  const thinkingEffort = input.thinkingEffort ?? "low"
+  const maxToolCalls = input.maxToolCalls ?? SUB_AGENT_DEFAULT_MAX_TOOL_CALLS
+  const deadlineAt = Math.min(input.deadlineAt ?? Infinity, Date.now() + (input.timeoutMs ?? SUB_AGENT_DEFAULT_TIMEOUT_MS))
+  const generation = owner.kind === "scheduled" ? owner.taskVersion : owner.runGeneration
+  const background = owner.kind === "scheduled" || owner.kind === "proactive"
+  const current = () => !owner.signal?.aborted && owner.isCurrent()
+  let slot: HarnessSlot | undefined
+  let kernel: TurnKernel | undefined
+  let detach: (() => void) | undefined
+  let needsInput = false
+  let permissionFailure: string | undefined
+  const abortFromOwner = () => {
+    void slot?.abort().catch(error => log.warn("子运行停止失败:", { runId: owner.runId }, formatError(error)))
   }
   try {
-    const spec = createTurnSpec(kernel, {
-      prompt: input.task,
-      timeoutMs: input.timeoutMs ?? 60000,
-      // 无人值守子运行保留计数封顶（计划步骤 / 主动规划 / agent 子代理；主回合已不传）。
-      maxToolCalls: input.maxRounds ?? 3,
-      projectToolResults: false,
-      runGeneration: scope?.runGeneration ?? 0,
-      isPermissionCurrent: scope?.isCurrent ?? (() => true),
-      // 子运行对聊天界面不可见：过程消息/工具结果/流式草稿都不进活跃会话的可见列表
-      // （子运行不落盘，推出去的气泡会在下一次读模型重载时消失）。过程可见性走顶栏。
-      invisible: true,
-      ...(input.beforeProvider ? {
-        providerAdmission: { beforeProvider: input.beforeProvider, maxOutputTokens: model.maxTokens },
-      } : {}),
-      ...(input.disableAutomaticCompaction ? { disableAutomaticCompaction: true } : {}),
+    if (!Number.isSafeInteger(generation) || generation < 0) throw new Error("子运行 owner 的版本或代际无效")
+    if (!Number.isSafeInteger(maxToolCalls) || maxToolCalls < 0) throw new Error("子运行 maxToolCalls 必须是非负整数")
+    if (!Number.isFinite(deadlineAt)) throw new Error("子运行 deadline 必须有效")
+    if (input.maxOutputTokens !== undefined && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1)) throw new Error("子运行 maxOutputTokens 必须是正整数")
+    if (!current()) return output = { ...output, status: "cancelled", error: "子运行 owner 已失效或取消" }
+    if (deadlineAt <= Date.now()) return output = { ...output, status: "timed_out", error: "子运行已超过 deadline" }
+    if (owner.kind === "scheduled" && (owner.authorization.taskId !== owner.taskId || owner.authorization.taskVersion !== owner.taskVersion || !owner.authorization.reference)) throw new Error("任务 owner 与持久授权不匹配")
+
+    // Freeze model before any capability await; all callers share auxiliary-model routing.
+    const baseModel = resolvePiAuxModel()
+    const model = input.maxOutputTokens === undefined ? baseModel : { ...baseModel, maxTokens: Math.min(baseModel.maxTokens, input.maxOutputTokens) }
+    const reasoningLevel = toPiReasoningLevel(thinkingEffort)
+    const mappedReasoning = reasoningLevel && model.thinkingLevelMap && reasoningLevel in model.thinkingLevelMap ? model.thinkingLevelMap[reasoningLevel] : reasoningLevel
+    const adaptation = thinkingEffort === "auto" ? "server_default" : model.reasoning && mappedReasoning !== null ? "native" : "unsupported"
+    output.resolved = {
+      modelId: model.id, provider: model.provider, requestedThinkingEffort: thinkingEffort,
+      ...(reasoningLevel ? { reasoningLevel, reasoningParameter: mappedReasoning } : {}),
+      thinkingAdaptation: adaptation, deadlineAt, maxToolCalls, maxOutputTokens: model.maxTokens, toolNames: [],
+    }
+    if (owner.kind === "scheduled" && adaptation === "unsupported") throw new Error(`模型 ${model.id} 不支持要求的思考档位 ${thinkingEffort}`)
+
+    // MCP is borrowed by this run, including failures during acquisition, and always released below.
+    const requested = input.tools.filter(tool => tool.policy.execution.isolation !== "delegate" &&
+      (owner.kind !== "proactive" || tool.source !== "mcp" && tool.safetyLevel === "SAFE" && !tool.resolveSafetyLevel && tool.policy.execution.effect === "read"))
+    const { acquireMcpServer } = await import("@/services/tool/mcp")
+    const unavailableServers = new Set<string>()
+    for (const server of new Set(requested.filter(tool => tool.source === "mcp").map(tool => tool.sourceId))) {
+      if (!current()) return output = { ...output, status: "cancelled", error: "子运行 owner 已失效或取消" }
+      const borrowed = await acquireMcpServer(server, requestId)
+      if (!borrowed.success) { unavailableServers.add(server); evidence.incomplete.push(`MCP ${server}: ${borrowed.error ?? "连接失败"}`) }
+    }
+    const registry = new Map(listAll().map(tool => [tool.id, tool]))
+    const tools = requested.flatMap(tool => {
+      const actual = registry.get(tool.id)
+      if (tool.source === "mcp" && unavailableServers.has(tool.sourceId)) return []
+      return actual && actual.name === tool.name && actual.policy.execution.isolation !== "delegate" ? [actual] : []
     })
-    const result = await slot.run(spec)
-    if (result.status === "completed") {
-      const finalAssistant = kernel.state.finalPlainAssistant ?? kernel.state.finalAssistant
-      const reply = finalAssistant ? contentText(finalAssistant.content) : ""
-      // afterResponse 已在提交前剥离 RUNTIME_DATA，提交的正文里没有标签；
-      // 只有内核留底的原始正文能与它配对比较（子代理不写变量，所以差异就是「写了却没生效」）。
-      const raw = kernel.rawTextForSettledReply(reply)
-      if (raw !== reply) {
-        log.warn(`子代理回复含被剥离的 ${RUNTIME_DATA_TAG}，变量写入不生效（原始正文已随 plan_step_result 留证）:`, input.task.substring(0, 40))
-      }
-      return {
-        // 子代理跑完但没有可见正文时说「无结果」，不是「已完成」：
-        // 步骤结果会原样进 plan_step_result 与后续步骤上下文，两种语义不能互相顶替。
-        reply: reply || getFallbackReply("subAgentNoResult"),
-        toolCallsMade: kernel.state.toolCallsMade,
-        success: true,
-        ...(kernel.state.usage ? { usage: { ...kernel.state.usage } } : {}),
-        // PLAN-09④：原始正文交给计划段写进 plan_step_result；不在这里解析变量。
-        ...(raw !== reply ? { rawReply: raw } : {}),
-      }
+    const names = new Set(tools.map(tool => tool.name))
+    const missing = (input.capabilities?.requiredToolNames ?? []).filter(name => !names.has(name))
+    if (missing.length) throw new Error(`指定的工具不存在或不可用: ${missing.join("、")}`)
+    output.resolved.toolNames = [...names]
+    if (!current()) return output = { ...output, status: "cancelled", error: "子运行 owner 已失效或取消" }
+    if (deadlineAt <= Date.now()) return output = { ...output, status: "timed_out", error: "子运行能力准备超过 deadline" }
+
+    const toolRun: HarnessToolRun = {
+      sessionId: owner.sessionId, runGeneration: generation, isCurrent: current, history,
+      ...((owner.kind === "conversation" || owner.kind === "plan") && owner.trustedUserEventId ? { trustedUserEventId: owner.trustedUserEventId } : {}),
+      ...(owner.kind === "scheduled" ? { taskAuthorization: owner.authorization } : {}),
+      permissionMode: background ? "background" : "interactive",
+      onToolStart: async (toolName, toolCallId) => {
+        evidence.tools.push({ toolName, toolCallId, status: "running" })
+        await input.onToolStart?.(toolName, toolCallId)
+      },
+      onToolDone: async (toolName, toolCallId, success) => {
+        const row = evidence.tools.find(item => item.toolCallId === toolCallId)
+        if (row) row.status = success ? "done" : "error"
+        if (!success && tools.find(tool => tool.name === toolName)?.policy.execution.effect === "external_side_effect") evidence.unconfirmedEffects = true
+        await input.onToolDone?.(toolName, toolCallId, success)
+      },
     }
-    const error = result.timedOut ? "Agent 执行超时" : result.error ?? "Pi Agent 未返回有效回复"
-    // FIX-50：失败原因与已发生的工具调用数不只进返回值，由计划段写进同一条 plan_step_result。
-    return {
-      reply: getFallbackReply("subAgentFailed"),
-      toolCallsMade: kernel.state.toolCallsMade,
-      success: false,
-      error,
-      ...(kernel.state.usage ? { usage: { ...kernel.state.usage } } : {}),
+    const traceContext = createRuntimeTraceContext(owner.sessionId, requestId)
+    traceContext.runId = owner.runId
+    kernel = createTurnKernel({
+      sessionId: owner.sessionId, requestId, traceContext, model, thinkingEffort, systemPrompt: input.systemPrompt,
+      tools, transientUserInput: false, persistSnapshots: input.audit !== undefined,
+      ...(owner.kind === "plan" ? { plan: { planId: owner.planId, stepId: owner.stepId, version: 1 } } : {}),
+      generation, toolRun,
+    })
+    slot = new HarnessSlot(`subagent-${owner.runId}`, { transient: true })
+    if (owner.kind === "conversation" || owner.kind === "plan") detach = owner.parentSlot?.attachChild(slot)
+    owner.signal?.addEventListener("abort", abortFromOwner, { once: true })
+    if (!current()) return output = { ...output, status: "cancelled", error: "子运行 owner 已失效或取消" }
+    const result = await slot.run(createTurnSpec(kernel, {
+      prompt: input.task, timeoutMs: Math.max(1, deadlineAt - Date.now()), maxToolCalls,
+      projectToolResults: false, runGeneration: generation, isPermissionCurrent: current, invisible: true,
+      providerAdmission: {
+        maxOutputTokens: model.maxTokens,
+        beforeProvider: async reservation => current() && Date.now() < deadlineAt && (await input.beforeProvider?.(reservation) ?? true),
+      },
+      onPermissionDecision: (toolName, toolCallId, permission) => {
+        if (permission.decision === "allow") return
+        if (permission.decision === "ask") needsInput = true
+        else permissionFailure = permission.reason ?? "子运行工具被权限策略拒绝"
+        evidence.tools.push({ toolName, toolCallId, status: permission.decision, ...(permission.reason ? { reason: permission.reason } : {}) })
+      },
+      onChildToolResult: ({ toolName, toolCallId, content, isError }) => {
+        const row: PiSubAgentEvidence["tools"][number] = evidence.tools.find(item => item.toolCallId === toolCallId) ?? { toolName, toolCallId, status: isError ? "error" : "done" }
+        if (!evidence.tools.includes(row)) evidence.tools.push(row)
+        row.status = isError ? "error" : "done"
+        row.completedAt = Date.now()
+        if (!isError) {
+          row.sourceUrls = childResultSourceUrls(contentText(content))
+          row.sources = childResultSources(content)
+        }
+      },
+      ...(input.disableAutomaticCompaction ? { disableAutomaticCompaction: true } : {}),
+    }))
+    output.toolCallsMade = kernel.state.toolCallsMade
+    if (kernel.state.usage) output.usage = { ...kernel.state.usage }
+    for (const row of history) {
+      if (!evidence.tools.some(item => item.toolName === row.toolName && item.status === row.status)) evidence.tools.push({ toolName: row.toolName, status: row.status })
     }
+    if (!current() || result.status === "aborted" && !result.timedOut) return output = { ...output, status: "cancelled", error: result.error ?? "子运行已取消" }
+    if (result.timedOut || Date.now() >= deadlineAt) return output = { ...output, status: "timed_out", error: result.error ?? "Agent 执行超时" }
+    if (needsInput) return output = { ...output, status: "needs_input", error: "任务需要额外授权或用户输入" }
+    if (permissionFailure) return output = { ...output, status: "failed", error: permissionFailure }
+    if (result.status !== "completed") return output = { ...output, error: result.error ?? "Pi Agent 未返回有效回复" }
+    const finalAssistant = kernel.state.finalPlainAssistant ?? kernel.state.finalAssistant
+    const reply = finalAssistant ? contentText(finalAssistant.content) : ""
+    const raw = kernel.rawTextForSettledReply(reply)
+    output = { ...output, status: "completed", reply, ...(raw !== reply ? { rawReply: raw } : {}) }
+    if (!reply.trim() || kernel.state.stoppedByToolGovernance) {
+      output.error = kernel.state.stoppedByToolGovernance ? "子运行达到工具治理上限，工作未完成" : "子运行没有返回结果"
+      evidence.incomplete.push(output.error)
+      return output
+    }
+    if (input.outputContract?.kind === "json") {
+      try { output.artifact = JSON.parse(reply) }
+      catch { output.error = "子运行结果不符合 JSON 产物契约"; return output }
+    }
+    const accepted = await input.outputContract?.validate?.({ reply, artifact: output.artifact, evidence }) ?? true
+    if (!current()) return output = { ...output, status: "cancelled", error: "子运行 owner 已失效或取消" }
+    output.success = accepted === true
+    if (!output.success) output.error = typeof accepted === "string" ? accepted : "子运行产物未通过验收"
+    return output
+  } catch (error) {
+    log.warn("子运行失败:", { runId: owner.runId, owner: owner.kind }, formatError(error))
+    output.error = formatError(error)
+    if (!current()) output.status = "cancelled"
+    else if (Date.now() >= deadlineAt) output.status = "timed_out"
+    return output
   } finally {
-    scope?.signal?.removeEventListener("abort", abortFromScope)
-    await slot.close()
+    owner.signal?.removeEventListener("abort", abortFromOwner)
+    try { await slot?.close() }
+    catch (error) { output.success = false; output.status = "failed"; output.error = formatError(error); log.warn("子运行槽释放失败:", { runId: owner.runId }, formatError(error)) }
     detach?.()
+    const { releaseMcpOwner } = await import("@/services/tool")
+    try { await releaseMcpOwner(requestId) }
+    catch (error) { output.success = false; output.status = "failed"; output.error = formatError(error); log.warn("子运行 MCP owner 释放失败:", { runId: owner.runId }, formatError(error)) }
   }
 }
 

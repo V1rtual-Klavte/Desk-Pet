@@ -44,6 +44,7 @@ import { activeSessionId } from "@/services/session/store"
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
 import { configureProactive, refreshProactive, start, stop, tick, wakeDelayMs } from "@/services/proactive/scanner"
 import { proactiveTierLimits } from "@/services/proactive/tiers"
+import { internalScheduler } from "@/services/scheduler"
 
 let root = ""
 const traces: Array<{ kind: string; payload: Record<string, unknown> }> = []
@@ -62,6 +63,18 @@ const WAKE_RANGE_MAX_MS = 18_000_000
 function wakeDelays(): number[] {
   return timeouts.map(item => item.delay).filter((delay): delay is number =>
     typeof delay === "number" && delay >= WAKE_RANGE_MIN_MS && delay < WAKE_RANGE_MAX_MS)
+}
+
+/** 统一调度核心只保留一个进程计时器；业务唤醒延迟读作业的 nextAt，而不是底层 setTimeout。 */
+function proactiveJob(): { nextAt: (now: number) => number | null } | undefined {
+  const register = internalScheduler.register as unknown as {
+    mock?: { calls: Array<[{ id: string; nextAt: (now: number) => number | null }]> }
+  }
+  return register.mock?.calls.find(([job]) => job.id === "proactive_scan")?.[0]
+}
+function wakeDelayAt(now: number): number | undefined {
+  const next = proactiveJob()?.nextAt(now)
+  return next === null || next === undefined ? undefined : next - now
 }
 
 beforeAll(async () => {
@@ -104,6 +117,7 @@ beforeEach(async () => {
   ipc.control.mockImplementation(async () => ({ muteUntil: null, revision: 1 }))
   // 唤醒区间取中值：random=0.5 时低/中/高档的延迟分别是 3.5h / 60min / 20min。
   activeSpies = [
+    vi.spyOn(internalScheduler, "register"),
     vi.spyOn(Math, "random").mockReturnValue(0.5),
     vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
       const handle = originalSetTimeout(handler, delay, ...args)
@@ -162,7 +176,7 @@ describe("档位门禁与随机唤醒调度", () => {
     start()
     await nextTick()
 
-    expect(wakeDelays(), "off 档位仍排出了唤醒定时器").toEqual([])
+    expect(wakeDelayAt(1_000_000), "off 档位仍排出了唤醒").toBeUndefined()
     expect(ipc.control, "off 档位仍下发了档位投影").not.toHaveBeenCalled()
 
     // tick 自身也持同一门禁：直接调用只留「关」的跳过痕迹，不进入扫描流程。
@@ -174,14 +188,16 @@ describe("档位门禁与随机唤醒调度", () => {
     // 事件唤醒（会话身份变化走既有 enqueueTick）同样不扫描：off = 不产生机会、不发送。
     activeSessionId.value = "tier-gate-off-session"
     await nextTick()
+    await internalScheduler.drain()
     expect(traces.some(event => event.kind === "proactive_tick"), "off 档位下事件仍唤醒了扫描").toBe(false)
 
     // 正对照：恢复中档后随机唤醒与投影下发都要真的发生（否则上面全是真空断言）。
     setOverride("ai.proactive.frequency", "medium")
     refreshProactive()
-    await vi.waitFor(() => expect(wakeDelays(), "中档恢复后没有排出唤醒定时器").toContain(3_600_000))
-    expect(ipc.control.mock.calls[0]?.[0]?.limits, "中档恢复后没有下发中档投影").toEqual(proactiveTierLimits("medium"))
-    await vi.waitFor(() => expect(traces.some(event => event.kind === "proactive_tick"), "中档恢复后扫描没有运行").toBe(true))
+    expect(wakeDelayAt(1_000_000), "中档恢复后没有排出中档唤醒").toBe(3_600_000)
+    await vi.waitFor(() => expect(ipc.control.mock.calls[0]?.[0]?.limits, "中档恢复后没有下发中档投影").toEqual(proactiveTierLimits("medium")))
+    await internalScheduler.drain()
+    expect(traces.some(event => event.kind === "proactive_tick"), "中档恢复后扫描没有运行").toBe(true)
   })
 
   it("事件唤醒先取消旧定时器再重排；档位变更换到新档区间 [proactive-random-wake-schedule]", async () => {
@@ -190,25 +206,23 @@ describe("档位门禁与随机唤醒调度", () => {
     // 本用例的启动断言按「中」档区间（60 分钟）写，不继承出厂值。
     setOverride("ai.proactive.frequency", "medium")
     start()
-    await vi.waitFor(() => expect(wakeDelays(), "启动后没有排出中档唤醒定时器").toContain(3_600_000))
-    const mediumSchedules = timeouts.filter(item => item.delay === 3_600_000)
-    const wakeHandle = mediumSchedules[mediumSchedules.length - 1]!.handle
+    await nextTick()
+    expect(wakeDelayAt(1_000_000), "启动后没有排出中档唤醒").toBe(3_600_000)
     const ticksBefore = traces.filter(event => event.kind === "proactive_tick").length
 
     // 事件唤醒：立即扫描（不等 30–90 分钟定时器），且先取消旧定时器，不留双重调度。
     activeSessionId.value = "tier-wake-session"
-    await vi.waitFor(() => expect(traces.filter(event => event.kind === "proactive_tick").length,
-      "会话身份变化没有立即唤醒扫描").toBeGreaterThan(ticksBefore))
-    expect(clears, "事件唤醒没有取消旧唤醒定时器").toContain(wakeHandle)
-    await vi.waitFor(() => expect(timeouts.filter(item => item.delay === 3_600_000).length,
-      "事件唤醒收尾后没有重排下一次唤醒").toBeGreaterThanOrEqual(mediumSchedules.length + 1))
+    await nextTick()
+    await internalScheduler.drain()
+    expect(traces.filter(event => event.kind === "proactive_tick").length,
+      "会话身份变化没有立即唤醒扫描").toBeGreaterThan(ticksBefore)
+    expect(wakeDelayAt(1_000_000), "事件唤醒收尾后没有重排中档唤醒").toBe(3_600_000)
 
     // 档位变更：同一调度点按新档区间取值（高档 random=0.5 → 20 分钟）。
     setOverride("ai.proactive.frequency", "high")
     refreshProactive()
-    await vi.waitFor(() => expect(wakeDelays(), "切到高档后没有按高档区间重排唤醒").toContain(1_200_000))
-    expect(wakeDelays().every(delay => delay === 1_200_000 || delay === 3_600_000),
-      "切换档位后仍排出了其它档位的唤醒定时器").toBe(true)
+    expect(wakeDelayAt(1_000_000), "切到高档后没有按高档区间重排唤醒").toBe(1_200_000)
+    await internalScheduler.drain()
   })
 
   it("档位投影按整行下发：start 推当前档、refresh 推新档、off 不推 [proactive-limits-projection]", async () => {

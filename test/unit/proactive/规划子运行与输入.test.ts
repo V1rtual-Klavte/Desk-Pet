@@ -145,21 +145,20 @@ describe("规划子运行的运行参数", () => {
     const signal = new AbortController().signal
     const run: PlannerRun = async input => {
       captured.push(input)
-      return { reply: JSON.stringify({ kind: "decline", reason: "没有依据", intent: "" }), toolCallsMade: 1, success: true }
+      return { status: "completed", evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { runId: input.owner.runId, requestId: "test-planner", ownerKind: "proactive" }, reply: JSON.stringify({ kind: "decline", reason: "没有依据", intent: "" }), toolCallsMade: 1, success: true }
     }
     const result = await plan(stubInput, owner, 1_700_000_000_000, signal, () => true, run, async () => true)
 
     expect(captured).toHaveLength(1)
     const call = captured[0]!
     expect(call.tools.map(tool => tool.name)).toEqual(["window_info", "system_info"])
-    expect(call.maxRounds).toBe(3)
+    expect(call.maxToolCalls).toBe(3)
     expect(call.timeoutMs).toBe(PLANNING_TIMEOUT_MS)
     expect(call.maxOutputTokens).toBe(PLANNING_OUTPUT_RESERVE)
     expect(call.disableAutomaticCompaction).toBe(true)
-    // 取消纪律接线：owner 身份与调用方的取消信号进 scope，owner/来源失效随信号级联。
-    expect(call.scope?.sessionId).toBe(owner.sessionId)
-    expect(call.scope?.runGeneration).toBe(owner.runGeneration)
-    expect(call.scope?.signal).toBe(signal)
+    // 取消纪律接线：owner 身份与调用方的取消信号进入统一 owner，owner/来源失效随信号级联。
+    expect(call.owner.sessionId).toBe(owner.sessionId)
+    expect(call.owner).toMatchObject({ kind: "proactive", runGeneration: owner.runGeneration, signal })
     // 文案口径：规划器可用只读工具，但最终只输出同一份 JSON。
     expect(call.systemPrompt).toContain("只读工具")
     expect(call.systemPrompt).toContain("只输出JSON")
@@ -168,7 +167,7 @@ describe("规划子运行的运行参数", () => {
   })
 
   it("owner 失效或取消时以 decline 收口，不把无效运行的输出当决策 [proactive-planner-cancel-decline]", async () => {
-    const okOutput: PlannerRunOutput = { reply: JSON.stringify({ kind: "speak_now", reason: "有依据", intent: "打个招呼" }), toolCallsMade: 0, success: true }
+    const okOutput: PlannerRunOutput = { status: "completed", evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { runId: "test-planner", requestId: "test-planner", ownerKind: "proactive" }, reply: JSON.stringify({ kind: "speak_now", reason: "有依据", intent: "打个招呼" }), toolCallsMade: 0, success: true }
     const run: PlannerRun = async () => okOutput
 
     const stale = await plan(stubInput, owner, 1_700_000_000_000, new AbortController().signal, () => false, run, async () => true)
@@ -182,17 +181,17 @@ describe("规划子运行的运行参数", () => {
     expect(aborted.reason).toBe("planning_cancelled")
   })
 
-  it("工具用尽后仍未产出合法 JSON 时按既有 planner_invalid_decision decline [proactive-planner-tool-exhausted-decline]", async () => {
+  it("工具用尽后以统一子运行失败原因 decline [proactive-planner-tool-exhausted-decline]", async () => {
     const captured: PlannerRunInput[] = []
-    // 模拟内核工具预算用尽后的终态：完成但正文不是决策 JSON（runPiSubAgent 会回落到「无结果」文案）。
+    // 模拟内核工具预算用尽后的终态：completed 只表示运行结束；预算耗尽时 success=false，不生成成功兜底正文。
     const run: PlannerRun = async input => {
       captured.push(input)
-      return { reply: "子代理没有返回结果", toolCallsMade: input.maxRounds ?? 0, success: true }
+      return { status: "completed", evidence: { tools: [], incomplete: ["工具预算用尽"], unconfirmedEffects: false }, audit: { runId: input.owner.runId, requestId: "test-planner", ownerKind: "proactive" }, reply: "", toolCallsMade: input.maxToolCalls ?? 0, success: false, error: "子运行达到工具治理上限，工作未完成" }
     }
     const result = await plan(stubInput, owner, 1_700_000_000_000, new AbortController().signal, () => true, run, async () => true)
-    expect(captured[0]?.maxRounds).toBe(3)
+    expect(captured[0]?.maxToolCalls).toBe(3)
     expect(result.kind).toBe("decline")
-    expect(result.reason).toBe("planner_invalid_decision")
+    expect(result.reason).toBe("子运行达到工具治理上限，工作未完成")
   })
 })
 

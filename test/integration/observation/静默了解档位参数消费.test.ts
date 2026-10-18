@@ -8,7 +8,7 @@
 // 本文件用真实调度器验证档位参数确实被消费：
 //   · 中档：钟点判定为假时不开批；判定为真后开批并按中档 4 轮预留（旧 8 批会红）；
 //   · 低档：每小时读取名额（4）占满 → 跳过决策调用只做整理；每日 2 轮预留；
-//   · 高档：距上次尝试 16 分钟即可再开批、按 6 轮预留；同一 16 分钟时间戳在中档被
+//   · 高档：不同槽位且距上次尝试 16 分钟即可开批、按 6 轮预留；同一 16 分钟时间戳在中档被
 //     30 分钟间隔挡住（两个档位的间隔值各自被消费）；
 //   · off：调度器不启动、话题入口不开启。
 // 钟点判定本身（到点/未到点/同钟点不重复/静默时段排除/三档表）由 L2 单测
@@ -19,7 +19,7 @@
 // 窗口观察与运行活动用替身注入（get_runtime_activity 在 Node 宿主是 Rust 专属命令），
 // Provider 用 fake。每个用例 vi.resetModules() + 重装宿主桥：调度器的 started/间隔记账
 // 与 store 的滚动记账跨用例会互相污染，reset 才能给每个场景干净的前提。
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -60,17 +60,35 @@ beforeAll(() => {
   const tmp = join(process.cwd(), "test", ".tmp")
   mkdirSync(tmp, { recursive: true })
   root = mkdtempSync(join(tmp, "observation-tier-"))
+  // 固定到档位钟点后的追赶窗口内，避免用例依赖真实运行时刻。
+  vi.spyOn(Date, "now").mockReturnValue(new Date(2026, 9, 5, 10, 5, 0).getTime())
 })
-afterAll(() => { rmSync(root, { recursive: true, force: true }) })
+afterAll(() => { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }) })
 
 const sleep = (ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms) })
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
+  const deadline = performance.now() + timeoutMs
   while (!predicate()) {
-    if (Date.now() > deadline) throw new Error("等待条件超时")
+    if (performance.now() > deadline) throw new Error("等待条件超时")
     await sleep(10)
   }
+}
+
+/** 统一调度器由一个进程计时器驱动；L3 不赌真实定时器，显式 drain 到业务条件成立。 */
+async function drainSchedulerUntil(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const { internalScheduler } = await import("@/services/scheduler")
+  const deadline = performance.now() + timeoutMs
+  while (!predicate()) {
+    await internalScheduler.drain()
+    if (predicate()) return
+    if (performance.now() > deadline) throw new Error("等待调度超时")
+    await sleep(10)
+  }
+}
+async function drainScheduler(): Promise<void> {
+  const { internalScheduler } = await import("@/services/scheduler")
+  await internalScheduler.drain()
 }
 
 function observedWindow(): Record<string, unknown> {
@@ -95,6 +113,16 @@ async function bootObservation(
   installNodeHostBridge()
   const nodeIpc = await import("../../host/node-ipc")
   nodeIpc.setTestDataRoot(root)
+  const slotPath = join(root, "scheduler-slots.fixture.json")
+  rmSync(slotPath, { force: true })
+  if (options.lastAttemptAt) {
+    const scheduledAt = Math.floor(Date.now() / 3_600_000) * 3_600_000 - 3_600_000
+    writeFileSync(slotPath, JSON.stringify([{ key: "silent_understanding", slotId: `previous:${scheduledAt}`, scheduledAt,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, status: "succeeded", revision: 2,
+      lastAttemptAt: options.lastAttemptAt, businessRef: null, updatedAt: options.lastAttemptAt }]), "utf8")
+  }
+  const { installSchedulerSlotFixture } = await import("../../host/scheduler-slot-fixture")
+  installSchedulerSlotFixture(slotPath)
   const paths = await import("@/services/paths")
   await paths.initPaths()
   const config = await import("@/services/config")
@@ -106,7 +134,7 @@ async function bootObservation(
   await getHostBridge().request("dir_create", { path: dir, recursive: true })
   await getHostBridge().request("file_write", { path, maxBytes: 256 * 1024, content: JSON.stringify({
     schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0,
-    lastAuxiliaryAttemptAt: options.lastAttemptAt ?? 0, targetReadAttempts: options.readAttempts ?? [],
+    targetReadAttempts: options.readAttempts ?? [],
   }) })
 
   const observation = await import("@/services/observation")
@@ -151,6 +179,7 @@ describe("静默了解档位参数消费", () => {
     schedule.due = false
     notDue.observation.startSilentUnderstanding()
     await sleep(60)
+    await drainScheduler()
     expect(budget.reserve, "钟点判定未命中仍开批（到点判定没有生效）").not.toHaveBeenCalled()
     await notDue.observation.stopSilentUnderstanding()
 
@@ -158,9 +187,9 @@ describe("静默了解档位参数消费", () => {
     const provider = await installBatchResponses()
     schedule.due = true
     due.observation.startSilentUnderstanding()
-    await waitFor(() => budget.reserve.mock.calls.length > 0)
+    await drainSchedulerUntil(() => budget.reserve.mock.calls.length > 0)
     expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取中档钟点表的 4 轮").toMatchObject({ kind: "observation", dailyLimit: 4 })
-    await waitFor(() => provider.payloads.length >= 2)
+    await drainSchedulerUntil(() => provider.payloads.length >= 2)
     expect(provider.payloads.length, "一批 = 决策 + 整理两次辅助调用").toBe(2)
     await due.observation.stopSilentUnderstanding()
     provider.restore()
@@ -171,9 +200,9 @@ describe("静默了解档位参数消费", () => {
     const { observation } = await bootObservation("low", { readAttempts: [now - 1, now - 2, now - 3, now - 4] })
     const provider = await installBatchResponses()
     observation.startSilentUnderstanding()
-    await waitFor(() => budget.reserve.mock.calls.length > 0)
+    await drainSchedulerUntil(() => budget.reserve.mock.calls.length > 0)
     expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取低档钟点表的 2 轮").toMatchObject({ kind: "observation", dailyLimit: 2 })
-    await waitFor(() => provider.payloads.length >= 1)
+    await drainSchedulerUntil(() => provider.payloads.length >= 1)
     // 本批的模型调用全部发生在结算之前：以结算为稳定哨兵替代定睡，
     // 批次收尾后才做「不多不少一次」的负断言，不再赌错误路径晚于定睡窗口到达。
     await waitFor(() => budget.settle.mock.calls.length > 0)
@@ -182,11 +211,11 @@ describe("静默了解档位参数消费", () => {
     provider.restore()
   })
 
-  it("高档：16 分钟前有尝试即可再开批；同一时间戳在中档被间隔挡住 [silent-tier-gap]", async () => {
+  it("高档：不同持久槽且16分钟前有尝试可开批；同一时间戳在中档被间隔挡住 [silent-tier-gap]", async () => {
     const high = await bootObservation("high", { lastAttemptAt: Date.now() - 16 * 60_000 })
     const provider = await installBatchResponses()
     high.observation.startSilentUnderstanding()
-    await waitFor(() => budget.reserve.mock.calls.length > 0)
+    await drainSchedulerUntil(() => budget.reserve.mock.calls.length > 0)
     expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取高档钟点表的 6 轮").toMatchObject({ kind: "observation", dailyLimit: 6 })
     await high.observation.stopSilentUnderstanding()
     provider.restore()
@@ -197,6 +226,7 @@ describe("静默了解档位参数消费", () => {
     const mediumProvider = await installBatchResponses()
     medium.observation.startSilentUnderstanding()
     await sleep(80)
+    await drainScheduler()
     expect(budget.reserve, "中档在 30 分钟间隔内开了新批").toHaveBeenCalledTimes(1)
     await medium.observation.stopSilentUnderstanding()
     mediumProvider.restore()

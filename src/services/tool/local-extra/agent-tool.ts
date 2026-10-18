@@ -56,28 +56,23 @@ const agentSpawnTool: ToolDef = defineTool({
 
     try {
       const { runForkAgent, runTeamAgent } = await import("@/services/agent/sub-agent")
-      // 取消级联（与计划步骤同形）：父回合停止 / 切会话时子运行立刻停，不再跑满自己的
-      // 90s 上限；没有会话归属（ctx 缺 sessionId）时不构造 scope，保持旧语义。
-      const scope = ctx.sessionId
-        ? {
-            sessionId: ctx.sessionId,
-            runGeneration: ctx.runGeneration ?? 0,
-            isCurrent: ctx.isCurrent ?? (() => true),
-            ...(ctx.signal ? { signal: ctx.signal } : {}),
-          }
-        : undefined
-
-      if (mode === "team") {
-        const result = await runTeamAgent({ task, memberCount: 2, ...(scope ? { scope } : {}) })
-        return { success: true, content: result }
+      if (!ctx.sessionId || !Number.isSafeInteger(ctx.runGeneration) || !ctx.isCurrent) {
+        return { success: false, content: "", error: "子代理缺少有效的父运行 owner" }
       }
-
-      // fork (默认)
-      const result = await runForkAgent({ task, ...(scope ? { scope } : {}) })
-      if (result.success) {
-        return { success: true, content: result.reply }
+      const owner = {
+        kind: "conversation" as const, runId: `delegate-${crypto.randomUUID()}`,
+        sessionId: ctx.sessionId, runGeneration: ctx.runGeneration!, isCurrent: ctx.isCurrent,
+        ...(ctx.trustedUserEventId ? { trustedUserEventId: ctx.trustedUserEventId } : {}),
+        ...(ctx.signal ? { signal: ctx.signal } : {}),
       }
-      return { success: false, content: "", error: result.error ?? "子代理执行失败" }
+      const result = mode === "team"
+        ? await runTeamAgent({ task, memberCount: 2, owner })
+        : await runForkAgent({ task, owner })
+      return {
+        success: result.success, content: result.reply,
+        ...(result.success ? {} : { error: result.error ?? "子代理执行失败" }),
+        details: result,
+      }
     } catch (e) {
       const msg = formatError(e)
       log.error("子代理异常:", msg)

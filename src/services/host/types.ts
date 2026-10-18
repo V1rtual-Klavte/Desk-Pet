@@ -101,6 +101,14 @@ import type {
   ProactiveValidateResponse,
 } from "@/services/agent/memory/protocol"
 import type { ThinkingEffort } from "@/services/agent/types"
+import type {
+  ScheduleChangeRequest,
+  ScheduleChangeResponse,
+  ScheduleQueryRequest,
+  ScheduleQueryResponse,
+  SchedulerStateRequest,
+  SchedulerStateResponse,
+} from "@/services/scheduler/protocol"
 import type { PlanStep } from "@/services/engine"
 // A2：会话侧投影帧的线上形状（唯一定义点在 native-ui；Rust 侧为
 // `TranscriptProjection` 的会话侧子集，字段名逐字对齐）。
@@ -1332,6 +1340,9 @@ export type HostCommandMap = {
   // protocol.ts 的 Proactive* 类型（唯一真相源）。
   proactive_scan: { args: { request: ProactiveScanRequest }; result: ProactiveScanResponse }
   proactive_query: { args: { request: ProactiveQueryRequest }; result: ProactiveQueryResponse }
+  schedule_query: { args: { request: ScheduleQueryRequest }; result: ScheduleQueryResponse }
+  schedule_change: { args: { request: ScheduleChangeRequest }; result: ScheduleChangeResponse }
+  scheduler_state: { args: { request: SchedulerStateRequest }; result: SchedulerStateResponse }
   proactive_change: { args: { request: ProactiveChangeRequest }; result: ProactiveChangeResponse }
   proactive_claim: { args: { request: ProactiveClaimRequest }; result: ProactiveClaimResponse }
   proactive_validate: {

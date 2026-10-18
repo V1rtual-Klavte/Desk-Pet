@@ -15,7 +15,7 @@
 //   `window.__*` 调试句柄是旧的开发者入口（`debug.ts` 的 `typeof window` 守卫内），
 //   不随 Node 出现；宿主侧调试端点属 W5/W8（本包只标注，不实现）。
 
-import { MemoryService, startIdleDreamingScheduler } from "@/services/agent/memory"
+import { MemoryService, startDreaming } from "@/services/agent/memory"
 import { loadV1rtualInstructions } from "@/services/context/instructions"
 import { initRegistry } from "@/services/personality"
 import { registerDefaultTools } from "@/services/tool"
@@ -35,7 +35,7 @@ let domainBootstrapRun: Promise<void> | null = null
  *
  * 顺序:
  *   1. 路径与运行时 CONFIG（get_runtime_paths → read_runtime_config；getter 的取值源）
- *   2. Memory 文件系统 (memory/ 目录就绪) + V1RTUAL 指令 + idle dreaming 调度器
+ *   2. Memory 文件系统 (memory/ 目录就绪) + V1RTUAL 指令 + 记忆存储
  *   3. Profile 元数据与选择（主题样式注入归 UI 消费者）
  *   4. 人格模块注册（Card 加载 → registry）
  *   5. proactive / runner / session 接线（回执读取器先于会话投影/恢复）
@@ -45,7 +45,7 @@ let domainBootstrapRun: Promise<void> | null = null
  *   9. Debug 状态刷新（工具计数/上下文上限；window.__* 句柄不在此列）
  *  10. 原生 UI 桥（宿主请求处理器 + 首帧状态推送；推送失败如实不阻断）
  *  11. 窗口观察接线（订阅 window-observed + 按 silentAccess 应用观察总闸/行为采集）
- *  12. 主动陪伴与静默了解调度启动（scanner.start() / startSilentUnderstanding()
+ *  12. 主动陪伴与静默了解调度启动（统一调度器注册
  *      的唯一调用点）
  *
  * 失败语义：任何一步抛出都向上抛给 bootstrap（harness 记录并退出）——
@@ -75,7 +75,6 @@ async function runDomainBootstrap(): Promise<void> {
   // ── 2. Memory 文件系统 ──
   await MemoryService.init()
   await loadV1rtualInstructions()
-  startIdleDreamingScheduler()
   log.info("2/11 Memory 就绪")
 
   // ── 3. Profile 系统（元数据 + 选择；注入交 UI）──
@@ -166,10 +165,13 @@ async function runDomainBootstrap(): Promise<void> {
   // 落位条件：在窗口观察接线（第 10 步，含观察总闸）之后，无其它前置条件；
   // 两者都有内部 started 闩（重复调用安全），引导本身是进程内单次。
   // stop 侧：Node 宿主没有卸载点，进程随宿主断开退出（生命周期钩子在 harness/main.ts）。
+  startDreaming()
   proactive.start()
   const { startSilentUnderstanding } = await import("@/services/observation")
   // 静默了解内部按 ai.silentAccess.frequency 判定（off 档不启动也不报错）。
   startSilentUnderstanding()
+  const { startUserTaskRuntime } = await import("@/services/user-tasks")
+  startUserTaskRuntime()
   log.info("12/12 主动陪伴与静默了解调度就绪")
 
   log.info("──── 初始化完成 ────")

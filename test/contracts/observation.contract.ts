@@ -1,3 +1,4 @@
+// 2026-10-18 统一调度与子运行：手工 analyze/generate 声明修订；测试已写未运行，sourceHash 留统一验收复算。
 // 2026-10-18 定向复核：本域行为未变；仅共享文件 src/services/agent/memory/sources.ts、crates/native-host/src/host/dispatch.rs 的增量（记忆来源查询与记忆命令分派参数）导致 sourceHash 变化。
 // 2026-10-15 Windows UI 验收 analyze -> generate：schema.rs 只修正主题帮助文案（三选一改为主题预设），观察档位字段、静默了解资格与钟点调度未改；ob-* 的描述、消费者与 caseId 不变。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 host/dispatch.rs（memory_job_checkpoint 分派臂加可选 coveredSourceIds）与 agent/memory/ipc.ts（按批内已处理来源传参）变化；观察、画像与 presence 路径不受影响，ob-01..07 逐点复核未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -244,6 +245,9 @@ import type { ModuleContract } from "../host/types"
 export const observationContract: ModuleContract = {
   module: "observation",
   sourceFiles: [
+    // ob-09: private durable-slot consumer and single process scheduler; native store owns transaction acceptance.
+    "src/services/scheduler/slots.ts",
+    "src/services/scheduler/kernel.ts",
     "src/services/observation/index.ts",
     "src/services/observation/types.ts",
     "src/services/observation/store.ts",
@@ -304,7 +308,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-18 列项答案补全批次：观察域行为未变，仅共享 runtime/trace 变化；定向复核后刷新。
-  sourceHash: "240f53580c48d6a74c1642468c8339206731f16752fd3b6882cf82d375621cbc",
+  sourceHash: "c6abd354841106c46b53c20ce78577bda62736fb8698875229632968e0bdf6e3",
   coverage: [
     {
       id: "ob-01",
@@ -381,7 +385,7 @@ export const observationContract: ModuleContract = {
     {
       id: "ob-09",
       feature: "静默了解档位参数消费（off/低/中/高）",
-      description: "静默了解调度按 ai.silentAccess.frequency 档位取全部参数：off = 调度器不启动、不预留批次、话题入口不开启（可信来源被丢弃、批次零模型调用）；三档决定固定钟点表（低 12/20、中 10/14/18/22、高 9/11/13/15/17/19——钟点后 15 分钟追赶窗口内到点即跑、同一钟点只跑一轮、表外与 23–9 静默时段不跑；判定纯函数在 proactive/schedule.ts）与防重间隔（2h / 30min / 15min——16 分钟前尝试在高档放行、中档被挡）、每日批数 = 钟点表轮数 / 每小时读取名额（2/4/6 与 4/8/12）——数值唯一来源是 proactive tiers 档位表，批次经 budget.reserve 以档位轮数预留；低档每小时读取名额占满时跳过决策调用、只做整理（一批 = 决策+整理两次辅助调用，名额耗尽时只剩一次）。批次资格不再要求系统空闲，也不含「AI 生成中 / 会话忙碌」排除（2026-10-06 用户裁决：允许用户使用电脑时后台了解）。",
+      description: "静默了解向统一内部调度器注册作业，按 ai.silentAccess.frequency 档位取全部参数：off = 调度器不启动、不预留批次、话题入口不开启（可信来源被丢弃、批次零模型调用）；三档决定固定钟点表（低 12/20、中 10/14/18/22、高 9/11/13/15/17/19——钟点后 15 分钟追赶窗口内到点即跑、同一钟点只跑一轮、表外与 23–9 静默时段不跑；判定纯函数在 proactive/schedule.ts）与私有持久槽防重间隔（2h / 30min / 15min——不同槽位且16分钟前尝试在高档放行、中档被挡；同槽位无论间隔都不得重放）、每日批数 = 钟点表轮数 / 每小时读取名额（2/4/6 与 4/8/12）——数值唯一来源是 proactive tiers 档位表，批次经 budget.reserve 以档位轮数预留；低档每小时读取名额占满时跳过决策调用、只做整理（一批 = 决策+整理两次辅助调用，名额耗尽时只剩一次）。批次资格不再要求系统空闲，也不含「AI 生成中 / 会话忙碌」排除（2026-10-06 用户裁决：允许用户使用电脑时后台了解）。",
       why: "档位是静默了解唯一的总闸与频率来源，任何一处仍读旧常量都会让档位选择无声失效（off 仍开批、中档按旧批数、低档按旧间隔、空闲要求回归）。",
       layer: "integration",
       depth: "shallow",

@@ -53,7 +53,7 @@ describe("规划子运行", () => {
       systemPrompt: "你是规划器",
       tools: [],
       maxOutputTokens: 256,
-      scope: { sessionId: "subagent-admission", runGeneration: 1, isCurrent: () => true },
+      owner: { kind: "proactive", runId: crypto.randomUUID(), cardId: "planner", sessionId: "subagent-admission", runGeneration: 1, isCurrent: () => true },
       beforeProvider: async reservation => {
         reservations.push(reservation)
         return false
@@ -79,7 +79,7 @@ describe("规划子运行", () => {
       systemPrompt: "你是子代理",
       tools: [],
       maxOutputTokens: 256,
-      scope: { sessionId, runGeneration: 1, isCurrent: () => true },
+      owner: { kind: "proactive", runId: crypto.randomUUID(), cardId: "planner", sessionId, runGeneration: 1, isCurrent: () => true },
     })
 
     expect(chatHistory).toHaveLength(0)

@@ -57,7 +57,7 @@ describe("辅助模型路由", () => {
 
     // ① 留空（默认）：子运行的请求落在聊天模型（注入替身）上。
     const inheriting = installFakeProvider([fakeText("辅助路由：继承")])
-    const first = await runForkAgent({ task: TASK })
+    const first = await runForkAgent({ task: TASK, owner: { kind: "conversation", runId: crypto.randomUUID(), sessionId: "fork-test", runGeneration: 1, isCurrent: () => true } })
     expect(first.success, `继承场景的子运行失败: ${first.error ?? "<无原因>"}`).toBe(true)
     expect(inheriting.payloads.length, "子运行没有发出请求").toBeGreaterThan(0)
     for (const payload of inheriting.payloads) {
@@ -68,7 +68,7 @@ describe("辅助模型路由", () => {
     //    而不是注入的聊天模型；子运行仍成功，说明请求走的还是替换后的运行面（没有出网）。
     setOverride("ai.auxModel", AUX_MODEL)
     const routed = installFakeProvider([fakeText("辅助路由：切换")])
-    const second = await runForkAgent({ task: TASK })
+    const second = await runForkAgent({ task: TASK, owner: { kind: "conversation", runId: crypto.randomUUID(), sessionId: "fork-test", runGeneration: 1, isCurrent: () => true } })
     expect(second.success, `辅助模型场景的子运行失败: ${second.error ?? "<无原因>"}`).toBe(true)
     expect(routed.payloads.length, "辅助模型场景没有发出请求").toBeGreaterThan(0)
     for (const payload of routed.payloads) {
@@ -78,7 +78,7 @@ describe("辅助模型路由", () => {
     // ③ 与聊天模型同名：回落语义同样成立（不因显式填写而走第二条身份构造路径）。
     setOverride("ai.auxModel", aiConfig.model)
     const same = installFakeProvider([fakeText("辅助路由：同名")])
-    const third = await runForkAgent({ task: TASK })
+    const third = await runForkAgent({ task: TASK, owner: { kind: "conversation", runId: crypto.randomUUID(), sessionId: "fork-test", runGeneration: 1, isCurrent: () => true } })
     expect(third.success, `同名回落场景的子运行失败: ${third.error ?? "<无原因>"}`).toBe(true)
     expect(same.payloads.length, "同名回落场景没有发出请求").toBeGreaterThan(0)
     for (const payload of same.payloads) {

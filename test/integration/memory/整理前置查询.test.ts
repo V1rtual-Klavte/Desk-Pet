@@ -15,9 +15,9 @@
 //   · 恢复既有作业（resumeJobId）不经前置查询：job 自带游标，水位为空也要能继续。
 //
 // 边界替换：memory ipc（Rust 专属命令）、来源收集（真 JSONL 扫描）与 engine/harness 用替身
-// 挂住；假时钟推进 15s 轮询；不触真 Provider、不触真 SQLite。
-// 每个用例 vi.resetModules() + 重装宿主桥：调度器的 lastSweepRunAt 是模块状态，
-// reset 才能给每个场景干净的前提。
+// 挂住；假时钟推进统一调度器；不触真 Provider、不触真 SQLite。
+// 每个用例 vi.resetModules() + 重装宿主桥：每例独立持久槽夹具，
+// 模块重载不会抹掉同一用例已认领的钟点。
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
@@ -65,7 +65,7 @@ vi.mock("@/services/engine/harness", () => ({
 }))
 
 let root = ""
-let activeDreaming: { stopIdleDreamingScheduler: () => void } | null = null
+let activeDreaming: { stopDreaming: () => Promise<void> } | null = null
 
 beforeAll(() => {
   const tmp = join(process.cwd(), "test", ".tmp")
@@ -74,8 +74,8 @@ beforeAll(() => {
 })
 afterAll(() => { rmSync(root, { recursive: true, force: true }) })
 
-afterEach(() => {
-  activeDreaming?.stopIdleDreamingScheduler()
+afterEach(async () => {
+  await activeDreaming?.stopDreaming()
   activeDreaming = null
   vi.useRealTimers()
 })
@@ -83,6 +83,7 @@ afterEach(() => {
 beforeEach(() => {
   // 调用计数逐用例独立；实现（mockResolvedValue）由各用例重新给。
   vi.clearAllMocks()
+  rmSync(join(root, "scheduler-slots.fixture.json"), { force: true })
 })
 
 /** 干净的模块世界 + 假时钟 + 档位覆盖（中档；系统时间钉在 10:00 = 中档钟点，让定时调度器到点）。 */
@@ -94,6 +95,8 @@ async function bootDreaming(tier = "medium") {
   installNodeHostBridge()
   const nodeIpc = await import("../../host/node-ipc")
   nodeIpc.setTestDataRoot(root)
+  const { installSchedulerSlotFixture } = await import("../../host/scheduler-slot-fixture")
+  installSchedulerSlotFixture(join(root, "scheduler-slots.fixture.json"))
   const paths = await import("@/services/paths")
   await paths.initPaths()
   const config = await import("@/services/config")
@@ -114,7 +117,7 @@ describe("记忆整理的前置查询", () => {
   it("水位之后没有待处理来源：钟点命中也不开作业、不预留预算 [dreaming-pending-gate-skip]", async () => {
     const dreaming = await bootDreaming()
     ipc.pendingMemorySourceCount.mockResolvedValue(0)
-    dreaming.startIdleDreamingScheduler()
+    dreaming.startDreaming()
     await advance(1_800_000)
 
     expect(sources.collectAllMemorySources, "前置查询之前没有先登记来源（水位判定无从谈起）").toHaveBeenCalled()

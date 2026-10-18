@@ -20,7 +20,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { resetConfirmChannel } from "../../host/confirm-channel"
+import { confirmRecords, resetConfirmChannel } from "../../host/confirm-channel"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { setOverrides } from "@/services/config"
 import {
@@ -189,4 +189,42 @@ describe("权限内核 PermissionKernel", () => {
     const confirmation = await awaitPermission(result.request!, context({ signal: controller.signal }))
     expect(confirmation, "已取消确认没有立即拒绝").toBe("deny")
   })
+  it("持久任务授权不能越过硬禁止或工具deny [permission-task-grant-deny-first]", async () => {
+    let consulted = 0
+    const taskAuthorization = { reference: "grant", taskId: "task", taskVersion: 1, authorize: async () => { consulted++; return true } }
+    const ctx = context({ permissionMode: "background", taskAuthorization })
+    const hard = await authorizeToolExecution(tool({ safetyLevel: "NOWAY" }), {}, ctx)
+    const denied = await authorizeToolExecution(tool({ safetyLevel: "SAFE", policy: policy({ defaultDecision: "deny" }) }), {}, ctx)
+    expect(hard.decision).toBe("deny")
+    expect(denied.decision).toBe("deny")
+    expect(consulted).toBe(0)
+    expect(confirmRecords()).toHaveLength(0)
+  })
+
+  it("即使SAFE也核对任务参数范围，DANGER由精确持久授权满足确认 [permission-task-grant-exact-scope]", async () => {
+    const taskAuthorization = { reference: "grant", taskId: "task", taskVersion: 1,
+      authorize: async (definition: ToolDef, params: Record<string, unknown>) => definition.name === "permission_test" && params.target === "authorized" }
+    const ctx = context({ permissionMode: "background", taskAuthorization })
+    const outside = await authorizeToolExecution(tool({ safetyLevel: "SAFE" }), { target: "outside" }, ctx)
+    const allowed = await authorizeToolExecution(tool({ safetyLevel: "DANGER" }), { target: "authorized" }, ctx)
+    expect(outside.decision).toBe("ask")
+    expect(allowed.decision).toBe("allow")
+    expect(confirmRecords()).toHaveLength(0)
+  })
+
+  it("持久授权校验await之后重查任务生命周期 [permission-task-grant-stale]", async () => {
+    let current = true
+    const taskAuthorization = { reference: "grant", taskId: "task", taskVersion: 1, authorize: async () => { current = false; return true } }
+    const result = await authorizeToolExecution(tool(), {}, context({ permissionMode: "background", taskAuthorization, isCurrent: () => current }))
+    expect(result.decision).toBe("deny")
+    expect(result.reason).toBe("任务授权已失效")
+  })
+
+  it("后台无可用授权的ask立即返回，不打开交互确认 [permission-background-no-wait]", async () => {
+    resetConfirmChannel("approve")
+    const result = await authorizeToolExecution(tool({ safetyLevel: "DANGER" }), {}, context({ permissionMode: "background" }))
+    expect(result.decision).toBe("ask")
+    expect(confirmRecords()).toHaveLength(0)
+  })
+
 })

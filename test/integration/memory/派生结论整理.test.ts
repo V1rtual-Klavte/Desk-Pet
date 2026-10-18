@@ -57,7 +57,7 @@ const harness = vi.hoisted(() => ({
 vi.mock("@/services/engine/harness", () => harness)
 
 let root = ""
-let activeDreaming: { stopIdleDreamingScheduler: () => void } | null = null
+let activeDreaming: { stopDreaming: () => Promise<void> } | null = null
 
 beforeAll(() => {
   const tmp = join(process.cwd(), "test", ".tmp")
@@ -66,8 +66,8 @@ beforeAll(() => {
 })
 afterAll(() => { rmSync(root, { recursive: true, force: true }) })
 
-afterEach(() => {
-  activeDreaming?.stopIdleDreamingScheduler()
+afterEach(async () => {
+  await activeDreaming?.stopDreaming()
   activeDreaming = null
   vi.useRealTimers()
 })

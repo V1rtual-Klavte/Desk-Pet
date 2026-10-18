@@ -12,10 +12,10 @@
 //     调度层不再读 token 账，token 的预留/结算照记（账照记、不作准入）。
 //
 // 边界替换：memory ipc（Rust 专属命令）与 engine/harness（模型调用）用替身挂住；
-// 假时钟推进 15s 轮询、固定本地日期；不触真 Provider、不触真 SQLite。
-// 每个用例 vi.resetModules() + 重装宿主桥：调度器的 lastSweepRunAt 是模块状态，
-// reset 才能给每个档位场景干净的前提。
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
+// 假时钟推进统一调度器、固定本地日期；不触真 Provider、不触真 SQLite。
+// 每个用例 vi.resetModules() + 重装宿主桥：每例独立持久槽夹具，
+// 模块重载不会抹掉同一用例已认领的钟点。
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -69,7 +69,7 @@ const harness = vi.hoisted(() => ({
 vi.mock("@/services/engine/harness", () => harness)
 
 let root = ""
-let activeDreaming: { stopIdleDreamingScheduler: () => void } | null = null
+let activeDreaming: { stopDreaming: () => Promise<void> } | null = null
 
 beforeAll(() => {
   const tmp = join(process.cwd(), "test", ".tmp")
@@ -78,8 +78,8 @@ beforeAll(() => {
 })
 afterAll(() => { rmSync(root, { recursive: true, force: true }) })
 
-afterEach(() => {
-  activeDreaming?.stopIdleDreamingScheduler()
+afterEach(async () => {
+  await activeDreaming?.stopDreaming()
   activeDreaming = null
   vi.useRealTimers()
 })
@@ -88,6 +88,7 @@ beforeEach(() => {
   // 调用计数逐用例独立；实现（mockResolvedValue / mockImplementation）由各 boot 重新给，
   // 避免上一个用例的替身实现跨用例泄漏（clearAllMocks 只清调用记录、不清实现）。
   vi.clearAllMocks()
+  rmSync(join(root, "scheduler-slots.fixture.json"), { force: true })
 })
 
 /**
@@ -104,6 +105,8 @@ async function bootDreaming(tier: string, budget: { usedTokens: number; reserved
   installNodeHostBridge()
   const nodeIpc = await import("../../host/node-ipc")
   nodeIpc.setTestDataRoot(root)
+  const { installSchedulerSlotFixture } = await import("../../host/scheduler-slot-fixture")
+  installSchedulerSlotFixture(join(root, "scheduler-slots.fixture.json"))
   const paths = await import("@/services/paths")
   await paths.initPaths()
   const config = await import("@/services/config")
@@ -142,11 +145,11 @@ async function advance(ms: number): Promise<void> {
 describe("记忆整理档位门禁", () => {
   it("off 档：定时调度器早退；手动入口不受档位影响 [dreaming-tier-off]", async () => {
     const dreaming = await bootDreaming("off", { usedTokens: 0, reservedTokens: 0 })
-    dreaming.startIdleDreamingScheduler()
+    dreaming.startDreaming()
     await advance(2 * 3600_000)
     expect(ipc.memoryDreamingBudget, "off 档仍查询了整理预算").not.toHaveBeenCalled()
     expect(ipc.startMemoryJob, "off 档仍自动开了整理作业").not.toHaveBeenCalled()
-    dreaming.stopIdleDreamingScheduler()
+    await dreaming.stopDreaming()
 
     // 手动入口保留：用户点按不受档位约束。
     const outcome = await dreaming.runDreamingSweep()
@@ -157,7 +160,7 @@ describe("记忆整理档位门禁", () => {
   it("中档：到点才开作业，同一钟点只跑一轮，下一钟点再跑 [dreaming-tier-medium-slots]", async () => {
     // 09:00 起：中档钟点是 10/14/18/22——09:00 不在表内。
     const dreaming = await bootDreaming("medium", { usedTokens: 0, reservedTokens: 0 }, new Date(2026, 9, 5, 9, 0, 0))
-    dreaming.startIdleDreamingScheduler()
+    dreaming.startDreaming()
     await advance(3_599_250) // 09:59:59.250：未到 10:00 钟点
     expect(ipc.startMemoryJob, "未到钟点仍开了作业").not.toHaveBeenCalled()
     await advance(1_000) // 越过 10:00 钟点（追赶窗口内）
@@ -171,7 +174,7 @@ describe("记忆整理档位门禁", () => {
 
   it("静默时段（23–9）不开作业 [dreaming-tier-quiet-hours]", async () => {
     const dreaming = await bootDreaming("medium", { usedTokens: 0, reservedTokens: 0 }, new Date(2026, 9, 5, 3, 0, 0))
-    dreaming.startIdleDreamingScheduler()
+    dreaming.startDreaming()
     await advance(2 * 3600_000) // 03:00 → 05:00 全在静默时段
     expect(ipc.startMemoryJob, "静默时段仍开了作业").not.toHaveBeenCalled()
   })
@@ -188,7 +191,7 @@ describe("记忆整理档位门禁", () => {
     harness.resolvePiAuxModel.mockImplementation(() => ({ id: "aux-test", contextWindow: 128_000, maxTokens: 4_096 }))
     harness.completePiText.mockResolvedValue({ text: '{"candidates":[]}', usage: { input: 100, output: 50 } })
 
-    dreaming.startIdleDreamingScheduler()
+    dreaming.startDreaming()
     await advance(3_601_000)
 
     expect(ipc.startMemoryJob, "当日 token 账烧过旧上限后不再开作业（撤掉的门禁又回来了）").toHaveBeenCalledWith("review")
@@ -205,7 +208,7 @@ describe("记忆整理档位门禁", () => {
 
   it("高档：09:00 到点开跑，表外钟点（10:00）不跑，11:00 再跑 [dreaming-tier-high-slots]", async () => {
     const dreaming = await bootDreaming("high", { usedTokens: 0, reservedTokens: 0 }, new Date(2026, 9, 5, 9, 0, 0))
-    dreaming.startIdleDreamingScheduler()
+    dreaming.startDreaming()
     await advance(15_000) // 启动即 tick：09:00 是高档钟点
     expect(ipc.startMemoryJob, "高档 09:00 没有开第一次作业").toHaveBeenCalledTimes(1)
     await advance(3_585_000) // 10:00：表外钟点
@@ -213,4 +216,20 @@ describe("记忆整理档位门禁", () => {
     await advance(3_600_000) // 11:00：下一个钟点
     expect(ipc.startMemoryJob, "高档 11:00 没有开第二次作业").toHaveBeenCalledTimes(2)
   })
+  it("重载领域模块仍尊重已认领钟点，失败槽不自动重放 [dreaming-slot-restart-no-replay]", async () => {
+    const at = new Date(2026, 9, 5, 10, 0, 0)
+    const first = await bootDreaming("medium", { usedTokens: 0, reservedTokens: 0 }, at)
+    first.startDreaming()
+    await advance(1_000)
+    expect(ipc.startMemoryJob).toHaveBeenCalledTimes(1)
+    await first.stopDreaming()
+    const persisted = JSON.parse(readFileSync(join(root, "scheduler-slots.fixture.json"), "utf8")) as Array<{key:string;status:string}>
+    expect(persisted.map(slot => ({key:slot.key,status:slot.status}))).toEqual([{key:"dreaming",status:"failed"}])
+
+    const restarted = await bootDreaming("medium", { usedTokens: 0, reservedTokens: 0 }, at)
+    restarted.startDreaming()
+    await advance(60_000)
+    expect(ipc.startMemoryJob).toHaveBeenCalledTimes(1)
+  })
+
 })

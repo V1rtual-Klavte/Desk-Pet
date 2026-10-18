@@ -13,6 +13,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { nextTick } from "vue"
+import { internalScheduler } from "@/services/scheduler"
 
 const observed = vi.hoisted(() => ({
   /** scanner 真正下发到机会构造器的 variable_change 槽位（`变量名:档位下标:当地日`）。 */
@@ -118,12 +120,16 @@ describe("主动档位机会", () => {
     // 同一档位内 0 → 5：不形成机会（变量机会只在跨档时产生，不是任何写入都触发）
     batchWriteVars({ 好感度: "5" })
     await savePoolToDisk()
-    await vi.waitFor(() => expect(observed.reconcileCalls).toBeGreaterThanOrEqual(2), { timeout: 5000 })
+    await nextTick()
+    await internalScheduler.drain()
+    await vi.waitFor(() => expect(observed.reconcileCalls).toBeGreaterThanOrEqual(1), { timeout: 5000 })
     expect(observed.variableSlots).toEqual([])
 
     // 跨过第一个档位 5 → 15：形成机会，槽位带跨档后的档位下标 1
     batchWriteVars({ 好感度: "15" })
     await savePoolToDisk()
+    await nextTick()
+    await internalScheduler.drain()
     await vi.waitFor(() => expect(observed.variableSlots).toHaveLength(1), { timeout: 5000 })
     expect(observed.variableSlots[0]).toMatch(/^好感度:1:/)
   }, 20_000)

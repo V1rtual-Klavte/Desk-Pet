@@ -54,7 +54,9 @@ import { flushSessionFrameWrites, harnessSlots } from "@/services/engine/harness
 import { flushLogs } from "@/services/logger"
 import { flushPendingReleases, retryBorrowerAttachIfPending } from "@/services/tool"
 import { disconnectAllMcpServers } from "@/services/tool/mcp"
-import { stopIdleDreamingSchedulerAndWait } from "@/services/agent/memory"
+import { internalScheduler } from "@/services/scheduler"
+import { stopUserTaskRuntime } from "@/services/user-tasks"
+import { stopDreaming } from "@/services/agent/memory"
 import { stop as stopProactive } from "@/services/proactive"
 import { stopSilentUnderstanding } from "@/services/observation"
 import { disconnectWindowObservation, setMonitorEnabled } from "@/services/window"
@@ -211,8 +213,10 @@ async function flushForShutdown(_context: HarnessContext): Promise<FlushReport> 
   }
   // Stop producers before waiting on Harness slots; then disconnect Native-owned MCP clients.
   await Promise.all([
+    attempt("user task runtime", stopUserTaskRuntime, undefined),
+    attempt("business scheduler", () => internalScheduler.stop(), undefined),
     attempt("proactive scheduler", stopProactive, undefined),
-    attempt("idle memory scheduler", stopIdleDreamingSchedulerAndWait, undefined),
+    attempt("idle memory scheduler", stopDreaming, undefined),
     attempt("silent understanding", stopSilentUnderstanding, undefined),
   ])
   const behaviorFlushed = await attempt("monitor disable", () => setMonitorEnabled(false), true)

@@ -29,7 +29,10 @@ import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { logByteMark, readLogLines, setTestDataRoot } from "../../host/node-ipc"
-import { stopIdleDreamingSchedulerAndWait } from "@/services/agent/memory"
+import { installSchedulerSlotFixture } from "../../host/scheduler-slot-fixture"
+import { internalScheduler } from "@/services/scheduler"
+import { stopUserTaskRuntime } from "@/services/user-tasks"
+import { stopDreaming } from "@/services/agent/memory"
 import { computeLogLevel } from "@/services/config"
 import { flushLogs, getLogLevel } from "@/services/logger"
 import { stopSilentUnderstanding } from "@/services/observation"
@@ -150,6 +153,8 @@ let root = ""
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "deskpet-bootstrap-seq-"))
   setTestDataRoot(root)
+  installSchedulerSlotFixture(join(root, "scheduler-slots.fixture.json"), method => method === "schedule_query"
+    ? Promise.resolve({revision:0,tasks:[],nextCursor:null}) : undefined)
   mkdirSync(join(root, "settings"), { recursive: true })
   writeFileSync(join(root, "settings", "CONFIG.yaml"), SYNTHETIC_CONFIG_YAML, "utf8")
   await initPaths()
@@ -181,13 +186,16 @@ beforeAll(async () => {
 }, 30_000)
 
 afterAll(async () => {
-  // 引导挂上三个常驻定时器：idle dreaming、主动扫描（5 分钟 interval，start 内还有一次
-  // 立即 tick）与静默了解（60 秒 interval，enabled=true 时启动）。用例内不跑这些任务，
+  // 引导把各领域作业注册到单一内部调度器；停止所有领域并等待统一调度器收尾。
+  // 用例内不运行后台业务，
   // 显式停掉，避免计时器泄漏到其它用例/文件；stopSilentUnderstanding 会等当前批次收尾
   // （在 rmSync 数据根之前 await 它，不给残留在飞的 I/O 留窗口）。
-  await stopIdleDreamingSchedulerAndWait()
+  await stopDreaming()
   await stopProactive()
   await stopSilentUnderstanding()
+  await stopUserTaskRuntime()
+  await internalScheduler.stop()
+  vi.restoreAllMocks()
   if (root) rmSync(root, { recursive: true, force: true })
 })
 

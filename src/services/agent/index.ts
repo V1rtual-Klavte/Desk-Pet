@@ -20,3 +20,5 @@ export {
 // ── Agent 运行器 ──
 export { sendMessage, initChat, sendActiveMessage, captureProactiveOwner, registerProactiveTurnContextReader, registerUserIngressObserver, cancelProactiveRun, stopActiveRun, resumePausedInputs, resetAgentRuntimeForTest } from "./runner"
 export type { SendMessageOptions, UserIngressObserverEvent } from "./runner"
+
+export { SUB_AGENT_RUN_TIMEOUT_MS } from "./timeouts"

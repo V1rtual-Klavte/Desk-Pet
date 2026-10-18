@@ -152,6 +152,21 @@ export async function evaluateToolPermission(
     return { decision: "deny", reason: "工具返回了无效权限结果" }
   }
   if (toolDecision === "deny") return { decision: "deny", reason: "工具专属策略拒绝" }
+  if (ctx.taskAuthorization) {
+    const authorization = ctx.taskAuthorization
+    if (!authorization.reference || !authorization.taskId || !Number.isSafeInteger(authorization.taskVersion) || authorization.taskVersion < 1) {
+      return { decision: "deny", reason: "定时任务授权身份无效" }
+    }
+    const authorized = await authorization.authorize(tool, params, {
+      inputHash: await sha256Text(stableSerialize(params)),
+      policyHash: await policyHash(tool, params, ctx),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+    })
+    // An await can outlive cancellation or a task-version change; never carry the old proof across it.
+    if (!isUsableContext(ctx)) return { decision: "deny", reason: "任务授权已失效" }
+    if (!authorized) return { decision: "ask", reason: "工具或参数超出持久任务授权，需要用户输入" }
+    return { decision: "allow" }
+  }
   // 独立约束取交集：标准 ask 不能被来源侧 allow 吞掉。
   const decision: PermissionDecision = base.decision === "ask" || toolDecision === "ask" ? "ask" : "allow"
   if (decision === "allow") return { decision }
@@ -193,7 +208,7 @@ export async function authorizeToolExecution(
   ctx: PermissionContext,
 ): Promise<PermissionResult> {
   const first = await evaluateToolPermission(tool, params, ctx)
-  if (first.decision !== "ask" || !first.request) return first
+  if (first.decision !== "ask" || !first.request || ctx.permissionMode === "background") return first
   const response = await awaitPermission(first.request, ctx)
   if (response === "deny") return { decision: "deny", reason: "用户拒绝、确认过期或确认已失效", request: first.request }
 
