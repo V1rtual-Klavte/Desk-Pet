@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest"
 
-import { parseReviewCandidates } from "@/services/agent/memory/dreaming"
+import { buildReviewPrompt, parseReviewCandidates } from "@/services/agent/memory/dreaming"
 import type { MemorySource } from "@/services/agent/memory"
 
 const SOURCE = {
@@ -29,6 +29,17 @@ const SOURCE = {
 } as unknown as MemorySource
 
 describe("Review 候选规范化", () => {
+  it("Review 输入使用短别名并映射回真实来源 [memory-dreaming-source-alias]", () => {
+    const prompt = buildReviewPrompt([SOURCE])
+    expect(prompt).toContain('"id":"s1"')
+    expect(prompt).not.toContain(SOURCE.sourceId)
+    const parsed = parseReviewCandidates(JSON.stringify({
+      candidates: [{ sourceIds: ["s1"], content: "明天要交作业", kind: "fact", scope: "user" }],
+    }), [SOURCE])
+    expect(parsed).toHaveLength(1)
+    expect(parsed[0]!.draft.sourceIds).toEqual([SOURCE.sourceId])
+  })
+
   it("working 候选缺状态时默认 open，非法状态不猜完成态", () => {
     const missing = parseReviewCandidates(JSON.stringify({
       candidates: [{ sourceIds: ["source-1"], content: "明天要交作业", kind: "working", scope: "user" }],
@@ -45,6 +56,17 @@ describe("Review 候选规范化", () => {
       candidates: [{ sourceIds: ["source-1"], content: "作业交完了", kind: "working", scope: "user", workingState: "completed" }],
     }), [SOURCE])
     expect(explicit[0]!.draft.workingState).toBe("completed")
+  })
+
+  it("整批候选都无效时错误信息带可诊断原因", () => {
+    const run = () => parseReviewCandidates(JSON.stringify({
+      candidates: [
+        { sourceIds: ["ghost-source"], content: "编造来源的事实", kind: "fact", scope: "user" },
+        { sourceIds: ["source-1"], content: "", kind: "fact", scope: "user" },
+      ],
+    }), [SOURCE])
+    expect(run).toThrow(/sourceIds-unknown/)
+    expect(run).toThrow(/content-empty/)
   })
 
   it("非 working 候选不携带事项状态，来源白名单外的候选整条丢弃", () => {

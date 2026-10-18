@@ -36,11 +36,12 @@ import { summarizeMemoryQualityUsage } from "../memory-quality/index.mjs"
 import { buildReaderControlPrompts, requireCompleteReaderOutput } from "./reader-control.mjs"
 import { formatLocomoQuestion, LOCOMO_ANSWER_FORMAT } from "./datasets/locomo/fixture.mjs"
 import { buildLocomoHistory, installLocomoAnswerPolicy } from "./datasets/locomo/live-fixture"
+import { candidateDiaIds } from "./candidate-recall.mjs"
 
 /** 与 src/services/agent/memory/sources.ts 的 EVIDENCE_CHARS 对齐：登记证据只保留引文长度。 */
 const EVIDENCE_CHARS = 4_000
-/** 产品 dreaming 的丢弃阈值（sourceLength > 4800 的整条来源不处理）。 */
-const OVERSIZED_SOURCE_CHARS = 4_800
+/** 产品 dreaming 的来源上限（sourceLength > 4000 的整条来源不处理）。 */
+const OVERSIZED_SOURCE_CHARS = 4_000
 const DREAMING_SWEEP_CAP = 40
 const JUDGE_TIMEOUT_MS = 120_000
 /**
@@ -113,6 +114,8 @@ export interface BenchCellOutcome {
   caseId: string
   questionId?: string | null
   status: "complete" | "failed"
+  /** infrastructure = 首个真实故障；group = 同组缓存失败，不算新的系统性故障。 */
+  failureKind?: "infrastructure" | "group"
   answer?: string
   usedTools?: boolean
   protocolViolations?: string[]
@@ -121,6 +124,8 @@ export interface BenchCellOutcome {
   fixtureCleanup?: { ok: boolean; error?: string }
   evidence: BenchEvidenceRef[]
   candidateSessionIds?: string[]
+  /** Pre-assembly candidate evidence coordinates (LoCoMo diaId); absent when not emitted. */
+  candidateDiaIds?: string[]
   groupReused: boolean
   storeGeneration: string
   ingest?: { registeredSources: number; processedSources: number; oversizedSources: number;
@@ -364,27 +369,35 @@ function evidenceFromTraceEvents(traces: unknown[], sourceMeta: Map<string, Sour
   return [...refs.values()]
 }
 
-function candidateSessionIds(traces: unknown[], itemById: Map<string, MemoryItem>,
-  sourceMeta: Map<string, SourceMeta>): string[] {
-  const sessions = new Set<string>()
+function candidateEvidenceIds(traces: unknown[], itemById: Map<string, MemoryItem>,
+  sourceMeta: Map<string, SourceMeta>): { sessionIds: string[]; diaIds: string[] } {
+  const ids: string[] = []
   for (const event of traces as Array<{ kind?: string; payload?: Record<string, unknown> }>) {
     if (event.kind !== "memory_recall_candidates") continue
-    const ids: string[] = []
     const flat = event.payload?.candidateIds
     if (Array.isArray(flat)) for (const id of flat) if (typeof id === "string") ids.push(id)
     const byScope = event.payload?.candidateIdsByScope as Record<string, unknown> | undefined
     if (byScope) for (const value of Object.values(byScope))
       if (Array.isArray(value)) for (const id of value) if (typeof id === "string") ids.push(id)
-    for (const itemId of ids) {
-      const item = itemById.get(itemId)
-      if (!item) continue
-      for (const sourceId of item.draft.sourceIds) {
-        const meta = sourceMeta.get(sourceId)
-        if (meta?.sessionId) sessions.add(meta.sessionId)
-      }
+  }
+  const uniqueIds = [...new Set(ids)]
+  const sessions = new Set<string>()
+  for (const id of uniqueIds) {
+    // Conversation candidates already carry their session identity; don't route them
+    // through itemById, which only knows memory items.
+    if (id.startsWith("conversation:")) {
+      const [, sessionId] = id.split(":")
+      if (sessionId) sessions.add(sessionId)
+      continue
+    }
+    const item = itemById.get(id.split("@")[0] ?? "")
+    if (!item) continue
+    for (const sourceId of item.draft.sourceIds) {
+      const meta = sourceMeta.get(sourceId)
+      if (meta?.sessionId) sessions.add(meta.sessionId)
     }
   }
-  return [...sessions]
+  return { sessionIds: [...sessions], diaIds: candidateDiaIds(uniqueIds, { sourceMeta, itemById }) }
 }
 
 function memoryRecallMetrics(traces: unknown[]) {
@@ -475,6 +488,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
     const items = await getMemoryItems(itemIds)
     const itemById = new Map(items.map(item => [item.id, item]))
     const evidence = evidenceFromTraceEvents(traces, group.sourceMeta, itemById)
+    const candidates = candidateEvidenceIds(traces, itemById, group.sourceMeta)
     const measured = summarizeMemoryQualityUsage(traces)
     const recallMetrics = memoryRecallMetrics(traces)
     return captured = { caseId: String(caseDef.caseId),
@@ -484,7 +498,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
       protocolViolations: observedToolCalls > 0 ? ["空工具回合出现工具调用，可比性受影响"] : [],
       tooling: { requestedMode: "none", observedCalls: observedToolCalls },
       toolCalls: result.toolCalls,
-      evidence, candidateSessionIds: candidateSessionIds(traces, itemById, group.sourceMeta),
+      evidence, candidateSessionIds: candidates.sessionIds, candidateDiaIds: candidates.diaIds,
       groupReused, storeGeneration: group.storeGeneration, ingest: group.ingest,
       metrics: { firstDeliveredTextDeltaMs, memoryRecall: recallMetrics }, usage: measured.usage, cache: { status: measured.cache } }
   } finally {
@@ -538,7 +552,16 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
       built = await memoryBankSources(persona as Parameters<typeof memoryBankSources>[0])
     } else throw new Error(`未登记的数据集: ${dataset}`)
     await registerAll(built.sources)
-    const drained = await drainDreaming(signal, traces)
+    // Dreaming is model-driven; a malformed review can be transient. Failed jobs do not
+    // advance watermarks, so one retry of the same pending sources is safe and models the
+    // product's later retry instead of discarding the whole conversation group.
+    let drained: Awaited<ReturnType<typeof drainDreaming>>
+    try {
+      drained = await drainDreaming(signal, traces)
+    } catch (error) {
+      log.warn(`dreaming 首次失败，重试同一组: ${formatError(error)}`)
+      drained = await drainDreaming(signal, traces)
+    }
     const ingest = { registeredSources: built.sources.length, processedSources: drained.processed,
       oversizedSources: drained.oversized, scopeNormalized: 0, sweeps: drained.sweeps }
     if (drained.incompleteOutput) return { ok: false, error: drained.incompleteOutput, ingest }
@@ -607,19 +630,30 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
         const knownFailure = failedGroups.get(groupKey)
           ?? (prepared?.groupKey === groupKey ? prepared.cleanupFailure : undefined)
         if (knownFailure !== undefined)
-          return { caseId: String(caseDef.caseId), status: "failed", error: knownFailure, evidence: [],
-            groupReused: true, storeGeneration: prepared?.storeGeneration ?? "unprepared" }
+          return { caseId: String(caseDef.caseId), status: "failed", failureKind: "group", error: knownFailure,
+            evidence: [], groupReused: true, storeGeneration: prepared?.storeGeneration ?? "unprepared" }
         let groupReused = true
         if (!prepared || prepared.groupKey !== groupKey) {
           // Reset once per group. Per-question setup would erase the reused store/history.
           await prepared?.answerPolicyCleanup?.()
           prepared = undefined
           await standardSetup()
-          const result = await prepareGroup(groupKey, caseDef, traces, signal)
+          let result: Awaited<ReturnType<typeof prepareGroup>>
+          try {
+            result = await prepareGroup(groupKey, caseDef, traces, signal)
+          } catch (error) {
+            // Dreaming/provider failures throw out of prepareGroup. Cache the group failure
+            // here so the remaining cells are reported as `group`, not as fresh systemic
+            // infrastructure failures that trip the three-strikes abort.
+            const message = formatError(error)
+            failedGroups.set(groupKey, message)
+            return { caseId: String(caseDef.caseId), status: "failed", failureKind: "infrastructure",
+              error: message, evidence: [], groupReused: false, storeGeneration: "unprepared" }
+          }
           if (!result.ok) {
             failedGroups.set(groupKey, result.error)
-            return { caseId: String(caseDef.caseId), status: "failed", error: result.error, evidence: [],
-              groupReused: false, storeGeneration: "unprepared", ingest: result.ingest }
+            return { caseId: String(caseDef.caseId), status: "failed", failureKind: "infrastructure",
+              error: result.error, evidence: [], groupReused: false, storeGeneration: "unprepared", ingest: result.ingest }
           }
           prepared = result.group
           groupReused = false

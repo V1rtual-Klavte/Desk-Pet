@@ -187,7 +187,13 @@ export async function runMemoryBenchEvaluation({
       if (outcome.status === "failed" && outcome.failureKind === "infrastructure") {
         failures.push({ caseId: cell.caseId, groupKey: cell.groupKey, kind: "infrastructure", message: outcome.error ?? "cell failed" })
         consecutiveInfrastructureFailures += 1
-      } else consecutiveInfrastructureFailures = 0
+      } else {
+        // A cached failure for the rest of the same group must not trip the systemic-failure
+        // abort: the group is already known bad, and later groups must still run.
+        if (outcome.status === "failed" && outcome.failureKind === "group")
+          failures.push({ caseId: cell.caseId, groupKey: cell.groupKey, kind: "group", message: outcome.error ?? "group failed" })
+        consecutiveInfrastructureFailures = 0
+      }
       outcomes.push({ ...outcome, groupKey: cell.groupKey, caseRef: caseRefOf(dataset, cell.caseDef), judgment })
       if (outcome.fixtureCleanup?.ok === false) {
         failures.push({ caseId: cell.caseId, groupKey: cell.groupKey, kind: "fixture-cleanup",

@@ -38,6 +38,23 @@ describe("LoCoMo official result import", () => {
       ingest: source.scores.ingest })
     expect(result.externalAdjudication.coverage.scoresAccepted).toBe(1)
   })
+  it("rebuilds per-category evidence and candidate recall from goldEvidence [bench-locomo-official-recall]", () => {
+    const enriched = structuredClone(source) as Record<string, any>
+    enriched.scores.rows = [{ caseId: "locomo-conv-00-q0000", sampleId: "conv-00", category: 5,
+      evidenceRecall: 0.5, candidateRecall: 0.5, goldEvidence: ["D1:1", "D2:2"] }]
+    enriched.scores.byCategory = [{ category: 5, count: 1, meanScore: null,
+      evidenceRecall: 0.5, candidateRecall: 0.5 }]
+    enriched.scores.finalEvidenceRecallMean = 0.5
+    enriched.scores.candidateRecallMean = 0.5
+    enriched.outcomes[0].evidence = [{ diaId: "D1:1" }]
+    enriched.outcomes[0].candidateDiaIds = ["D1:1"]
+    const result = importExternalVerdicts(enriched, [officialRow], options) as Record<string, any>
+    expect(result.scores.finalEvidenceRecallMean).toBe(0.5)
+    expect(result.scores.candidateRecallMean).toBe(0.5)
+    expect(result.scores.byCategory).toEqual([
+      { category: 5, count: 1, meanScore: 1, evidenceRecall: 0.5, candidateRecall: 0.5 },
+    ])
+  })
   it("rejects missing, duplicate, tampered, or wrong-question official rows [bench-locomo-official-reject]", () => {
     const run = (rows: unknown[]) => importExternalVerdicts(source, rows as never, options)
     expect(() => run([])).toThrow()

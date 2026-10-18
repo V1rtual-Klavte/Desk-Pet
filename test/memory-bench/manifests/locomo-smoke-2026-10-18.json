@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "desk-pet-memory-bench-manifest/v1",
+  "dataset": "locomo",
+  "split": "locomo10",
+  "seed": "memory-bench-2026-10-18",
+  "perCategory": 6,
+  "caseCount": 1,
+  "upstream": {
+    "source": "https://raw.githubusercontent.com/snap-research/locomo",
+    "url": "https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/data/locomo10.json",
+    "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+    "file": "locomo10.json",
+    "fileSha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "bytes": 2805274
+  },
+  "importTransformVersion": "locomo10/2",
+  "caseIds": [
+    "locomo-conv-41-q0033"
+  ],
+  "createdAt": "2026-10-18T03:27:47.100Z"
+}

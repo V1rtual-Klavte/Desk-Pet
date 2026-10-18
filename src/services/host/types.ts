@@ -1367,7 +1367,7 @@ export type HostCommandMap = {
   //   移出产品 HostCommandMap。届时把类型落到不再跨 src/test 树的位置。
   e2e_options: {
     args: Record<string, never>
-    // Rust E2eOptions：26 个 Option<String>（release 构建全部为 null），camelCase；
+    // Rust E2eOptions：27 个 Option<String>（release 构建全部为 null），camelCase；
     // 其中 case_id 经 serde rename 是 `case`。
     result: {
       module: string | null
@@ -1391,6 +1391,7 @@ export type HostCommandMap = {
       benchLimit: string | null
       benchPerCategory: string | null
       benchCase: string | null
+      benchManifest: string | null
       benchSeed: string | null
       benchJudge: string | null
       benchJudgeModel: string | null

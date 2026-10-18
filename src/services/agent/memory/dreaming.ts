@@ -158,11 +158,18 @@ function reviewTimeoutMs(outputBudget: number): number {
  * 校验模型返回的候选：来源必须落在本批、枚举必须合法、正文不能为空。
  * 任何一条不合法就整条丢弃 —— 宁可少记，也不能让模型编的来源进库。
  */
+/** Review 输入里的短来源别名：弱模型复制长 sessionId:entryId 时会把 entryId 截断。 */
+function reviewSourceAlias(index: number): string {
+  return `s${index + 1}`
+}
+
 export function parseReviewCandidates(
   raw: string,
   batch: readonly MemorySource[],
 ): { draft: MemoryDraft; reason?: string }[] {
-  const allowed = new Set(batch.map(source => source.sourceId))
+  const aliasToSourceId = new Map(batch.map((source, index) => [reviewSourceAlias(index), source.sourceId]))
+  // Accept both the short alias and the full sourceId; the prompt emits only aliases.
+  const allowed = new Set([...aliasToSourceId.keys(), ...batch.map(source => source.sourceId)])
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
@@ -177,17 +184,28 @@ export function parseReviewCandidates(
   }
   const list = Array.isArray(parsed) ? parsed : candidates as unknown[]
   const out: { draft: MemoryDraft; reason?: string }[] = []
+  // Keep rejection reasons for the all-invalid failure below. Never echo content text;
+  // only the field shape and source ids that failed the allow-list check.
+  const rejected: string[] = []
   for (const item of list) {
     const record = asRecord(item)
-    if (!record) continue
+    if (!record) { rejected.push("not-object"); continue }
     const content = typeof record.content === "string" ? record.content.trim() : ""
     const kind = typeof record.kind === "string" ? record.kind : ""
     const scope = typeof record.scope === "string" ? record.scope : ""
     const sourceIds = Array.isArray(record.sourceIds)
       ? record.sourceIds.filter((id): id is string => typeof id === "string")
       : []
-    if (!content || !KINDS.has(kind) || !SCOPES.has(scope)) continue
-    if (sourceIds.length === 0 || sourceIds.some(id => !allowed.has(id))) continue
+    if (!content) { rejected.push("content-empty"); continue }
+    if (!KINDS.has(kind)) { rejected.push(`kind-${kind || "empty"}`); continue }
+    if (!SCOPES.has(scope)) { rejected.push(`scope-${scope || "empty"}`); continue }
+    if (sourceIds.length === 0) { rejected.push("sourceIds-empty"); continue }
+    const unknown = sourceIds.filter(id => !allowed.has(id))
+    if (unknown.length > 0) {
+      rejected.push(`sourceIds-unknown:${unknown.slice(0, 2).map(id => id.slice(0, 80)).join(",")}`)
+      continue
+    }
+    const resolvedSourceIds = [...new Set(sourceIds.map(id => aliasToSourceId.get(id) ?? id))]
     const aliases = Array.isArray(record.aliases)
       ? record.aliases.filter((alias): alias is string => typeof alias === "string").slice(0, 8)
       : []
@@ -198,7 +216,7 @@ export function parseReviewCandidates(
       : undefined
     const eventAt = kind === "episode" || kind === "working" ? parseEventAnchor(record.eventAt) : undefined
     // 只有称呼类的稳定事实才允许 pinned，避免模型把所有东西都塞进核心画像。
-    const cardId = batch.find(source => sourceIds.includes(source.sourceId))?.cardId
+    const cardId = batch.find(source => resolvedSourceIds.includes(source.sourceId))?.cardId
     out.push({
       draft: {
         content,
@@ -214,7 +232,7 @@ export function parseReviewCandidates(
         ...(typeof record.expiresAt === "number" ? { expiresAt: record.expiresAt } : {}),
         ...(eventAt ? { eventAt } : {}),
         ...(workingState ? { workingState: workingState as MemoryDraft["workingState"] } : {}),
-        sourceIds,
+        sourceIds: resolvedSourceIds,
       },
       ...(typeof record.reason === "string" ? { reason: record.reason.slice(0, 400) } : {}),
     })
@@ -225,7 +243,8 @@ export function parseReviewCandidates(
     }
   }
   if (list.length > 0 && out.length === 0) {
-    throw new Error("整理输出没有通过校验的候选")
+    const reasons = [...new Set(rejected)].slice(0, 3).join("; ")
+    throw new Error(`整理输出没有通过校验的候选: ${reasons || "unknown"}`)
   }
   return out
 }
@@ -243,11 +262,11 @@ function parseEventAnchor(value: unknown): TemporalAnchor | undefined {
   return undefined
 }
 
-function buildReviewPrompt(batch: readonly MemorySource[]): string {
+export function buildReviewPrompt(batch: readonly MemorySource[]): string {
   return JSON.stringify({
     now: Date.now(),
-    sources: batch.map(source => ({
-      id: source.sourceId,
+    sources: batch.map((source, index) => ({
+      id: reviewSourceAlias(index),
       said: (source.evidence ?? "").slice(0, MAX_SOURCE_CHARS),
       at: source.observedAt,
       cardId: source.cardId ?? null,

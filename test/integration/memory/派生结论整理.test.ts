@@ -205,7 +205,9 @@ describe("派生结论的整理", () => {
     // 用户批次走模型，prompt 里只有用户来源（派生来源不混池）。
     expect(harness.completePiText).toHaveBeenCalledTimes(1)
     const prompt = JSON.parse(String((harness.completePiText.mock.calls[0]![0] as { userText: string }).userText)) as { sources: Array<{ id: string }> }
-    expect(prompt.sources.map(source => source.id)).toEqual(["user-src"])
+    // Review 输入使用短别名；真实 sourceId 由解析层映射，派生来源仍不得混入用户批次。
+    expect(prompt.sources.map(source => source.id)).toEqual(["s1"])
+    expect(JSON.stringify(prompt)).not.toContain("behavior-conclusion:focus:cccc")
     // 派生批次是确定性映射，不调模型。
     const derivedAdd = ipc.addMemoryCandidates.mock.calls.find(call => call[0] === "job-derived")!
     expect((derivedAdd[1][0] as { draft: { content: string } }).draft.content).toContain("专注")

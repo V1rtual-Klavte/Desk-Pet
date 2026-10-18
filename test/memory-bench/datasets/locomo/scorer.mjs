@@ -28,7 +28,9 @@ export function scoreLocomo(cases, outcomes, officialScores) {
   const outcomeById = new Map(outcomes.map(row => [row.caseId, row]))
   const categoryScores = new Map()
   const categoryRecalls = new Map()
+  const categoryCandidateRecalls = new Map()
   const evidenceRecalls = []
+  const candidateRecalls = []
   const usage = { input: 0, output: 0 }
 
   for (const item of cases) {
@@ -50,6 +52,19 @@ export function scoreLocomo(cases, outcomes, officialScores) {
       recalls.push(evidenceRecall)
       categoryRecalls.set(item.category, recalls)
     }
+    // Candidate recall is measured before final assembly: a miss here is a retrieval gap,
+    // while candidate hit + final miss points at projection/reading/evidence selection.
+    // Absent diagnostics mean "not measured" (null), not "zero recall".
+    const reportedCandidateIds = outcome?.candidateDiaIds
+    const candidateSet = new Set(Array.isArray(reportedCandidateIds) ? reportedCandidateIds.filter(Boolean) : [])
+    const candidateRecall = Array.isArray(reportedCandidateIds) && gold.length
+      ? gold.filter(diaId => candidateSet.has(diaId)).length / gold.length : null
+    if (candidateRecall !== null) {
+      candidateRecalls.push(candidateRecall)
+      const recalls = categoryCandidateRecalls.get(item.category) ?? []
+      recalls.push(candidateRecall)
+      categoryCandidateRecalls.set(item.category, recalls)
+    }
     const measured = outcome?.usage
     if (measured && typeof measured === "object") {
       const input = Number.isFinite(measured.inputTokens) ? measured.inputTokens : measured.input
@@ -59,7 +74,10 @@ export function scoreLocomo(cases, outcomes, officialScores) {
     }
     rows.push({ caseId: item.caseId, sampleId: item.sampleId, category: item.category,
       status: outcome?.status ?? "not-attempted", score: official?.score ?? null,
-      evidenceRecall, answer: outcome?.answer ?? null })
+      evidenceRecall, candidateRecall, answer: outcome?.answer ?? null,
+      // Retained so the official-score import can recompute every aggregate from the report
+      // itself (scores.rows is the only case-level input it receives).
+      goldEvidence: gold })
   }
   for (const row of scoreById?.values() ?? []) {
     if (!byId.has(row.caseId)) throw new Error(`LoCoMo official score has unknown caseId: ${row.caseId}`)
@@ -75,6 +93,7 @@ export function scoreLocomo(cases, outcomes, officialScores) {
       count: categoryRows.length,
       meanScore: values.length ? mean(values) : null,
       evidenceRecall: mean(categoryRecalls.get(category) ?? []),
+      candidateRecall: mean(categoryCandidateRecalls.get(category) ?? []),
     }
   })
   const scored = rows.filter(row => row.score !== null)
@@ -92,6 +111,8 @@ export function scoreLocomo(cases, outcomes, officialScores) {
     evidenceRecallMean: mean(evidenceRecalls),
     /** Alias kept explicit: this is final rendered evidence, not candidate-pool recall. */
     finalEvidenceRecallMean: mean(evidenceRecalls),
+    /** Gold evidence present in the pre-assembly candidate pool. */
+    candidateRecallMean: mean(candidateRecalls),
     cost: { inputTokens: usage.input, outputTokens: usage.output, totalTokens: usage.input + usage.output },
     ingest: summarizeGroupIngest(outcomes),
     rows,

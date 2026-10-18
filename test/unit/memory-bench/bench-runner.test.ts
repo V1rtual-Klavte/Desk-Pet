@@ -244,6 +244,36 @@ describe("bench runner 编排（fake adapter）", () => {
     expect(adapter.calls.cells).toHaveLength(3)
   })
 
+  it("同一组的缓存失败记录为 group 且不中止后续组 [bench-runner-group-failure-continues]", async () => {
+    const locomo = { schemaVersion: "desk-pet-memory-bench-cases/v1", dataset: "locomo", split: "locomo10",
+      importTransformVersion: "test/1", upstream: null, license: null, selection: { policy: "test", caseCount: 5 },
+      conversations: [{ sampleId: "g1" }, { sampleId: "g2" }],
+      cases: [locomoCase("locomo-g1-q0", "g1"), locomoCase("locomo-g1-q1", "g1"),
+        locomoCase("locomo-g1-q2", "g1"), locomoCase("locomo-g2-q0", "g2"), locomoCase("locomo-g2-q1", "g2")] }
+    const adapter = fakeAdapter()
+    const calls: string[] = []
+    let g1Calls = 0
+    adapter.runCell = async input => {
+      const caseId = input.caseId as string
+      calls.push(caseId)
+      if ((input.groupKey as string) === "g1") {
+        g1Calls += 1
+        return { caseId, questionId: null, status: "failed", answer: "",
+          failureKind: g1Calls === 1 ? "infrastructure" : "group",
+          error: "dreaming failed", evidence: [], candidateSessionIds: [], groupReused: true, storeGeneration: "gen" }
+      }
+      return { caseId, questionId: null, status: "complete", answer: "ok", evidence: [],
+        candidateSessionIds: [], groupReused: true, storeGeneration: "gen" }
+    }
+    const report = await runMemoryBenchEvaluation({ adapter, dataset: "locomo", split: "locomo10",
+      file: locomo, seed: "s", judge: "off" }) as Record<string, any>
+    expect(calls).toHaveLength(5)
+    expect(report.failures.map((failure: { kind: string }) => failure.kind))
+      .toEqual(["infrastructure", "group", "group"])
+    expect(report.completedCells).toBe(2)
+    expect(report.gates.complete).toBe(false)
+  })
+
   it("MemoryBank judge 开启但缺 judgeModel 时在开跑前抛错 [bench-judge-model-required]", async () => {
     const memoryBank = { schemaVersion: "desk-pet-memory-bench-cases/v1", dataset: "memorybank", split: "cn",
       importTransformVersion: "test/1", upstream: null, license: null, selection: { policy: "test", caseCount: 1 },

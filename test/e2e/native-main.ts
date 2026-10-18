@@ -18,8 +18,8 @@
 // 开发工具直接用 console（终端进度与失败现场）：把它接进产品日志链会在启动失败时
 // 制造循环依赖 [保留已登记 §4.2]。
 
-import { appendFileSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { appendFileSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { dirname, isAbsolute, join, relative } from "node:path"
 
 import { connectHostBridge, setHostBridge } from "@/services/host"
 import type { FlushReport, HostBridgeRuntime, HostCommandMap } from "@/services/host"
@@ -41,6 +41,7 @@ import { runMemoryPerformanceEvaluation } from "./memory-performance"
 import { createLiveMemoryQualityAdapter } from "../memory-quality/live-adapter"
 import { MEMORY_QUALITY_CASES, MEMORY_QUALITY_STRATEGIES, runMemoryQualityEvaluation } from "../memory-quality/index.mjs"
 import { createLiveMemoryBenchAdapter } from "../memory-bench/bench-adapter"
+import { BENCH_CASE_MANIFEST_SCHEMA_VERSION, readBenchCaseManifest, writeBenchCaseManifest } from "../memory-bench/case-manifest.mjs"
 import { installUiEventTap } from "../host/ui-event-tap"
 import { benchSplitInfo, planBenchCells, runMemoryBenchEvaluation } from "../memory-bench/index.mjs"
 import { TRACE_WINDOW_SIZE, formatSceneFailure, formatTraceEvents } from "./progress"
@@ -454,7 +455,22 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     if (raw.benchPerCategory && (!Number.isInteger(perCategory) || (perCategory ?? 0) <= 0)) {
       throw new Error(`--bench-per-category 必须是正整数: ${raw.benchPerCategory}`)
     }
-    const caseFilter = raw.benchCase ? raw.benchCase.split(",").map(value => value.trim()).filter(Boolean) : undefined
+    let caseFilter = raw.benchCase ? raw.benchCase.split(",").map(value => value.trim()).filter(Boolean) : undefined
+    const benchManifestPath = raw.benchManifest?.trim() || null
+    let caseManifest: { path: string; mode: "pinned" | "create"; caseCount: number } | null = null
+    if (benchManifestPath) {
+      if (caseFilter) throw new Error("--bench-manifest 与 --bench-case 不能同时使用")
+      const relativePath = relative(process.cwd(), benchManifestPath)
+      if (!relativePath || isAbsolute(relativePath) || relativePath.split(/[\\/]/)[0] !== "test")
+        throw new Error(`--bench-manifest 必须位于仓库 test/ 下: ${benchManifestPath}`)
+      if (existsSync(benchManifestPath)) {
+        const pinned = readBenchCaseManifest(benchManifestPath, { dataset, split: info.split })
+        caseFilter = pinned.caseIds
+        caseManifest = { path: relativePath, mode: "pinned", caseCount: pinned.caseIds.length }
+      } else {
+        caseManifest = { path: relativePath, mode: "create", caseCount: 0 }
+      }
+    }
     const judgeMode = raw.benchJudge === "off" ? "off" : "on"
     const judgeModel = raw.benchJudgeModel ?? resolvedModels.judgeModel ?? "deepseek-v4-pro"
     const readerControlValue = raw.benchReaderControl ?? undefined
@@ -463,10 +479,22 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     }
     const readerControl = readerControlValue as "direct" | "con" | undefined
     const planned = planBenchCells(dataset, file, { limit, caseFilter, seed, perCategory })
+    if (benchManifestPath && caseManifest?.mode === "create") {
+      writeBenchCaseManifest(benchManifestPath, {
+        schemaVersion: BENCH_CASE_MANIFEST_SCHEMA_VERSION,
+        dataset, split: info.split, seed, perCategory: perCategory ?? null,
+        caseCount: planned.length, upstream: file.upstream ?? null,
+        importTransformVersion: file.importTransformVersion ?? null,
+        caseIds: planned.map(cell => cell.caseId),
+        createdAt: new Date().toISOString(),
+      })
+      caseManifest.caseCount = planned.length
+    }
     manifest.bench = {
       dataset, split: info.split, namespace: info.namespace, plannedCells: planned.length,
       seed, perCategory: perCategory ?? null,
       judge: judgeMode === "off" ? null : judgeModel, readerControl: readerControl ?? null,
+      caseManifest,
     }
     manifest.expectedTrials = planned.map(cell => ({ caseId: cell.caseId, sceneId: cell.caseId, trialId: "1" }))
     await writeManifest(false)

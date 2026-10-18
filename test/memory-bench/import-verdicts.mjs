@@ -264,8 +264,12 @@ function importOfficialLocomoScores(report, rows, { sourceReportSha256, verdictL
   const selectedIds = report.subsetDescription?.requestedCaseIds
   if (!Array.isArray(selectedIds) || new Set(selectedIds).size !== selectedIds.length)
     throw new Error("原始 LoCoMo 报告所选题 ID 缺失或重复")
-  const scoreCases = report.scores?.rows
-  if (!Array.isArray(scoreCases)) throw new Error("原始 LoCoMo 报告缺少确定性逐题 score rows")
+  const scoreRows = report.scores?.rows
+  if (!Array.isArray(scoreRows)) throw new Error("原始 LoCoMo 报告缺少确定性逐题 score rows")
+  // scoreLocomo recomputes recall from gold evidence; rows carry it so the derived report
+  // keeps the same per-category aggregates instead of nulling them after official import.
+  const scoreCases = scoreRows.map(row => ({ ...row,
+    evidence: Array.isArray(row.goldEvidence) ? row.goldEvidence : [] }))
   const selected = new Set(selectedIds)
   const expected = new Map()
   for (const outcome of report.outcomes ?? []) {
@@ -305,11 +309,22 @@ function importOfficialLocomoScores(report, rows, { sourceReportSha256, verdictL
   if (seen.size !== expected.size) throw new Error(`LoCoMo official results incomplete: ${seen.size}/${expected.size}`)
   const derived = structuredClone(report)
   const recomputed = scoreLocomo(scoreCases, report.outcomes, scores)
-  recomputed.evidenceRecallMean = report.scores.evidenceRecallMean
+  // Historical reports predate goldEvidence; keep their reported aggregates rather than
+  // turning a previously measured recall into null.
+  recomputed.evidenceRecallMean = recomputed.evidenceRecallMean ?? report.scores.evidenceRecallMean ?? null
+  recomputed.finalEvidenceRecallMean = recomputed.finalEvidenceRecallMean
+    ?? report.scores.finalEvidenceRecallMean ?? recomputed.evidenceRecallMean
+  recomputed.candidateRecallMean = recomputed.candidateRecallMean
+    ?? report.scores.candidateRecallMean ?? null
   recomputed.ingest = report.scores.ingest
-  const oldRows = new Map(scoreCases.map(row => [row.caseId, row]))
-  recomputed.rows = recomputed.rows.map(row => ({ ...oldRows.get(row.caseId), ...row,
-    evidenceRecall: oldRows.get(row.caseId)?.evidenceRecall ?? null }))
+  const previousByCategory = new Map((report.scores.byCategory ?? []).map(row => [row.category, row]))
+  recomputed.byCategory = (recomputed.byCategory ?? []).map(row => ({
+    ...row,
+    evidenceRecall: row.evidenceRecall ?? previousByCategory.get(row.category)?.evidenceRecall ?? null,
+    candidateRecall: row.candidateRecall ?? previousByCategory.get(row.category)?.candidateRecall ?? null,
+  }))
+  const oldRows = new Map(scoreRows.map(row => [row.caseId, row]))
+  recomputed.rows = recomputed.rows.map(row => ({ ...oldRows.get(row.caseId), ...row }))
   derived.scores = recomputed
   derived.externalAdjudication = {
     judge: "official-script", method: "Snap LoCoMo task_eval/evaluation.py::eval_question_answering",

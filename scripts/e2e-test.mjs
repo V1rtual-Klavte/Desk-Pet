@@ -12,7 +12,7 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
-import { extname, join, relative } from "node:path"
+import { extname, isAbsolute, join, relative, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { checkContractHashes } from "./check-contract-hashes.mjs"
 import { parseBenchDeadlineMinutes } from "./e2e-deadline.mjs"
@@ -33,7 +33,7 @@ const benchDeadlineMinutes = parseBenchDeadlineMinutes(args)
 // 两边各有一行互指注释；不做机制化共享（cli.ts 经 esbuild 进 Node bundle，
 // 本文件顶层有副作用、不能被 import，重复清单是现状里代价最低的同步点）。
 const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report", "--contracts", "--quality-seed", "--trace",
-  "--bench-dataset", "--bench-split", "--bench-limit", "--bench-per-category", "--bench-case", "--bench-seed", "--bench-judge", "--bench-judge-model", "--bench-reader-control"])
+  "--bench-dataset", "--bench-split", "--bench-limit", "--bench-per-category", "--bench-case", "--bench-manifest", "--bench-seed", "--bench-judge", "--bench-judge-model", "--bench-reader-control"])
 const flagOptions = new Set(["--strict", "--quality", "--performance", "--bench"])
 // 启动器自用的选项表（分池 / 门禁 / 超时的判据；子进程环境另见 childEnv）。
 const env = { ...process.env }
@@ -47,7 +47,8 @@ const channelOptionKeys = {
   "--repeat": "repeat", "--report": "report", "--quality-seed": "qualitySeed", "--trace": "trace",
   "--bench-dataset": "benchDataset", "--bench-split": "benchSplit", "--bench-limit": "benchLimit",
   "--bench-per-category": "benchPerCategory",
-  "--bench-case": "benchCase", "--bench-seed": "benchSeed", "--bench-judge": "benchJudge",
+  "--bench-case": "benchCase", "--bench-manifest": "benchManifest",
+  "--bench-seed": "benchSeed", "--bench-judge": "benchJudge",
   "--bench-judge-model": "benchJudgeModel",
   "--bench-reader-control": "benchReaderControl",
   "--strict": "strict", "--quality": "quality", "--performance": "performance", "--bench": "bench",
@@ -81,7 +82,13 @@ for (let index = 0; index < args.length; index++) {
     continue
   }
   if (!valueOptions.has(option) || !args[index + 1]) continue
-  const value = args[++index]
+  let value = args[++index]
+  if (option === "--bench-manifest") {
+    value = resolve(process.cwd(), value)
+    const inside = relative(process.cwd(), value)
+    if (!inside || inside.startsWith("..") || isAbsolute(inside) || inside.split(/[\\/]/)[0] !== "test")
+      throw new Error(`[E2E] --bench-manifest 必须位于仓库 test/ 下: ${value}`)
+  }
   env[`DESKPET_E2E_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = value
   if (channelOptionKeys[option]) channelOptions[channelOptionKeys[option]] = value
 }

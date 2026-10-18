@@ -48,8 +48,8 @@ describe("LoCoMo official-score-only quality", () => {
     const score = scoreLocomo(cases as never, outcomes as never) as Record<string, any>
     expect(score.meanScore).toBe(null)
     expect(score.byCategory).toEqual([
-      { category: 1, count: 1, meanScore: null, evidenceRecall: 1 },
-      { category: 5, count: 1, meanScore: null, evidenceRecall: 1 },
+      { category: 1, count: 1, meanScore: null, evidenceRecall: 1, candidateRecall: null },
+      { category: 5, count: 1, meanScore: null, evidenceRecall: 1, candidateRecall: null },
     ])
     expect(score.officialScoring.status).toBe("pending_official")
   })
@@ -60,12 +60,25 @@ describe("LoCoMo official-score-only quality", () => {
     ]) as Record<string, any>
     expect(scores.meanScore).toBe(0.625)
     expect(scores.byCategory).toEqual([
-      { category: 1, count: 1, meanScore: 0.25, evidenceRecall: 1 },
-      { category: 5, count: 1, meanScore: 1, evidenceRecall: 1 },
+      { category: 1, count: 1, meanScore: 0.25, evidenceRecall: 1, candidateRecall: null },
+      { category: 5, count: 1, meanScore: 1, evidenceRecall: 1, candidateRecall: null },
     ])
     expect(scores.officialScoring.status).toBe("official")
     expect(() => scoreLocomo(cases as never, outcomes as never, [
       { caseId: cases[1].caseId, category: 4, score: 1 },
     ])).toThrow(/category/)
+  })
+  it("separates candidate-pool recall from final rendered evidence [bench-locomo-candidate-recall]", () => {
+    const candidateCases = [{ caseId: "locomo-conv-00-q0002", sampleId: "conv-00", category: 1,
+      evidence: ["D1:1", "D2:2"] }]
+    const candidateOutcomes = [{ caseId: candidateCases[0].caseId, status: "complete", answer: "answer",
+      evidence: [{ diaId: "D1:1" }], candidateDiaIds: ["D1:1"] }]
+    const score = scoreLocomo(candidateCases as never, candidateOutcomes as never) as Record<string, any>
+    expect(score.candidateRecallMean).toBe(0.5)
+    expect(score.finalEvidenceRecallMean).toBe(0.5)
+    expect(score.byCategory).toEqual([
+      { category: 1, count: 1, meanScore: null, evidenceRecall: 0.5, candidateRecall: 0.5 },
+    ])
+    expect(score.rows[0]).toMatchObject({ candidateRecall: 0.5, goldEvidence: ["D1:1", "D2:2"] })
   })
 })

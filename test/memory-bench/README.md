@@ -176,7 +176,10 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
   category 5 对抗题二值（`no information available` / `not mentioned`）。
 - 词干器是按 Porter 1980 论文算法本仓移植（与 NLTK `PorterStemmer` 默认模式同口径，实现独立），
   论文测试词表在 L2 单测逐一核对 —— 报告口径为「本仓适配移植」。
-- 另报确定性 `evidenceRecallMean`（gold `evidence` dia_id 被渲染证据覆盖的比例）。
+- 另报确定性 `candidateRecallMean`（装配前候选池对 gold `evidence` dia_id 的覆盖）、`evidenceRecallMean` /
+  `finalEvidenceRecallMean`（最终渲染证据对 gold `evidence` 的覆盖）与按 category 的
+  `byCategory[].candidateRecall/evidenceRecall`。候选命中但最终未渲染，指向装配/选择；
+  候选未命中才是检索缺口。官方回填后这些聚合仍从 `scores.rows[].goldEvidence` 重算。
 
 ### MemoryBank cn（确定性检索 + judge 一致性）
 
@@ -194,7 +197,7 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 
 - LongMemEval 每个原始会话、MemoryBank 每个历史日期建立隔离 JSONL 夹具，按顺序保留 user/assistant 角色与原始时间；不逐轮调用 `sendMessage` 重放。所有角色消息进入对话检索，只有 user 轮另登记为用户事实 `MemorySource`；MemoryBank 的 query/response 对应 user/assistant。
 - LoCoMo 每个上游 session 建真实 JSONL，正文保留原始 speaker、日期、文本和独立标记的 blip_caption。固定 speaker_a → user（可登记事实）、speaker_b → assistant（仅对话引用）；双方都是上游真人，此模型角色映射是适配器选择，不能同时将两人的经历登记为用户本人事实。来源坐标指向已提交的 sessionId/entryId/seq，样本id:dia_id 仅作评测映射标签。
-- `evidence` 截 2000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留完整渲染正文长度；dreaming 对 >4800 字符来源的整条丢弃按实计数。原话 JSONL 完整保留，不跟随摘要截断。
+- `evidence` 截 4000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留完整渲染正文长度；dreaming 对 >4000 字符来源的整条丢弃按实计数。原话 JSONL 完整保留，不跟随摘要截断。
 - 提取走真实 dreaming（manual 模式，循环 sweep 直至无待处理来源）；全部数据集保留生产 scope，不做 session→user 或 add/forget 归一，`ingest.scopeNormalized` 恒为 0。跨会话细节通过受治理的对话检索读取，不撤销其引用锚。
 - LoCoMo 所有题加同一 `Answer using our conversation history:` 前缀，原题不改；该明确任务上下文驱动生产查询计划和阅读器，普通知识问答的跳过路径仍保留。活动 Card 的输出规则统一要求英文完整短答、计数使用数字、只答所求且保留多项/日期/否定/可能性等必需信息；历史事件核对亲历前提，假设意愿题允许依据相关个人证据作限定推断，身份不靠沉默推断；证据不足时 `No information available.`，经公共保存入口刷新并在收尾恢复。生成输入不使用 answer/category/evidence 金标；这些字段只供判分及诊断。报告 manifest 留存完整规则、角色映射和 `productScore: false`：结果是官方确定性判分的 **LoCoMo 适配器分数**，不直接宣称产品分数。
 - 提问：每题新建会话；cell = 题 × 1 trial（外部集是观测证据，不套自建集的 ≥3 trial 配对纪律）。
@@ -202,7 +205,7 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 - 每个提问回合通过 `toolMode: "none"` 请求禁用模型工具，并记录实际调用数与协议违规；不改全局工具注册表。
   存储为隔离 E2E 根内的真实 Rust SQLite。
 - 模型工具/权限边界不变；**不为拉高分改产品**：recall 预算（CONFIG `ai.memory.core/recall`）、
-  dreaming 截断（1200）/丢弃（4800）造成的压分照实记录（`ingest` + `manifest.memoryConfig`）。
+  dreaming 来源上限（4000）与整条 oversized 丢弃造成的压分照实记录（`ingest` + `manifest.memoryConfig`）。
 - **召回时限（2026-10-09 起）**：bench 把 `ai.memory.recallTimeoutMs` 覆盖为 120 秒（生产默认 4 秒）。
   这是**测量口径**而非给产品放水：生产进程长期在线、会话索引随召回增量建立，4 秒交互延迟预算
   够用；而基准每题一组全新库 = 每题都付一次整组冷索引，4 秒内原文通道必然退化为空
