@@ -5,7 +5,6 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { scoreLongMemEval } from "./datasets/longmemeval/scorer.mjs"
-import { scoreLocomo } from "./datasets/locomo/scorer.mjs"
 const upstreamLock = JSON.parse(readFileSync(new URL("./upstream-lock.json", import.meta.url), "utf8"))
 import { exportHypotheses } from "./export-hypotheses.mjs"
 import { formatBenchSummary, parseBenchReportPayload, renderBenchHtmlReport, summarizeBenchReport } from "./report.mjs"
@@ -104,8 +103,8 @@ function parseVerdictLog(text) {
 export function importExternalVerdicts(report, verdictRows, {
   sourceReportSha256, verdictLogSha256, judge, scope, judgedAt,
 } = {}) {
-  if (report?.schemaVersion === "desk-pet-memory-bench/v1" && report.dataset === "locomo")
-    return importOfficialLocomoScores(report, verdictRows, { sourceReportSha256, verdictLogSha256, scope, judgedAt })
+  if (report?.dataset === "locomo")
+    throw new Error("LoCoMo 使用异构 LLM judge，不再导入官方 F1 结果")
   if (report?.schemaVersion !== "desk-pet-memory-bench/v1" || report.dataset !== "longmemeval")
     throw new Error("外部官方结果回填仅支持 LongMemEval 或 LoCoMo memory-bench 原始报告")
   if (!Array.isArray(verdictRows) || verdictRows.length === 0) throw new Error("判分日志没有逐题 verdict")
@@ -250,92 +249,8 @@ export function importExternalVerdicts(report, verdictRows, {
   return derived
 }
 
-function importOfficialLocomoScores(report, rows, { sourceReportSha256, verdictLogSha256, scope, judgedAt }) {
-  const lock = upstreamLock.downloads
-  const revision = lock.locomo_evaluation.revision
-  if (report.upstream?.revision !== lock.locomo10.revision || report.upstream?.fileSha256 !== lock.locomo10.sha256)
-    throw new Error("原始 LoCoMo 报告未绑定当前锁定数据集")
-  if (!Array.isArray(rows) || !rows.length) throw new Error("LoCoMo 官方评分日志为空")
-  if (!/^[a-f0-9]{64}$/.test(sourceReportSha256 ?? "") || !/^[a-f0-9]{64}$/.test(verdictLogSha256 ?? ""))
-    throw new TypeError("缺少原始报告/官方结果 SHA-256")
-  if (typeof scope !== "string" || !scope.trim()) throw new TypeError("必须写明判分 scope")
-  if (typeof judgedAt !== "string" || !Number.isFinite(Date.parse(judgedAt)))
-    throw new TypeError("judgedAt 必须是有效 ISO 时间")
-  const selectedIds = report.subsetDescription?.requestedCaseIds
-  if (!Array.isArray(selectedIds) || new Set(selectedIds).size !== selectedIds.length)
-    throw new Error("原始 LoCoMo 报告所选题 ID 缺失或重复")
-  const scoreRows = report.scores?.rows
-  if (!Array.isArray(scoreRows)) throw new Error("原始 LoCoMo 报告缺少确定性逐题 score rows")
-  // scoreLocomo recomputes recall from gold evidence; rows carry it so the derived report
-  // keeps the same per-category aggregates instead of nulling them after official import.
-  const scoreCases = scoreRows.map(row => ({ ...row,
-    evidence: Array.isArray(row.goldEvidence) ? row.goldEvidence : [] }))
-  const selected = new Set(selectedIds)
-  const expected = new Map()
-  for (const outcome of report.outcomes ?? []) {
-    if (outcome.status !== "complete" || typeof outcome.answer !== "string") continue
-    const ref = outcome.caseRef ?? {}
-    if (expected.has(outcome.caseId)) throw new Error(`原始报告 case_id 重复: ${outcome.caseId}`)
-    if (!selected.has(outcome.caseId) || typeof ref.sampleId !== "string" || !Number.isInteger(ref.questionIndex)
-      || typeof ref.question !== "string" || !Number.isInteger(ref.category))
-      throw new Error(`${outcome.caseId}: 完成题缺少可验证的 LoCoMo identity/question/category`)
-    expected.set(outcome.caseId, { outcome, ref, hypothesisSha256: sha256(outcome.answer) })
-  }
-  if (!expected.size) throw new Error("原始报告没有已完成的 LoCoMo 回答")
-  const seen = new Set()
-  const scores = []
-  for (const row of rows) {
-    const id = row?.question_id
-    const exp = expected.get(id)
-    if (typeof id !== "string" || seen.has(id)) throw new Error("LoCoMo official question_id 缺失或重复")
-    seen.add(id)
-    if (!exp) throw new Error(`未知或未完成的 LoCoMo question_id: ${id}`)
-    const { outcome, ref, hypothesisSha256 } = exp
-    if (row.source_report_sha256 !== sourceReportSha256 || row.case_id !== id || id !== outcome.caseId
-      || row.case_id_sha256 !== sha256(id))
-      throw new Error(`${id}: source report/case identity mismatch`)
-    if (row.hypothesis !== outcome.answer || row.hypothesis_sha256 !== hypothesisSha256)
-      throw new Error(`${id}: hypothesis tampered or does not match source report`)
-    if (row.sample_id !== ref.sampleId || row.question_index !== ref.questionIndex || row.question !== ref.question
-      || row.question_sha256 !== sha256(ref.question) || row.category !== ref.category)
-      throw new Error(`${id}: question identity/category mismatch`)
-    if (row.official_revision !== revision || row.official_script_sha256 !== lock.locomo_evaluation.sha256
-      || row.official_data_sha256 !== lock.locomo10.sha256 || row.official_metric !== "locomo-category-score")
-      throw new Error(`${id}: official script/data identity mismatch`)
-    if (!Number.isFinite(row.official_score) || row.official_score < 0 || row.official_score > 1)
-      throw new Error(`${id}: invalid official score`)
-    scores.push({ caseId: id, category: ref.category, score: row.official_score })
-  }
-  if (seen.size !== expected.size) throw new Error(`LoCoMo official results incomplete: ${seen.size}/${expected.size}`)
-  const derived = structuredClone(report)
-  const recomputed = scoreLocomo(scoreCases, report.outcomes, scores)
-  // Historical reports predate goldEvidence; keep their reported aggregates rather than
-  // turning a previously measured recall into null.
-  recomputed.evidenceRecallMean = recomputed.evidenceRecallMean ?? report.scores.evidenceRecallMean ?? null
-  recomputed.finalEvidenceRecallMean = recomputed.finalEvidenceRecallMean
-    ?? report.scores.finalEvidenceRecallMean ?? recomputed.evidenceRecallMean
-  recomputed.candidateRecallMean = recomputed.candidateRecallMean
-    ?? report.scores.candidateRecallMean ?? null
-  recomputed.ingest = report.scores.ingest
-  const previousByCategory = new Map((report.scores.byCategory ?? []).map(row => [row.category, row]))
-  recomputed.byCategory = (recomputed.byCategory ?? []).map(row => ({
-    ...row,
-    evidenceRecall: row.evidenceRecall ?? previousByCategory.get(row.category)?.evidenceRecall ?? null,
-    candidateRecall: row.candidateRecall ?? previousByCategory.get(row.category)?.candidateRecall ?? null,
-  }))
-  const oldRows = new Map(scoreRows.map(row => [row.caseId, row]))
-  recomputed.rows = recomputed.rows.map(row => ({ ...oldRows.get(row.caseId), ...row }))
-  derived.scores = recomputed
-  derived.externalAdjudication = {
-    judge: "official-script", method: "Snap LoCoMo task_eval/evaluation.py::eval_question_answering",
-    scope: scope.trim(), judgedAt, importedAt: new Date().toISOString(), sourceReportSha256, verdictLogSha256,
-    coverage: { selectedCases: selectedIds.length, hypothesesExported: expected.size, scoresAccepted: scores.length,
-      missingHypotheses: selectedIds.length - expected.size, missingScores: 0 },
-    official: { revision, scriptSha256: lock.locomo_evaluation.sha256, dataSha256: lock.locomo10.sha256,
-      metric: "official category score (1-5)" },
-  }
-  return derived
-}
+// LoCoMo no longer imports official token-F1 results; it is scored by the heterogeneous
+// LLM judge in the bench runner.
 
 function parseOptions(args) {
   const values = new Map()

@@ -49,13 +49,6 @@
       "bytes": 7436,
       "path": "reference/longmemeval-evaluate_qa.py"
     },
-    "locomo_evaluation": {
-      "url": "https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/task_eval/evaluation.py",
-      "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
-      "sha256": "8e3be5d57ff2ff9ec5cd05939592f468c5f3f1fd95d13e431932bdf6bf0fd6fd",
-      "bytes": 9441,
-      "path": "reference/locomo-evaluation.py"
-    },
     "longmemeval_license": {
       "url": "https://raw.githubusercontent.com/xiaowu0162/LongMemEval/9e0b455f4ef0e2ab8f2e582289761153549043fc/LICENSE",
       "revision": "9e0b455f4ef0e2ab8f2e582289761153549043fc",

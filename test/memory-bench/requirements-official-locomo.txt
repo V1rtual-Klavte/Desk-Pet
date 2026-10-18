@@ -1,6 +1,0 @@
-# Minimal pinned runtime dependencies imported by Snap LoCoMo's official evaluation.py.
-# The upstream reference requirements also pin a CUDA/Linux training stack not used here.
-regex==2022.10.31
-numpy==1.26.0
-nltk==3.8.1
-bert-score==0.3.13

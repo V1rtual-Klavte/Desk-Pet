@@ -37,48 +37,61 @@ describe("LoCoMo date/import", () => {
   })
 })
 
-describe("LoCoMo official-score-only quality", () => {
+describe("LoCoMo semantic judge quality", () => {
   const cases = [
-    { caseId: "locomo-conv-00-q0000", sampleId: "conv-00", category: 1, evidence: ["D1:1"] },
-    { caseId: "locomo-conv-00-q0001", sampleId: "conv-00", category: 5, evidence: ["D2:2"] },
+    { caseId: "locomo-conv-00-q0000", sampleId: "conv-00", category: 1,
+      evidence: ["D1:1"], answer: "Aerial, kundalini" },
+    { caseId: "locomo-conv-00-q0001", sampleId: "conv-00", category: 5,
+      evidence: ["D2:2"], answer: "Nobody" },
   ]
-  const outcomes = cases.map(item => ({ caseId: item.caseId, status: "complete", answer: "answer",
-    evidence: [{ diaId: item.evidence[0] }] }))
-  it("keeps the primary score pending until official rows are supplied [bench-locomo-pending-official]", () => {
-    const score = scoreLocomo(cases as never, outcomes as never) as Record<string, any>
-    expect(score.meanScore).toBe(null)
+  const outcomes = [
+    { caseId: cases[0].caseId, status: "complete", answer: "kundalini yoga, aerial yoga",
+      evidence: [{ diaId: "D1:1" }], candidateDiaIds: ["D1:1"] },
+    { caseId: cases[1].caseId, status: "complete", answer: "No information available.",
+      evidence: [], candidateDiaIds: ["D2:2"] },
+  ]
+
+  it("uses heterogeneous judge verdicts and per-category accuracy [bench-locomo-judge-accuracy]", () => {
+    const score = scoreLocomo(cases, outcomes, {
+      [cases[0].caseId]: { adjudicated: true, correct: true },
+      [cases[1].caseId]: { adjudicated: true, correct: true },
+    }) as Record<string, any>
+    expect(score.judged).toBe(2)
+    expect(score.correct).toBe(2)
+    expect(score.accuracy).toBe(1)
     expect(score.byCategory).toEqual([
-      { category: 1, count: 1, meanScore: null, evidenceRecall: 1, candidateRecall: null },
-      { category: 5, count: 1, meanScore: null, evidenceRecall: 1, candidateRecall: null },
+      { category: 1, count: 1, judged: 1, correct: 1, accuracy: 1, evidenceRecall: 1, candidateRecall: 1 },
+      { category: 5, count: 1, judged: 1, correct: 1, accuracy: 1, evidenceRecall: 0, candidateRecall: 1 },
     ])
-    expect(score.officialScoring.status).toBe("pending_official")
+    expect(score.finalEvidenceRecallMean).toBe(0.5)
+    expect(score.candidateRecallMean).toBe(1)
   })
-  it("groups supplied upstream values by category, retaining adversarial category 5 [bench-locomo-official-category]", () => {
-    const scores = scoreLocomo(cases as never, outcomes as never, [
-      { caseId: cases[0].caseId, category: 1, score: 0.25 },
-      { caseId: cases[1].caseId, category: 5, score: 1 },
-    ]) as Record<string, any>
-    expect(scores.meanScore).toBe(0.625)
-    expect(scores.byCategory).toEqual([
-      { category: 1, count: 1, meanScore: 0.25, evidenceRecall: 1, candidateRecall: null },
-      { category: 5, count: 1, meanScore: 1, evidenceRecall: 1, candidateRecall: null },
-    ])
-    expect(scores.officialScoring.status).toBe("official")
-    expect(() => scoreLocomo(cases as never, outcomes as never, [
-      { caseId: cases[1].caseId, category: 4, score: 1 },
-    ])).toThrow(/category/)
+
+  it("counts un-adjudicated judge output as a failure, not a wrong answer [bench-locomo-judge-failure]", () => {
+    const score = scoreLocomo(cases, outcomes, {
+      [cases[0].caseId]: { adjudicated: false, error: "judge timeout" },
+      [cases[1].caseId]: { adjudicated: true, correct: false },
+    }) as Record<string, any>
+    expect(score.judged).toBe(1)
+    expect(score.correct).toBe(0)
+    expect(score.accuracy).toBe(0)
+    expect(score.judgeFailures).toBe(1)
   })
+
   it("separates candidate-pool recall from final rendered evidence [bench-locomo-candidate-recall]", () => {
     const candidateCases = [{ caseId: "locomo-conv-00-q0002", sampleId: "conv-00", category: 1,
-      evidence: ["D1:1", "D2:2"] }]
-    const candidateOutcomes = [{ caseId: candidateCases[0].caseId, status: "complete", answer: "answer",
+      evidence: ["D1:1", "D2:2"], answer: "Aerial, kundalini" }]
+    const candidateOutcomes = [{ caseId: candidateCases[0].caseId, status: "complete", answer: "aerial yoga",
       evidence: [{ diaId: "D1:1" }], candidateDiaIds: ["D1:1"] }]
-    const score = scoreLocomo(candidateCases as never, candidateOutcomes as never) as Record<string, any>
+    const score = scoreLocomo(candidateCases, candidateOutcomes, {
+      [candidateCases[0].caseId]: { adjudicated: true, correct: true },
+    }) as Record<string, any>
     expect(score.candidateRecallMean).toBe(0.5)
     expect(score.finalEvidenceRecallMean).toBe(0.5)
     expect(score.byCategory).toEqual([
-      { category: 1, count: 1, meanScore: null, evidenceRecall: 0.5, candidateRecall: 0.5 },
+      { category: 1, count: 1, judged: 1, correct: 1, accuracy: 1, evidenceRecall: 0.5, candidateRecall: 0.5 },
     ])
-    expect(score.rows[0]).toMatchObject({ candidateRecall: 0.5, goldEvidence: ["D1:1", "D2:2"] })
+    expect(score.rows[0]).toMatchObject({ candidateRecall: 0.5, goldEvidence: ["D1:1", "D2:2"],
+      goldAnswer: "Aerial, kundalini" })
   })
 })

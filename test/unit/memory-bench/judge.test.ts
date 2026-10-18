@@ -1,7 +1,8 @@
 // 外部评测 judge 模板 L2 单测：模板选取、官方措辞关键句、判定解析语义。
 import { describe, it, expect } from "vitest"
 import {
-  buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, judgeTemplateId, parseJudgeVerdict, parseMemoryBankJudgeVerdict,
+  buildLocomoJudgePrompt, buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget,
+  judgeTemplateId, parseJudgeVerdict, parseLocomoJudgeVerdict, parseMemoryBankJudgeVerdict,
 } from "../../memory-bench/judge.mjs"
 
 describe("judge 输出预算", () => {
@@ -77,6 +78,38 @@ describe("LongMemEval judge 提示内容", () => {
       question: "Q?", answer: "A!", response: 'I think {"x": 1} is right.', abstention: false })
     expect(prompt).toContain('Model Response: I think {"x": 1} is right.')
     expect(prompt.indexOf("Correct Answer: A!")).toBeLessThan(prompt.indexOf("Model Response:"))
+  })
+})
+
+describe("LoCoMo judge 提示（语义正确率）", () => {
+  it("非对抗题按语义正确且完整判定，允许同义改写、缺项/错实体为 no [bench-locomo-judge-prompt]", () => {
+    const { prompt, templateId } = buildLocomoJudgePrompt({
+      question: "What pets?", answer: "Two cats and a dog", response: "Luna and Oliver",
+    })
+    expect(templateId).toBe("locomo-semantic")
+    expect(prompt).toContain("Accept paraphrases, synonyms, equivalent dates/units")
+    expect(prompt).toContain("misses a required item")
+    expect(prompt).toContain("Question: What pets?")
+    expect(prompt).toContain("Reference answer: Two cats and a dog")
+    expect(prompt).toContain("Model response: Luna and Oliver")
+    expect(prompt.endsWith("Answer yes or no only.")).toBe(true)
+  })
+
+  it("cat5 对抗题把 trap answer 标成非正确答案，要求识别不可回答/纠正前提 [bench-locomo-judge-adversarial]", () => {
+    const { prompt, templateId } = buildLocomoJudgePrompt({
+      question: "When did they meet?", answer: "Yesterday", response: "No information available.", adversarial: true,
+    })
+    expect(templateId).toBe("locomo-adversarial")
+    expect(prompt).toContain("Trap answer (not a correct answer): Yesterday")
+    expect(prompt).toContain("A response that asserts a concrete answer, including the trap answer, is wrong.")
+    expect(prompt.endsWith("Answer yes or no only.")).toBe(true)
+  })
+
+  it("只接受明确单词判定，混合解释不猜结论 [bench-locomo-judge-parse]", () => {
+    expect(parseLocomoJudgeVerdict(" yes ")).toBe(true)
+    expect(parseLocomoJudgeVerdict("No")).toBe(false)
+    expect(parseLocomoJudgeVerdict("yes, but the date is wrong")).toBeNull()
+    expect(parseLocomoJudgeVerdict("")).toBeNull()
   })
 })
 

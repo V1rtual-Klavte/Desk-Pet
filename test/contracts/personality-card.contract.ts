@@ -32,7 +32,7 @@ export const personalityCardContract: ModuleContract = {
   // stages-prompt.md 是生成侧的另一半契约：它决定模型输出哪些键，validateStages 决定哪些键算齐。
   // 两边漂移会让新 key 永远取不到 Card 文案，所以提示词纳入 sourceFiles，改动必须触发重审。
   sourceFiles: ["src/services/personality/registry.ts", "src/services/personality/loader.ts", "src/services/personality/card-manage.ts", "src/services/personality/stages-cache.ts", "src/services/personality/stages-file.ts", "src/services/personality/stages-prompt.md", "src/services/tool/registry.ts"],
-  sourceHash: "956c9c8daaaaa2770c0f8459a6a762b69eeebf4c73d50f7387fb8007925362b3",
+  sourceHash: "0ee38c2c131ec1021460561572eff37864b5250761ff2b5a02b43d729f2e498f",
   coverage: [
     { id: "pc-01", feature: "Card 解析", description: "importUserCard 把 Card markdown 解析成 PersonalityCard：frontmatter 的 id/name/version 与各区块的 sections 都要落到字段上，source 恒为 runtime，hash 非空", why: "人格卡系统基础", layer: "unit", depth: "shallow", scenarios: ["card-parse"] },
     { id: "pc-02", feature: "注册表的非法切换守卫", description: "switchPersonality(null) 与切换到不存在的人格都返回 ok:false 并给出原因，且失败的切换不得改动 activeId（拒绝必须原子）", why: "人格切换失败回滚是运行时核心约束", layer: "unit", depth: "shallow", scenarios: ["card-registry-guard"] },

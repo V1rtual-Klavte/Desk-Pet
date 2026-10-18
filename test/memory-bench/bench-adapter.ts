@@ -30,7 +30,10 @@ import { inputEventId, userInputMessage } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { standardSetup } from "../host/standard-setup"
-import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, parseJudgeVerdict, parseMemoryBankJudgeVerdict } from "./judge.mjs"
+import {
+  buildLocomoJudgePrompt, buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt,
+  judgeOutputBudget, parseJudgeVerdict, parseLocomoJudgeVerdict, parseMemoryBankJudgeVerdict,
+} from "./judge.mjs"
 import { questionTimeAnchor } from "./datasets/longmemeval/importer.mjs"
 import { summarizeMemoryQualityUsage } from "../memory-quality/index.mjs"
 import { buildReaderControlPrompts, requireCompleteReaderOutput } from "./reader-control.mjs"
@@ -603,8 +606,8 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
           rerankTimeoutMs: memoryConfig.rerankTimeoutMs },
         evidenceCapChars: EVIDENCE_CHARS, oversizedSourceChars: OVERSIZED_SOURCE_CHARS,
         fixtureStorage: "isolated-e2e-root",
-        scoreProvenance: dataset === "locomo" ? "official-locomo-deterministic-adapter-score; not product score" : "dataset-specific benchmark adapter",
-        ...(dataset === "locomo" ? { productScore: false } : {}),
+        scoreProvenance: dataset === "locomo" ? "heterogeneous-llm-judge-adapter-score; not official LoCoMo F1" : "dataset-specific benchmark adapter",
+        ...(dataset === "locomo" ? { productScore: false, judgeRubric: "locomo-semantic-correctness" } : {}),
         answerPolicy: dataset === "locomo" ? LOCOMO_ANSWER_FORMAT : undefined,
         questionInputPolicy: dataset === "locomo" ? "uniform conversation-history task prefix plus unchanged question; no QA gold/category/evidence in generation input" : undefined,
         fixtureRoles: dataset === "locomo" ? { speakerA: "user-fact-eligible", speakerB: "conversation-only", dialogue: "complete-original-turns" } : undefined,
@@ -675,11 +678,15 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
       const request = input as
         | { kind: "longmemeval"; questionType: string; question: string; answer: string; response: string; abstention: boolean }
         | { kind: "memorybank"; persona: Parameters<typeof formatMemoryBankHistory>[0]; question: string; response: string }
+        | { kind: "locomo"; question: string; answer: string; response: string; adversarial: boolean }
       let built: { templateId: string; prompt: string }
       if (request.kind === "longmemeval") built = buildLongMemEvalJudgePrompt(request)
       else if (request.kind === "memorybank")
         built = buildMemoryBankJudgePrompt({ question: request.question,
           history: formatMemoryBankHistory(request.persona), response: request.response })
+      else if (request.kind === "locomo")
+        built = buildLocomoJudgePrompt({ question: request.question, answer: request.answer,
+          response: request.response, adversarial: request.adversarial })
       else throw new Error(`未知 judge 输入: ${(request as { kind?: string }).kind}`)
       const systemPrompt = "You are an evaluation judge that follows the user's instruction exactly. Reply with a single word: yes or no."
       const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: built.prompt }])
@@ -690,7 +697,8 @@ export function createLiveMemoryBenchAdapter(options: { readerControl?: ReaderCo
         systemPrompt, userText: built.prompt, maxTokens, timeoutMs: JUDGE_TIMEOUT_MS })
       const text = result.text.trim()
       if (!text) return { adjudicated: false, error: "judge returned an empty response", templateId: built.templateId, model: judgeModel }
-      const correct = request.kind === "memorybank" ? parseMemoryBankJudgeVerdict(text) : parseJudgeVerdict(text)
+      const correct = request.kind === "memorybank" ? parseMemoryBankJudgeVerdict(text)
+        : request.kind === "locomo" ? parseLocomoJudgeVerdict(text) : parseJudgeVerdict(text)
       if (correct === null) return { adjudicated: false, error: "MemoryBank judge must return a single yes or no", raw: text,
         templateId: built.templateId, model: judgeModel }
       return { adjudicated: true, correct, raw: text, templateId: built.templateId,

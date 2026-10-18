@@ -301,16 +301,31 @@ describe("bench runner 编排（fake adapter）", () => {
       file: { ...file, cases: [{ caseId: "bad id" }] }, seed: "s", judgeModel: "j" })).rejects.toThrow(/非法/)
   })
 
-  it("LoCoMo 不做 LLM judge（由独立官方脚本生成唯一主分），即使 judge 配置为 on", async () => {
+  it("LoCoMo 默认调用异构 LLM judge，报告语义正确率 [bench-locomo-judge-enabled]", async () => {
     const locomoFile = { schemaVersion: "desk-pet-memory-bench-cases/v1", dataset: "locomo", split: "locomo10",
       importTransformVersion: "test/1", upstream: null, license: null, selection: { policy: "full", caseCount: 1 },
       conversations: [{ sampleId: "conv-00" }], cases: [locomoCase("locomo-conv-00-q0000", "conv-00")] }
     const adapter = fakeAdapter()
     const report = await runMemoryBenchEvaluation({ adapter, dataset: "locomo", split: "locomo10",
       file: locomoFile, seed: "s", judge: "on", judgeModel: "judge-model-x" }) as Record<string, any>
+    expect(adapter.calls.judges).toHaveLength(1)
+    expect(report.judge).toEqual({ enabled: true, model: "judge-model-x" })
+    expect(report.scores.judged).toBe(1)
+    expect(report.scores.correct).toBe(1)
+    expect(report.scores.accuracy).toBe(1)
+    expect(report.gates.complete).toBe(true)
+  })
+
+  it("LoCoMo judge off 时不调用 judgeCase，accuracy 保持 null [bench-locomo-judge-off]", async () => {
+    const locomoFile = { schemaVersion: "desk-pet-memory-bench-cases/v1", dataset: "locomo", split: "locomo10",
+      importTransformVersion: "test/1", upstream: null, license: null, selection: { policy: "full", caseCount: 1 },
+      conversations: [{ sampleId: "conv-00" }], cases: [locomoCase("locomo-conv-00-q0000", "conv-00")] }
+    const adapter = fakeAdapter()
+    const report = await runMemoryBenchEvaluation({ adapter, dataset: "locomo", split: "locomo10",
+      file: locomoFile, seed: "s", judge: "off" }) as Record<string, any>
     expect(adapter.calls.judges).toHaveLength(0)
     expect(report.judge.enabled).toBe(false)
-    expect(report.scores.officialScoring.status).toBe("pending_official")
-    expect(report.gates.complete).toBe(true)
+    expect(report.scores.judged).toBe(0)
+    expect(report.scores.accuracy).toBe(null)
   })
 })

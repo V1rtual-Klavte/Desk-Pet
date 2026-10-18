@@ -17,13 +17,13 @@ const LONGMEMEVAL_METRIC_MODELS = new Map([
 
 function parseArgs(argv) {
   const [dataset, hypotheses, ...rest] = argv
-  if (!dataset || !hypotheses || !["locomo", "longmemeval"].includes(dataset))
-    throw new Error("用法: node test/memory-bench/run-official.mjs <locomo|longmemeval> <hypotheses.jsonl> [--data-dir PATH] [--out PATH] [--split oracle|s] [--metric-model gpt-4o-mini]")
+  if (!dataset || !hypotheses || dataset !== "longmemeval")
+    throw new Error("用法: node test/memory-bench/run-official.mjs longmemeval <hypotheses.jsonl> [--data-dir PATH] [--split oracle|s] [--metric-model gpt-4o-mini]")
   const options = new Map()
   for (let index = 0; index < rest.length; index += 2) {
     const name = rest[index]
     const value = rest[index + 1]
-    if (!["--data-dir", "--out", "--split", "--metric-model"].includes(name)) throw new Error(`未知参数: ${name}`)
+    if (!["--data-dir", "--split", "--metric-model"].includes(name)) throw new Error(`未知参数: ${name}`)
     if (options.has(name)) throw new Error(`参数重复: ${name}`)
     if (!value || value.startsWith("--")) throw new Error(`${name} 缺少值`)
     options.set(name, value)
@@ -71,13 +71,6 @@ function main() {
   const dataDir = resolve(options.get("--data-dir") ?? process.env.DESKPET_BENCH_DATA_DIR ?? join(ROOT, ".data"))
   const python = process.env.DESKPET_BENCH_PYTHON ?? "python3"
   const rows = hypothesisRows(hypotheses)
-
-  if (dataset === "locomo") {
-    const out = resolve(options.get("--out") ?? `${hypotheses}.official-locomo.jsonl`)
-    const runner = join(ROOT, "datasets/locomo/run_official.py")
-    run(python, [runner, "--hypotheses", hypotheses, "--data-dir", dataDir, "--out", out])
-    return
-  }
 
   const split = options.get("--split") ?? "oracle"
   const downloadName = split === "oracle" ? "longmemeval_oracle"

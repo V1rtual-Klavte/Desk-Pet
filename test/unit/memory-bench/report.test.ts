@@ -155,7 +155,7 @@ describe("记忆基准报告呈现", () => {
     expect(formatBenchSummary(summary)).toContain("LongMemEval evaluate_qa.py")
   })
 
-  it("MemoryBank 用单一 accuracy，LoCoMo 在无官方结果时显示 pending_official [bench-report-pending-official]", () => {
+  it("MemoryBank 与 LoCoMo 都使用 judge accuracy [bench-report-judge-accuracy]", () => {
     const memorybank = summarizeBenchReport({
       dataset: "memorybank", split: "cn", splitLabel: "MemoryBank/cn", status: "observational",
       plannedCells: 1, completedCells: 1, failures: [], outcomes: [outcome({ caseRef: { question: "q", persona: "p" } })],
@@ -165,13 +165,24 @@ describe("记忆基准报告呈现", () => {
 
     const locomo = summarizeBenchReport({
       dataset: "locomo", split: "locomo10", splitLabel: "LoCoMo/locomo10", status: "observational",
-      plannedCells: 2, completedCells: 2, failures: [], outcomes: [outcome({ score: 0.5 })],
-      scores: { cases: 2, scored: 0, meanScore: null, byCategory: [],
-        officialScoring: { status: "pending_official" }, ingest: { registeredSources: 3, processedSources: 3, sweeps: 1 } },
+      plannedCells: 2, completedCells: 2, failures: [],
+      outcomes: [
+        outcome({ caseId: "locomo-q0", score: 1, caseRef: { question: "q0", category: 1 },
+          judgment: { adjudicated: true, correct: true, raw: "yes" } }),
+        outcome({ caseId: "locomo-q1", score: 0, caseRef: { question: "q1", category: 1 },
+          judgment: { adjudicated: true, correct: false, raw: "no" } }),
+      ],
+      scores: { cases: 2, judged: 2, correct: 1, accuracy: 0.5,
+        byCategory: [{ category: 1, count: 2, judged: 2, correct: 1, accuracy: 0.5,
+          evidenceRecall: 1, candidateRecall: 1 }],
+        ingest: { registeredSources: 3, processedSources: 3, sweeps: 1 } },
     })
-    expect(locomo.quality.overall).toMatchObject({ judged: 0, accuracy: null, pending: true })
-    expect(formatBenchSummary(locomo)).toContain("Snap LoCoMo")
-    expect(formatBenchSummary(locomo)).not.toContain("LongMemEval evaluate_qa.py")
+    expect(locomo.quality.overall).toMatchObject({ judged: 2, correct: 1, accuracy: 0.5 })
+    expect(locomo.quality.breakdownLabel).toBe("类别语义正确率")
+    const text = formatBenchSummary(locomo)
+    expect(text).toContain("语义正确率 50.0%（1/2）")
+    expect(text).not.toContain("pending_official")
+    expect(text).not.toContain("Snap LoCoMo")
   })
 
   it("按逐请求证据汇总混合缓存状态", () => {

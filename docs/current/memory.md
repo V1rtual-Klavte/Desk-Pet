@@ -153,6 +153,6 @@ dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Re
 
 ## 质量与资源证据
 
-记忆质量以外部权威基准为**主口径**（memory-bench：LongMemEval／MemoryBank cn／LoCoMo，按分层节奏运行，报告是质量证据）；自建 80 题是**兜底冒烟与治理语义回归**，目前仍是待人工审计的合成标注草案。跑批、独立审阅门禁与 release 存储/debug IPC 性能脚本已接入[测试入口](../../test/README.md#trace记忆质量与性能门禁)。实际注入证据取请求预算裁剪后的 rendered IDs，提取与回答分开评分，无记忆/本地/always/adaptive/gold evidence 逐 cell 重建库并配对。采集完成不等于质量通过，缺审阅与缓存计数不能补成成功或零成本。
+记忆质量以外部权威基准为**主口径**（memory-bench：LongMemEval／MemoryBank cn／LoCoMo；LoCoMo 用异构 LLM judge 的语义正确率，不用官方词面 F1；按分层节奏运行，报告是质量证据）；自建 80 题是**兜底冒烟与治理语义回归**，目前仍是待人工审计的合成标注草案。跑批、独立审阅门禁与 release 存储/debug IPC 性能脚本已接入[测试入口](../../test/README.md#trace记忆质量与性能门禁)。实际注入证据取请求预算裁剪后的 rendered IDs，提取与回答分开评分，无记忆/本地/always/adaptive/gold evidence 逐 cell 重建库并配对。采集完成不等于质量通过，缺审阅与缓存计数不能补成成功或零成本。
 
 完整性/治理零失败、语义质量、重排收益与资源门槛分别判定；尚需修复的问题与完成条件见[未完成工作总表](../plans/active/未完成工作与已知缺口.md#3-长期记忆剩余)，测试结果由 `test/reports/` 报告与交付检查点承担，不在待办重复记录。当前尚不能宣称 adaptive 已带来收益；真实设置窗口、Windows 和 release UI/IPC 证据也不能由 Node 单测替代。

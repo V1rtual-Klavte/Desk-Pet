@@ -169,17 +169,23 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
   仍按 verdict 判分；它们只归为污染样本，不能混入严格空工具 baseline。旧报告或工具观测字段缺失的 run 会记为未知，
   不会被追认为严格空工具。
 
-### LoCoMo（确定性词面 F1，不用 judge）
+### LoCoMo（异构 LLM judge 语义正确率，不用官方 F1）
 
-- 移植官方 `task_eval/evaluation.py`：normalize（去逗号→小写→去 ASCII 标点→去 a/an/the/and→折叠空白）、
-  Porter 词干化、词频交集 F1；多跳（category 1）逗号拆子句取最优；category 3 金标在 `;` 截断；
-  category 5 对抗题二值（`no information available` / `not mentioned`）。
-- 词干器是按 Porter 1980 论文算法本仓移植（与 NLTK `PorterStemmer` 默认模式同口径，实现独立），
-  论文测试词表在 L2 单测逐一核对 —— 报告口径为「本仓适配移植」。
-- 另报确定性 `candidateRecallMean`（装配前候选池对 gold `evidence` dia_id 的覆盖）、`evidenceRecallMean` /
-  `finalEvidenceRecallMean`（最终渲染证据对 gold `evidence` 的覆盖）与按 category 的
-  `byCategory[].candidateRecall/evidenceRecall`。候选命中但最终未渲染，指向装配/选择；
-  候选未命中才是检索缺口。官方回填后这些聚合仍从 `scores.rows[].goldEvidence` 重算。
+- **不使用 Snap 官方 `task_eval/evaluation.py` 词面 F1。** 官方 F1 是 token 级词面重叠，
+  会惩罚语义正确但更长的回答；cat3 只取分号前、cat1 逗号拆句、cat5 是 `no information available`
+  子串二值，且独立审计发现约 6.4% gold 错答。公开 harness（Mem0 / Zep / Cognee 等）也普遍使用
+  自定义 LLM judge，没有一个直接调用官方 F1 脚本；跨论文 F1/judge 数字也不可混比。
+- 质量主口径：**异构 LLM judge 的语义正确率**。judge 默认 `deepseek-v4-pro`，必须不同于被测模型
+  （`--bench-judge-model` 可覆盖）；只接收 question / reference answer / model response。
+  允许同义改写、等价日期/单位和额外正确细节；缺项、错实体/时间、矛盾或无依据编造为错。
+  category 5 的 trap answer 不是正确答案，正确回答是识别不可回答或纠正前提。
+- 报告 `scores`：`judged` / `correct` / `accuracy`、按 category 的 `byCategory[].accuracy`、
+  `judgeFailures`；另报 `candidateRecallMean`（装配前候选池对 gold `evidence` dia_id 的覆盖）、
+  `finalEvidenceRecallMean`（最终渲染证据覆盖）与按 category 的候选/证据召回。
+  `--bench-judge off` 时 accuracy 为 null，只保留证据指标。
+- 不再有 `officialScoring` / `meanScore` / 官方回填；LoCoMo 的官方 F1 脚本与
+  `run-official` / `import-verdicts` / `export-hypotheses` 分支已删除。
+  LongMemEval 官方 `evaluate_qa.py` 链保留。
 
 ### MemoryBank cn（确定性检索 + judge 一致性）
 
@@ -199,6 +205,7 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 - LoCoMo 每个上游 session 建真实 JSONL，正文保留原始 speaker、日期、文本和独立标记的 blip_caption。固定 speaker_a → user（可登记事实）、speaker_b → assistant（仅对话引用）；双方都是上游真人，此模型角色映射是适配器选择，不能同时将两人的经历登记为用户本人事实。来源坐标指向已提交的 sessionId/entryId/seq，样本id:dia_id 仅作评测映射标签。
 - `evidence` 截 4000 字符（对齐产品 `EVIDENCE_CHARS`），`sourceLength` 保留完整渲染正文长度；dreaming 对 >4000 字符来源的整条丢弃按实计数。原话 JSONL 完整保留，不跟随摘要截断。
 - 提取走真实 dreaming（manual 模式，循环 sweep 直至无待处理来源）；全部数据集保留生产 scope，不做 session→user 或 add/forget 归一，`ingest.scopeNormalized` 恒为 0。跨会话细节通过受治理的对话检索读取，不撤销其引用锚。
+- 灌库链路是生产代码：`registerMemorySources` → 真实 `runDreamingSweep`（Light → Review → commit）→ Rust SQLite；但对话本身是隔离 fixture JSONL 预写入，**不是通过 UI 真实聊天回放**。提问回合才走真实 `sendMessage`（`toolMode: "none"`），召回/阅读/作答仍是生产链路。
 - LoCoMo 所有题加同一 `Answer using our conversation history:` 前缀，原题不改；该明确任务上下文驱动生产查询计划和阅读器，普通知识问答的跳过路径仍保留。活动 Card 的输出规则统一要求英文完整短答、计数使用数字、只答所求且保留多项/日期/否定/可能性等必需信息；历史事件核对亲历前提，假设意愿题允许依据相关个人证据作限定推断，身份不靠沉默推断；证据不足时 `No information available.`，经公共保存入口刷新并在收尾恢复。生成输入不使用 answer/category/evidence 金标；这些字段只供判分及诊断。报告 manifest 留存完整规则、角色映射和 `productScore: false`：结果是官方确定性判分的 **LoCoMo 适配器分数**，不直接宣称产品分数。
 - 提问：每题新建会话；cell = 题 × 1 trial（外部集是观测证据，不套自建集的 ≥3 trial 配对纪律）。
 - 组复用：LoCoMo 一段对话灌一次库、组内多题提问；MemoryBank 一个角色同理；LongMemEval 每题一组。
@@ -242,7 +249,7 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 | **常规回归**（默认） | 记忆核心（召回 / 提取 / 治理）改动后 | `pnpm run test:memory-bench:regression`（oracle 全量 52 题） | 0.5–1M（每题 ≈1 次提取 sweep + 1 次提问 + 1 次 judge） |
 | **中文对照** | 中文卡 / 中文体验改动后 | `pnpm run test:memory-bench:zh`（MemoryBank cn 15 角色 × 100 题） | 最小（提取近零，主要是 judge） |
 | **检索难度** | 里程碑 / 发版前 | `pnpm run test:memory-bench:difficulty`（LongMemEval S；需先 `node test/memory-bench/prepare.mjs --dataset longmemeval --split s` 装 277MB） | 2.5–4.5M（每题 haystack ≈122k） |
-| **对外可比** | 需要对外引用数字时 | `pnpm run test:memory-bench:external`（LoCoMo，默认分批 100 题；换批量用 `test:memory-bench -- --bench-dataset locomo --bench-limit N`） | 免 judge（词面 F1）；1986 题信息量最大 |
+| **LoCoMo 语义对照** | 需要看 LoCoMo 产品语义质量时 | `pnpm run test:memory-bench:external`（LoCoMo，默认分批 100 题；换批量用 `test:memory-bench -- --bench-dataset locomo --bench-limit N`） | 异构 LLM judge（默认 v4pro，必须不同于被测模型）；1986 题信息量最大 |
 
 别名只是固定最常见口径；其它参数组合仍走 `pnpm run test:memory-bench -- <参数>`。
 

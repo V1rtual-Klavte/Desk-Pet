@@ -100,6 +100,7 @@ export async function registerDefaultTools(): Promise<void> {
   const { registerWindowInfoTool } = await import("./local/window")
   const { registerScreenshotTool } = await import("./local/screenshot")
   const { registerAppOpenTool } = await import("./local-extra/app")
+  // 剪贴板工具走原生宿主；动态导入避免与 registry 形成循环依赖。
   const { registerClipboardTools } = await import("./local-extra/clipboard")
   const { registerAgentSpawnTool } = await import("./local-extra/agent-tool")
   const { registerMemoryTools } = await import("./local-extra/memory")

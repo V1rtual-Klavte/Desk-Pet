@@ -47,6 +47,24 @@ export function buildLongMemEvalJudgePrompt({ questionType, question, answer, re
 }
 
 /**
+ * LoCoMo 语义判分：以产品侧「回答是否语义正确且完整」为准，不用官方词面 F1。
+ * 允许同义改写、等价日期/单位和额外正确细节；缺项、错实体/时间、矛盾或无依据编造为错。
+ * category 5 是对抗题：对话本身不支持题面前提，trap answer 不是正确答案。
+ */
+export function buildLocomoJudgePrompt({ question, answer, response, adversarial = false }) {
+  if (adversarial) {
+    return {
+      templateId: "locomo-adversarial",
+      prompt: `You are evaluating a memory assistant's answer to an adversarial question about a long conversation. The conversation does not contain the information needed to answer the question as asked. The "trap answer" below is NOT a correct answer.\n\nA correct response identifies the question as unanswerable, says the information is not available, or corrects the false premise. A response that asserts a concrete answer, including the trap answer, is wrong.\n\nQuestion: ${String(question)}\n\nTrap answer (not a correct answer): ${String(answer)}\n\nModel response: ${String(response)}\n\nDoes the model response correctly identify the question as unanswerable or correct the false premise? Answer yes or no only.`,
+    }
+  }
+  return {
+    templateId: "locomo-semantic",
+    prompt: `You are evaluating a memory assistant's answer to a question about a long conversation. You will see the question, the reference answer, and the model response.\n\nDecide whether the model response is semantically correct and complete.\n- Accept paraphrases, synonyms, equivalent dates/units, and extra correct detail.\n- Answer no if the response misses a required item, names the wrong person/entity/time, contradicts the reference, or adds an unsupported claim that changes the answer.\n- Do not penalize wording or length when the meaning is correct and complete.\n- Use only the reference answer to judge meaning; do not require the exact reference wording.\n\nQuestion: ${String(question)}\n\nReference answer: ${String(answer)}\n\nModel response: ${String(response)}\n\nIs the model response semantically correct and complete? Answer yes or no only.`,
+  }
+}
+
+/**
  * MemoryBank 自适配判分：以整段角色历史为参照判回答一致性。
  * 上游无金标，也没有官方模板；本模板只回答「回答是否与历史一致且答到了问题」。
  */
@@ -64,6 +82,12 @@ export function parseJudgeVerdict(text) {
 
 /** MemoryBank 无官方解析约定：严格接受单词 yes/no，其他输出保留为未裁决。 */
 export function parseMemoryBankJudgeVerdict(text) {
+  const verdict = String(text ?? "").trim().toLowerCase()
+  return verdict === "yes" ? true : verdict === "no" ? false : null
+}
+
+/** LoCoMo 语义判分同样要求严格单词 yes/no；混合解释不猜结论。 */
+export function parseLocomoJudgeVerdict(text) {
   const verdict = String(text ?? "").trim().toLowerCase()
   return verdict === "yes" ? true : verdict === "no" ? false : null
 }

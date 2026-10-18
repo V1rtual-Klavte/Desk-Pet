@@ -535,17 +535,20 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     const benchPassed = report.gates.complete === true
     const scores = report.scores as {
       overall?: { correct?: number; judged?: number; accuracy?: number | null }
-      accuracy?: { correct?: number; judged?: number; value?: number | null }
-      meanScore?: number | null
+      accuracy?: number | { correct?: number; judged?: number; value?: number | null } | null
+      judged?: number
+      correct?: number
       scored?: number
     }
-    const benchAccuracy = scores.overall ? scores.overall.accuracy : scores.accuracy?.value
-    const benchJudged = scores.overall?.judged ?? scores.accuracy?.judged ?? scores.scored
-    const benchCorrect = scores.overall?.correct ?? scores.accuracy?.correct
+    const accuracyObject = scores.accuracy && typeof scores.accuracy === "object" ? scores.accuracy : null
+    const benchAccuracy = scores.overall?.accuracy
+      ?? (typeof scores.accuracy === "number" ? scores.accuracy : accuracyObject?.value ?? null)
+    const benchJudged = scores.overall?.judged ?? accuracyObject?.judged ?? scores.judged ?? scores.scored
+    const benchCorrect = scores.overall?.correct ?? accuracyObject?.correct ?? scores.correct
     const qualityNote = benchAccuracy === null || benchAccuracy === undefined
       ? "无已判分样本"
-      : `${dataset === "locomo" ? "平均 F1" : "正确率"} ${(benchAccuracy * 100).toFixed(1)}%`
-        + `（${dataset === "locomo" ? `n=${benchJudged ?? "?"}` : `${benchCorrect ?? "?"}/${benchJudged ?? "?"}`}）`
+      : `${dataset === "locomo" ? "语义正确率" : "正确率"} ${(benchAccuracy * 100).toFixed(1)}%`
+        + `（${benchCorrect ?? "?"}/${benchJudged ?? "?"}）`
     view.finish({
       verdict: benchPassed ? "pass" : "fail",
       note: `完成 ${report.completedCells}/${report.plannedCells} · ${qualityNote} · 观测指标非门禁阈值；详见 JSON 报告（terminal 报告含逐 case 明细）`

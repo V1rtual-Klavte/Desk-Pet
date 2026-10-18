@@ -64,7 +64,7 @@ export function summarizeBenchReport(report) {
   const officialPending = dataset === "longmemeval"
     && scores.officialScoring?.status !== "official" && scores.officialScoring?.status !== "manual"
 
-  // 质量口径按数据集归一；LoCoMo 只呈现官方类别分，未回填时明确 pending。
+  // 质量口径按数据集归一；LoCoMo 呈现异构 LLM judge 的语义正确率。
   let quality = { kind: dataset, overall: null, buckets: [], breakdown: [], breakdownLabel: "分组" }
   if (dataset === "longmemeval") {
     const bucket = name => {
@@ -91,12 +91,11 @@ export function summarizeBenchReport(report) {
     quality.overall = { cases: scores.cases ?? outcomes.length, judged: accuracy.judged, correct: accuracy.correct, accuracy: accuracy.value ?? null }
     quality.breakdownLabel = "检索"
   } else if (dataset === "locomo") {
-    const pending = scores.officialScoring?.status !== "official"
-    quality.overall = { cases: scores.cases ?? outcomes.length, judged: scores.scored ?? 0,
-      correct: null, accuracy: pending ? null : scores.meanScore, metric: "official category score", pending }
+    quality.overall = { cases: scores.cases ?? outcomes.length, judged: scores.judged ?? 0,
+      correct: scores.correct ?? null, accuracy: scores.accuracy ?? null, metric: "heterogeneous LLM judge" }
     quality.breakdown = (scores.byCategory ?? []).map(row => ({ name: `category ${row.category}`, cases: row.count,
-      judged: row.count, accuracy: row.meanScore }))
-    quality.breakdownLabel = "官方类别评分"
+      judged: row.judged ?? 0, correct: row.correct ?? null, accuracy: row.accuracy ?? null }))
+    quality.breakdownLabel = "类别语义正确率"
   } else {
     quality.overall = { cases: outcomes.length, judged: null, correct: null, accuracy: null }
   }
@@ -248,19 +247,17 @@ export function formatBenchSummary(summary, options = {}) {
     lines.push(`召回观测：${metrics.diagnosticSamples}/${metrics.samples} 次有完整诊断 · FTS ${num(metrics.ftsHits)} · LIKE 回退 ${num(metrics.likeFallbacks)} · 时间过滤 ${num(metrics.timeFilterBefore)}→${num(metrics.timeFilterAfter)} · 重复 ${num(metrics.duplicateEvents)} · JSONL 回读淘汰 ${num(metrics.jsonlReadbackDropped)}/${num(metrics.jsonlReadbackCandidates)} · p95 recall/query ${num(metrics.recallP95Ms, 1)}/${num(metrics.queryP95Ms, 1)}ms · 冷索引 ${num(metrics.coldIndexSessions)} 会话/${num(metrics.coldIndexMs, 1)}ms`)
   }
   const overall = summary.quality?.overall
-  const metric = summary.quality?.kind === "locomo" ? "LoCoMo 官方类别分" : "正确率"
+  const metric = summary.quality?.kind === "locomo" ? "语义正确率" : "正确率"
   if (overall && overall.accuracy !== null && overall.accuracy !== undefined) {
-    const detail = summary.quality?.kind === "locomo"
-      ? `n=${overall.judged ?? "?"}`
-      : `${overall.correct ?? "?"}/${overall.judged ?? "?"}`
+    const detail = `${overall.correct ?? "?"}/${overall.judged ?? "?"}`
     lines.push(`质量参考（观测指标，非门禁阈值）：${metric} ${pct(overall.accuracy)}（${detail}）`)
     const buckets = (summary.quality.buckets ?? []).filter(bucket => bucket && bucket.judged > 0)
     if (buckets.length) lines.push(`  ${buckets.map(bucket => `${bucket.name} ${pct(bucket.accuracy)}`).join(" · ")}`)
   } else {
-    const pendingGuide = summary.quality?.kind === "locomo"
-      ? "pending_official（须运行锁定的 Snap LoCoMo 官方评分脚本并回填）"
-      : summary.quality?.kind === "longmemeval"
-        ? "pending_official（须运行锁定的 LongMemEval evaluate_qa.py 并回填）"
+    const pendingGuide = summary.quality?.kind === "longmemeval"
+      ? "pending_official（须运行锁定的 LongMemEval evaluate_qa.py 并回填）"
+      : summary.quality?.kind === "locomo"
+        ? "无已判分样本（judge 关闭或全部未裁决）"
         : "pending_official（须运行对应数据集的锁定官方评分脚本并回填）"
     lines.push(summary.quality?.overall?.pending
       ? `质量参考（观测指标，非门禁阈值）：${pendingGuide}`
@@ -324,10 +321,10 @@ function qualityCards(summary) {
   const cards = []
   const overall = summary.quality?.overall
   if (overall) {
-    const metric = summary.quality.kind === "locomo" ? "LoCoMo 官方类别分" : "正确率"
+    const metric = summary.quality.kind === "locomo" ? "语义正确率" : "正确率"
     cards.push({ label: `总体${metric}`, value: overall.accuracy === null || overall.accuracy === undefined ? "—" : pct(overall.accuracy),
       detail: overall.pending ? "pending_official · 需导入锁定官方评分结果"
-        : summary.quality.kind === "locomo" ? `n=${overall.judged ?? "?"}` : `${overall.correct ?? "?"}/${overall.judged ?? "?"} 正确` })
+        : `${overall.correct ?? "?"}/${overall.judged ?? "?"} 正确` })
   }
   for (const bucket of summary.quality?.buckets ?? []) {
     if (!bucket || bucket.judged === undefined) continue
@@ -375,7 +372,7 @@ export function renderBenchHtmlReport(report, options = {}) {
     ? `<section><h2>外部逐题判分与覆盖</h2><div class="meta-grid"><span>判分者：${escapeHtml(adjudication.judge)}</span><span>口径：${escapeHtml(adjudication.method)}</span><span>scope：${escapeHtml(adjudication.scope)}</span><span>判分时间：${escapeHtml(adjudication.judgedAt)}</span><span>导入时间：${escapeHtml(adjudication.importedAt)}</span><span>原始报告 SHA-256：${escapeHtml(adjudication.sourceReportSha256)}</span><span>判分结果 SHA-256：${escapeHtml(adjudication.verdictLogSha256)}</span><span>覆盖：${adjudication.coverage?.scoresAccepted ?? adjudication.coverage?.verdictsAccepted ?? 0}/${adjudication.coverage?.selectedCases ?? "?"}；未导出回答 ${adjudication.coverage?.missingHypotheses ?? "?"}；缺判分 ${adjudication.coverage?.missingScores ?? adjudication.coverage?.missingVerdicts ?? "?"}</span></div><p class="note">${escapeHtml(adjudication.note ?? "")}</p></section>`
     : ""
   const breakdownHtml = breakdown.length
-    ? `<section><h2>${escapeHtml(summary.quality.breakdownLabel)}</h2><table><thead><tr><th>名称</th><th>样本</th><th>判分</th><th>${summary.quality.kind === "locomo" ? "官方类别分" : "正确率"}</th></tr></thead><tbody>${
+    ? `<section><h2>${escapeHtml(summary.quality.breakdownLabel)}</h2><table><thead><tr><th>名称</th><th>样本</th><th>判分</th><th>${summary.quality.kind === "locomo" ? "语义正确率" : "正确率"}</th></tr></thead><tbody>${
       breakdown.map(row => `<tr><td>${escapeHtml(row.name)}</td><td>${row.cases ?? "—"}</td><td>${row.judged ?? "—"}</td><td>${row.accuracy === null || row.accuracy === undefined ? "—" : pct(row.accuracy)}</td></tr>`).join("")
     }</tbody></table></section>`
     : ""
@@ -474,7 +471,7 @@ export function renderBenchHtmlReport(report, options = {}) {
   ${failureHtml}
   <section><h2>逐题（${summary.rows.length}）</h2>${rowHtml || "<div class='note'>没有逐题结果。</div>"}</section>
   <div class="note">
-    报告 JSON：${escapeHtml(options.reportPath ?? "")}${options.hypothesesPath ? `<br />逐题 hypotheses（官方脚本可消费）：${escapeHtml(options.hypothesesPath)}` : ""}
+    报告 JSON：${escapeHtml(options.reportPath ?? "")}${options.hypothesesPath ? `<br />逐题记录（诊断用）：${escapeHtml(options.hypothesesPath)}` : ""}
   </div>
 </body></html>
 `

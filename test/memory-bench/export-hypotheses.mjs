@@ -6,8 +6,8 @@
 // 用本脚本把已留存报告的回答与身份哈希导出，再由锁定官方脚本评分并回填：
 //   · LongMemEval：输出 {"question_id","hypothesis"} 行，直接喂官方
 //     src/evaluation/evaluate_qa.py <metric_model> <hyp_file> <ref_file>；
-//   · LoCoMo：输出带身份与哈希的 hypotheses；run-official.mjs 调用锁定 Snap evaluator 并从锁定 raw data join gold；
 //   · MemoryBank：输出 {"persona","question","hypothesis"} 行（上游没有判分脚本）。
+//   · LoCoMo 不再导出官方 F1 hypotheses；质量由 bench runner 内的异构 LLM judge 直接判定。
 //
 // 用法：node test/memory-bench/export-hypotheses.mjs <report.json> [--out file.jsonl]
 // 报告 = pnpm run test:memory-bench 输出的 test/reports/<stamp>.json（或 bundle 里同内容）；
@@ -23,10 +23,6 @@ function hypothesisLine(dataset, outcome) {
   if (dataset === "longmemeval")
     return { question_id: ref.questionId ?? outcome.questionId ?? null, question: ref.question ?? null,
       hypothesis: outcome.answer ?? null }
-  if (dataset === "locomo")
-    return { caseId: outcome.caseId, question_id: outcome.caseId,
-      sample_id: ref.sampleId ?? outcome.groupKey, question_index: ref.questionIndex ?? null,
-      question: ref.question ?? null, hypothesis: outcome.answer ?? null, category: ref.category ?? null }
   if (dataset === "memorybank")
     return { caseId: outcome.caseId, persona: ref.persona ?? outcome.groupKey, question: ref.question ?? null,
       hypothesis: outcome.answer ?? null }
@@ -62,12 +58,6 @@ export function exportHypotheses(report, { sourceReportSha256 } = {}) {
       if (typeof line.question_id !== "string" || !line.question_id.trim())
         throw new Error(`${outcome.caseId}: 缺少唯一 question_id，无法绑定外部判分`)
       if (typeof line.question !== "string") throw new Error(`${outcome.caseId}: 缺少 question 文本，无法绑定外部判分`)
-      line.question_sha256 = sha256(line.question)
-    }
-    if (dataset === "locomo") {
-      if (typeof line.sample_id !== "string" || !Number.isInteger(line.question_index)
-        || typeof line.question !== "string" || !Number.isInteger(line.category))
-        throw new Error(`${outcome.caseId}: LoCoMo identity/question/category is incomplete`)
       line.question_sha256 = sha256(line.question)
     }
     lines.push(line)
