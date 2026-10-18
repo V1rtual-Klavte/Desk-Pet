@@ -1,3 +1,4 @@
+// 2026-10-18 定向复核：本域行为未变；仅共享文件 src/services/host/types.ts 的增量（记忆命令线形状）导致 sourceHash 变化。
 // 2026-10-15 Windows UI 验收 analyze -> generate：types.ts 删除无 Node 消费者的光标事件；Node 设置提交/投影入口未改。设置布局、换行、保存回执与字体线程修复由 Rust 内联用例和隔离实窗验证，不冒充本契约的 Node 覆盖。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 src/services/host/types.ts 变化 —— memory_job_checkpoint 命令形状新增可选 coveredSourceIds（批内水位按每个覆盖会话推进，见 memory 契约同批记录）；原生 UI 面不受影响，覆盖点与 caseId 语义不变，仅按当前源码刷新 sourceHash。
 // 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
@@ -210,7 +211,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "52df81b750563223d28cf018ba8a03dc72b0a45059fa7172e388ea70d17034e4",
+  sourceHash: "ac63290c63ef6c60aadb1716f37b3657d4be1ac70429f4fdce601c9f5bb4f435",
   coverage: [
     {
       id: "nui-34",

@@ -1,3 +1,4 @@
+// 2026-10-18 定向复核：本域行为未变；仅共享文件 src/services/host/types.ts 的增量（记忆命令线形状）导致 sourceHash 变化。
 // 2026-10-15 Windows UI 验收 analyze -> generate：types.ts/index.ts 仅删除光标事件定义/导出；更新命令、确认与退出序列形状不变，现有 coverage/caseId 不变。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 src/services/host/types.ts 变化 —— 仅 memory_job_checkpoint 命令形状新增可选 coveredSourceIds；更新命令的名字、参数与 Node 请求面隔离保持原义，up-01 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-10 定向复核：getHostBridge/request 取用口和更新命令签名未变；通用 JSON blob 传输由 host 契约覆盖，up-01 的更新命令形状、返回透传与 Node 请求面隔离保持原覆盖。
@@ -83,7 +84,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "57e3920860114dd31048291780727d1157e9487436a9b328e46f41a50a2a9e74",
+  sourceHash: "504cfeb1ab8c5ebe9f4547b9987fc0d51373201877228abe884e4158b8dbc0d2",
   coverage: [
     {
       id: "up-01",

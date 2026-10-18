@@ -38,7 +38,7 @@ import { formatLocomoQuestion, LOCOMO_ANSWER_FORMAT } from "./datasets/locomo/fi
 import { buildLocomoHistory, installLocomoAnswerPolicy } from "./datasets/locomo/live-fixture"
 
 /** 与 src/services/agent/memory/sources.ts 的 EVIDENCE_CHARS 对齐：登记证据只保留引文长度。 */
-const EVIDENCE_CHARS = 2_000
+const EVIDENCE_CHARS = 4_000
 /** 产品 dreaming 的丢弃阈值（sourceLength > 4800 的整条来源不处理）。 */
 const OVERSIZED_SOURCE_CHARS = 4_800
 const DREAMING_SWEEP_CAP = 40

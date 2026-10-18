@@ -2219,44 +2219,28 @@ impl MemoryStore {
         if changed == 0 {
             return Err(AppError::MemoryConflict);
         }
-        // 水位写入口只有这里（唯一实现点）：批内每个会话各自推进，游标来源兜底保证
-        // 老调用（只带 cursor）语义不变。
-        let mut advances: Vec<(String, i64)> = Vec::new();
-        if covered_source_ids.is_empty() {
-            let source: Option<(String, i64)> = conn
-                .query_row(
-                    "SELECT session_id,seq FROM memory_sources WHERE source_id=?1 LIMIT 1",
-                    [cursor],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()
-                .map_err(db_err)?;
-            advances.extend(source);
+        // The job-local projection records what this batch actually reviewed. Global
+        // watermarks advance only in publish_candidates, so a malformed model response
+        // or a failed publish cannot silently skip these sources on the next sweep.
+        let written = if covered_source_ids.is_empty() {
+            conn.query_row(
+                "SELECT source_id FROM memory_sources WHERE source_id=?1 LIMIT 1",
+                [cursor],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(db_err)?
+            .into_iter()
+            .collect::<Vec<_>>()
         } else {
-            let placeholders = std::iter::repeat("?")
-                .take(covered_source_ids.len())
-                .collect::<Vec<_>>()
-                .join(",");
-            let mut statement = conn
-                .prepare(&format!(
-                    "SELECT session_id,MAX(seq) FROM memory_sources WHERE source_id IN ({placeholders}) GROUP BY session_id"
-                ))
-                .map_err(db_err)?;
-            let rows = statement
-                .query_map(
-                    params_from_iter(covered_source_ids.iter().map(String::as_str)),
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-                )
-                .map_err(db_err)?;
-            for row in rows {
-                advances.push(row.map_err(db_err)?);
-            }
-        }
-        for (session_id, seq) in advances {
+            covered_source_ids.to_vec()
+        };
+        for source_id in written {
             conn.execute(
-                    "INSERT INTO memory_watermarks(session_id,seq,rule_version,updated_at) VALUES (?1,?2,?3,?4) \
-                     ON CONFLICT(session_id) DO UPDATE SET seq=MAX(memory_watermarks.seq,excluded.seq),updated_at=excluded.updated_at",
-                    params![session_id, seq, WATERMARK_RULE_VERSION, now_ms()]).map_err(db_err)?;
+                "INSERT OR IGNORE INTO memory_job_covered_sources(job_id,source_id,created_at) VALUES (?1,?2,?3)",
+                params![job_id, source_id, now_ms()],
+            )
+            .map_err(db_err)?;
         }
         Self::read_job(&conn, job_id)
     }
@@ -2314,7 +2298,9 @@ impl MemoryStore {
         };
         let mut statement = conn
             .prepare(&format!(
-                "SELECT {PENDING_SOURCE_COLUMNS} {PENDING_SOURCE_FROM} ORDER BY s.session_id, s.seq LIMIT ?4"
+                "SELECT {PENDING_SOURCE_COLUMNS} {PENDING_SOURCE_FROM} \
+                 AND NOT EXISTS(SELECT 1 FROM memory_job_covered_sources c WHERE c.job_id=?4 AND c.source_id=s.source_id) \
+                 ORDER BY s.session_id, s.seq LIMIT ?5"
             ))
             .map_err(db_err)?;
         let rows = statement
@@ -2323,6 +2309,7 @@ impl MemoryStore {
                     cursor_position.as_ref().map(|position| position.0.clone()),
                     cursor_position.as_ref().map(|position| position.1),
                     origin,
+                    job_id,
                     JOB_SOURCE_BATCH
                 ],
                 |row| {
@@ -2647,7 +2634,53 @@ impl MemoryStore {
                 .map_err(db_err)?;
             published += 1;
         }
-        // 水位由 job_checkpoint 按实际完成的来源推进；发布只提交已审候选，不能把其它来源一并标成完成。
+        // Watermarks advance in the same transaction that publishes the reviewed candidates.
+        // A failed parse or publish therefore leaves the sources pending for the next sweep.
+        let covered = {
+            let mut statement = transaction
+                .prepare("SELECT source_id FROM memory_job_covered_sources WHERE job_id=?1")
+                .map_err(db_err)?;
+            let rows = statement
+                .query_map([job_id], |row| row.get::<_, String>(0))
+                .map_err(db_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            rows
+        };
+        if !covered.is_empty() {
+            let placeholders = std::iter::repeat("?")
+                .take(covered.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let advances = {
+                let mut statement = transaction
+                    .prepare(&format!(
+                        "SELECT session_id,MAX(seq) FROM memory_sources WHERE source_id IN ({placeholders}) GROUP BY session_id"
+                    ))
+                    .map_err(db_err)?;
+                let rows = statement
+                    .query_map(
+                        params_from_iter(covered.iter().map(String::as_str)),
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                    )
+                    .map_err(db_err)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db_err)?;
+                rows
+            };
+            for (session_id, seq) in advances {
+                transaction
+                    .execute(
+                        "INSERT INTO memory_watermarks(session_id,seq,rule_version,updated_at) VALUES (?1,?2,?3,?4) \
+                         ON CONFLICT(session_id) DO UPDATE SET seq=MAX(memory_watermarks.seq,excluded.seq),updated_at=excluded.updated_at",
+                        params![session_id, seq, WATERMARK_RULE_VERSION, now_ms()],
+                    )
+                    .map_err(db_err)?;
+            }
+            transaction
+                .execute("DELETE FROM memory_job_covered_sources WHERE job_id=?1", [job_id])
+                .map_err(db_err)?;
+        }
         let revision = if published > 0 {
             Self::bump(&transaction, "revision")?
         } else {

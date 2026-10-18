@@ -27,7 +27,9 @@ export function scoreLocomo(cases, outcomes, officialScores) {
   const rows = []
   const outcomeById = new Map(outcomes.map(row => [row.caseId, row]))
   const categoryScores = new Map()
+  const categoryRecalls = new Map()
   const evidenceRecalls = []
+  const usage = { input: 0, output: 0 }
 
   for (const item of cases) {
     const outcome = outcomeById.get(item.caseId) ?? null
@@ -42,7 +44,19 @@ export function scoreLocomo(cases, outcomes, officialScores) {
     const rendered = new Set((outcome?.evidence ?? []).map(ref => ref.diaId).filter(Boolean))
     const gold = item.evidence ?? []
     const evidenceRecall = gold.length ? gold.filter(diaId => rendered.has(diaId)).length / gold.length : null
-    if (evidenceRecall !== null) evidenceRecalls.push(evidenceRecall)
+    if (evidenceRecall !== null) {
+      evidenceRecalls.push(evidenceRecall)
+      const recalls = categoryRecalls.get(item.category) ?? []
+      recalls.push(evidenceRecall)
+      categoryRecalls.set(item.category, recalls)
+    }
+    const measured = outcome?.usage
+    if (measured && typeof measured === "object") {
+      const input = Number.isFinite(measured.inputTokens) ? measured.inputTokens : measured.input
+      const output = Number.isFinite(measured.outputTokens) ? measured.outputTokens : measured.output
+      usage.input += Number.isFinite(input) ? input : 0
+      usage.output += Number.isFinite(output) ? output : 0
+    }
     rows.push({ caseId: item.caseId, sampleId: item.sampleId, category: item.category,
       status: outcome?.status ?? "not-attempted", score: official?.score ?? null,
       evidenceRecall, answer: outcome?.answer ?? null })
@@ -50,8 +64,19 @@ export function scoreLocomo(cases, outcomes, officialScores) {
   for (const row of scoreById?.values() ?? []) {
     if (!byId.has(row.caseId)) throw new Error(`LoCoMo official score has unknown caseId: ${row.caseId}`)
   }
-  const byCategory = [...categoryScores.entries()].sort((a, b) => a[0] - b[0])
-    .map(([category, values]) => ({ category, count: values.length, meanScore: mean(values) }))
+  // Report every presented category even before official scores are imported; otherwise
+  // a diagnostic run has an empty breakdown and cannot show per-category evidence recall.
+  const categories = [...new Set(rows.map(row => row.category))].sort((a, b) => a - b)
+  const byCategory = categories.map(category => {
+    const categoryRows = rows.filter(row => row.category === category)
+    const values = categoryRows.map(row => row.score).filter(Number.isFinite)
+    return {
+      category,
+      count: categoryRows.length,
+      meanScore: values.length ? mean(values) : null,
+      evidenceRecall: mean(categoryRecalls.get(category) ?? []),
+    }
+  })
   const scored = rows.filter(row => row.score !== null)
   return {
     cases: cases.length,
@@ -65,6 +90,9 @@ export function scoreLocomo(cases, outcomes, officialScores) {
       scored: scored.length,
     } : { status: "pending_official", metric: null, scored: 0 },
     evidenceRecallMean: mean(evidenceRecalls),
+    /** Alias kept explicit: this is final rendered evidence, not candidate-pool recall. */
+    finalEvidenceRecallMean: mean(evidenceRecalls),
+    cost: { inputTokens: usage.input, outputTokens: usage.output, totalTokens: usage.input + usage.output },
     ingest: summarizeGroupIngest(outcomes),
     rows,
   }

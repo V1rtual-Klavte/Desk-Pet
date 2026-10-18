@@ -5,6 +5,7 @@ pub const MEMORY_COMMANDS: &[&str] = &[
     "conversation_index_replace",
     "conversation_index_prune",
     "conversation_search",
+    "conversation_term_check",
     "conversation_context",
     "memory_recall_candidates",
     "memory_job_list",
@@ -46,7 +47,7 @@ pub const PROACTIVE_COMMANDS: &[&str] = &[
     "proactive_auxiliary_budget_reserve",
     "proactive_auxiliary_budget_settle",
 ];
-pub const MEMORY_SCHEMA_VERSION: i64 = 4;
+pub const MEMORY_SCHEMA_VERSION: i64 = 5;
 pub const PROACTIVE_TICK_MS: i64 = 300000;
 pub const PROACTIVE_MAX_TASKS: i64 = 100;
 pub const PROACTIVE_MAX_RECURRING_TASKS: i64 = 10;
@@ -113,6 +114,7 @@ pub const PROACTIVE_TIERS_DREAMING_HIGH_HOURS: &[i64] = &[9, 11, 13, 15, 17, 19]
 pub const PROACTIVE_TIERS_DREAMING_HIGH_MIN_INTERVAL_MINUTES: i64 = 30;
 pub const MEMORY_CONVERSATION_BATCH_CHUNKS: i64 = 512;
 pub const MEMORY_CONVERSATION_MAX_SEARCH_RESULTS: i64 = 50;
+pub const MEMORY_CONVERSATION_MAX_SCAN_RESULTS: i64 = 500;
 pub const MEMORY_QUERY_ENGLISH_STOP_WORDS: &[&str] = &[
     "a",
     "an",

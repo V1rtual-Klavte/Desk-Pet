@@ -62,6 +62,8 @@ import type { ConversationSearchResult } from "@/services/agent/memory/protocol"
 import type { MemoryQueryPlan } from "@/services/agent/memory/query"
 import { deriveMemoryQueryPlan, planMemoryQueries } from "@/services/agent/memory/query"
 import { memoryConfig } from "@/services/config"
+import type { HostBridge } from "@/services/host"
+import { setHostBridge } from "@/services/host"
 
 function memoryItem(id: string, options: { origin?: "user" | "derived_behavior"; pinned?: boolean; text?: string } = {}): MemoryItem {
   const content = options.text ?? `事实 ${id}`
@@ -155,8 +157,26 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setHostBridge(null)
   vi.clearAllMocks()
 })
+
+/** Minimal host boundary for corpus probing: only `conversation_term_check` is reachable here. */
+function installTermCheckBridge(presentTerms: ReadonlySet<string>): string[][] {
+  const calls: string[][] = []
+  setHostBridge({
+    async request(method: string, args: Record<string, unknown>) {
+      if (method !== "conversation_term_check") throw new Error(`unexpected host command: ${method}`)
+      const terms = args.terms as string[]
+      calls.push(terms)
+      return terms.map(term => ({ term, present: presentTerms.has(term), df: presentTerms.has(term) ? 1 : 0 }))
+    },
+    subscribe: () => () => undefined,
+    readBlob: async () => new Uint8Array(),
+    releaseBlob: async () => undefined,
+  } as unknown as HostBridge)
+  return calls
+}
 
 describe("联合记忆召回", () => {
   it("rewrite上下文标记user/assistant角色，assistant只作引用而非用户事实 [memory-query-context-roles]", async () => {
@@ -248,7 +268,35 @@ describe("联合记忆召回", () => {
     expect(plan.queries).toEqual([query])
     expect(fake.complete).toHaveBeenCalledTimes(1)
     expect(String(fake.complete.mock.calls[0]?.[0].userText)).toContain('"recentMessages":[]')
-    expect(String(fake.complete.mock.calls[0]?.[0].systemPrompt)).toContain("Do not add synonyms, translations, inferred aliases, or new content words")
+    expect(String(fake.complete.mock.calls[0]?.[0].systemPrompt)).toContain("the host rejects terms absent from the indexed corpus")
+  })
+
+  it("索引词表确认的同义改写被接受，词表判定缺失时拒绝 [memory-query-corpus-synonym]", async () => {
+    fake.visibleTranscript = { error: undefined, entries: [], messages: [] }
+    const query = "What did you recommend for learning?"
+    const run = async (requestId: string) => planMemoryQueries({
+      requestId,
+      sessionId: "session-a",
+      query,
+      signal: new AbortController().signal,
+      queryRewriteMode: "adaptive",
+      localCandidateCount: 0,
+    })
+
+    // "recommend" 已在前文出现，"education" 只能靠索引词表背书。
+    const presentCalls = installTermCheckBridge(new Set(["education"]))
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["recommend education"]}' })
+    const accepted = await run("corpus-synonym-present")
+    expect(presentCalls).toEqual([["education"]])
+    expect(accepted.queries).toEqual([query, "recommend education"])
+    expect(accepted.rewriteStatus).toBe("rewritten")
+
+    const absentCalls = installTermCheckBridge(new Set())
+    fake.complete.mockResolvedValueOnce({ text: '{"queries":["recommend education"]}' })
+    const rejected = await run("corpus-synonym-absent")
+    expect(absentCalls).toEqual([["education"]])
+    expect(rejected.queries).toEqual([query])
+    expect(rejected.rewriteStatus).toBe("fallback")
   })
 
   it("有前文的短跟进可在零事实命中时改写 [memory-query-contextual-followup]", async () => {
@@ -404,7 +452,7 @@ describe("联合记忆召回", () => {
       .toBe("original exact-match evidence")
   })
 
-  it("RRF 保留原问题列表原顺序，改写只补充其外的候选 [memory-query-rrf-anchor]", () => {
+  it("原问题加权但不硬锁前排，强改写候选可以进入弱原命中之前 [memory-query-rrf-anchor]", () => {
     const lists = [
       ["exact", "second"],
       ["rewrite-only", "exact"],
@@ -413,7 +461,7 @@ describe("联合记忆召回", () => {
     ]
 
     expect(fuseRankedLists(lists, value => value)).toEqual([
-      "exact", "second", "rewrite-only", "third", "fourth",
+      "exact", "rewrite-only", "second", "third", "fourth",
     ])
   })
 

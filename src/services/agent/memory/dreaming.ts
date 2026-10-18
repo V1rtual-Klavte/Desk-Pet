@@ -43,8 +43,8 @@ const log = createLogger("MemoryDreaming")
 
 /** 单批来源上界：批大小是资源边界，不是调优旋钮。 */
 const MAX_SOURCES_PER_BATCH = 20
-/** 单条来源正文上界：超过它不截断，整条标 oversized 交给用户。 */
-const MAX_SOURCE_CHARS = 1_200
+/** 单条来源正文上界：超过它整条标 oversized；普通长消息不再被 1200 字符截断。 */
+const MAX_SOURCE_CHARS = 4_000
 const MAX_BATCHES_PER_RUN = 3
 /** 评审输出上限的防呆下限；未配置时按模型输出预算自动推导（见 runDreamingSweep）。 */
 const REVIEW_MAX_TOKENS_FLOOR = 256
@@ -167,11 +167,15 @@ export function parseReviewCandidates(
   try {
     parsed = JSON.parse(raw)
   } catch {
-    return []
+    // Malformed output is not a legitimate empty result: the caller must fail the batch
+    // and leave the watermark untouched so these sources can be reviewed again.
+    throw new Error("整理输出不是合法 JSON")
   }
-  const list = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray(asRecord(parsed)?.candidates) ? (asRecord(parsed)!.candidates as unknown[]) : []
+  const candidates = asRecord(parsed)?.candidates
+  if (!Array.isArray(parsed) && !Array.isArray(candidates)) {
+    throw new Error("整理输出缺少 candidates 数组")
+  }
+  const list = Array.isArray(parsed) ? parsed : candidates as unknown[]
   const out: { draft: MemoryDraft; reason?: string }[] = []
   for (const item of list) {
     const record = asRecord(item)
@@ -219,6 +223,9 @@ export function parseReviewCandidates(
     if (last.draft.scope === "card" && !last.draft.scopeId) {
       last.draft.scope = "user"
     }
+  }
+  if (list.length > 0 && out.length === 0) {
+    throw new Error("整理输出没有通过校验的候选")
   }
   return out
 }
@@ -426,7 +433,9 @@ export function mergeCohorts(items: readonly MemoryItem[], now = Date.now()): Me
   const groups = new Map<string, MergeCohort>()
   for (const item of items) {
     const { pinned, kind, scope, expiresAt, scopeId, sourceIds } = item.draft
-    if (item.origin !== "user" || pinned || kind === "working") continue
+    // Independent experiences keep their own event time and must not be summarized into
+    // one episode; only stable facts/preferences participate in library compaction.
+    if (item.origin !== "user" || pinned || kind === "working" || kind === "episode") continue
     if (expiresAt != null && expiresAt <= now) continue
     if (sourceIds.length === 0) continue
     const key = `${scope}\u0000${scopeId ?? ""}\u0000${kind}`
@@ -599,7 +608,9 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
       const batchSources = pool.slice(0, MAX_SOURCES_PER_BATCH)
       const usable = batchSources.filter(source => {
         const text = source.evidence ?? ""
-        if ((source.sourceLength ?? text.length) > MAX_SOURCE_CHARS * 4) {
+        // Too large is skipped as a whole (the user can pick a fragment); the tail is never
+        // silently sliced off the extraction input.
+        if ((source.sourceLength ?? text.length) > MAX_SOURCE_CHARS) {
           oversized.push(source.sourceId)
           return false
         }

@@ -115,6 +115,18 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           error TEXT
         ) STRICT;
 
+        -- 作业内已审核来源的待推进水位；只有提交事务成功时才写入 memory_watermarks。
+        -- 失败/取消的作业不推进全局水位，下一轮会重新处理这些来源。
+        CREATE TABLE IF NOT EXISTS memory_job_covered_sources (
+          job_id TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(job_id, source_id),
+          FOREIGN KEY(job_id) REFERENCES memory_jobs(id) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS memory_job_covered_sources_source
+          ON memory_job_covered_sources(source_id);
+
         CREATE TABLE IF NOT EXISTS memory_watermarks (
           session_id TEXT PRIMARY KEY NOT NULL,
           seq INTEGER NOT NULL,
@@ -205,6 +217,11 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           chunk INTEGER NOT NULL CHECK (chunk >= 0),
           role TEXT NOT NULL CHECK (role IN ('user','assistant')),
           text TEXT NOT NULL,
+          -- 只用于检索的上下文投影；展示正文始终是 text。
+          search_text TEXT NOT NULL DEFAULT '',
+          -- 原话明确给出的事件时间；无法解析时为空，不用记录时间猜。
+          event_at_ms INTEGER CHECK (event_at_ms IS NULL OR event_at_ms >= 0),
+          event_at_date TEXT,
           timestamp INTEGER NOT NULL CHECK (timestamp >= 0),
           anchor_entry_id TEXT,
           anchor_event_id TEXT,
@@ -217,6 +234,18 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           ON conversation_index_entries(session_id, timestamp DESC, seq DESC, chunk DESC);
         CREATE INDEX IF NOT EXISTS conversation_index_entries_anchor
           ON conversation_index_entries(session_id, anchor_entry_id, anchor_event_id, seq, chunk);
+        CREATE INDEX IF NOT EXISTS conversation_index_entries_event_time
+          ON conversation_index_entries(event_at_ms, event_at_date, session_id, seq);
+        -- 词表/文档频率是可重建会话索引的一部分；查询纠正与 IDF 共用。
+        CREATE TABLE IF NOT EXISTS conversation_index_terms (
+          session_id TEXT NOT NULL,
+          term TEXT NOT NULL,
+          df INTEGER NOT NULL CHECK (df > 0),
+          PRIMARY KEY(session_id, term),
+          FOREIGN KEY(session_id) REFERENCES conversation_index_sessions(session_id) ON DELETE CASCADE
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS conversation_index_terms_term
+          ON conversation_index_terms(term);
 
         -- forget 后 memory_sources 会按既有治理语义删除；此处保留源身份以阻止 JSONL 重建复活。
         CREATE TABLE IF NOT EXISTS conversation_index_suppressions (
@@ -257,6 +286,9 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           chunk INTEGER NOT NULL CHECK (chunk >= 0),
           role TEXT NOT NULL CHECK (role IN ('user','assistant')),
           text TEXT NOT NULL,
+          search_text TEXT NOT NULL DEFAULT '',
+          event_at_ms INTEGER CHECK (event_at_ms IS NULL OR event_at_ms >= 0),
+          event_at_date TEXT,
           timestamp INTEGER NOT NULL CHECK (timestamp >= 0),
           anchor_entry_id TEXT,
           anchor_event_id TEXT,
@@ -277,6 +309,7 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
 
         CREATE VIRTUAL TABLE IF NOT EXISTS conversation_fts USING fts5(
           text,
+          search_text,
           tokenize='trigram case_sensitive 0'
         );
         "#,
@@ -1458,7 +1491,11 @@ fn repair_regular_tables(
     plan: &RepairPlan,
 ) -> AppResult<()> {
     if plan.recreate_conversation_cache {
-        for table in ["conversation_index_entries", "conversation_index_sessions"] {
+        for table in [
+            "conversation_index_terms",
+            "conversation_index_entries",
+            "conversation_index_sessions",
+        ] {
             if table_exists(conn, table)? {
                 conn.execute_batch(&format!("DROP TABLE {}", quote_identifier(table)))
                     .map_err(|error| sql_error(&format!("重建会话缓存表 {table} 失败"), error))?;
@@ -1590,17 +1627,18 @@ fn rebuild_fts_contents(conn: &Connection, name: &str) -> AppResult<()> {
             conn.execute("DELETE FROM conversation_fts", [])
                 .map_err(|error| sql_error("清空 conversation_fts 缓存失败", error))?;
             let entries = {
-                let mut statement = conn.prepare("SELECT rowid,text FROM conversation_index_entries ORDER BY rowid")
+                let mut statement = conn.prepare("SELECT rowid,text,search_text FROM conversation_index_entries ORDER BY rowid")
                     .map_err(|error| sql_error("读取会话 FTS 回填数据失败", error))?;
-                let rows = statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+                let rows = statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
                     .map_err(|error| sql_error("读取会话 FTS 回填数据失败", error))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|error| sql_error("读取会话 FTS 回填数据失败", error))?;
                 rows
             };
-            for (rowid, text) in entries {
-                conn.execute("INSERT INTO conversation_fts(rowid,text) VALUES (?1,?2)",
-                    rusqlite::params![rowid, super::store::normalize_memory_text(&text)])
+            for (rowid, text, search_text) in entries {
+                let searchable = if search_text.is_empty() { text.clone() } else { search_text };
+                conn.execute("INSERT INTO conversation_fts(rowid,text,search_text) VALUES (?1,?2,?3)",
+                    rusqlite::params![rowid, super::store::normalize_memory_text(&text), super::store::normalize_memory_text(&searchable)])
                     .map_err(|error| sql_error("从会话索引重建 conversation_fts 失败", error))?;
             }
         }

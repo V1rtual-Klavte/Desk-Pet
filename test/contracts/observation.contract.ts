@@ -1,3 +1,4 @@
+// 2026-10-18 定向复核：本域行为未变；仅共享文件 src/services/agent/memory/sources.ts、crates/native-host/src/host/dispatch.rs 的增量（记忆来源查询与记忆命令分派参数）导致 sourceHash 变化。
 // 2026-10-15 Windows UI 验收 analyze -> generate：schema.rs 只修正主题帮助文案（三选一改为主题预设），观察档位字段、静默了解资格与钟点调度未改；ob-* 的描述、消费者与 caseId 不变。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 host/dispatch.rs（memory_job_checkpoint 分派臂加可选 coveredSourceIds）与 agent/memory/ipc.ts（按批内已处理来源传参）变化；观察、画像与 presence 路径不受影响，ob-01..07 逐点复核未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -302,7 +303,7 @@ export const observationContract: ModuleContract = {
     "test/unit/observation/证据身份稳定.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "758fff50f7fb3c47d59b30ab8320ea416a8a7094cfcaab631b409f540f918dd6",
+  sourceHash: "7e8ee7ee469ff10a2f1a4d5d5394876c7e0300c77e13c0262734cfb004a3c7bc",
   coverage: [
     {
       id: "ob-01",

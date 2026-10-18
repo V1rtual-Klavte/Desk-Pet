@@ -3,7 +3,9 @@
 import { publishRuntimeTrace } from "@/services/engine/runtime"
 import { focusMemoryEvidence, isGroundedMemorySearch } from "./reader"
 import type { FocusedMemoryEvidence, FocusMemoryEvidenceInput } from "./reader"
+import type { MemoryCountItem } from "./evidence-review"
 import { deduplicateMemoryEvidence, hasNewMemoryEvidence, memoryRecallTokens } from "./projection"
+import type { MemoryQuestionGuide } from "./projection"
 import type { MemoryProjection } from "./provider"
 import type { MemoryQueryPlan } from "./query"
 
@@ -94,10 +96,137 @@ function mergeEvidence(base: readonly MemoryProjection[], additions: readonly Me
   }
   for (const unit of units) {
     const replacementIds = new Set(unit.map(item => item.sourceId))
-    const candidate = deduplicateMemoryEvidence([...merged.filter(item => !replacementIds.has(item.sourceId)), ...unit])
-    if (memoryRecallTokens(candidate) <= tokenBudget) merged = candidate
+    const trialBase = merged.filter(item => !replacementIds.has(item.sourceId))
+    const candidate = deduplicateMemoryEvidence([...trialBase, ...unit])
+    if (memoryRecallTokens(candidate) <= tokenBudget) {
+      merged = candidate
+      continue
+    }
+    // Budget is full: allow a higher-value new unit to evict the lowest-value admitted
+    // evidence. Core items and the unit being replaced are never eviction targets.
+    const newValue = unit.reduce((sum, item) => sum + memoryEvidenceValue(item), 0)
+    const removable = trialBase
+      .filter(item => item.tier !== "core")
+      .sort((left, right) => memoryEvidenceValue(left) - memoryEvidenceValue(right))
+    let trial = [...trialBase]
+    let droppedValue = 0
+    for (const victim of removable) {
+      trial = trial.filter(item => item.sourceId !== victim.sourceId)
+      droppedValue += memoryEvidenceValue(victim)
+      const next = deduplicateMemoryEvidence([...trial, ...unit])
+      if (memoryRecallTokens(next) <= tokenBudget) {
+        if (newValue >= droppedValue) merged = next
+        break
+      }
+    }
   }
   return merged
+}
+
+function memoryEvidenceValue(item: MemoryProjection): number {
+  if (item.tier === "core") return 3
+  if (item.conversation) return 1.5
+  return item.origin === "derived_behavior" ? 1 : 2
+}
+
+/** Split a count pool into reader-sized batches. A single oversized item stays alone. */
+function splitForCountBatches(raw: readonly MemoryProjection[], maxTokens: number): MemoryProjection[][] {
+  const batches: MemoryProjection[][] = []
+  let current: MemoryProjection[] = []
+  let used = 0
+  for (const item of raw) {
+    const cost = memoryRecallTokens([item], "reference")
+    if (current.length > 0 && used + cost > maxTokens) {
+      batches.push(current)
+      current = []
+      used = 0
+    }
+    current.push(item)
+    used += cost
+  }
+  if (current.length) batches.push(current)
+  return batches
+}
+
+/** Merge per-batch count sheets; duplicates are unioned and any uncertainty keeps the event open. */
+export function mergeCountReading(
+  results: readonly FocusedMemoryEvidence[],
+  raw: readonly MemoryProjection[],
+  truncated = false,
+): FocusedMemoryEvidence {
+  const valid = results.filter(result => result.guide)
+  const first = results[0]
+  if (!valid.length || !first) {
+    return first ?? {
+      projections: [...raw], noteSourceIds: [], errors: {}, noteStatus: "empty", guideStatus: "absent",
+      checkCounts: { supported: 0, missing: 0, conflicting: 0 },
+    }
+  }
+  const checks = new Map<string, MemoryQuestionGuide["questionChecks"][number]>()
+  const statusRank = { supported: 0, missing: 1, conflicting: 2 } as const
+  for (const result of valid) {
+    for (const check of result.guide!.questionChecks) {
+      // Same condition across batches merges into one check; required is the stricter
+      // obligation and missing/conflicting are the stricter statuses.
+      const key = `${check.kind}\0${check.condition}`
+      const existing = checks.get(key)
+      if (!existing) {
+        checks.set(key, { ...check, sourceIds: [...new Set(check.sourceIds)] })
+        continue
+      }
+      existing.sourceIds = [...new Set([...existing.sourceIds, ...check.sourceIds])]
+      if (statusRank[check.status] > statusRank[existing.status]) existing.status = check.status
+      if (check.obligation === "required") existing.obligation = "required"
+    }
+  }
+  const reviews = valid
+    .map(result => result.guide!.evidenceReview)
+    .filter((review): review is Extract<NonNullable<MemoryQuestionGuide["evidenceReview"]>, { kind: "count" }> => review?.kind === "count")
+  let evidenceReview: MemoryQuestionGuide["evidenceReview"]
+  if (reviews.length > 0) {
+    const items = new Map<string, MemoryCountItem>()
+    for (const review of reviews) {
+      for (const item of review.items) {
+        const key = `${item.subject}\0${item.event}\0${item.time}`.normalize("NFKC").toLowerCase()
+        const existing = items.get(key)
+        if (!existing) {
+          items.set(key, { ...item, sourceIds: [...new Set(item.sourceIds)], sameAs: undefined })
+          continue
+        }
+        existing.sourceIds = [...new Set([...existing.sourceIds, ...item.sourceIds])]
+        // A counted instance in one batch and an uncertain one in another stays open.
+        if (existing.disposition === "counted" && item.disposition === "uncertain") existing.disposition = "uncertain"
+      }
+    }
+    const mergedItems = [...items.values()]
+    evidenceReview = {
+      kind: "count",
+      scope: reviews[0]!.scope,
+      complete: !truncated && reviews.every(review => review.complete)
+        && mergedItems.every(item => item.disposition !== "uncertain"),
+      items: mergedItems,
+      observedCount: mergedItems.filter(item => item.disposition === "counted").length,
+    }
+  }
+  const errors: FocusedMemoryEvidence["errors"] = {}
+  for (const result of valid) {
+    for (const [category, count] of Object.entries(result.errors)) {
+      const key = category as keyof FocusedMemoryEvidence["errors"]
+      errors[key] = (errors[key] ?? 0) + (count ?? 0)
+    }
+  }
+  const mergedChecks = [...checks.values()]
+  const checkCounts = { supported: 0, missing: 0, conflicting: 0 }
+  for (const check of mergedChecks) checkCounts[check.status] += 1
+  return {
+    projections: deduplicateMemoryEvidence(valid.flatMap(result => result.projections)),
+    guide: { questionChecks: mergedChecks, ...(evidenceReview ? { evidenceReview } : {}) },
+    noteSourceIds: [...new Set(valid.flatMap(result => result.noteSourceIds))],
+    errors,
+    noteStatus: truncated || valid.some(result => result.noteStatus !== "complete") ? "partial" : "complete",
+    guideStatus: "valid",
+    checkCounts,
+  }
 }
 
 async function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
@@ -147,6 +276,24 @@ export async function completeMemoryEvidence(
       if (controller.signal.aborted || Date.now() >= input.deadlineAt) return finish("deadline")
       focused = await focusMemoryEvidence({ ...input, projections: raw, timeoutMs: Math.max(1, input.deadlineAt - Date.now()) })
       if (input.signal.aborted) { clear(); return finish("cancelled") }
+      // A count pool that exceeds the single-request reader window is read in bounded
+      // batches and merged by the host; the ordinary path above stays unchanged.
+      if (!focused.guide && input.queryPlan.recallIntent === "count" && raw.length > 1) {
+        const batches = splitForCountBatches(raw, Math.max(2_000, Math.floor(input.tokenBudget / 2)))
+        if (batches.length > 1) {
+          const results: FocusedMemoryEvidence[] = []
+          for (let index = 0; index < Math.min(4, batches.length); index += 1) {
+            if (controller.signal.aborted) break
+            results.push(await focusMemoryEvidence({
+              ...input,
+              requestId: `${input.requestId}:count:${index}`,
+              projections: batches[index]!,
+              timeoutMs: Math.max(1, input.deadlineAt - Date.now()),
+            }))
+          }
+          focused = mergeCountReading(results, raw, batches.length > 4)
+        }
+      }
       if (!focused.guide) return finish("reader_unavailable")
       if (focused.guide.questionChecks.some(check => check.kind === "premise" && check.status === "conflicting")) return finish("premise_conflicting")
       if (!focused.guide.questionChecks.some(check => check.obligation === "required" && check.status !== "supported")

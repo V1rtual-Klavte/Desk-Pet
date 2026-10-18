@@ -1,3 +1,4 @@
+// 2026-10-18 定向复核：本域行为未变；仅共享文件 crates/native-host/src/memory/protocol.rs、src/services/agent/memory/protocol.json、src/services/agent/memory/protocol.ts 的增量（记忆协议再生成）导致 sourceHash 变化。
 // 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 最终静态复核：派生治理复用既有闭包，回顾标记观察代理指标，选材保留话题立场；既有次数与授权裁决未改，未执行测试。
 // 2026-10-08 存量债收口（本批刷新）：本次 STALE 是历史挂账的延续，不是新改动 —— 声明值
@@ -260,7 +261,7 @@ import type { ModuleContract } from "../host/types"
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "690feb647d8b5fd22b3eba3fd6582d6d1f30f1a8646e3bfbc5bdca39a408c2fa",
+  module:"proactive",sourceHash: "1e4fbfb6b0794734717e25da75bb5c8e83da90567ca6b1ad20b2006c03935b29",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

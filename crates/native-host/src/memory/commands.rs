@@ -4,7 +4,7 @@
 //! 业务规则一律留在 `store.rs`，命令层不复制第二份判定。
 //! IPC 层只做参数提取后转发，不含业务判定。
 
-use super::conversation::{ConversationIndexEntry, ConversationRecordTime};
+use super::conversation::{ConversationEventTime, ConversationIndexEntry, ConversationRecordTime};
 use super::store::{
     JOB_LEASE_MS, JOB_LIST_LIMIT_DEFAULT, LIST_LIMIT_DEFAULT, QUERY_LIMIT_DEFAULT,
     MemoryEventTime, RECALL_LIMIT_DEFAULT,
@@ -155,6 +155,10 @@ pub(crate) fn conversation_search(
     limit: Option<i64>,
     before: Option<i64>,
     recent_fallback: Option<bool>,
+    scan: Option<bool>,
+    entities: Option<Vec<String>>,
+    roles: Option<Vec<String>>,
+    event_time: Option<ConversationEventTime>,
     record_time: Option<ConversationRecordTime>,
 ) -> AppResult<Value> {
     state.0.conversation_search(
@@ -163,8 +167,16 @@ pub(crate) fn conversation_search(
         limit,
         before,
         recent_fallback.unwrap_or(false),
+        scan.unwrap_or(false),
+        entities.as_deref().unwrap_or(&[]),
+        roles.as_deref().unwrap_or(&[]),
+        event_time.as_ref(),
         record_time.as_ref(),
     )
+}
+
+pub(crate) fn conversation_term_check(state: &MemoryState, terms: Vec<String>) -> AppResult<Value> {
+    state.0.conversation_term_check(&terms)
 }
 
 pub(crate) fn conversation_context(

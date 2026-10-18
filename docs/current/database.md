@@ -13,10 +13,10 @@
 ## 建表点与版本策略
 
 - 生产建表点只有两个：记忆侧 [memory/schema.rs](../../crates/native-host/src/memory/schema.rs)、主动链侧 [proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)；记忆侧 `ensure` 建完自己的表后调用主动链侧的 `ensure`（`proactive/store.rs` 里的建表语句属于 `#[cfg(test)]` 夹具，不是生产路径）。
-- 版本：`MEMORY_SCHEMA_VERSION` 当前为 4，存于 `memory_meta.schema_version`；2026-10-16 从 3 递增，为 `memory_items` 增加事件时间及规范化检索投影，并重建事实与会话 FTS 缓存。2026-10-05 频率档位批曾随 `proactive_control.enabled` 列删除从 2 递增。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。启动时以及恢复提交后的活动库，会用记忆侧与主动链侧现有 DDL 构造期望结构，事务内补齐可无损添加的字段/表/索引并搬回既有列数据；不可恢复的事实、来源或遗忘治理缺失会明确失败，未知未来 schema_version 永不降级。显式选择的备份仍须通过已有 schema_version 和必需表校验。**派生结论批（2026-10-06）不涉版本变更**：条目/来源类别 `origin` 不落额外列（由来源类别派生），旧库照常打开，无需重建。
+- 版本：`MEMORY_SCHEMA_VERSION` 当前为 5，存于 `memory_meta.schema_version`；2026-10-18 从 4 递增，为 `conversation_index_entries` 增加 `search_text/event_at_ms/event_at_date`、`conversation_fts` 增加 `search_text`、新增 `conversation_index_terms` 与 `memory_job_covered_sources`，会话缓存按 v5 结构重建；2026-10-16 的 v4 为 `memory_items` 增加事件时间及规范化检索投影，并重建事实与会话 FTS 缓存。2026-10-05 频率档位批曾随 `proactive_control.enabled` 列删除从 2 递增。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。启动时以及恢复提交后的活动库，会用记忆侧与主动链侧现有 DDL 构造期望结构，事务内补齐可无损添加的字段/表/索引并搬回既有列数据；不可恢复的事实、来源或遗忘治理缺失会明确失败，未知未来 schema_version 永不降级。显式选择的备份仍须通过已有 schema_version 和必需表校验。**派生结论批（2026-10-06）不涉版本变更**：条目/来源类别 `origin` 不落额外列（由来源类别派生），旧库照常打开，无需重建。
 - 既有库首次需要结构修复前，MemoryStore 通过 SQLite backup API 在 `memory/backups/` 预留 `memory-repair-*.sqlite3` 快照；修复事务失败会回滚且保留快照，修复完成后的重复打开不会重复备份。事实 `memory_fts` 从已接受的 `memory_items` 重建；会话 FTS 与索引行属于可重建缓存，JSONL 仍是聊天正文真相源。恢复也会在提交后复核活动库结构。
 - 若清理来源清单曾声明完整但 fence 丢失，或缺失记忆作业/墓碑/来源关系、主动控制/预算等核心持久状态，启动不会创建空表掩盖缺口；会保留原库与诊断快照并返回可诊断错误。唯一同版本新增的可选模块例外是 `mcp_credentials`：缺表时可恢复空结构并保留修复前快照，`rust_warn!` 会说明原凭据无法由数据库重建，需重新录入或从备份恢复；应用不会伪造或声称恢复凭据值。旧库没有会话索引元数据时，clear 时间从操作/墓碑账本恢复；没有完整会话清单时只开放可证明晚于 cutoff 的缓存，TS 后续 clear 会提交稳定 seq fence。
-- 同一版本内的已知安全增列仍以 nullable 或有默认值的字段为主，不重置既有行（主动链的 `proactive_budgets` 增列即此模式）；会话检索表随 `ensure` 创建，不改 schema_version。2026-10-16 的 v4 迁移增加 `memory_items.event_at_ms/event_at_date`、`content_norm/summary_norm/aliases_norm` 可空投影，旧行在结构修复事务内从既有事实回填；事实和会话 FTS 按规范化投影校验并重建。
+- 同一版本内的已知安全增列仍以 nullable 或有默认值的字段为主，不重置既有行（主动链的 `proactive_budgets` 增列即此模式）；会话检索缓存随 `ensure` 创建/校验，结构变化按 schema_version 版本策略处理。2026-10-16 的 v4 迁移增加 `memory_items.event_at_ms/event_at_date`、`content_norm/summary_norm/aliases_norm` 可空投影，旧行在结构修复事务内从既有事实回填；事实和会话 FTS 按规范化投影校验并重建。
 
 ## 表清单
 
@@ -30,7 +30,7 @@
 | memory_item_sources | 事实 ↔ 来源关联（随 item 版本级联删除） |
 | memory_candidates | Review 产出的 staging 候选：提交事务前只存在这里，不进 FTS、不进召回 |
 | memory_jobs | dreaming 作业账本：phase/status/revision/forget_epoch、租约、cursor 与当日用量 |
-| memory_watermarks | 来源消费水位（session → 已处理 seq，单调 MAX 推进；整理 checkpoint 按**本批实际处理的每个会话**各自推进，不只批尾游标所在会话），水位补扫的判定依据 |
+| memory_watermarks | 来源消费水位（session → 已处理 seq，单调 MAX 推进；只由 `memory_dreaming_commit` 在同一事务内按作业已覆盖来源推进，`memory_job_checkpoint` 不写水位；按本批实际处理的每个会话分别推进，不只批尾游标所在会话），水位补扫的判定依据 |
 | memory_tombstones | 遗忘墓碑：稳定事件身份（session+entry+content_hash+effect），拦住索引重建、旧水位补扫与旧批次发布让内容复活 |
 | memory_operations | operation_id 幂等账本：提交结果未知时先查它，不盲重放 |
 | memory_dreaming_budgets | dreaming 每日 token 账（按自然日记录 reserved/used；只记账观测，不参与准入——2026-10-06 起日上限不再是门禁） |
@@ -39,12 +39,14 @@
 | memory_fts（+5 张 FTS5 影子表） | 全文索引：规范化正文/摘要/别名，trigram 分词；检索使用 bm25 权重 3/2/1；工具输出与原始 JSON 不建索引 |
 | conversation_index_meta | 会话索引自己的 revision、clear cutoff 与完整清空来源清单标记；不推进事实记忆 revision |
 | conversation_index_sessions | 每个会话当前索引指纹；replace 以旧指纹和 forgetEpoch 做 CAS |
-| conversation_index_entries | read-model 投影出的 user/assistant 文本片段，含 chunk、稳定来源身份与可选助手锚点；JSONL 仍是正文真相源 |
+| conversation_index_entries | read-model 投影出的 user/assistant 文本片段，含 chunk、稳定来源身份与可选助手锚点；`search_text` 是只用于检索的上下文投影，`event_at_ms/event_at_date` 是原话明确给出的事件时间；JSONL 仍是正文真相源 |
+| conversation_index_terms | 每个会话的词表/文档频率投影（`session_id,term,df`），供查询拼写纠正与 IDF 加权；随会话索引重建，不参加证据渲染 |
+| memory_job_covered_sources | 作业内已审核来源的待推进水位（`job_id,source_id,created_at`）；只在 `memory_dreaming_commit` 事务内转写全局水位，失败/取消不推进 |
 | conversation_index_suppressions | forget 后保留的 session/entry/event 身份，阻止重建找回原条目及同轮助手回应 |
 | conversation_index_clear_fences | 清空时每个原会话的稳定 seq 上界，空会话用 -1；后续新来源不依赖墙钟时间判定 |
 | conversation_index_staging_batches | 分批索引的快照身份、指纹/遗忘代CAS、偏移与完成回执；只在 complete 后原子发布 |
 | conversation_index_staging_entries / conversation_index_staging_calls | 未发布片段与幂等批次回执；不参加检索，删除源会话或清空时级联清理，遗留批次按TTL回收 |
-| conversation_fts | NFKC 小写会话片段全文检索索引，trigram 分词；短词另用参数化 LIKE 回退 |
+| conversation_fts | NFKC 小写会话片段全文检索索引（`text` + `search_text`），trigram 分词；短词另用参数化 LIKE 回退，bm25 权重原文 3 / search_text 1 |
 
 主动链侧（[proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)）：
 

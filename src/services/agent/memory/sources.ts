@@ -53,7 +53,7 @@ export const UNDERSTANDING_ALIAS_LABEL = "静默了解"
 type UnknownRecord = Record<string, unknown>
 
 /** 证据片段上限：记忆只保留回溯所需的引文，绝不复制整段会话正文。 */
-const EVIDENCE_CHARS = 2_000
+const EVIDENCE_CHARS = 4_000
 
 function asRecord(value: unknown): UnknownRecord | undefined {
   return value && typeof value === "object" ? (value as UnknownRecord) : undefined

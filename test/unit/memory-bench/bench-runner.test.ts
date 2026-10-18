@@ -92,6 +92,40 @@ describe("bench cell 规划", () => {
       .toEqual(["locomo-c2-q0"])
     expect(() => planBenchCells("locomo", file, { seed: "s", caseFilter: ["missing"] })).toThrow(/没有命中/)
   })
+
+  it("LoCoMo 按 category 分层抽样：每类至多 N 题、同 seed 可复现、异 seed 选题不同 [bench-locomo-per-category]", () => {
+    const categories = [1, 2, 3, 4]
+    const samples = ["conv-a", "conv-b"]
+    // 每类 6 题、跨两个 sample：perCategory=2 时各类都必然需要截断，
+    // 且选区不是「取文件前 N 条」。
+    const cases = categories.flatMap(category =>
+      Array.from({ length: 6 }, (_, index) => ({
+        ...locomoCase(`locomo-${samples[index % samples.length]}-c${category}-q${index}`, samples[index % samples.length]!),
+        category,
+        questionIndex: index,
+      })))
+    const file = { cases }
+
+    const first = planBenchCells("locomo", file, { seed: "seed-a", perCategory: 2 })
+    const again = planBenchCells("locomo", file, { seed: "seed-a", perCategory: 2 })
+    const other = planBenchCells("locomo", file, { seed: "seed-b", perCategory: 2 })
+
+    expect(first).toHaveLength(categories.length * 2)
+    for (const category of categories) {
+      const selected = first.filter(cell => (cell.caseDef as { category: number }).category === category)
+      expect(selected.length).toBeLessThanOrEqual(2)
+      expect(selected).toHaveLength(2)
+    }
+    expect(again.map(cell => cell.caseId)).toEqual(first.map(cell => cell.caseId))
+    expect(other.map(cell => cell.caseId)).not.toEqual(first.map(cell => cell.caseId))
+    // 分层后仍保持「同一 sample 的题相邻」的组连续语义。
+    const groupKeys = first.map(cell => cell.groupKey)
+    for (const sample of samples) {
+      const positions = groupKeys.flatMap((key, index) => key === sample ? [index] : [])
+      expect(positions.length).toBeGreaterThan(0)
+      expect(positions[positions.length - 1]! - positions[0]! + 1).toBe(positions.length)
+    }
+  })
 })
 
 describe("bench runner 编排（fake adapter）", () => {

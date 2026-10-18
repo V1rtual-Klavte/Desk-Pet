@@ -85,19 +85,19 @@ describe("本地与adaptive召回选择", () => {
     expect(rows.map(row => row.sourceId)).toEqual(["core@1"])
   })
 
-  it("仅返回模型选择的有序子集，未发送候选ID不能进入投影", async () => {
-    configure(Array.from({ length: 13 }, (_, index) => item(`dynamic-${index}`)))
+  it("已展示未选候选被淘汰，未展示候选保留在本地次序之后 [memory-rerank-unseen-retained]", async () => {
+    configure(Array.from({ length: 25 }, (_, index) => item(`dynamic-${index}`)))
     mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-3","dynamic-0"]' })
-    const rows = await sqliteMemoryProvider.recall(request())
+    const rows = await sqliteMemoryProvider.recall({ ...request(), tokenBudget: 10_000 })
     const sent = JSON.parse(mocks.completePiText.mock.calls[0]![0].userText) as { candidates: Array<{ id: string }> }
-    expect(sent.candidates.length).toBeLessThanOrEqual(12)
-    expect(sent.candidates.some(candidate => candidate.id === "dynamic-12")).toBe(false)
-    expect(rows.map(row => row.sourceId)).toEqual(["dynamic-3@1", "dynamic-0@1"])
-    expect(estimateContextTokens(`${mocks.completePiText.mock.calls[0]![0].systemPrompt}\n${mocks.completePiText.mock.calls[0]![0].userText}`)).toBeLessThanOrEqual(2_048)
+    expect(sent.candidates.length).toBeLessThanOrEqual(24)
+    expect(sent.candidates.some(candidate => candidate.id === "dynamic-24")).toBe(false)
+    expect(rows.map(row => row.sourceId)).toEqual(["dynamic-3@1", "dynamic-0@1", "dynamic-24@1"])
+    expect(estimateContextTokens(`${mocks.completePiText.mock.calls[0]![0].systemPrompt}\n${mocks.completePiText.mock.calls[0]![0].userText}`)).toBeLessThanOrEqual(4_096)
     // 白名单外 id 让整份输出判无效并回退本地同一顺序（mm-02：未知 id 不裁掉放行）。
-    mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-0","dynamic-12"]' })
-    const fallback = await sqliteMemoryProvider.recall(request())
-    expect(fallback.map(row => row.sourceId)).toEqual(Array.from({ length: 13 }, (_, index) => `dynamic-${index}@1`))
+    mocks.completePiText.mockResolvedValueOnce({ text: '["dynamic-0","dynamic-24"]' })
+    const fallback = await sqliteMemoryProvider.recall({ ...request(), tokenBudget: 10_000 })
+    expect(fallback.map(row => row.sourceId)).toEqual(Array.from({ length: 25 }, (_, index) => `dynamic-${index}@1`))
   })
 
   it("格式无效才回退到本地排序，写后刷新可显式跳过重排", async () => {

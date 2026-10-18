@@ -47,7 +47,10 @@ describe("LoCoMo official-score-only quality", () => {
   it("keeps the primary score pending until official rows are supplied [bench-locomo-pending-official]", () => {
     const score = scoreLocomo(cases as never, outcomes as never) as Record<string, any>
     expect(score.meanScore).toBe(null)
-    expect(score.byCategory).toEqual([])
+    expect(score.byCategory).toEqual([
+      { category: 1, count: 1, meanScore: null, evidenceRecall: 1 },
+      { category: 5, count: 1, meanScore: null, evidenceRecall: 1 },
+    ])
     expect(score.officialScoring.status).toBe("pending_official")
   })
   it("groups supplied upstream values by category, retaining adversarial category 5 [bench-locomo-official-category]", () => {
@@ -57,7 +60,8 @@ describe("LoCoMo official-score-only quality", () => {
     ]) as Record<string, any>
     expect(scores.meanScore).toBe(0.625)
     expect(scores.byCategory).toEqual([
-      { category: 1, count: 1, meanScore: 0.25 }, { category: 5, count: 1, meanScore: 1 },
+      { category: 1, count: 1, meanScore: 0.25, evidenceRecall: 1 },
+      { category: 5, count: 1, meanScore: 1, evidenceRecall: 1 },
     ])
     expect(scores.officialScoring.status).toBe("official")
     expect(() => scoreLocomo(cases as never, outcomes as never, [

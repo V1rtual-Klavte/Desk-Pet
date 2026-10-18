@@ -23,12 +23,15 @@ import type { MemoryQueryPlan } from "./query"
 const log = createLogger("ConversationMemory")
 
 const CONVERSATION_SEARCH_LIMIT = MEMORY_LIMITS.conversation.maxSearchResults
+const CONVERSATION_SCAN_LIMIT = MEMORY_LIMITS.conversation.maxScanResults
 const MAX_INDEX_RETRIES = 2
-const CHUNK_SCHEMA_VERSION = 2
+const CHUNK_SCHEMA_VERSION = 3
 const CHUNK_MAX_CODEPOINTS = 1_600
 const CHUNK_MAX_TOKENS = 400
 const CHUNK_OVERLAP_TOKENS = 48
 const CONVERSATION_INDEX_BATCH_SIZE = MEMORY_LIMITS.conversation.batchChunks
+const SEARCH_TEXT_MAX_CHARS = 8_000
+const SEARCH_NEIGHBOR_CHARS = 280
 
 export interface ConversationRecallRequest {
   sessionId: string
@@ -334,6 +337,16 @@ export async function searchConversationCandidates(request: ConversationCandidat
       ...(queryPlan.timeConstraint.calendarDate === undefined ? {} : { calendarDate: queryPlan.timeConstraint.calendarDate }),
     }
     : undefined
+  const eventTime = queryPlan?.timeConstraint?.basis === "event"
+    ? {
+      ...(queryPlan.timeConstraint.start === undefined ? {} : { start: queryPlan.timeConstraint.start }),
+      ...(queryPlan.timeConstraint.end === undefined ? {} : { end: queryPlan.timeConstraint.end }),
+      ...(queryPlan.timeConstraint.calendarDate === undefined ? {} : { calendarDate: queryPlan.timeConstraint.calendarDate }),
+    }
+    : undefined
+  const scan = queryPlan?.recallIntent === "count" || queryPlan?.recallIntent === "overview"
+  const entities = queryPlan?.entities ?? []
+  const roles = queryPlan?.sourceRoles ?? []
   const uniqueQueries: string[] = []
   const seenQueries = new Set<string>()
   for (const rawQuery of request.queries) {
@@ -355,13 +368,19 @@ export async function searchConversationCandidates(request: ConversationCandidat
     entries: [],
     ...(request.observe ? { diagnostics: { duplicateEvents: 0, jsonlReadbackCandidates: 0, jsonlReadbackDropped: 0, coldIndexMs, coldIndexSessions } } : {}),
   }
-  const limit = Math.max(1, Math.min(CONVERSATION_SEARCH_LIMIT, Math.floor(request.limit ?? CONVERSATION_SEARCH_LIMIT)))
+  const limit = scan
+    ? CONVERSATION_SCAN_LIMIT
+    : Math.max(1, Math.min(CONVERSATION_SEARCH_LIMIT, Math.floor(request.limit ?? CONVERSATION_SEARCH_LIMIT)))
   let searchResults = await Promise.all(uniqueQueries.map(query => host.request("conversation_search", {
     query,
     sessionId: request.sessionId,
     limit,
+    ...(scan ? { scan: true } : {}),
+    ...(entities.length ? { entities: [...entities] } : {}),
+    ...(roles.length ? { roles: [...roles] } : {}),
     ...(request.before === undefined ? {} : { before: request.before }),
     ...(recordTime ? { recordTime } : {}),
+    ...(eventTime ? { eventTime } : {}),
   }, { signal: request.signal })))
   // A short, explicit reference may be grounded in nearby prior turns even when its
   // literal terms have no indexed match. Run this only after every normal query misses.
@@ -372,7 +391,9 @@ export async function searchConversationCandidates(request: ConversationCandidat
       query: "",
       sessionId: request.sessionId,
       limit,
+      ...(scan ? { scan: true } : {}),
       ...(request.before === undefined ? {} : { before: request.before }),
+      ...(eventTime ? { eventTime } : {}),
       recentFallback: true,
     }, { signal: request.signal })]
   }
@@ -499,6 +520,9 @@ async function expandSearchEntriesFromJsonl(
         seq: candidate.seq,
         role: candidate.role,
         text: message.text,
+        searchText: "",
+        eventAtMs: null,
+        eventAtDate: null,
         timestamp: candidate.timestamp,
         ...(candidate.anchorEntryId ? { anchorEntryId: candidate.anchorEntryId } : {}),
         ...(candidate.anchorEventId ? { anchorEventId: candidate.anchorEventId } : {}),
@@ -718,6 +742,16 @@ function* buildIndexEntryBatches(
   signal: AbortSignal,
 ): Generator<ConversationIndexEntry[]> {
   const visible = new Map(messages.map(message => [message.id, message]))
+  const ordered = messages.filter(message => message.role === "user" || message.role === "assistant")
+  const positions = new Map(ordered.map((message, index) => [message.id, index]))
+  const neighborsOf = (id: string): string[] => {
+    const index = positions.get(id)
+    // Only the preceding turn is contextual search text. Including the next turn leaks a
+    // later query's terms into an earlier turn and breaks negative controls / entry identity.
+    if (index === undefined || index === 0) return []
+    const previous = ordered[index - 1]?.text
+    return previous?.trim() ? [previous.slice(0, SEARCH_NEIGHBOR_CHARS)] : []
+  }
   let batch: ConversationIndexEntry[] = []
   let anchor: { entryId: string; eventId?: string } | undefined
 
@@ -741,12 +775,16 @@ function* buildIndexEntryBatches(
         continue
       }
       const eventId = message.eventId ?? messageEventId(entry.message) ?? null
+      const search = buildSearchText(message.text, message.timestamp, neighborsOf(message.id))
       const source = {
         entryId: entry.id,
         eventId,
         seq: entry.seq,
         role,
         text: message.text,
+        searchText: search.searchText,
+        eventAtMs: search.eventAtMs,
+        eventAtDate: search.eventAtDate,
         timestamp: message.timestamp,
       } as const
       for (const indexed of chunksForEntry(source, signal)) {
@@ -762,12 +800,16 @@ function* buildIndexEntryBatches(
     }
 
     // Visible assistant content is searchable transcript evidence, never a new trusted fact.
+    const search = buildSearchText(message.text, message.timestamp, neighborsOf(message.id))
     const source = {
       entryId: entry.id,
       eventId: message.eventId ?? entry.id,
       seq: entry.seq,
       role,
       text: message.text,
+      searchText: search.searchText,
+      eventAtMs: search.eventAtMs,
+      eventAtDate: search.eventAtDate,
       timestamp: message.timestamp,
       ...(anchor ? { anchorEntryId: anchor.entryId } : {}),
       ...(anchor?.eventId ? { anchorEventId: anchor.eventId } : {}),
@@ -782,6 +824,98 @@ function* buildIndexEntryBatches(
     }
   }
   if (batch.length > 0 && !signal.aborted) yield batch
+}
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+] as const
+
+function localDateParts(ms: number): { year: number; month: number; day: number } {
+  const date = new Date(ms)
+  return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() }
+}
+
+function formatLocalDate(ms: number): string {
+  const { year, month, day } = localDateParts(ms)
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+}
+
+function localMidnight(year: number, month: number, day: number): number | null {
+  const date = new Date(year, month - 1, day)
+  if (date.getFullYear() !== year || date.getMonth() + 1 !== month || date.getDate() !== day) return null
+  return date.getTime()
+}
+
+function dateSearchTokens(ms: number): string {
+  const { year, month, day } = localDateParts(ms)
+  return `${formatLocalDate(ms)} ${MONTH_NAMES[month - 1]} ${day} ${year} ${year}年${month}月${day}日`
+}
+
+/** Conservative event-date projection: only explicit dates or relative words anchored to the
+ * turn timestamp. Ambiguous text leaves the field null instead of guessing. */
+function parseEventDate(text: string, timestamp: number): { ms: number | null; date: string | null } {
+  const iso = /\b(20\d{2})-(\d{1,2})-(\d{1,2})\b/.exec(text)
+  if (iso) {
+    const ms = localMidnight(Number(iso[1]), Number(iso[2]), Number(iso[3]))
+    return { ms, date: ms === null ? null : formatLocalDate(ms) }
+  }
+  const chinese = /(20\d{2})年(\d{1,2})月(\d{1,2})日/.exec(text)
+  if (chinese) {
+    const ms = localMidnight(Number(chinese[1]), Number(chinese[2]), Number(chinese[3]))
+    return { ms, date: ms === null ? null : formatLocalDate(ms) }
+  }
+  const named = /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(20\d{2}))?/i.exec(text)
+  if (named) {
+    const month = MONTH_NAMES.findIndex(name => name.toLowerCase() === named[1]!.toLowerCase()) + 1
+    const year = named[3] ? Number(named[3]) : localDateParts(timestamp).year
+    const ms = localMidnight(year, month, Number(named[2]))
+    return { ms, date: ms === null ? null : formatLocalDate(ms) }
+  }
+  const relative = /(yesterday|today|tomorrow|前天|昨天|今天|明天|后天|last\s+week|上周|上星期|last\s+month|上个月|last\s+year|去年|(\d+)\s+days?\s+ago|(\d+)\s+weeks?\s+ago|(\d+)\s+months?\s+ago|(\d+)天前|(\d+)周前|(\d+)个月前)/i.exec(text)
+  if (relative) {
+    const token = relative[1]!.toLowerCase()
+    let offsetDays: number | null = null
+    if (/yesterday|昨天|前天/.test(token)) offsetDays = /前天/.test(token) ? -2 : -1
+    else if (/today|今天/.test(token)) offsetDays = 0
+    else if (/tomorrow|明天|后天/.test(token)) offsetDays = /后天/.test(token) ? 2 : 1
+    else if (/last\s+week|上周|上星期/.test(token)) offsetDays = -7
+    else if (/last\s+month|上个月/.test(token)) offsetDays = -30
+    else if (/last\s+year|去年/.test(token)) offsetDays = -365
+    else {
+      const amount = Number(relative[2] ?? relative[3] ?? relative[4] ?? relative[5] ?? relative[6] ?? relative[7])
+      if (Number.isFinite(amount)) {
+        const unit = /week|周/.test(token) ? 7 : /month|月/.test(token) ? 30 : 1
+        offsetDays = /ago|前/.test(token) ? -amount * unit : amount * unit
+      }
+    }
+    if (offsetDays !== null) {
+      const { year, month, day } = localDateParts(timestamp + offsetDays * 86_400_000)
+      const ms = localMidnight(year, month, day)
+      return { ms, date: ms === null ? null : formatLocalDate(ms) }
+    }
+  }
+  return { ms: null, date: null }
+}
+
+function buildSearchText(
+  text: string,
+  timestamp: number,
+  neighbors: readonly string[],
+): { searchText: string; eventAtMs: number | null; eventAtDate: string | null } {
+  const recordDate = formatLocalDate(timestamp)
+  const event = parseEventDate(text, timestamp)
+  const parts = [
+    `record-date ${recordDate}`,
+    dateSearchTokens(timestamp),
+    ...(event.date ? [`event-date ${event.date}`, dateSearchTokens(event.ms!)] : []),
+    ...neighbors.filter(Boolean),
+  ]
+  return {
+    searchText: parts.join("\n").slice(0, SEARCH_TEXT_MAX_CHARS),
+    eventAtMs: event.ms,
+    eventAtDate: event.date,
+  }
 }
 
 function* chunksForEntry(source: Omit<ConversationIndexEntry, "chunk">, signal: AbortSignal): Generator<ConversationIndexEntry> {

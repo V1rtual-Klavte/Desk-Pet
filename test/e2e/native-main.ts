@@ -450,6 +450,10 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
     if (raw.benchLimit && (!Number.isInteger(limit) || (limit ?? 0) <= 0)) {
       throw new Error(`--bench-limit 必须是正整数: ${raw.benchLimit}`)
     }
+    const perCategory = raw.benchPerCategory ? Number.parseInt(raw.benchPerCategory, 10) : undefined
+    if (raw.benchPerCategory && (!Number.isInteger(perCategory) || (perCategory ?? 0) <= 0)) {
+      throw new Error(`--bench-per-category 必须是正整数: ${raw.benchPerCategory}`)
+    }
     const caseFilter = raw.benchCase ? raw.benchCase.split(",").map(value => value.trim()).filter(Boolean) : undefined
     const judgeMode = raw.benchJudge === "off" ? "off" : "on"
     const judgeModel = raw.benchJudgeModel ?? resolvedModels.judgeModel ?? "deepseek-v4-pro"
@@ -458,17 +462,18 @@ async function main(bridge: HostBridgeRuntime, input: NativeLiveHostInput): Prom
       throw new Error("--bench-reader-control 仅支持 longmemeval oracle 的 direct|con")
     }
     const readerControl = readerControlValue as "direct" | "con" | undefined
-    const planned = planBenchCells(dataset, file, { limit, caseFilter, seed })
+    const planned = planBenchCells(dataset, file, { limit, caseFilter, seed, perCategory })
     manifest.bench = {
       dataset, split: info.split, namespace: info.namespace, plannedCells: planned.length,
-      seed, judge: judgeMode === "off" ? null : judgeModel, readerControl: readerControl ?? null,
+      seed, perCategory: perCategory ?? null,
+      judge: judgeMode === "off" ? null : judgeModel, readerControl: readerControl ?? null,
     }
     manifest.expectedTrials = planned.map(cell => ({ caseId: cell.caseId, sceneId: cell.caseId, trialId: "1" }))
     await writeManifest(false)
     const view = createConsoleSpecialView({ mode: `外部记忆基准 · ${dataset}/${info.split}`, total: planned.length, reportPath: resultFilePath() })
     const report: BenchReport = await runMemoryBenchEvaluation({
       adapter: createLiveMemoryBenchAdapter({ readerControl }),
-      dataset, split: info.split, file, seed, limit, caseFilter, judge: judgeMode, judgeModel,
+      dataset, split: info.split, file, seed, limit, caseFilter, perCategory, judge: judgeMode, judgeModel,
       onCellStart: async (cell: BenchCellContext) => {
         await traceRecorder!.beginTrial(cell.caseId, "1")
         benchLog.info(`${cell.sequence}/${cell.total} ${cell.caseId}`)

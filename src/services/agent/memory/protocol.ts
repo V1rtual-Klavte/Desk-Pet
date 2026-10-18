@@ -7,6 +7,9 @@ export interface ConversationIndexEntry {
   chunk: number
   role: "user" | "assistant"
   text: string
+  searchText: string
+  eventAtMs: number | null
+  eventAtDate: string | null
   timestamp: number
   anchorEntryId?: string | null
   anchorEventId?: string | null
@@ -517,7 +520,7 @@ export interface MemoryCandidateDraft {
   reason?: string
 }
 
-export type MemoryCommand = "conversation_index_status" | "conversation_index_replace" | "conversation_index_prune" | "conversation_search" | "conversation_context" | "memory_recall_candidates" | "memory_job_list" | "memory_restore_preview" | "memory_source_evidence" | "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_pending_source_count" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
+export type MemoryCommand = "conversation_index_status" | "conversation_index_replace" | "conversation_index_prune" | "conversation_search" | "conversation_term_check" | "conversation_context" | "memory_recall_candidates" | "memory_job_list" | "memory_restore_preview" | "memory_source_evidence" | "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_pending_source_count" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
 export type ProactiveCommand = "proactive_scan" | "proactive_query" | "proactive_change" | "proactive_claim" | "proactive_validate" | "proactive_settle" | "proactive_reconcile" | "proactive_control" | "proactive_auxiliary_budget_reserve" | "proactive_auxiliary_budget_settle"
 export const PROACTIVE_LIMITS = Object.freeze({
   "tickMs": 300000,
@@ -644,7 +647,8 @@ export const PROACTIVE_LIMITS = Object.freeze({
 export const MEMORY_LIMITS = Object.freeze({
   "conversation": {
     "batchChunks": 512,
-    "maxSearchResults": 50
+    "maxSearchResults": 50,
+    "maxScanResults": 500
   },
   "query": {
     "englishStopWords": [

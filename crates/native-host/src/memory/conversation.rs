@@ -20,6 +20,8 @@ const FINGERPRINT_MAX: usize = 256;
 const CHUNK_CHARS_MAX: usize = 4_000;
 const SEARCH_LIMIT_DEFAULT: i64 = 8;
 const SEARCH_LIMIT_MAX: i64 = super::protocol::MEMORY_CONVERSATION_MAX_SEARCH_RESULTS;
+const SCAN_LIMIT_MAX: i64 = super::protocol::MEMORY_CONVERSATION_MAX_SCAN_RESULTS;
+const SEARCH_TEXT_CHARS_MAX: usize = 8_000;
 const RECENT_FALLBACK_MAX: i64 = 4;
 const INDEX_BATCH_CHUNKS_MAX: usize = super::protocol::MEMORY_CONVERSATION_BATCH_CHUNKS as usize;
 pub(super) const INDEX_STAGE_TTL_MS: i64 = 86_400_000;
@@ -53,6 +55,13 @@ pub(crate) struct ConversationIndexEntry {
     pub chunk: i64,
     pub role: String,
     pub text: String,
+    /// Index-only context projection; never rendered as evidence.
+    pub search_text: String,
+    /// Event time stated by the source text; null when the source did not state one.
+    #[serde(default)]
+    pub event_at_ms: Option<i64>,
+    #[serde(default)]
+    pub event_at_date: Option<String>,
     pub timestamp: i64,
     #[serde(default)]
     pub anchor_entry_id: Option<String>,
@@ -129,6 +138,66 @@ impl ConversationRecordTime {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConversationEventTime {
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+    pub calendar_date: Option<ConversationCalendarDate>,
+}
+
+impl ConversationEventTime {
+    fn validate(&self) -> AppResult<()> {
+        if self.start.is_none() && self.end.is_none() && self.calendar_date.is_none() {
+            return Err(AppError::Memory("eventTime 至少需要一个时间条件".into()));
+        }
+        if self.start.is_some_and(|value| value < 0)
+            || self.end.is_some_and(|value| value < 0)
+            || matches!((self.start, self.end), (Some(start), Some(end)) if start >= end)
+        {
+            return Err(AppError::Memory("eventTime 范围无效".into()));
+        }
+        if let Some(date) = &self.calendar_date {
+            if let Some(year) = date.year.filter(|year| *year <= 0) {
+                return Err(AppError::Memory(format!("eventTime 年份无效: {year}")));
+            }
+            if NaiveDate::from_ymd_opt(date.year.unwrap_or(2000), date.month, date.day).is_none() {
+                return Err(AppError::Memory("eventTime 日历日期无效".into()));
+            }
+        }
+        Ok(())
+    }
+
+    fn matches(&self, event_at_ms: Option<i64>, event_at_date: Option<&str>) -> bool {
+        if self.start.is_some() || self.end.is_some() {
+            let Some(ms) = event_at_ms else {
+                return false;
+            };
+            if self.start.is_some_and(|start| ms < start)
+                || self.end.is_some_and(|end| ms >= end)
+            {
+                return false;
+            }
+        }
+        let Some(date) = &self.calendar_date else {
+            return true;
+        };
+        let local = event_at_date
+            .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+            .or_else(|| {
+                event_at_ms
+                    .and_then(|value| Utc.timestamp_millis_opt(value).single())
+                    .map(|instant| instant.with_timezone(&Local).date_naive())
+            });
+        let Some(local) = local else {
+            return false;
+        };
+        local.month() == date.month
+            && local.day() == date.day
+            && date.year.map_or(true, |year| local.year() == year)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ConversationClearFence {
     pub session_id: String,
@@ -145,10 +214,14 @@ struct IndexedEntry {
     chunk: i64,
     role: String,
     text: String,
+    search_text: String,
+    event_at_ms: Option<i64>,
+    event_at_date: Option<String>,
     timestamp: i64,
     anchor_entry_id: Option<String>,
     anchor_event_id: Option<String>,
     score: f64,
+    bm25_score: f64,
 }
 
 /// Existing best-first search order: relevance, recency, then stable identity keys.
@@ -181,8 +254,15 @@ fn validate_entry(entry: &ConversationIndexEntry) -> AppResult<()> {
         || entry.timestamp < 0
         || entry.text.is_empty()
         || entry.text.chars().count() > CHUNK_CHARS_MAX
+        || entry.search_text.chars().count() > SEARCH_TEXT_CHARS_MAX
+        || entry.event_at_ms.is_some_and(|value| value < 0)
     {
         return Err(AppError::Memory("会话索引条目字段无效或片段过长".into()));
+    }
+    if let Some(date) = &entry.event_at_date {
+        if NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() {
+            return Err(AppError::Memory("会话索引事件日期无效".into()));
+        }
     }
     if let Some(anchor) = &entry.anchor_entry_id {
         valid_id(anchor, "anchorEntryId", ID_MAX)?;
@@ -211,12 +291,36 @@ fn like_pattern(term: &str) -> String {
     )
 }
 
+fn levenshtein(left: &str, right: &str) -> usize {
+    let left = left.chars().collect::<Vec<_>>();
+    let right = right.chars().collect::<Vec<_>>();
+    if left.len().abs_diff(right.len()) > 1 {
+        return usize::MAX;
+    }
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    let mut current = vec![0usize; right.len() + 1];
+    for (row, left_char) in left.iter().enumerate() {
+        current[0] = row + 1;
+        for (column, right_char) in right.iter().enumerate() {
+            let substitution = previous[column] + usize::from(left_char != right_char);
+            current[column + 1] = (previous[column + 1] + 1)
+                .min(current[column] + 1)
+                .min(substitution);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right.len()]
+}
+
 /// 在当前事务里依据持久身份抑制已忘来源及其同一轮助手回应。
 fn delete_suppressed_session_tx(tx: &Transaction<'_>, session_id: &str) -> AppResult<usize> {
     let sql = format!(
         "DELETE FROM conversation_index_entries AS e WHERE e.session_id=?1 AND {SUPPRESSION_EXISTS}"
     );
     let suppressed = tx.execute(&sql, [session_id]).map_err(db_err)?;
+    if suppressed > 0 {
+        MemoryStore::rebuild_conversation_terms(tx, session_id)?;
+    }
     Ok(suppressed)
 }
 
@@ -241,6 +345,22 @@ pub(super) fn reconcile_conversation_suppressions(conn: &Connection) -> AppResul
         format!("DELETE FROM conversation_index_entries AS e WHERE {SUPPRESSION_EXISTS}");
     let removed = conn.execute(&delete_entries_sql, []).map_err(db_err)?;
     if removed > 0 {
+        conn.execute("DELETE FROM conversation_index_terms", [])
+            .map_err(db_err)?;
+        let sessions = {
+            let mut statement = conn
+                .prepare("SELECT DISTINCT session_id FROM conversation_index_entries")
+                .map_err(db_err)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(db_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            rows
+        };
+        for session_id in sessions {
+            MemoryStore::rebuild_conversation_terms(conn, &session_id)?;
+        }
         conn.execute(
             "UPDATE conversation_index_meta SET revision=revision+1 WHERE id=1",
             [],
@@ -443,6 +563,8 @@ impl MemoryStore {
             [session_id],
         )
         .map_err(db_err)?;
+        tx.execute("DELETE FROM conversation_index_terms WHERE session_id=?1", [session_id])
+            .map_err(db_err)?;
         tx.execute(
             "DELETE FROM conversation_index_entries WHERE session_id=?1",
             [session_id],
@@ -475,10 +597,10 @@ impl MemoryStore {
     ) -> AppResult<()> {
         tx.execute(
             &format!(
-                "INSERT INTO conversation_index_entries(session_id,entry_id,event_id,seq,chunk,role,text,timestamp,anchor_entry_id,anchor_event_id)
-                 SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
-                 FROM (SELECT ?1 AS session_id,?2 AS entry_id,?3 AS event_id,?4 AS seq,?5 AS chunk,?6 AS role,?7 AS text,?8 AS timestamp,?9 AS anchor_entry_id,?10 AS anchor_event_id) e
-                 WHERE {}", clear_eligibility(11)
+                "INSERT INTO conversation_index_entries(session_id,entry_id,event_id,seq,chunk,role,text,search_text,event_at_ms,event_at_date,timestamp,anchor_entry_id,anchor_event_id)
+                 SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+                 FROM (SELECT ?1 AS session_id,?2 AS entry_id,?3 AS event_id,?4 AS seq,?5 AS chunk,?6 AS role,?7 AS text,?8 AS search_text,?9 AS event_at_ms,?10 AS event_at_date,?11 AS timestamp,?12 AS anchor_entry_id,?13 AS anchor_event_id) e
+                 WHERE {}", clear_eligibility(14)
             ),
             params![
                 session_id,
@@ -488,6 +610,9 @@ impl MemoryStore {
                 entry.chunk,
                 entry.role,
                 entry.text,
+                entry.search_text,
+                entry.event_at_ms,
+                entry.event_at_date,
                 entry.timestamp,
                 entry.anchor_entry_id,
                 entry.anchor_event_id,
@@ -498,20 +623,52 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Recompute the per-session term/document-frequency projection used by spell correction
+    /// and IDF weighting. The table is part of the rebuildable conversation cache.
+    fn rebuild_conversation_terms(conn: &Connection, session_id: &str) -> AppResult<()> {
+        conn.execute("DELETE FROM conversation_index_terms WHERE session_id=?1", [session_id])
+            .map_err(db_err)?;
+        let entries = {
+            let mut statement = conn
+                .prepare("SELECT text,search_text FROM conversation_index_entries WHERE session_id=?1")
+                .map_err(db_err)?;
+            let rows = statement
+                .query_map([session_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(db_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            rows
+        };
+        for (text, search_text) in entries {
+            let combined = if search_text.is_empty() { text } else { format!("{text} {search_text}") };
+            for term in memory_query_terms(&combined) {
+                conn.execute(
+                    "INSERT INTO conversation_index_terms(session_id,term,df) VALUES (?1,?2,1)
+                     ON CONFLICT(session_id,term) DO UPDATE SET df=df+1",
+                    params![session_id, term],
+                )
+                .map_err(db_err)?;
+            }
+        }
+        Ok(())
+    }
+
     fn finish_conversation_replace_tx(tx: &Transaction<'_>, session_id: &str) -> AppResult<i64> {
         delete_suppressed_session_tx(tx, session_id)?;
         let entries = {
-            let mut statement = tx.prepare("SELECT rowid,text FROM conversation_index_entries WHERE session_id=?1")
+            let mut statement = tx.prepare("SELECT rowid,text,search_text FROM conversation_index_entries WHERE session_id=?1")
                 .map_err(db_err)?;
-            let rows = statement.query_map([session_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+            let rows = statement.query_map([session_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))
                 .map_err(db_err)?.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
             rows
         };
-        for (rowid, text) in entries {
-            tx.execute("INSERT INTO conversation_fts(rowid,text) VALUES (?1,?2)",
-                params![rowid, super::store::normalize_memory_text(&text)])
+        for (rowid, text, search_text) in entries {
+            let searchable = if search_text.is_empty() { text.clone() } else { search_text };
+            tx.execute("INSERT INTO conversation_fts(rowid,text,search_text) VALUES (?1,?2,?3)",
+                params![rowid, super::store::normalize_memory_text(&text), super::store::normalize_memory_text(&searchable)])
                 .map_err(db_err)?;
         }
+        Self::rebuild_conversation_terms(tx, session_id)?;
         tx.execute(
             "UPDATE conversation_index_meta SET revision=revision+1 WHERE id=1",
             [],
@@ -627,8 +784,8 @@ impl MemoryStore {
             .ok_or_else(|| AppError::Memory("会话索引 batch offset 溢出".into()))?;
         for (index, entry) in entries.iter().enumerate() {
             tx.execute(
-                "INSERT INTO conversation_index_staging_entries(session_id,batch_id,batch_offset,entry_id,event_id,seq,chunk,role,text,timestamp,anchor_entry_id,anchor_event_id)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                "INSERT INTO conversation_index_staging_entries(session_id,batch_id,batch_offset,entry_id,event_id,seq,chunk,role,text,search_text,event_at_ms,event_at_date,timestamp,anchor_entry_id,anchor_event_id)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
                 params![
                     session_id,
                     batch.id,
@@ -639,6 +796,9 @@ impl MemoryStore {
                     entry.chunk,
                     entry.role,
                     entry.text,
+                    entry.search_text,
+                    entry.event_at_ms,
+                    entry.event_at_date,
                     entry.timestamp,
                     entry.anchor_entry_id,
                     entry.anchor_event_id,
@@ -679,6 +839,8 @@ impl MemoryStore {
                 [session_id],
             )
             .map_err(db_err)?;
+            tx.execute("DELETE FROM conversation_index_terms WHERE session_id=?1", [session_id])
+                .map_err(db_err)?;
             tx.execute(
                 "DELETE FROM conversation_index_entries WHERE session_id=?1",
                 [session_id],
@@ -692,8 +854,8 @@ impl MemoryStore {
             .map_err(db_err)?;
             tx.execute(
                 &format!(
-                    "INSERT INTO conversation_index_entries(session_id,entry_id,event_id,seq,chunk,role,text,timestamp,anchor_entry_id,anchor_event_id)
-                     SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+                    "INSERT INTO conversation_index_entries(session_id,entry_id,event_id,seq,chunk,role,text,search_text,event_at_ms,event_at_date,timestamp,anchor_entry_id,anchor_event_id)
+                     SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
                      FROM conversation_index_staging_entries e
                      WHERE e.session_id=?1 AND e.batch_id=?2 AND {}
                      ORDER BY e.batch_offset", clear_eligibility(3)
@@ -765,6 +927,11 @@ impl MemoryStore {
             )
             .map_err(db_err)?;
             tx.execute(
+                "DELETE FROM conversation_index_terms WHERE session_id=?1",
+                [session_id],
+            )
+            .map_err(db_err)?;
+            tx.execute(
                 "DELETE FROM conversation_index_sessions WHERE session_id=?1",
                 [session_id],
             )
@@ -795,6 +962,32 @@ impl MemoryStore {
         Ok(revision)
     }
 
+    /// Whether the corrected/derived query terms exist in the indexed corpus. Used only to
+    /// validate model-proposed synonyms; it never writes memory or expands a source.
+    pub(crate) fn conversation_term_check(&self, terms: &[String]) -> AppResult<Value> {
+        let conn = self.lock()?;
+        let mut out = Vec::new();
+        for term in terms {
+            let normalized = super::store::normalize_memory_text(term.trim());
+            let df: i64 = if normalized.is_empty() {
+                0
+            } else {
+                conn.query_row(
+                    "SELECT COALESCE(SUM(df),0) FROM conversation_index_terms WHERE term=?1",
+                    [&normalized],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)?
+            };
+            out.push(json!({
+                "term": term,
+                "present": df > 0,
+                "df": df,
+            }));
+        }
+        Ok(Value::Array(out))
+    }
+
     pub(crate) fn conversation_search(
         &self,
         query: &str,
@@ -802,20 +995,30 @@ impl MemoryStore {
         limit: Option<i64>,
         before: Option<i64>,
         recent_fallback: bool,
+        scan: bool,
+        entities: &[String],
+        roles: &[String],
+        event_time: Option<&ConversationEventTime>,
         record_time: Option<&ConversationRecordTime>,
     ) -> AppResult<Value> {
         valid_id(session_id, "sessionId", SESSION_ID_MAX)?;
+        let max_limit = if scan { SCAN_LIMIT_MAX } else { SEARCH_LIMIT_MAX };
         let limit = limit
             .unwrap_or(SEARCH_LIMIT_DEFAULT)
-            .clamp(1, SEARCH_LIMIT_MAX) as usize;
+            .clamp(1, max_limit) as usize;
         if before.is_some_and(|value| value < 0) {
             return Err(AppError::Memory("会话检索 before 不能为负数".into()));
         }
         if let Some(record_time) = record_time {
             record_time.validate()?;
         }
-        let terms = memory_query_terms(query);
+        if let Some(event_time) = event_time {
+            event_time.validate()?;
+        }
+        let raw_terms = memory_query_terms(query);
         let conn = self.lock()?;
+        let terms = Self::correct_query_terms(&conn, &raw_terms)?;
+        let idf = Self::term_idf(&conn, &terms)?;
         let (index_revision, clear_cutoff): (i64, i64) = conn
             .query_row(
                 "SELECT revision,clear_cutoff FROM conversation_index_meta WHERE id=1",
@@ -828,9 +1031,9 @@ impl MemoryStore {
         let mut rows = Vec::new();
 
         if terms.is_empty() {
-            if query.trim().is_empty() && (recent_fallback || record_time.is_some()) {
+            if query.trim().is_empty() && (recent_fallback || record_time.is_some() || event_time.is_some()) {
                 let mut sql = format!(
-                    "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+                    "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
                      FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}
                        AND NOT {SUPPRESSION_EXISTS}"
                 );
@@ -840,21 +1043,23 @@ impl MemoryStore {
                     values.push(rusqlite::types::Value::Integer(before));
                 }
                 sql.push_str(" ORDER BY e.timestamp DESC,e.seq DESC,CASE WHEN e.role='assistant' THEN 0 ELSE 1 END,e.chunk DESC");
-                if record_time.is_none() {
+                if record_time.is_none() && event_time.is_none() {
                     sql.push_str(&format!(" LIMIT {}", limit.min(RECENT_FALLBACK_MAX as usize)));
                 }
                 let mut statement = conn.prepare(&sql).map_err(db_err)?;
                 let found = statement
                     .query_map(params_from_iter(values), Self::read_conversation_row)
                     .map_err(db_err)?;
-                let result_limit = if record_time.is_some() {
+                let result_limit = if record_time.is_some() || event_time.is_some() {
                     limit
                 } else {
                     limit.min(RECENT_FALLBACK_MAX as usize)
                 };
                 for candidate in found {
                     let row = candidate.map_err(db_err)?;
-                    if record_time.map_or(true, |filter| filter.matches(row.timestamp)) {
+                    if record_time.map_or(true, |filter| filter.matches(row.timestamp))
+                        && event_time.map_or(true, |filter| filter.matches(row.event_at_ms, row.event_at_date.as_deref()))
+                    {
                         rows.push(row);
                         if rows.len() >= result_limit {
                             break;
@@ -864,7 +1069,7 @@ impl MemoryStore {
             }
         } else {
             let mut sql = format!(
-                "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+                "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id,-bm25(conversation_fts,3.0,1.0) AS bm25_score
                  FROM conversation_index_entries e JOIN conversation_fts nf ON nf.rowid=e.rowid WHERE {CLEAR_CUTOFF_PREDICATE}",
             );
             let mut values = vec![rusqlite::types::Value::Integer(clear_cutoff)];
@@ -881,43 +1086,72 @@ impl MemoryStore {
                 values.push(rusqlite::types::Value::Text(expression));
             }
             for term in &terms {
-                let p = values.len() + 1;
-                conditions.push(format!("nf.text LIKE ?{p} ESCAPE '\\'"));
+                let p1 = values.len() + 1;
+                let p2 = values.len() + 2;
+                conditions.push(format!("(nf.text LIKE ?{p1} ESCAPE '\\' OR nf.search_text LIKE ?{p2} ESCAPE '\\')"));
+                values.push(rusqlite::types::Value::Text(like_pattern(term)));
                 values.push(rusqlite::types::Value::Text(like_pattern(term)));
             }
             sql.push_str(&conditions.join(" OR "));
             sql.push_str(" ) ORDER BY e.timestamp DESC,e.seq DESC,e.chunk DESC");
             let mut statement = conn.prepare(&sql).map_err(db_err)?;
             let found = statement
-                .query_map(params_from_iter(values), Self::read_conversation_row)
+                .query_map(params_from_iter(values), Self::read_conversation_search_row)
                 .map_err(db_err)?;
             let query_lower = super::store::normalize_memory_text(query.trim());
-            // Score every governed hit while retaining only the requested top limit (<= 50).
-            // SQL's recency order remains the deterministic tie order, but must not become a
-            // hidden candidate ceiling that excludes older exact matches before scoring.
+            let total_weight: f64 = terms
+                .iter()
+                .map(|term| idf.get(term).copied().unwrap_or(1.0))
+                .sum();
+            let normalized_entities = entities
+                .iter()
+                .map(|entity| super::store::normalize_memory_text(entity))
+                .filter(|entity| !entity.is_empty())
+                .collect::<Vec<_>>();
+            // Score every governed hit; the SQL order is only a deterministic tie order.
             for candidate in found {
                 let mut row = candidate.map_err(db_err)?;
-                if record_time.map_or(false, |filter| !filter.matches(row.timestamp)) {
+                if record_time.map_or(false, |filter| !filter.matches(row.timestamp))
+                    || event_time.map_or(false, |filter| !filter.matches(row.event_at_ms, row.event_at_date.as_deref()))
+                {
                     continue;
                 }
-                let text = super::store::normalize_memory_text(&row.text);
-                let matched = terms
+                let searchable = if row.search_text.is_empty() {
+                    super::store::normalize_memory_text(&row.text)
+                } else {
+                    super::store::normalize_memory_text(&format!("{} {}", row.text, row.search_text))
+                };
+                let matched_weight: f64 = terms
                     .iter()
-                    .filter(|term| text.contains(&term.to_lowercase()))
-                    .count();
-                let coverage = matched as f64 / terms.len() as f64;
-                let phrase = if !query_lower.is_empty() && text.contains(&query_lower) {
+                    .filter(|term| searchable.contains(term.as_str()))
+                    .map(|term| idf.get(term).copied().unwrap_or(1.0))
+                    .sum();
+                let coverage = if total_weight > 0.0 { matched_weight / total_weight } else { 0.0 };
+                let phrase = if !query_lower.is_empty() && searchable.contains(&query_lower) {
                     0.5
                 } else {
                     0.0
                 };
-                row.score = coverage
+                let entity_bonus = if normalized_entities.is_empty() {
+                    0.0
+                } else {
+                    let matched = normalized_entities
+                        .iter()
+                        .filter(|entity| searchable.contains(entity.as_str()))
+                        .count();
+                    0.2 * matched as f64 / normalized_entities.len() as f64
+                };
+                let role_bonus = if roles.iter().any(|role| role == &row.role) {
+                    0.1
+                } else {
+                    0.0
+                };
+                row.score = row.bm25_score.max(0.0).min(20.0) * 0.05
+                    + coverage
                     + phrase
-                    + if row.session_id == session_id {
-                        0.1
-                    } else {
-                        0.0
-                    };
+                    + entity_bonus
+                    + role_bonus
+                    + if row.session_id == session_id { 0.1 } else { 0.0 };
                 let insertion = rows
                     .iter()
                     .position(|existing| search_order(&row, existing) == Ordering::Less)
@@ -927,7 +1161,10 @@ impl MemoryStore {
                     rows.pop();
                 }
             }
-            rows = Self::expand_conversation_context(&conn, rows, clear_cutoff, before)?;
+            // Normal search keeps the historical "candidate ceiling must not orphan an
+            // anchored reply" behavior; scan mode may expand up to its own larger ceiling.
+            let expansion_limit = if scan { limit } else { SEARCH_LIMIT_MAX as usize };
+            rows = Self::expand_conversation_context(&conn, rows, clear_cutoff, before, expansion_limit)?;
             if let Some(record_time) = record_time {
                 rows.retain(|row| record_time.matches(row.timestamp));
             }
@@ -951,6 +1188,77 @@ impl MemoryStore {
                 "score": entry.score,
             })).collect::<Vec<_>>(),
         }))
+    }
+
+    /// Correct Latin query terms against the indexed word projection. The original term is
+    /// always kept; a distance-1 corpus term is added only when the original has no hits.
+    fn correct_query_terms(conn: &Connection, terms: &[String]) -> AppResult<Vec<String>> {
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for term in terms {
+            if seen.insert(term.clone()) {
+                out.push(term.clone());
+            }
+            if term.chars().count() < 4 || !term.chars().all(|value| value.is_ascii_alphabetic()) {
+                continue;
+            }
+            let df: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(df),0) FROM conversation_index_terms WHERE term=?1",
+                    [term],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)?;
+            if df > 0 {
+                continue;
+            }
+            let first = term.chars().next().unwrap().to_string();
+            let length = term.chars().count() as i64;
+            let mut statement = conn
+                .prepare(
+                    "SELECT term FROM conversation_index_terms
+                     WHERE term GLOB ?1 AND length(term) BETWEEN ?2 AND ?3
+                     GROUP BY term ORDER BY SUM(df) DESC LIMIT 200",
+                )
+                .map_err(db_err)?;
+            let candidates = statement
+                .query_map(params![format!("{first}*"), (length - 1).max(1), length + 1], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(db_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            if let Some(corrected) = candidates
+                .into_iter()
+                .find(|candidate| candidate != term && levenshtein(term, candidate) <= 1)
+            {
+                if seen.insert(corrected.clone()) {
+                    out.push(corrected);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Inverse document frequency for the corrected query terms. Terms absent from the corpus
+    /// keep a high weight so an exact original term is not drowned out by a correction.
+    fn term_idf(conn: &Connection, terms: &[String]) -> AppResult<std::collections::HashMap<String, f64>> {
+        let total: f64 = conn
+            .query_row("SELECT COUNT(*) FROM conversation_index_entries", [], |row| row.get(0))
+            .map_err(db_err)?;
+        let mut out = std::collections::HashMap::new();
+        for term in terms {
+            let df: f64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(df),0) FROM conversation_index_terms WHERE term=?1",
+                    [term],
+                    |row| row.get(0),
+                )
+                .map_err(db_err)?;
+            let idf = ((((total - df + 0.5).max(0.0)) / (df + 0.5)) + 1.0).ln().max(0.1);
+            out.insert(term.clone(), idf);
+        }
+        Ok(out)
     }
 
     /// Read a bounded page of complete indexed turns from one already-selected hit session.
@@ -1013,7 +1321,7 @@ impl MemoryStore {
         let mut rows = Vec::new();
         if anchor_visible {
             let mut sql = format!(
-                "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+                "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
                  FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}
                    AND NOT {SUPPRESSION_EXISTS} AND e.session_id=?2 AND e.chunk=0 AND e.seq>?3"
             );
@@ -1069,11 +1377,21 @@ impl MemoryStore {
             chunk: row.get(4)?,
             role: row.get(5)?,
             text: row.get(6)?,
-            timestamp: row.get(7)?,
-            anchor_entry_id: row.get(8)?,
-            anchor_event_id: row.get(9)?,
+            search_text: row.get(7)?,
+            event_at_ms: row.get(8)?,
+            event_at_date: row.get(9)?,
+            timestamp: row.get(10)?,
+            anchor_entry_id: row.get(11)?,
+            anchor_event_id: row.get(12)?,
             score: 0.0,
+            bm25_score: 0.0,
         })
+    }
+
+    fn read_conversation_search_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IndexedEntry> {
+        let mut entry = Self::read_conversation_row(row)?;
+        entry.bm25_score = row.get::<_, f64>(13)?;
+        Ok(entry)
     }
 
     fn anchored_assistant_chunks(
@@ -1083,7 +1401,7 @@ impl MemoryStore {
         before: Option<i64>,
     ) -> AppResult<Vec<IndexedEntry>> {
         let mut sql = String::from(
-            "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+            "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
              FROM conversation_index_entries e WHERE e.session_id=?1 AND e.role='assistant' AND e.chunk<=1
                AND (e.anchor_entry_id=?2 OR e.anchor_event_id=?3)",
         );
@@ -1120,7 +1438,7 @@ impl MemoryStore {
             return Ok(None);
         }
         let mut sql = String::from(
-            "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+            "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
              FROM conversation_index_entries e WHERE e.session_id=?1 AND e.role='user' AND e.chunk=0
                AND (e.entry_id=?2 OR e.event_id=?3)",
         );
@@ -1162,7 +1480,7 @@ impl MemoryStore {
             return Ok(None);
         }
         let mut sql = String::from(
-            "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.timestamp,e.anchor_entry_id,e.anchor_event_id
+            "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
              FROM conversation_index_entries e WHERE e.session_id=?1 AND e.entry_id=?2 AND e.role='assistant' AND e.chunk=?3",
         );
         let mut values = vec![
@@ -1189,6 +1507,7 @@ impl MemoryStore {
         matches: Vec<IndexedEntry>,
         clear_cutoff: i64,
         before: Option<i64>,
+        limit: usize,
     ) -> AppResult<Vec<IndexedEntry>> {
         let mut output = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -1227,7 +1546,7 @@ impl MemoryStore {
                 );
                 !seen.contains(&key) && unit_seen.insert(key)
             });
-            if output.len() + unit.len() > SEARCH_LIMIT_MAX as usize {
+            if output.len() + unit.len() > limit {
                 continue;
             }
             for entry in unit {
@@ -1238,7 +1557,7 @@ impl MemoryStore {
                 ));
                 output.push(entry);
             }
-            if output.len() >= SEARCH_LIMIT_MAX as usize {
+            if output.len() >= limit {
                 break;
             }
         }
@@ -1284,6 +1603,9 @@ impl MemoryStore {
             let removed = tx
                 .execute(&delete_entries_sql, [&session_id])
                 .map_err(db_err)?;
+            if removed > 0 {
+                Self::rebuild_conversation_terms(tx, &session_id)?;
+            }
             deleted += removed;
         }
         if deleted > 0 {
@@ -1333,6 +1655,8 @@ impl MemoryStore {
             .map_err(db_err)?;
         }
         tx.execute("DELETE FROM conversation_fts", [])
+            .map_err(db_err)?;
+        tx.execute("DELETE FROM conversation_index_terms", [])
             .map_err(db_err)?;
         tx.execute("DELETE FROM conversation_index_entries", [])
             .map_err(db_err)?;
@@ -1414,6 +1738,9 @@ mod tests {
             chunk: 0,
             role: role.into(),
             text: text.into(),
+            search_text: String::new(),
+            event_at_ms: None,
+            event_at_date: None,
             timestamp: 1_700_000_000_000 + seq,
             anchor_entry_id: anchor.map(str::to_string),
             anchor_event_id: None,
@@ -1455,6 +1782,10 @@ mod tests {
                 Some(10),
                 None,
                 false,
+                false,
+                &[],
+                &[],
+                None,
                 None,
             )
             .unwrap();
@@ -1463,7 +1794,7 @@ mod tests {
         assert_eq!(rows[0]["entryId"], "study");
         assert!(fixture
             .1
-            .conversation_search("to in be", "english-context", Some(10), None, false, None)
+            .conversation_search("to in be", "english-context", Some(10), None, false, false, &[], &[], None, None)
             .unwrap()["entries"]
             .as_array()
             .unwrap()
@@ -1505,6 +1836,10 @@ mod tests {
                 Some(50),
                 None,
                 false,
+                false,
+                &[],
+                &[],
+                None,
                 None,
             )
             .unwrap();
@@ -1545,7 +1880,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("咖啡", "s1", Some(10), None, false, None)
+            .conversation_search("咖啡", "s1", Some(10), None, false, false, &[], &[], None, None)
             .expect("search");
         let rows = result["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 2, "两字中文必须由 LIKE 回退命中两个会话");
@@ -1571,7 +1906,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("cafe", "s1", Some(10), None, false, None)
+            .conversation_search("cafe", "s1", Some(10), None, false, false, &[], &[], None, None)
             .expect("NFKC search");
         let rows = result["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 1, "ASCII query should match normalized fullwidth text");
@@ -1609,7 +1944,7 @@ mod tests {
         };
         let result = fixture
             .1
-            .conversation_search("", "s1", Some(10), None, false, Some(&record_time))
+            .conversation_search("", "s1", Some(10), None, false, false, &[], &[], None, Some(&record_time))
             .expect("date overview");
         let entries = result["entries"].as_array().expect("entries array");
         assert_eq!(entries.len(), 2, "yearless date selects both stored years");
@@ -1657,7 +1992,7 @@ mod tests {
         };
         let result = fixture
             .1
-            .conversation_search("", "s1", Some(10), None, false, Some(&record_time))
+            .conversation_search("", "s1", Some(10), None, false, false, &[], &[], None, Some(&record_time))
             .expect("bounded time search");
         let entries = result["entries"].as_array().expect("entries array");
         assert_eq!(entries.len(), 2);
@@ -1667,7 +2002,7 @@ mod tests {
 
         let before = fixture
             .1
-            .conversation_search("", "s1", Some(10), Some(2_000), false, Some(&record_time))
+            .conversation_search("", "s1", Some(10), Some(2_000), false, false, &[], &[], None, Some(&record_time))
             .expect("before intersects record range");
         let before_entries = before["entries"].as_array().expect("entries array");
         assert_eq!(before_entries.len(), 1);
@@ -1698,7 +2033,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("专属召回限制探针", "s1", Some(100), None, false, None)
+            .conversation_search("专属召回限制探针", "s1", Some(100), None, false, false, &[], &[], None, None)
             .expect("search clamps to the protocol candidate ceiling");
         let rows = result["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 50);
@@ -1744,7 +2079,7 @@ mod tests {
 
         let result = fixture
             .1
-            .conversation_search("alpha beta", "s1", Some(50), None, false, None)
+            .conversation_search("alpha beta", "s1", Some(50), None, false, false, &[], &[], None, None)
             .expect("search every governed hit");
         let entries = result["entries"].as_array().expect("entries array");
         assert!(
@@ -1775,6 +2110,9 @@ mod tests {
         let second_continuation = ConversationIndexEntry {
             chunk: 1,
             text: "第二轮续片".into(),
+            search_text: String::new(),
+            event_at_ms: None,
+            event_at_date: None,
             ..second.clone()
         };
         let third = entry("a3", Some("a3:assistant"), 3, "assistant", "第三轮", None);
@@ -1953,7 +2291,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("咖啡", "s1", Some(10), None, false, None)
+                .conversation_search("咖啡", "s1", Some(10), None, false, false, &[], &[], None, None)
                 .expect("search after forget")["entries"]
                 .as_array()
                 .unwrap()
@@ -1962,7 +2300,7 @@ mod tests {
         );
         let active = fixture
             .1
-            .conversation_search("活动提醒", "s1", Some(10), None, false, None)
+            .conversation_search("活动提醒", "s1", Some(10), None, false, false, &[], &[], None, None)
             .expect("unanchored active assistant survives forget");
         assert_eq!(active["entries"].as_array().unwrap().len(), 1);
         assert_eq!(active["entries"][0]["entryId"], "active-1");
@@ -1974,7 +2312,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("咖啡", "s1", Some(10), None, false, None)
+                .conversation_search("咖啡", "s1", Some(10), None, false, false, &[], &[], None, None)
                 .expect("search after rebuild")["entries"]
                 .as_array()
                 .unwrap()
@@ -2019,7 +2357,7 @@ mod tests {
         fixture.replace("s1", "fp2", None, vec![old], epoch);
         let result = fixture
             .1
-            .conversation_search("旧内容", "s1", Some(10), None, true, None)
+            .conversation_search("旧内容", "s1", Some(10), None, true, false, &[], &[], None, None)
             .expect("search after clear");
         assert!(
             result["entries"].as_array().unwrap().is_empty(),
@@ -2033,7 +2371,7 @@ mod tests {
         fixture.replace("s1", "fp3", Some("fp2"), vec![recent], epoch);
         let result = fixture
             .1
-            .conversation_search("", "s1", Some(10), None, true, None)
+            .conversation_search("", "s1", Some(10), None, true, false, &[], &[], None, None)
             .expect("recent fallback");
         assert_eq!(
             result["entries"].as_array().unwrap().len(),
@@ -2042,14 +2380,14 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("", "s1", Some(10), None, false, None)
+            .conversation_search("", "s1", Some(10), None, false, false, &[], &[], None, None)
             .expect("no fallback")["entries"]
             .as_array()
             .unwrap()
             .is_empty());
         assert!(fixture
             .1
-            .conversation_search("嗯", "s1", Some(10), None, true, None)
+            .conversation_search("嗯", "s1", Some(10), None, true, false, &[], &[], None, None)
             .expect("nonempty query no fallback")["entries"]
             .as_array()
             .unwrap()
@@ -2120,13 +2458,13 @@ mod tests {
 
         let no_history = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), None, false, None)
+            .conversation_search("", "current-new-session", Some(4), None, false, false, &[], &[], None, None)
             .expect("empty query without fallback");
         assert!(no_history["entries"].as_array().unwrap().is_empty());
 
         let recent = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), None, true, None)
+            .conversation_search("", "current-new-session", Some(4), None, true, false, &[], &[], None, None)
             .expect("explicit global fallback");
         let rows = recent["entries"].as_array().expect("entries array");
         assert_eq!(rows.len(), 3);
@@ -2139,7 +2477,7 @@ mod tests {
 
         let bounded = fixture
             .1
-            .conversation_search("", "current-new-session", Some(4), Some(now - 600), true, None)
+            .conversation_search("", "current-new-session", Some(4), Some(now - 600), true, false, &[], &[], None, None)
             .expect("before-bounded fallback");
         let bounded_rows = bounded["entries"].as_array().expect("bounded entries");
         assert_eq!(bounded_rows.len(), 1);
@@ -2192,7 +2530,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("旧索引", "s1", Some(10), None, false, None)
+                .conversation_search("旧索引", "s1", Some(10), None, false, false, &[], &[], None, None)
                 .expect("old snapshot visible")["entries"]
                 .as_array()
                 .unwrap()
@@ -2201,7 +2539,7 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("新批次", "s1", Some(10), None, false, None)
+            .conversation_search("新批次", "s1", Some(10), None, false, false, &[], &[], None, None)
             .expect("staging hidden")["entries"]
             .as_array()
             .unwrap()
@@ -2242,7 +2580,7 @@ mod tests {
         assert_eq!(
             fixture
                 .1
-                .conversation_search("新批次", "s1", Some(10), None, false, None)
+                .conversation_search("新批次", "s1", Some(10), None, false, false, &[], &[], None, None)
                 .expect("new snapshot visible")["entries"]
                 .as_array()
                 .unwrap()
@@ -2251,7 +2589,7 @@ mod tests {
         );
         assert!(fixture
             .1
-            .conversation_search("旧索引", "s1", Some(10), None, false, None)
+            .conversation_search("旧索引", "s1", Some(10), None, false, false, &[], &[], None, None)
             .expect("old snapshot removed after final commit")["entries"]
             .as_array()
             .unwrap()
@@ -2388,19 +2726,19 @@ mod tests {
             .expect("publish new source after a clock rollback");
         let empty = fixture
             .1
-            .conversation_search("专属标记", "current", Some(5), None, false, None)
+            .conversation_search("专属标记", "current", Some(5), None, false, false, &[], &[], None, None)
             .expect("new empty-session entry");
         assert_eq!(empty["entries"].as_array().unwrap().len(), 1);
         assert!(fixture
             .1
-            .conversation_search("旧未来消息", "current", Some(5), None, false, None)
+            .conversation_search("旧未来消息", "current", Some(5), None, false, false, &[], &[], None, None)
             .expect("forgotten future timestamp")["entries"]
             .as_array()
             .unwrap()
             .is_empty());
         let result = fixture
             .1
-            .conversation_search("挂号", "current", Some(1), None, false, None)
+            .conversation_search("挂号", "current", Some(1), None, false, false, &[], &[], None, None)
             .expect("new session and its anchored reply");
         assert_eq!(result["entries"][0]["entryId"], "a-new");
         assert!(result["entries"]
@@ -2421,6 +2759,9 @@ mod tests {
             chunk: 0,
             role: "assistant".into(),
             text: "记得带医保卡".into(),
+            search_text: String::new(),
+            event_at_ms: None,
+            event_at_date: None,
             timestamp: 1_700_000_000_002,
             anchor_entry_id: Some("u1".into()),
             anchor_event_id: Some("u1:user".into()),
@@ -2428,6 +2769,9 @@ mod tests {
         let assistant_chunk1 = ConversationIndexEntry {
             chunk: 1,
             text: "也带上就诊记录".into(),
+            search_text: String::new(),
+            event_at_ms: None,
+            event_at_date: None,
             ..assistant_chunk0.clone()
         };
         fixture.replace(
@@ -2440,7 +2784,7 @@ mod tests {
 
         let expanded = fixture
             .1
-            .conversation_search("挂号", "s1", Some(1), None, false, None)
+            .conversation_search("挂号", "s1", Some(1), None, false, false, &[], &[], None, None)
             .expect("user hit includes its answer window");
         let rows = expanded["entries"].as_array().expect("entries array");
         assert_eq!(
@@ -2457,10 +2801,117 @@ mod tests {
 
         let bounded = fixture
             .1
-            .conversation_search("挂号", "s1", Some(1), Some(1_700_000_000_002), false, None)
+            .conversation_search("挂号", "s1", Some(1), Some(1_700_000_000_002), false, false, &[], &[], None, None)
             .expect("before excludes the assistant window at its timestamp");
         let bounded_rows = bounded["entries"].as_array().expect("bounded entries");
         assert_eq!(bounded_rows.len(), 1);
         assert_eq!(bounded_rows[0]["entryId"], "u1");
+    }
+
+    #[test]
+    fn conversation_search_corrects_latin_typos_against_the_index_vocabulary() {
+        let fixture = Fixture::new();
+        fixture.replace(
+            "typo-session",
+            "fp-typo",
+            None,
+            vec![entry(
+                "edu",
+                Some("edu:user"),
+                1,
+                "user",
+                "Nora studied education.",
+                None,
+            )],
+            0,
+        );
+        let result = fixture
+            .1
+            .conversation_search("educaton", "typo-session", Some(5), None, false, false, &[], &[], None, None)
+            .expect("typo search succeeds");
+        let rows = result["entries"].as_array().expect("entries array");
+        assert_eq!(rows.len(), 1, "the corrected term must reach the indexed chunk");
+        assert_eq!(rows[0]["entryId"], "edu");
+
+        let checks = fixture
+            .1
+            .conversation_term_check(&["education".into(), "educaton".into()])
+            .expect("term check succeeds");
+        let checks = checks.as_array().expect("term check array");
+        assert_eq!(checks[0]["present"], json!(true));
+        assert_eq!(checks[1]["present"], json!(false));
+    }
+
+    #[test]
+    fn conversation_search_scan_raises_the_normal_candidate_ceiling() {
+        let fixture = Fixture::new();
+        let entries = (0..60)
+            .map(|index| entry(
+                &format!("scan-{index}"),
+                Some(&format!("scan-{index}:user")),
+                index,
+                "user",
+                "scanword evidence",
+                None,
+            ))
+            .collect::<Vec<_>>();
+        fixture.replace("scan-session", "fp-scan", None, entries, 0);
+
+        let normal = fixture
+            .1
+            .conversation_search("scanword", "scan-session", Some(100), None, false, false, &[], &[], None, None)
+            .expect("normal search succeeds");
+        assert_eq!(
+            normal["entries"].as_array().expect("normal entries").len(),
+            super::super::protocol::MEMORY_CONVERSATION_MAX_SEARCH_RESULTS as usize,
+            "normal search keeps the 50-candidate ceiling"
+        );
+        let scanned = fixture
+            .1
+            .conversation_search("scanword", "scan-session", Some(100), None, false, true, &[], &[], None, None)
+            .expect("scan search succeeds");
+        assert_eq!(
+            scanned["entries"].as_array().expect("scanned entries").len(),
+            60,
+            "scan mode may enumerate beyond the normal ceiling"
+        );
+    }
+
+    #[test]
+    fn conversation_search_filters_explicit_event_dates_without_guessing() {
+        let fixture = Fixture::new();
+        let mut dated = entry(
+            "dated",
+            Some("dated:user"),
+            1,
+            "user",
+            "The support group met today.",
+            None,
+        );
+        dated.event_at_ms = Some(1_683_417_600_000);
+        dated.event_at_date = Some("2023-05-07".into());
+        fixture.replace("dated-session", "fp-dated", None, vec![dated], 0);
+
+        let matching = ConversationEventTime {
+            start: None,
+            end: None,
+            calendar_date: Some(ConversationCalendarDate { year: Some(2023), month: 5, day: 7 }),
+        };
+        let hit = fixture
+            .1
+            .conversation_search("support group", "dated-session", Some(5), None, false, false, &[], &[], Some(&matching), None)
+            .expect("event-date search succeeds");
+        assert_eq!(hit["entries"].as_array().expect("hit entries").len(), 1);
+
+        let missing = ConversationEventTime {
+            start: None,
+            end: None,
+            calendar_date: Some(ConversationCalendarDate { year: Some(2023), month: 5, day: 8 }),
+        };
+        let miss = fixture
+            .1
+            .conversation_search("support group", "dated-session", Some(5), None, false, false, &[], &[], Some(&missing), None)
+            .expect("event-date miss succeeds");
+        assert!(miss["entries"].as_array().expect("miss entries").is_empty());
     }
 }

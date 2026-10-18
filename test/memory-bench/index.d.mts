@@ -88,7 +88,7 @@ export const BENCH_DATASETS: Record<string, { name: string; defaultSplit: string
 
 export function benchSplitInfo(dataset: string, split?: string): { dataset: string; split: string; namespace: string; label: string; datasetName: string }
 export function validateBenchCaseFile(dataset: string, file: unknown): string[]
-export function planBenchCells(dataset: string, file: { cases: Array<Record<string, unknown>> }, options?: { limit?: number; caseFilter?: string[]; seed?: string }): Array<{ caseId: string; groupKey: string; questionId: string | null; caseDef: Record<string, unknown>; sequence: number; total: number }>
+export function planBenchCells(dataset: string, file: { cases: Array<Record<string, unknown>> }, options?: { limit?: number; caseFilter?: string[]; seed?: string; perCategory?: number }): Array<{ caseId: string; groupKey: string; questionId: string | null; caseDef: Record<string, unknown>; sequence: number; total: number }>
 export function scoreBenchDataset(dataset: string, file: unknown, outcomes: unknown[], judgments?: Record<string, unknown>, cases?: unknown[]): Record<string, unknown>
 export function runMemoryBenchEvaluation(options: {
   adapter: {
@@ -106,6 +106,7 @@ export function runMemoryBenchEvaluation(options: {
   seed: string
   limit?: number
   caseFilter?: string[]
+  perCategory?: number
   judge?: "on" | "off" | boolean
   judgeModel?: string
   signal?: AbortSignal

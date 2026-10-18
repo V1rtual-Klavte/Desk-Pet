@@ -590,6 +590,73 @@ describe("会话原文索引", () => {
     expect(replaced).not.toContain(empty.id)
     expect(result.map(item => item.conversation?.entryId)).toEqual(["normal-user"])
   })
+
+  it("索引条目投影记录日期、前一回合与事件日期，展示正文逐字不变 [conversation-index-search-projection]", async () => {
+    const current = session("search-projection-session")
+    fixture.metadata = [current]
+    const recordMs = new Date(2026, 9, 5, 12).getTime()
+    const explicit = messageEntry("explicit-user", 1, "user", recordMs, "explicit-event")
+    const reply = messageEntry("reply-assistant", 2, "assistant", recordMs + 60_000)
+    const relative = messageEntry("relative-user", 3, "user", recordMs + 120_000, "relative-event")
+    fixture.transcripts.set(current.id, {
+      entries: [explicit, reply, relative],
+      messages: [
+        { id: explicit.id, eventId: "explicit-event", role: "user", text: "2026年10月2日我们确定了迁移方案", timestamp: recordMs, isUserInput: true },
+        { id: reply.id, eventId: reply.id, role: "assistant", text: "收到，方案已记录", timestamp: recordMs + 60_000 },
+        { id: relative.id, eventId: "relative-event", role: "user", text: "昨天我又检查了备份", timestamp: recordMs + 120_000, isUserInput: true },
+      ],
+    })
+    installBridge()
+
+    await recallConversation({ sessionId: current.id, query: "迁移方案", tokenBudget: 500, signal: new AbortController().signal })
+
+    const rows = fixture.calls
+      .filter(call => call.method === "conversation_index_replace")
+      .flatMap(call => call.args.entries as Array<Record<string, unknown>>)
+    const explicitRow = rows.find(row => row.entryId === "explicit-user")!
+    // 展示正文必须逐字保留；日期/邻居只进检索投影，不混进原文。
+    expect(explicitRow.text).toBe("2026年10月2日我们确定了迁移方案")
+    expect(explicitRow.searchText).toContain("record-date 2026-10-05")
+    // 后轮文本不能泄漏进早轮检索面；否则普通关键词搜索会误命中，context 扩展失去负对照。
+    expect(explicitRow.searchText).not.toContain("收到，方案已记录")
+    expect(explicitRow.eventAtDate).toBe("2026-10-02")
+    expect(explicitRow.eventAtMs).toBe(new Date(2026, 9, 2).getTime())
+    const relativeRow = rows.find(row => row.entryId === "relative-user")!
+    expect(relativeRow.text).toBe("昨天我又检查了备份")
+    expect(relativeRow.searchText).toContain("收到，方案已记录")
+    expect(relativeRow.searchText).toContain("event-date 2026-10-04")
+    expect(relativeRow.eventAtDate).toBe("2026-10-04")
+    expect(relativeRow.eventAtMs).toBe(new Date(2026, 9, 4).getTime())
+  })
+
+  it("计数/概览扫描意图发送 scan 且上限500，普通查询保持50 [memory-conversation-scan-mode]", async () => {
+    installBridge()
+    const signal = new AbortController().signal
+    // 不含「刚才/之前/我们聊过」等短指代词，避免命中零结果后的近期回退分支。
+    const planFor = (recallIntent: MemoryQueryPlan["recallIntent"]): MemoryQueryPlan => ({
+      originalQuery: "旅行一共几次",
+      queries: ["旅行一共几次"],
+      rewriteStatus: "not_needed",
+      recallIntent,
+      sourceRoles: ["user", "assistant"],
+      entities: [],
+      evidenceNeeds: [],
+    })
+
+    for (const recallIntent of ["count", "overview"] as const) {
+      fixture.calls.length = 0
+      const plan = planFor(recallIntent)
+      await searchConversationCandidates({ sessionId: "scan-session", queries: plan.queries, queryPlan: plan, signal })
+      const scans = fixture.calls.filter(call => call.method === "conversation_search")
+      expect(scans.map(call => [call.args.scan, call.args.limit])).toEqual([[true, 500]])
+    }
+
+    fixture.calls.length = 0
+    const lookup = planFor("lookup")
+    await searchConversationCandidates({ sessionId: "scan-session", queries: lookup.queries, queryPlan: lookup, signal })
+    const normal = fixture.calls.filter(call => call.method === "conversation_search")
+    expect(normal.map(call => [call.args.scan, call.args.limit])).toEqual([[undefined, 50]])
+  })
 })
 
 function contextFixture(count = 64): { snapshot: ConversationEvidenceResult; rows: ConversationEvidenceEntry[] } {

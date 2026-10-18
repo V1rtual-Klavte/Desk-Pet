@@ -73,12 +73,28 @@ function groupKeyOf(dataset, item) {
  * cell 规划：按组连续性排序（LoCoMo 一段对话只灌一次库），组内用 seed 洗牌，
  * 再在打平后的顺序截断 limit —— limit 语义是「本次最多跑几题」，可能在组中间结束。
  */
-export function planBenchCells(dataset, file, { limit, caseFilter, seed } = {}) {
+export function planBenchCells(dataset, file, { limit, caseFilter, seed, perCategory } = {}) {
   let cases = file.cases
   if (Array.isArray(caseFilter) && caseFilter.length > 0) {
     const wanted = new Set(caseFilter)
     cases = cases.filter(item => wanted.has(item.caseId))
     if (cases.length === 0) throw new RangeError(`caseFilter 没有命中任何题目: ${caseFilter.join(", ")}`)
+  }
+  // LoCoMo 分层抽样：先按 category 各自洗牌取 N，再做会话分组与组内洗牌。
+  // 固定 seed + caseId 排序保证同一批题在多次 trial 中可复现。
+  if (dataset === "locomo" && Number.isInteger(perCategory) && perCategory > 0) {
+    const buckets = new Map()
+    for (const item of cases) {
+      const bucket = buckets.get(item.category) ?? []
+      bucket.push(item)
+      buckets.set(item.category, bucket)
+    }
+    cases = [...buckets.entries()]
+      .sort((left, right) => left[0] - right[0])
+      .flatMap(([category, bucket]) =>
+        shuffled(bucket, `${seed}/category/${category}`)
+          .slice(0, perCategory)
+          .sort((left, right) => String(left.caseId).localeCompare(String(right.caseId))))
   }
   const groups = new Map()
   for (const item of cases) {
@@ -122,7 +138,7 @@ export function scoreBenchDataset(dataset, file, outcomes, judgments = {}, cases
 }
 
 export async function runMemoryBenchEvaluation({
-  adapter, dataset, split, file, seed, limit, caseFilter, judge = "on", judgeModel, signal, onCellStart, onCellEnd,
+  adapter, dataset, split, file, seed, limit, caseFilter, perCategory, judge = "on", judgeModel, signal, onCellStart, onCellEnd,
 } = {}) {
   const info = benchSplitInfo(dataset, split)
   if (!adapter || typeof adapter.runCell !== "function") throw new TypeError("adapter.runCell is required")
@@ -132,7 +148,7 @@ export async function runMemoryBenchEvaluation({
   const judgeEnabled = judge !== "off" && judge !== false && dataset === "memorybank"
   if (judgeEnabled && (typeof judgeModel !== "string" || !judgeModel.trim()))
     throw new TypeError("judge 开启时必须提供 judgeModel")
-  const cells = planBenchCells(dataset, file, { limit, caseFilter, seed })
+  const cells = planBenchCells(dataset, file, { limit, caseFilter, seed, perCategory })
   const reportNamespace = adapter.reportNamespace?.() ?? info.namespace
   const evalRunId = `bench-${reportNamespace}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`
   const startedAt = new Date().toISOString()

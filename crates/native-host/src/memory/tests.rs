@@ -209,7 +209,7 @@ fn protocol_commands_match_published_schema() {
     assert!(MEMORY_COMMANDS.contains(&"conversation_context"));
     assert_eq!(
         MEMORY_COMMANDS.len(),
-        32,
+        33,
         "命令数量变了就要同步 protocol.json 与 ipc.ts"
     );
     assert_eq!(MEMORY_SCHEMA_VERSION, SCHEMA_VERSION);
@@ -1055,7 +1055,14 @@ fn pending_source_count_follows_watermark_and_tombstones() {
     let job_id = job["id"].as_str().unwrap().to_string();
     store
         .job_checkpoint(&job_id, "src-1", &[], "host", 60_000)
-        .expect("推进水位");
+        .expect("记录本批已审来源");
+    // Checkpoint only records the job-local projection; the global watermark advances on
+    // commit, so a failed review must not skip the source.
+    assert_eq!(store.pending_source_count(None).unwrap(), 2);
+    let revision = store.status().unwrap().revision;
+    store
+        .commit_dreaming_job(&job_id, revision)
+        .expect("提交空作业并推进水位");
     assert_eq!(
         store.pending_source_count(None).unwrap(),
         1,
@@ -1104,7 +1111,7 @@ fn pending_source_count_follows_watermark_and_tombstones() {
 }
 
 #[test]
-fn job_checkpoint_advances_watermarks_for_every_covered_session() {
+fn job_commit_advances_watermarks_for_every_covered_session() {
     // 一批来源横跨多个会话时，水位必须按会话各自推进：只推进游标（批尾）所在会话会把
     // 批中段会话整段留在水位之后，下个作业重读同一批来源（2026-10-10 LongMemEval S 实测：
     // 239 来源跑 10 轮 sweep 仍剩 166 待处理，头部来源被处理 10/10 次）。
@@ -1136,11 +1143,22 @@ fn job_checkpoint_advances_watermarks_for_every_covered_session() {
         .collect();
     store
         .job_checkpoint(&job_id, "s3-2", &covered, "host", 60_000)
-        .expect("推进批内全部会话水位");
+        .expect("记录批内全部会话的已审来源");
+    assert_eq!(
+        store.pending_source_count(None).unwrap(),
+        6,
+        "checkpoint 只记录作业内覆盖，提交前不得推进全局水位"
+    );
+    let same_job_pending = store.job_sources(&job_id, None).unwrap();
+    assert!(same_job_pending.is_empty(), "本作业已覆盖来源不得重读: {same_job_pending:?}");
+    let revision = store.status().unwrap().revision;
+    store
+        .commit_dreaming_job(&job_id, revision)
+        .expect("提交空作业并推进批内全部会话水位");
     assert_eq!(
         store.pending_source_count(None).unwrap(),
         0,
-        "批内每个会话都应推进水位（只推游标会话会漏掉批中段）"
+        "提交后批内每个会话都应推进水位（只推游标会话会漏掉批中段）"
     );
 
     // 下一个作业不得再读到同一批来源（修复前 s1/s2 的来源会整段重读）。
@@ -2494,6 +2512,9 @@ fn database_repair_restores_cache_index_and_fts_without_losing_facts_forget_or_s
                 chunk: 0,
                 role: "user".into(),
                 text: "新来源".into(),
+                search_text: String::new(),
+                event_at_ms: None,
+                event_at_date: None,
                 timestamp: 1_800_000_000_000,
                 anchor_entry_id: None,
                 anchor_event_id: None,
@@ -2917,6 +2938,9 @@ fn database_repair_recovers_clear_cutoff_before_conversation_cache_existed() {
                     chunk: 0,
                     role: "user".into(),
                     text: "清理之前的旧内容".into(),
+                    search_text: String::new(),
+                    event_at_ms: None,
+                    event_at_date: None,
                     timestamp: cutoff.saturating_sub(1_000),
                     anchor_entry_id: None,
                     anchor_event_id: None,
@@ -2928,6 +2952,9 @@ fn database_repair_recovers_clear_cutoff_before_conversation_cache_existed() {
                     chunk: 0,
                     role: "user".into(),
                     text: "清理之后新提交的全新记录".into(),
+                    search_text: String::new(),
+                    event_at_ms: None,
+                    event_at_date: None,
                     timestamp: cutoff + 10_000,
                     anchor_entry_id: None,
                     anchor_event_id: None,
@@ -2938,12 +2965,12 @@ fn database_repair_recovers_clear_cutoff_before_conversation_cache_existed() {
         .expect("index future committed entry");
     let old_result = fixture
         .store
-        .conversation_search("旧内容", "future-session", Some(5), None, false, None)
+        .conversation_search("旧内容", "future-session", Some(5), None, false, false, &[], &[], None, None)
         .expect("search pre-clear history after cache rebuild");
     assert_eq!(old_result["entries"].as_array().unwrap().len(), 0);
     let result = fixture
         .store
-        .conversation_search("新提交", "future-session", Some(5), None, false, None)
+        .conversation_search("新提交", "future-session", Some(5), None, false, false, &[], &[], None, None)
         .expect("search future committed entry");
     assert_eq!(result["entries"].as_array().unwrap().len(), 1);
     assert_eq!(result["entries"][0]["entryId"], "future-user-entry");
@@ -3040,6 +3067,9 @@ fn database_repair_does_not_infer_complete_clear_inventory_from_a_leftover_fence
                 chunk: 0,
                 role: "user".into(),
                 text: "清理之后的新会话".into(),
+                search_text: String::new(),
+                event_at_ms: None,
+                event_at_date: None,
                 timestamp: cutoff + 10_000,
                 anchor_entry_id: None,
                 anchor_event_id: None,
@@ -3049,7 +3079,7 @@ fn database_repair_does_not_infer_complete_clear_inventory_from_a_leftover_fence
         .expect("index a new session after clear");
     let result = fixture
         .store
-        .conversation_search("新会话", "new-session-after-clear", Some(5), None, false, None)
+        .conversation_search("新会话", "new-session-after-clear", Some(5), None, false, false, &[], &[], None, None)
         .expect("search newly indexed session");
     assert_eq!(result["entries"].as_array().unwrap().len(), 1);
 }

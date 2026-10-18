@@ -1,6 +1,6 @@
 //! 原生宿主完整命令分派器（W4）。
 //!
-//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 141 条（总数以 types.ts
+//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 142 条（总数以 types.ts
 //! 为准；分项已复核为「107 冻结 + 34 扩展」：冻结件删 `profile_clone`（「新建 Profile」
 //! 改造）与 `mcp_send`，MCP 裸行收发改由 `mcp_write` / `mcp_read` 两条有意扩展承担）。
 //! A2 追加 `apply_chat_projection` / `apply_titlebar_status`，
@@ -49,7 +49,7 @@
 //! `e2e_memory_reset` / `e2e_memory_performance` 的域实现自带「debug + is_e2e」
 //! 双闸；`e2e_options` / `e2e_complete` / `e2e_trace` 是宿主级测试协议（需要
 //! `main.rs` 的 E2E 私有通道），由 `E2eDispatcher` 承接 —— 本分派器对这三条给出
-//! 明确错误而不是未知方法，保证 141 条在分派面上「条条有着落」。
+//! 明确错误而不是未知方法，保证 142 条在分派面上「条条有着落」。
 
 use std::collections::HashMap;
 use std::sync::{
@@ -860,6 +860,28 @@ impl NativeDispatcher {
                 arg_opt_i64(args, "limit")?,
                 arg_opt_i64(args, "before")?,
                 arg_opt_bool(args, "recentFallback")?,
+                arg_opt_bool(args, "scan")?,
+                args.get("entities")
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(|error| {
+                            AppError::Config(format!("命令参数解析失败: {error}"))
+                        })
+                    })
+                    .transpose()?,
+                args.get("roles")
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(|error| {
+                            AppError::Config(format!("命令参数解析失败: {error}"))
+                        })
+                    })
+                    .transpose()?,
+                args.get("eventTime")
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(|error| {
+                            AppError::Config(format!("命令参数解析失败: {error}"))
+                        })
+                    })
+                    .transpose()?,
                 args.get("recordTime")
                     .map(|value| {
                         serde_json::from_value(value.clone()).map_err(|error| {
@@ -868,6 +890,17 @@ impl NativeDispatcher {
                     })
                     .transpose()?,
             ),
+            "conversation_term_check" => ser(memory_commands::conversation_term_check(
+                self.memory()?,
+                args.get("terms")
+                    .map(|value| {
+                        serde_json::from_value(value.clone()).map_err(|error| {
+                            AppError::Config(format!("命令参数解析失败: {error}"))
+                        })
+                    })
+                    .transpose()?
+                    .unwrap_or_default(),
+            )?),
             "conversation_context" => memory_commands::conversation_context(
                 self.memory()?,
                 arg_str(args, "sessionId")?,
@@ -1723,12 +1756,13 @@ mod tests {
         // 时由它落地；漏登记会让折叠结果写不出去、`too-large` 无声回归）—— 分项变为
         // 「107 冻结 + 29 扩展」。
         // 会话原文索引追加五条 conversation_*，分项为「107 冻结 + 34 扩展」。
-        assert_eq!(names.len(), 141, "HostCommandMap 条数（以 types.ts 为准）");
+        assert_eq!(names.len(), 142, "HostCommandMap 条数（以 types.ts 为准）");
         for name in [
             "conversation_index_status",
             "conversation_index_replace",
             "conversation_index_prune",
             "conversation_search",
+            "conversation_term_check",
             "conversation_context",
         ] {
             assert!(
