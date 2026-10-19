@@ -42,7 +42,7 @@ import {
 } from "@/services/host"
 import type { HostEventMap } from "@/services/host"
 import { createLogger } from "@/services/logger"
-import { confirmState, resolvePermissionConfirm } from "@/services/safety"
+import { confirmState, resolvePermissionConfirm, setPermissionPromptAvailable } from "@/services/safety"
 import type { ConfirmRequest } from "@/services/safety"
 
 const log = createLogger("NativeUi")
@@ -77,6 +77,7 @@ let stopReceipts: (() => void) | undefined
  * 的窗口期（正常引导顺序下不可达，只是防御）。
  */
 export function startPermissionConfirmBridge(): void {
+  setPermissionPromptAvailable(true)
   if (!stopWatcher) {
     stopWatcher = watch(
       () => confirmState.pending,
@@ -125,6 +126,7 @@ export function startPermissionConfirmBridge(): void {
 
 /** 关停或测试拆卸：退订并允许再次装配。 */
 export function stopPermissionConfirmBridge(): void {
+  setPermissionPromptAvailable(false)
   const stopWatcherNow = stopWatcher
   const stopReceiptsNow = stopReceipts
   stopWatcher = undefined

@@ -6,6 +6,7 @@ import { getActiveCard, getActivePersonalityId } from "@/services/personality"
 import { activeSessionId } from "@/services/session"
 import { SUB_AGENT_RUN_TIMEOUT_MS } from "@/services/agent"
 import { runPiSubAgent } from "@/services/engine/harness"
+import { permissionPromptAvailable } from "@/services/safety"
 import { listAll, releaseMcpOwner } from "@/services/tool"
 import { createLogger } from "@/services/logger"
 import { summarizeError } from "@/services/error"
@@ -103,6 +104,7 @@ async function execute(owner:ProactiveOwner,task:ProactiveTask,definition:UserTa
       task:workPrompt(definition.work,Date.now(),definition.schedule.calendar.timezone),
       systemPrompt:"你执行已获授权的后台任务，独立工作并返回有证据的产物。你不代表用户发言，不更新用户记忆，不向其他会话发消息，不创建子代理。",
       tools,capabilities:{requiredToolNames:definition.work.capabilities},thinkingEffort:definition.execution.thinkingEffort,
+      permissionMode:permissionPromptAvailable()?"interactive":"background",
       timeoutMs:TASK_RUN_MS,deadlineAt,maxToolCalls:loopConfig.subAgentRounds,maxOutputTokens:2000,
       outputContract:{kind:"json",validate:({artifact,evidence})=>{
         const check=validateWorkArtifact(artifact,definition.work!,evidence,Date.now(),definition.schedule.calendar.timezone)

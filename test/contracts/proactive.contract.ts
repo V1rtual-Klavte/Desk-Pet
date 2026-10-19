@@ -268,7 +268,7 @@ import type { ModuleContract } from "../host/types"
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "7474e334f61673e173a0ec014e91a4a8aaa13e2e5b190c8e67f881c8c87a5523",
+  module:"proactive",sourceHash: "03a09abf4a07f64f8fbcde256279a6ca07c66f2a01cd7a89782dfadc9f13de27",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

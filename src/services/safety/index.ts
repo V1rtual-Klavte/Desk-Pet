@@ -23,5 +23,5 @@ export {
 export type { PermissionConfirmation, PermissionContext, PermissionPolicySnapshot, PermissionRequest, PermissionResult } from "./permission"
 export type { PermissionDecision, EffectClass } from "@/services/tool/types"
 
-export { confirmState, requestPermissionConfirm, resolveConfirm, resolvePermissionConfirm } from "./confirm"
+export { confirmState, permissionPromptAvailable, requestPermissionConfirm, resolveConfirm, resolvePermissionConfirm, setPermissionPromptAvailable } from "./confirm"
 export type { ConfirmRequest } from "./confirm"

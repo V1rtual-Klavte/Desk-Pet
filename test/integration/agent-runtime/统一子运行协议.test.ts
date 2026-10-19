@@ -14,6 +14,7 @@ import { confirmRecords, resetConfirmChannel } from "../../host/confirm-channel"
 import { runPiSubAgent, resetPiRuntimeProviderForTest } from "@/services/engine/harness"
 import type { PiSubAgentInput, PiSubAgentOwner } from "@/services/engine/harness"
 import { runTeamAgent } from "@/services/agent/sub-agent"
+import { setPermissionPromptAvailable } from "@/services/safety"
 import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 import type { TaskToolAuthorization, ToolDef, ToolHandler } from "@/services/tool"
 import { setOverrides } from "@/services/config"
@@ -134,6 +135,24 @@ describe("统一子运行结果与 owner", () => {
     expect(calls[0]?.policyHash).toMatch(/^[a-f0-9]{64}$/)
     expect(provider.payloads).toHaveLength(1)
     expect(confirmRecords()).toHaveLength(0)
+  })
+
+  it("有确认面板时定时任务弹出权限确认并继续执行 [subrun-scheduled-permission-prompt]", async () => {
+    setPermissionPromptAvailable(true)
+    try {
+      let executions = 0
+      const tool = probe("prompt_probe", async () => { executions++; return { success: true, content: "已获准执行" } }, "DANGER")
+      installFakeProvider([fakeToolCall(tool.name, {}, "prompt-call"), fakeText("完成")], { id: "thinking", reasoning: true })
+      const owner = scheduled(async () => false)
+      const result = await runPiSubAgent({ ...input(owner), tools: [tool], permissionMode: "interactive" })
+      expect(result.status).toBe("completed")
+      expect(result.success).toBe(true)
+      expect(executions).toBe(1)
+      expect(confirmRecords().length).toBeGreaterThan(0)
+    } finally {
+      setPermissionPromptAvailable(false)
+      resetConfirmChannel("deny")
+    }
   })
 
   it("父取消中止正在执行的工具，记录取消而不消费后续收尾 [subrun-inflight-cancel]", async () => {

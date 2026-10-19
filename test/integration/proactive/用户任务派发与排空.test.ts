@@ -22,6 +22,7 @@ vi.mock("@/services/config",()=>({loopConfig:{subAgentRounds:3},silentAccessConf
 vi.mock("@/services/window",()=>({getLatestWindowObservation:()=>null,subscribeWindowObservations:()=>()=>{}}))
 vi.mock("@/services/behavior",()=>({getBehaviorSnapshot:()=>{throw new Error("没有观察时不应读取画像")}}))
 vi.mock("@/services/init",()=>({prepareRunCapabilities:async(_owner:string,current?:()=>void)=>{current?.()}}))
+vi.mock("@/services/safety",()=>({permissionPromptAvailable:()=>true}))
 vi.mock("@/services/user-tasks/validation",()=>({parseUserTaskDefinition:(value:unknown)=>value}))
 vi.mock("@/services/proactive",()=>({
   registerScheduledDeliveryHooks(){},offer(){},tick:async()=>{},query:async()=>({attempts:[]}),reconcileSession:async()=>{},
@@ -78,6 +79,7 @@ describe("用户任务派发与排空",()=>{
     const dispatch=state.job!.run(now).then(()=>{drained=true})
     await vi.waitFor(()=>expect(drained).toBe(true),{timeout:1000})
     expect(state.run).toHaveBeenCalledTimes(1)
+    expect(state.run.mock.calls[0]?.[0]).toMatchObject({ permissionMode: "interactive" })
     expect(state.runs.get("work")?.status).toBe("executing")
     expect(state.runs.get("reminder")?.status).toBe("ready_to_deliver")
     state.release!(incomplete())

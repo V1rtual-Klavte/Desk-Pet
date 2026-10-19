@@ -134,6 +134,25 @@ function validGrant(request: PermissionRequest): boolean {
   return true
 }
 
+async function buildPermissionRequest(
+  tool: ToolDef,
+  params: Record<string, unknown>,
+  ctx: PermissionContext,
+): Promise<PermissionRequest> {
+  return {
+    requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    sessionId: ctx.sessionId,
+    runGeneration: ctx.runGeneration,
+    toolCallId: ctx.toolCallId,
+    toolName: tool.name,
+    inputHash: await sha256Text(stableSerialize(params)),
+    policyHash: await policyHash(tool, params, ctx),
+    message: `“${tool.name}” 将执行 ${effectClass(tool)} 操作，需要你的确认。`,
+    parameterSummary: parameterSummary(params),
+    effectClass: effectClass(tool),
+  }
+}
+
 /**
  * 只做裁决，不展示 UI。passthrough 在此函数内必须被收敛，executor 永远得不到它。
  */
@@ -164,27 +183,14 @@ export async function evaluateToolPermission(
     })
     // An await can outlive cancellation or a task-version change; never carry the old proof across it.
     if (!isUsableContext(ctx)) return { decision: "deny", reason: "任务授权已失效" }
-    if (!authorized) return { decision: "ask", reason: "工具或参数超出持久任务授权，需要用户输入" }
+    if (!authorized) return { decision: "ask", reason: "工具或参数超出持久任务授权，需要用户输入", request: await buildPermissionRequest(tool, params, ctx) }
     return { decision: "allow" }
   }
   // 独立约束取交集：标准 ask 不能被来源侧 allow 吞掉。
   const decision: PermissionDecision = base.decision === "ask" || toolDecision === "ask" ? "ask" : "allow"
   if (decision === "allow") return { decision }
 
-  const inputHash = await sha256Text(stableSerialize(params))
-  const currentPolicyHash = await policyHash(tool, params, ctx)
-  const request: PermissionRequest = {
-    requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    sessionId: ctx.sessionId,
-    runGeneration: ctx.runGeneration,
-    toolCallId: ctx.toolCallId,
-    toolName: tool.name,
-    inputHash,
-    policyHash: currentPolicyHash,
-    message: `“${tool.name}” 将执行 ${effectClass(tool)} 操作，需要你的确认。`,
-    parameterSummary: parameterSummary(params),
-    effectClass: effectClass(tool),
-  }
+  const request = await buildPermissionRequest(tool, params, ctx)
   if (ctx.policy.sessionTrustEnabled && ctx.policy.safetyMode !== "let_me_tk" && validGrant(request)) return { decision: "allow" }
   return { decision: "ask", reason: base.reason, request }
 }

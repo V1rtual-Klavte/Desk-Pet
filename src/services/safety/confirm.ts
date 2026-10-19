@@ -13,6 +13,20 @@ import type { EffectClass, PermissionConfirmation, PermissionRequest } from "./p
 
 const log = createLogger("SafetyConfirm")
 
+/**
+ * Whether a human-facing confirmation sink is mounted (native UI bridge or the
+ * test confirm channel). Background task runs only switch to interactive
+ * permission mode when this is true; otherwise they keep the fail-closed
+ * `needs_input` path instead of waiting forever for a panel nobody can see.
+ */
+let promptAvailable = false
+export function setPermissionPromptAvailable(available: boolean): void {
+  promptAvailable = available
+}
+export function permissionPromptAvailable(): boolean {
+  return promptAvailable
+}
+
 export interface ConfirmRequest {
   id: string
   message: string

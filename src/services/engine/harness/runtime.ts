@@ -348,6 +348,8 @@ export interface PiSubAgentInput {
   systemPrompt: string
   capabilities?: { requiredToolNames?: readonly string[] }
   maxToolCalls?: number
+  /** Caller override: scheduled work may prompt only when a human-facing confirm sink is mounted. */
+  permissionMode?: "interactive" | "background"
   timeoutMs?: number
   deadlineAt?: number
   thinkingEffort?: ThinkingEffort
@@ -3263,7 +3265,9 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   const maxToolCalls = input.maxToolCalls ?? SUB_AGENT_DEFAULT_MAX_TOOL_CALLS
   const deadlineAt = Math.min(input.deadlineAt ?? Infinity, Date.now() + (input.timeoutMs ?? SUB_AGENT_DEFAULT_TIMEOUT_MS))
   const generation = owner.kind === "scheduled" ? owner.taskVersion : owner.runGeneration
-  const background = owner.kind === "scheduled" || owner.kind === "proactive"
+  const background = input.permissionMode
+    ? input.permissionMode === "background"
+    : owner.kind === "scheduled" || owner.kind === "proactive"
   const current = () => !owner.signal?.aborted && owner.isCurrent()
   let slot: HarnessSlot | undefined
   let kernel: TurnKernel | undefined

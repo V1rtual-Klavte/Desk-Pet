@@ -248,7 +248,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "b84471035a11bf738bf3ded0b16b4466ccd278fdeab2f0a8b3d2e538cca40578",
+  sourceHash: "edfa0aad02445030c123021654ccb61979489a47d99ddc6b05f2569b3454d5cd",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -256,10 +256,10 @@ export const agentRuntimeContract: ModuleContract = {
   coverage: [
     {
       id: "ar-41", feature: "统一子运行 owner、产物验收与工具证据",
-      description: "runPiSubAgent 是 fork/team、Plan、主动规划和定时工作的唯一内核。host 必须给定 conversation/plan/proactive/scheduled owner；预取消和过期 deadline 在 Provider 前返回 cancelled/timed_out。maxToolCalls 只表示工具调用次数，保留各业务默认上限。运行状态 completed 与业务 success 分离：空正文、非法 JSON 或治理中止没有成功兜底。必需能力缺失不开工，定时任务明确要求的思考档位不受模型支持时拒绝；resolved 记录模型/provider/期望档位与映射适配、deadline 和冻结工具名。后台持久授权拒绝以 needs_input 收口，不打开用户确认；父取消中止正在执行的工具。工具证据来自真实 after_tool 回执，只提取有界安全 URL、获取时间及同一 JSON 对象中的 URL/发布日期配对；助手自报来源不进证据。audit.runId 与 host owner 一致；team 保留成员状态，lead 空结果不能包装成功。MCP 按本 run 借用并在所有收尾路径释放（真实连接生命周期仍由 tool-execution 的相关 L4 契约验证）。",
+      description: "runPiSubAgent 是 fork/team、Plan、主动规划和定时工作的唯一内核。host 必须给定 conversation/plan/proactive/scheduled owner；预取消和过期 deadline 在 Provider 前返回 cancelled/timed_out。maxToolCalls 只表示工具调用次数，保留各业务默认上限。运行状态 completed 与业务 success 分离：空正文、非法 JSON 或治理中止没有成功兜底。必需能力缺失不开工，定时任务明确要求的思考档位不受模型支持时拒绝；resolved 记录模型/provider/期望档位与映射适配、deadline 和冻结工具名。定时任务持久授权不足：有确认面板时通过 interactive 权限模式弹窗，用户批准后继续执行；无面板时以 needs_input 收口，不打开用户确认；父取消中止正在执行的工具。工具证据来自真实 after_tool 回执，只提取有界安全 URL、获取时间及同一 JSON 对象中的 URL/发布日期配对；助手自报来源不进证据。audit.runId 与 host owner 一致；team 保留成员状态，lead 空结果不能包装成功。MCP 按本 run 借用并在所有收尾路径释放（真实连接生命周期仍由 tool-execution 的相关 L4 契约验证）。",
       why: "临时 owner、空正文成功、team 字符串包装成功会把未完成工作伪装成已交付；背景任务等待交互或把模型来源自报当真证据同样不可接受。",
       layer: "integration", depth: "deep",
-      scenarios: ["subrun-output-acceptance", "subrun-owner-preflight", "subrun-required-capabilities", "subrun-tool-source-evidence", "subrun-background-authorization", "subrun-inflight-cancel", "subrun-team-lead-failure"],
+      scenarios: ["subrun-output-acceptance", "subrun-owner-preflight", "subrun-required-capabilities", "subrun-tool-source-evidence", "subrun-background-authorization", "subrun-scheduled-permission-prompt", "subrun-inflight-cancel", "subrun-team-lead-failure"],
     },
     {
       id: "ar-40",
