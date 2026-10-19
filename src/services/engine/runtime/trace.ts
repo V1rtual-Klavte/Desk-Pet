@@ -220,9 +220,13 @@ function safePayload(kind: RuntimeTraceKind, payload: Record<string, unknown>): 
     else if (field === "candidateIdsByScope" && value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>
       const byScope: Record<string, readonly string[]> = {}
-      for (const scope of ["user", "card", "session"] as const) {
+      // Conversation candidates are the evidence-bearing half of the benchmark
+      // recall metric; dropping the scope silently under-counted candidate recall.
+      // Structural IDs only, no transcript text, with a higher structural cap.
+      for (const scope of ["user", "card", "session", "conversation"] as const) {
         const ids = record[scope]
-        if (Array.isArray(ids)) byScope[scope] = Object.freeze(ids.slice(0, 50).filter((id): id is string => typeof id === "string"))
+        const limit = scope === "conversation" ? 1000 : 50
+        if (Array.isArray(ids)) byScope[scope] = Object.freeze(ids.slice(0, limit).filter((id): id is string => typeof id === "string"))
       }
       safe[field] = Object.freeze(byScope)
     }

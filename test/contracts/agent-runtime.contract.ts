@@ -248,7 +248,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "c9ebec417fbcaa157e2cf1eb72d566d12d9e68c9b2b7a37f16962a9343d0c5a5",
+  sourceHash: "b84471035a11bf738bf3ded0b16b4466ccd278fdeab2f0a8b3d2e538cca40578",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

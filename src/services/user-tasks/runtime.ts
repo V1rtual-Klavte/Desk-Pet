@@ -18,8 +18,9 @@ import { activeSchedulePeriods, currentSchedulePeriod, nextScheduleBoundary, sam
 import { queryUserTasks, subscribeUserTaskChanges } from "./client"
 import { parseUserTaskDefinition } from "./validation"
 import { taskContentFingerprint } from "./proposals"
-import { isTaskReadCapability, taskCapabilityScopeAllows } from "./capabilities"
-import { workPrompt, validateWorkArtifact } from "./work"
+import { isTaskReadCapability, taskCapabilityScopeAllows, taskMcpServers } from "./capabilities"
+import { activeRunEntries, cancelAllRuns, trackRun, untrackRun } from "./active-runs"
+import { classifyWorkFailure, workPrompt, validateWorkArtifact } from "./work"
 import type { ObservedScheduleEvent, SchedulePeriod, UserTaskDefinition } from "./types"
 
 const log=createLogger("UserTasks")
@@ -28,11 +29,16 @@ const TASK_RUN_MS=SUB_AGENT_RUN_TIMEOUT_MS
 const WORK_ENDED_REST_MS=10*60_000
 let stopJob:(()=>void)|undefined, nextAt=0
 const cleanups:Array<()=>void>=[]
-const active=new Map<string,AbortController>()
 const pendingExecutions=new Map<string,Promise<void>>()
-let lastCategory:string|null=null,restSince=0,hadWorking=false,event:ObservedScheduleEvent|undefined
+let lastCategory:string|null=null,restSince=0,hadWorking=false
+const observedEvents:ObservedScheduleEvent[]=[]
+const OBSERVED_EVENT_KEEP=8
+function rememberObservedEvent(next:ObservedScheduleEvent):void {
+  if(!observedEvents.some(item=>item.event===next.event&&item.signal===next.signal&&item.occurredAt===next.occurredAt)) observedEvents.push(next)
+  if(observedEvents.length>OBSERVED_EVENT_KEEP) observedEvents.splice(0,observedEvents.length-OBSERVED_EVENT_KEEP)
+}
 function wake():void {internalScheduler.wake("user_tasks")}
-function resetWorkObservation():void {lastCategory=null;restSince=0;hadWorking=false;event=undefined}
+function resetWorkObservation():void {lastCategory=null;restSince=0;hadWorking=false;observedEvents.length=0}
 /** Observation events describe state changes; unchanged leisure still matures on the scheduler clock. */
 function refreshWorkEndedEvent(now:number):void {
   const observation=getLatestWindowObservation()
@@ -41,7 +47,7 @@ function refreshWorkEndedEvent(now:number):void {
   if(snapshot.quality.status!=="reliable"){resetWorkObservation();return}
   if(!["leisure","idle"].includes(snapshot.focus.currentCategory??"")){restSince=0;return}
   if(hadWorking&&restSince&&now-restSince>=WORK_ENDED_REST_MS){
-    event={event:"work_ended",signal:"working_to_idle",occurredAt:restSince+WORK_ENDED_REST_MS}
+    rememberObservedEvent({event:"work_ended",signal:"working_to_idle",occurredAt:restSince+WORK_ENDED_REST_MS})
     hadWorking=false
   }
 }
@@ -70,7 +76,7 @@ async function execute(owner:ProactiveOwner,task:ProactiveTask,definition:UserTa
   if(definition.kind==="reminder")return updateRun(run,"ready_to_deliver",{artifact:{text:definition.text,execution:{until}}})
   const controller=new AbortController()
   const activeKey=`${task.id}:${run.runId}`
-  active.set(activeKey,controller)
+  trackRun(activeKey,controller,owner)
   const capabilityOwner=`scheduled-prepare:${run.runId}`
   const deadlineAt=Math.min(until,Date.now()+TASK_RUN_MS)
   let workStarted=false
@@ -80,8 +86,10 @@ async function execute(owner:ProactiveOwner,task:ProactiveTask,definition:UserTa
     const grant=definition.authorization
     if(!grant||grant.contentFingerprint!==taskContentFingerprint(definition)||!definition.work) return updateRun(run,"needs_input",{error:"任务缺少可核验的持久授权"})
     const {prepareRunCapabilities}=await import("@/services/init")
-    await prepareRunCapabilities(capabilityOwner,assertCurrent)
+    await prepareRunCapabilities(capabilityOwner,assertCurrent,taskMcpServers(definition))
     const tools=listAll().filter(tool=>definition.work!.capabilities.includes(tool.name)&&isTaskReadCapability(tool))
+    const missing=definition.work.capabilities.filter(name=>!tools.some(tool=>tool.name===name))
+    if(missing.length) return updateRun(run,"needs_input",{error:`任务所需能力当前不可用：${missing.join("、")}`})
     workStarted=true
     const output=await runPiSubAgent({
       owner:{kind:"scheduled",runId:run.runId,sessionId:owner.sessionId,cardId:owner.cardId,taskId:task.id,taskVersion:task.version,occurrenceId,
@@ -102,16 +110,22 @@ async function execute(owner:ProactiveOwner,task:ProactiveTask,definition:UserTa
       }},audit:{reference:`scheduler_runs:${run.runId}`},
     })
     if(!await loadTask(owner,task.id,task.version))return
-    if(!output.success) return updateRun(run,output.evidence.unconfirmedEffects?"unresolved":output.status==="needs_input"||output.status==="completed"?"needs_input":"failed",{
-      error:summarizeError(output.error??"任务完成条件未通过"),artifact:{text:output.reply,structured:output.artifact,evidence:output.evidence.tools,execution:{...output.resolved,status:output.status,until},audit:{...output.audit}}})
+    if(!output.success) {
+      const status=output.evidence.unconfirmedEffects?"unresolved"
+        :output.status==="needs_input"?"needs_input"
+        :output.status==="completed"?classifyWorkFailure(String(output.error??"output_contract_failed"))
+        :"failed"
+      return updateRun(run,status,{
+        error:summarizeError(output.error??"任务完成条件未通过"),artifact:{text:output.reply,structured:output.artifact,evidence:output.evidence.tools,execution:{...output.resolved,status:output.status,until},audit:{...output.audit}}})
+    }
     const artifact=validateWorkArtifact(output.artifact,definition.work,output.evidence,Date.now(),definition.schedule.calendar.timezone)
-    if(typeof artifact==="string")return updateRun(run,"needs_input",{error:artifact})
+    if(typeof artifact==="string")return updateRun(run,classifyWorkFailure(artifact),{error:artifact})
     return updateRun(run,"ready_to_deliver",{artifact:{text:artifact.text,structured:artifact,evidence:output.evidence.tools,execution:{...output.resolved,until,usage:output.usage},audit:{...output.audit}}})
   } catch(error) {
     if(await loadTask(owner,task.id,task.version))run=await updateRun(run,workStarted?"unresolved":"failed",{error:summarizeError(error)})
     log.warn("定时任务执行未收口",{taskId:task.id,runId:run.runId},summarizeError(error))
     return run
-  } finally {active.delete(activeKey);await releaseMcpOwner(capabilityOwner)}
+  } finally {untrackRun(activeKey);await releaseMcpOwner(capabilityOwner)}
 }
 /** Work outlives a dispatcher tick; reminders must keep their own due-time checks. */
 function launchExecution(owner:ProactiveOwner,task:ProactiveTask,definition:UserTaskDefinition,occurrenceId:string,until:number):void {
@@ -166,7 +180,14 @@ async function checkTask(owner:ProactiveOwner,task:ProactiveTask,now:number):Pro
   const boundary=nextScheduleBoundary(definition.schedule,now)
   if(boundary!==null)nextAt=Math.min(nextAt,boundary)
   const deliveryMs=definition.delivery.windowMinutes*60_000
-  const periods=definition.schedule.trigger.kind==="observed_event"?[currentSchedulePeriod(definition.schedule,now,event)]:activeSchedulePeriods(definition.schedule,now,deliveryMs)
+  const trigger=definition.schedule.trigger
+  // An observed event belongs to the period containing the event, not the clock
+  // period containing the later check. Keep a bounded event list instead of one
+  // latest slot so two work-ended events in the same day both get a period.
+  const periods=trigger.kind==="observed_event"
+    ?observedEvents.filter(item=>item.event===trigger.event&&item.signal===trigger.signal)
+      .map(item=>currentSchedulePeriod(definition.schedule,item.occurredAt,item))
+    :activeSchedulePeriods(definition.schedule,now,deliveryMs)
   for(const period of periods) {
     const sample=await periodFor(owner,task,definition,period)
     if(!sample)continue
@@ -237,11 +258,12 @@ export function startUserTaskRuntime():void {
     const run=await deliveryRun(item)
     if(run?.status==="ready_to_deliver"&&run.attemptId===attemptId)await updateRun(run,"delivered",{assistantEntryId})
   }})
-  stopJob=internalScheduler.register({id:"user_tasks",nextAt:now=>Math.max(now+1,Math.min(nextAt||now+TASK_CHECK_MS,now+TASK_CHECK_MS)),run:checkTasks,cancel:()=>{for(const controller of active.values())controller.abort(new Error("任务调度停止"))}})
+  stopJob=internalScheduler.register({id:"user_tasks",nextAt:now=>Math.max(now+1,Math.min(nextAt||now+TASK_CHECK_MS,now+TASK_CHECK_MS)),run:checkTasks,cancel:()=>cancelAllRuns("任务调度停止")})
   cleanups.push(watch(activeSessionId,wake),watch(()=>getActivePersonalityId(),wake),subscribeUserTaskChanges(change=>{
     if(change.action!=="snooze") {
-      if(change.task)for(const [key,controller] of active)if(key.startsWith(`${change.task.id}:`))controller.abort(new Error("任务定义已改变"))
-      else for(const controller of active.values())controller.abort(new Error("任务定义已改变"))
+      for(const [key,{controller}] of activeRunEntries()) {
+        if(change.task?key.startsWith(`${change.task.id}:`):true)controller.abort(new Error("任务定义已改变"))
+      }
     }
     wake()
   }))
@@ -253,7 +275,7 @@ export function startUserTaskRuntime():void {
     if(category==="work"||category==="development"){hadWorking=true;restSince=0}
     else if(hadWorking&&["leisure","idle"].includes(category??"")&&lastCategory!==category){restSince=now}
     else if(!["leisure","idle"].includes(category??""))restSince=0
-    if(hadWorking&&restSince&&now-restSince>=WORK_ENDED_REST_MS){event={event:"work_ended",signal:"working_to_idle",occurredAt:restSince+WORK_ENDED_REST_MS};hadWorking=false;wake()}
+    if(hadWorking&&restSince&&now-restSince>=WORK_ENDED_REST_MS){rememberObservedEvent({event:"work_ended",signal:"working_to_idle",occurredAt:restSince+WORK_ENDED_REST_MS});hadWorking=false;wake()}
     lastCategory=category
   }))
   wake()
@@ -262,6 +284,6 @@ export async function stopUserTaskRuntime():Promise<void> {
   const remove=stopJob;stopJob=undefined;remove?.()
   resetWorkObservation()
   for(const cleanup of cleanups.splice(0))cleanup()
-  for(const controller of active.values())controller.abort(new Error("任务调度停止"))
+  cancelAllRuns("任务调度停止")
   await Promise.all([...pendingExecutions.values()])
 }

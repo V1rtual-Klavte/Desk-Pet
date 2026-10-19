@@ -2788,7 +2788,10 @@ impl MemoryStore {
         }
         let source = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(db_err)?;
-        crate::scheduler::schema::validate_inventory(&source, true)?;
+        // Backups made before the scheduler extension have no scheduler tables or
+        // marker; they are still valid memory snapshots and restore into a fresh
+        // ledger. A current backup with a missing table still fails closed.
+        crate::scheduler::schema::validate_inventory(&source, false)?;
         let integrity: String = source
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
             .map_err(db_err)?;
@@ -2888,7 +2891,8 @@ impl MemoryStore {
         }
         let source = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(db_err)?;
-        crate::scheduler::schema::validate_inventory(&source, true)?;
+        // Legacy backup: no scheduler marker/tables is a valid memory-only snapshot.
+        crate::scheduler::schema::validate_inventory(&source, false)?;
         let version: Option<String> = source
             .query_row(
                 "SELECT value FROM memory_meta WHERE key='schema_version'",
@@ -2986,11 +2990,11 @@ impl MemoryStore {
             }
             // Replace metadata except the monotonically increasing privacy/version counters.
             conn.execute(
-            "DELETE FROM memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch')",
+            "DELETE FROM memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch','scheduler_schema_version')",
             [],
         )
         .map_err(db_err)?;
-            conn.execute("INSERT INTO memory_meta(key,value) SELECT key,value FROM restore_src.memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch')", []).map_err(db_err)?;
+            conn.execute("INSERT INTO memory_meta(key,value) SELECT key,value FROM restore_src.memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch','scheduler_schema_version')", []).map_err(db_err)?;
             for (table, _) in [
                 ("memory_sources", "memory_sources"),
                 ("memory_items", "memory_items"),

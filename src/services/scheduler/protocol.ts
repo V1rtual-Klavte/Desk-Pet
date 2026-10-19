@@ -67,12 +67,14 @@ export type SchedulerStateRequest =
   | ({ operation: "run_update"; runId: string; expectedRevision: number; status: SchedulerRunStatus; leaseMs?: number; artifact?: SchedulerArtifact; error?: string; attemptId?: string; assistantEntryId?: string } & TaskIdentity & Mutation)
   | { operation: "run_list"; owner: ProactiveOwner; taskId?: string; statuses?: SchedulerRunStatus[]; cursor?: string; limit?: number }
   | { operation: "task_list"; cursor?: string; limit?: number }
+  | { operation: "owner_invalidate"; sessionId?: string; cardId?: string; cardHash?: string; operationId: string; now: number }
 export type SchedulerStateResponse =
   | { operation: "slot_get" | "slot_claim" | "slot_settle"; slot: SchedulerSlotRecord | null; lastAttemptAt: number | null; claimed: boolean }
   | { operation: "period_get" | "period_put"; period: SchedulerPeriodRecord | null }
   | { operation: "run_get" | "run_claim" | "run_update"; run: SchedulerRunRecord | null; claimed: boolean }
   | { operation: "run_list"; runs: SchedulerRunRecord[]; nextCursor: string | null }
   | { operation: "task_list"; tasks: Array<{ task: ProactiveTask; owner: ProactiveOwner }>; nextCursor: string | null }
+  | { operation: "owner_invalidate"; invalidated: number }
 
 export interface ScheduleQueryRequest {
   owner: ProactiveOwner

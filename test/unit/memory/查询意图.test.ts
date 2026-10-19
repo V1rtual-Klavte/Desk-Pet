@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { deriveMemoryQueryPlan } from "@/services/agent/memory/query"
-import { hasAdaptiveQueryShape, hasPersonalRecallIntent } from "@/services/agent/memory/query-shape"
+import { deriveFeedbackQueries, hasAdaptiveQueryShape, hasPersonalRecallIntent } from "@/services/agent/memory/query-shape"
 
 describe("记忆检索意图", () => {
   it("英文功能词不占实体名额，推断与历史的证据需求共用阅读分类 [memory-query-plan-inference-fields]", () => {
@@ -193,6 +193,36 @@ describe("记忆检索意图", () => {
     expect(deriveMemoryQueryPlan("Answer using our conversation history:\nWhat fields would Caroline be likely to pursue?").evidenceNeeds)
       .not.toContain("enumeration")
     expect(deriveMemoryQueryPlan("What is SQLite?").evidenceNeeds).not.toContain("enumeration")
+    expect(deriveMemoryQueryPlan("What was my 姓名确认单七一?").evidenceNeeds).not.toContain("enumeration")
+  })
+
+  it("第三人称枚举与建议进入 aspect 扇出，建议不变一般知识 [memory-query-third-person-aspect]", () => {
+    const authors = deriveMemoryQueryPlan("What authors has Tim read books from?")
+    expect(authors).toMatchObject({ recallIntent: "lookup", aspectCategories: ["book"] })
+    expect(authors.evidenceNeeds).toContain("enumeration")
+    expect(authors.aspectQueries).toEqual(expect.arrayContaining(["book", "author"]))
+    const pets = deriveMemoryQueryPlan("What kind of tricks do James's pets know?")
+    expect(pets).toMatchObject({ recallIntent: "lookup", evidenceNeeds: expect.arrayContaining(["enumeration"]) })
+    const advice = deriveMemoryQueryPlan("What is something that Andrew could do to make birdwatching hobby to fit in his city schedule?")
+    expect(advice).toMatchObject({ recallIntent: "advice", aspectCategories: ["activity"] })
+    expect(advice.aspectQueries).toEqual(expect.arrayContaining(["birds"]))
+    expect(deriveMemoryQueryPlan("What did the telescope discover?").recallIntent).toBe("none")
+  })
+
+  it("反馈查询从首轮命中提取作品名，排除原问题词并限制条数 [memory-context-enumeration-feedback]", () => {
+    const entries = [
+      { text: "Harry Potter and Game of Thrones are amazing - I'm hooked!" },
+      { text: "I saw that you had \"The Alchemist\" on there, one of my favorites." },
+      { text: "The Hobbit is great, but have you read that other popular fantasy series?" },
+      { text: "I'm excited to watch The Wheel of Time, based on a book series I love." },
+    ]
+    const queries = deriveFeedbackQueries(entries, ["What authors has Tim read books from?"])
+    expect(queries.length).toBeLessThanOrEqual(6)
+    expect(queries).toContain("Harry Potter")
+    expect(queries).toContain("The Alchemist")
+    expect(queries).toContain("The Hobbit")
+    expect(queries.some(query => query.toLowerCase().includes("authors"))).toBe(false)
+    expect(deriveFeedbackQueries([{ text: "我最喜欢的书是《三体》，作者刘慈欣。" }], ["我喜欢什么书"])).toContain("三体")
   })
 })
 

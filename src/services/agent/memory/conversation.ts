@@ -16,6 +16,7 @@ import { messageEventId } from "@/services/engine/runtime"
 import { getPiSessionRepo, listPiSessionMetadata, readPiSessionEntriesOnce, readVisibleSessionTranscript, withPiSessionFileLock } from "@/services/session"
 import type { MemoryProjection } from "./provider"
 import { deriveMemoryQueryPlan } from "./query"
+import { deriveFeedbackQueries } from "./query-shape"
 import { fuseRankedListsScored } from "./fusion"
 import { conversationEventKey, conversationKeyAliases } from "./conversation-key"
 import { normalizeMemoryQueryText } from "./query"
@@ -497,6 +498,37 @@ export async function searchConversationCandidates(request: ConversationCandidat
       ...(eventTime ? { eventTime } : {}),
       recentFallback: true,
     }, { signal: request.signal })]
+  }
+  // Set/advice answers often require a second lexical hop: the first hit names
+  // the work/activity, while the author or schedule fact lives in another turn.
+  // Feedback queries are bounded and only used for enumeration/advice shapes.
+  const feedbackEligible = !recordTime && (queryPlan?.recallIntent === "advice"
+    || queryPlan?.recallIntent === "overview" || queryPlan?.recallIntent === "count"
+    || queryPlan?.evidenceNeeds?.includes("enumeration"))
+  if (feedbackEligible && !request.signal.aborted) {
+    const feedbackQueries = deriveFeedbackQueries(
+      searchResults.flatMap(item => item.entries),
+      uniqueQueries,
+    ).filter(query => {
+      const key = normalizeMemoryQueryText(query)
+      if (!key || seenQueries.has(key)) return false
+      seenQueries.add(key)
+      return true
+    })
+    if (feedbackQueries.length > 0) {
+      const feedbackResults = await Promise.all(feedbackQueries.map(query => host.request("conversation_search", {
+        query,
+        sessionId: request.sessionId,
+        limit,
+        ...(scan ? { scan: true } : {}),
+        ...(entities.length ? { entities: [...entities] } : {}),
+        ...(roles.length ? { roles: [...roles] } : {}),
+        ...(request.before === undefined ? {} : { before: request.before }),
+        ...(eventTime ? { eventTime } : {}),
+      }, { signal: request.signal })))
+      if (request.signal.aborted) return { ...searchResults[0], entries: [] }
+      searchResults = [...searchResults, ...feedbackResults]
+    }
   }
   let result = searchResults[0]
   if (!result) return {

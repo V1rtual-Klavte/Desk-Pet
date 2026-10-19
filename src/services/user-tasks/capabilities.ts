@@ -1,8 +1,29 @@
 import { createHash } from "node:crypto"
 import { posix, win32 } from "node:path"
+import { enabledMcpServerNames } from "@/services/config"
 import type { ToolDef } from "@/services/tool/types"
 import { toolPolicyFingerprint } from "@/services/tool/policy"
 import type { UserTaskDefinition } from "./types"
+
+/**
+ * MCP tools are named `mcp_<server>_<tool>`; a task may only borrow the servers
+ * named by its persisted capability grants. Unknown capability names stay out of
+ * the borrow set and are reported as missing before any work starts.
+ */
+export function taskMcpServers(definition: UserTaskDefinition): string[] {
+  const capabilities = definition.work?.capabilities ?? []
+  if (!capabilities.length) return []
+  const servers = enabledMcpServerNames()
+  const selected = new Set<string>()
+  for (const capability of capabilities) {
+    const matches = servers.filter(server => capability.startsWith(`mcp_${server}_`))
+    if (!matches.length) continue
+    // Prefer the longest server name so `foo` cannot shadow `foo_bar`.
+    matches.sort((left, right) => right.length - left.length)
+    selected.add(matches[0]!)
+  }
+  return [...selected]
+}
 
 /** An MCP hint is eligibility metadata; persisted consent plus PermissionKernel still grant execution. */
 export function isTaskReadCapability(tool: ToolDef): boolean {

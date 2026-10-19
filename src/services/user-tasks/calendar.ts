@@ -60,14 +60,21 @@ export function currentSchedulePeriod(schedule: ScheduleSpec, instant: number, e
   }
   const trigger = schedule.trigger
   let awaitingEvent = trigger.kind === "observed_event"
+  let matchedEventAt: number | undefined
   if (trigger.kind === "observed_event" && event?.event === trigger.event && event.signal === trigger.signal
     && event.occurredAt >= from && event.occurredAt < until && selectedDate(schedule, localDayKey(event.occurredAt, timezone))) {
     const eventFrom = Math.max(event.occurredAt + trigger.offsetMinutes * MINUTE_MS, schedule.validity.from)
     const eventUntil = Math.min(eventFrom + Math.max(1, trigger.windowMinutes * MINUTE_MS), schedule.validity.until ?? Infinity)
     if (eventFrom < eventUntil) windows.push({ from: eventFrom, until: eventUntil, localDate: localDayKey(event.occurredAt, timezone), ...(trigger.windowMinutes === 0 ? { fixed: true } : {}) })
     awaitingEvent = false
+    matchedEventAt = event.occurredAt
   }
-  return { key: `${schedulePeriodUnit(schedule)}:${day}:${timezone}`, from, until, windows, awaitingEvent }
+  // Event periods are keyed by the real occurrence, not just the calendar bucket:
+  // two work-ended events in one day must each own their sample and run identity.
+  const key = matchedEventAt === undefined
+    ? `${schedulePeriodUnit(schedule)}:${day}:${timezone}`
+    : `${schedulePeriodUnit(schedule)}:${day}:${timezone}:event:${matchedEventAt}`
+  return { key, from, until, windows, awaitingEvent }
 }
 
 export function nextSchedulePeriod(schedule: ScheduleSpec, periodOrInstant: SchedulePeriod | number): SchedulePeriod | null {

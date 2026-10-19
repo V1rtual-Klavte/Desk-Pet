@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { validateWorkArtifact } from "@/services/user-tasks/work"
+import { classifyWorkFailure, validateWorkArtifact } from "@/services/user-tasks/work"
 import type { PiSubAgentEvidence } from "@/services/engine/harness"
 const now=Date.parse("2026-10-18T04:00:00Z")
 const work={goal:"查询今天的新闻热点",inputs:[],capabilities:["search"],output:"三条热点附来源",completion:"取得本轮可核验来源"}
@@ -24,5 +24,12 @@ describe("执行产物校验",()=>{
     expect(validateWorkArtifact(artifact,work,receipts,now,"Asia/Shanghai")).toEqual({text:"三条热点",completed:true,criterion:work.completion,
       sources:[{url:"https://example.org/news",title:"新闻原文",fetchedAt:now-1000,publishedAt:"2026-10-18T02:00:00Z",publicationDateVerified:true}]})
     expect(validateWorkArtifact(artifact,work,{...evidence,tools:[{...evidence.tools[0],sources:[{url:"https://example.org/news",publishedAt:"2026-10-17T02:00:00Z"}]}]},now,"Asia/Shanghai")).toBe("freshness_unverified")
+  })
+  it("输出合同失败不一律当作用户输入缺失 [scheduled-artifact-failure-classification]",()=>{
+    expect(classifyWorkFailure("completion_not_met")).toBe("needs_input")
+    expect(classifyWorkFailure("missing_artifact")).toBe("needs_input")
+    for(const error of ["incomplete_evidence","required_capability_not_used","unverified_source","unverified_source_date","missing_fresh_sources","freshness_unverified"]) {
+      expect(classifyWorkFailure(error),error).toBe("failed")
+    }
   })
 })

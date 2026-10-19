@@ -347,6 +347,18 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
         log.warn("Session: 删除后清理对话检索索引失败:", sessionId, formatError(error))
         reportError("Session", error, { kind: "删除后清理对话检索索引失败", overlay: false })
       }
+      try {
+        // Stop in-flight work before invalidating the ledger: the host then refuses
+        // any late run update because the task is no longer active.
+        const [{ cancelRuns }, { invalidateOwnerTasks }] = await Promise.all([
+          import("@/services/user-tasks/active-runs"), import("@/services/user-tasks/client"),
+        ])
+        cancelRuns(owner => owner.sessionId === sessionId)
+        await invalidateOwnerTasks({ sessionId })
+      } catch (error) {
+        log.warn("Session: 删除后失效定时任务失败:", sessionId, formatError(error))
+        reportError("Session", error, { kind: "删除后失效定时任务失败", overlay: false })
+      }
       // 文件确实删掉之后再清理该会话的托管聊天图片（不出「文件没删掉却清了图」）。
       await deleteSessionChatImages(sessionId, sourceEntries)
     }

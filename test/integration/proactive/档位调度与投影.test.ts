@@ -39,7 +39,7 @@ import { loadCard } from "@/services/personality/loader"
 import { getActiveCard } from "@/services/personality/registry"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
-import { setOverride } from "@/services/config"
+import { setOverride, setProactiveFrequency } from "@/services/config"
 import { activeSessionId } from "@/services/session/store"
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
 import { configureProactive, refreshProactive, start, stop, tick, wakeDelayMs } from "@/services/proactive/scanner"
@@ -223,6 +223,18 @@ describe("档位门禁与随机唤醒调度", () => {
     refreshProactive()
     expect(wakeDelayAt(1_000_000), "切到高档后没有按高档区间重排唤醒").toBe(1_200_000)
     await internalScheduler.drain()
+  })
+
+  it("档位切换先重排所有作业再唤醒，即时扫描不被 refreshAll 覆盖 [proactive-tier-switch-wake-order]", async () => {
+    configureShallowScanner()
+    start()
+    const order: string[] = []
+    const refreshAll = vi.spyOn(internalScheduler, "refreshAll").mockImplementation(() => { order.push("refreshAll") })
+    const wake = vi.spyOn(internalScheduler, "wake").mockImplementation(id => { if (id === "proactive_scan") order.push("wake") })
+    await setProactiveFrequency("high")
+    expect(order, "refreshAll 必须排在即时唤醒之前").toEqual(["refreshAll", "wake"])
+    refreshAll.mockRestore()
+    wake.mockRestore()
   })
 
   it("档位投影按整行下发：start 推当前档、refresh 推新档、off 不推 [proactive-limits-projection]", async () => {

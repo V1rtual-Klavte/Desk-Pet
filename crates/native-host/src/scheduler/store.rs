@@ -306,6 +306,14 @@ impl MemoryStore {
                 "limit",
             ],
             "task_list" => &["operation", "cursor", "limit"],
+            "owner_invalidate" => &[
+                "operation",
+                "sessionId",
+                "cardId",
+                "cardHash",
+                "operationId",
+                "now",
+            ],
             _ => return Err(fail("未知 scheduler_state operation")),
         };
         fields(request, allowed)?;
@@ -313,7 +321,12 @@ impl MemoryStore {
         let tx = conn.unchecked_transaction().map_err(db)?;
         let mutation = matches!(
             operation,
-            "slot_claim" | "slot_settle" | "period_put" | "run_claim" | "run_update"
+            "slot_claim"
+                | "slot_settle"
+                | "period_put"
+                | "run_claim"
+                | "run_update"
+                | "owner_invalidate"
         );
         let now = if mutation {
             positive(request, "now")?
@@ -543,6 +556,34 @@ impl MemoryStore {
                 }
                 json!({"operation":operation,"tasks":entries,"nextCursor":next})
             }
+            "owner_invalidate" => {
+                let session = optional_string(request, "sessionId")?;
+                let card = optional_string(request, "cardId")?;
+                let card_hash = optional_string(request, "cardHash")?;
+                if session.is_none() && card.is_none() {
+                    return Err(fail("owner_invalidate 至少需要 sessionId 或 cardId"));
+                }
+                let mut stmt = tx.prepare(
+                    "SELECT id FROM proactive_tasks WHERE state='active' AND \
+                     ((?1 IS NOT NULL AND (json_extract(intent_json,'$.delivery.sessionId')=?1 OR (scope='session' AND scope_id=?1))) \
+                      OR (?2 IS NOT NULL AND (json_extract(intent_json,'$.delivery.cardId')=?2 OR (scope='card' AND scope_id=?2)))) \
+                     AND (?3 IS NULL OR json_extract(intent_json,'$.delivery.cardHash')=?3)",
+                ).map_err(db)?;
+                let ids = stmt
+                    .query_map(params![session, card, card_hash], |row| row.get::<_, String>(0))
+                    .map_err(db)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(db)?;
+                drop(stmt);
+                for id in &ids {
+                    invalidate_task_content(&tx, id, now)?;
+                    tx.execute(
+                        "UPDATE proactive_tasks SET state='invalidated',version=version+1,intent_json='{}',source_refs_json='[]',updated_at=?2,invalidation_epoch=invalidation_epoch+1 WHERE id=?1 AND state='active'",
+                        params![id, now],
+                    ).map_err(db)?;
+                }
+                json!({"operation":operation,"invalidated":ids.len()})
+            }
             _ => unreachable!(),
         };
         if mutation {
@@ -591,7 +632,7 @@ impl MemoryStore {
             tx.commit().map_err(db)?;
             return Ok(json!({"revision":revision,"tasks":[],"nextCursor":null,"operationReceipt":receipt}));
         }
-        let sql=format!("SELECT {TASK_COLUMNS} FROM proactive_tasks WHERE json_extract(intent_json,'$.kind') IN ('reminder','agent_job') AND (scope='user' OR (scope='card' AND scope_id=?1) OR (scope='session' AND scope_id=?2)) AND state IN (SELECT value FROM json_each(?3)) AND (?4 IS NULL OR id=?4) AND id>?5 AND json_extract(intent_json,'$.delivery.sessionId')=?2 AND json_extract(intent_json,'$.delivery.cardId')=?1 AND NOT EXISTS(SELECT 1 FROM json_each(source_refs_json) r WHERE (json_extract(r.value,'$.scope')='session' AND json_extract(r.value,'$.scopeId')<>?2) OR (json_extract(r.value,'$.scope')='card' AND json_extract(r.value,'$.scopeId')<>?1)) ORDER BY id LIMIT ?6");
+        let sql=format!("SELECT {TASK_COLUMNS} FROM proactive_tasks WHERE json_extract(intent_json,'$.kind') IN ('reminder','agent_job') AND (scope='user' OR (scope='card' AND scope_id=?1) OR (scope='session' AND scope_id=?2)) AND state IN (SELECT value FROM json_each(?3)) AND (?4 IS NULL OR id=?4) AND id>?5 AND json_extract(intent_json,'$.delivery.sessionId')=?2 AND json_extract(intent_json,'$.delivery.cardId')=?1 AND json_extract(intent_json,'$.delivery.cardHash')=?7 AND NOT EXISTS(SELECT 1 FROM json_each(source_refs_json) r WHERE (json_extract(r.value,'$.scope')='session' AND json_extract(r.value,'$.scopeId')<>?2) OR (json_extract(r.value,'$.scope')='card' AND json_extract(r.value,'$.scopeId')<>?1)) ORDER BY id LIMIT ?6");
         let mut stmt = tx.prepare(&sql).map_err(db)?;
         let mut tasks = stmt
             .query_map(
@@ -601,7 +642,8 @@ impl MemoryStore {
                     states,
                     task_id,
                     cursor,
-                    limit + 1
+                    limit + 1,
+                    string(&request["owner"], "cardHash")?
                 ],
                 read_task,
             )
@@ -616,6 +658,7 @@ impl MemoryStore {
                 && task["intent"].get("delivery").is_none_or(|d| {
                     d["sessionId"] == request["owner"]["sessionId"]
                         && d["cardId"] == request["owner"]["cardId"]
+                        && d["cardHash"] == request["owner"]["cardHash"]
                 })
         });
         let has_more = tasks.len() > limit as usize;
@@ -1523,6 +1566,122 @@ mod tests {
         fixture.claim("occ", "run", fixture.now);
         fixture.store.schedule_change(&json!({"operationId":"cancel","baseRevision":fixture.revision(),"action":"cancel","owner":Fixture::owner(),"trustedUserEventId":"user-event","sourceRefs":[Fixture::source()],"taskId":"task","expectedVersion":1})).expect("cancel");
         assert!(fixture.store.scheduler_state(&json!({"operation":"run_update","owner":Fixture::owner(),"taskId":"task","taskVersion":1,"runId":"run","expectedRevision":1,"status":"ready_to_deliver","artifact":{"text":"late result"},"operationId":"late","now":fixture.now+1})).is_err());
+    }
+
+    #[test]
+    fn deleting_owner_invalidates_active_tasks_and_rejects_late_claims() {
+        let fixture = Fixture::new();
+        fixture.create("task");
+        let result = fixture
+            .store
+            .scheduler_state(&json!({"operation":"owner_invalidate","sessionId":"s1","operationId":"owner-drop","now":fixture.now+1}))
+            .expect("invalidate owner");
+        assert_eq!(result["invalidated"], json!(1));
+        assert!(fixture
+            .store
+            .schedule_query(&json!({"owner":Fixture::owner()}))
+            .expect("query after invalidation")["tasks"]
+            .as_array()
+            .expect("tasks")
+            .is_empty());
+        let conn = fixture
+            .store
+            .conn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let state: String = conn
+            .query_row("SELECT state FROM proactive_tasks WHERE id='task'", [], |row| row.get(0))
+            .expect("task state");
+        assert_eq!(state, "invalidated");
+        drop(conn);
+        assert!(fixture
+            .store
+            .scheduler_state(&json!({"operation":"run_claim","operationId":"late-claim","owner":Fixture::owner(),"taskId":"task","taskVersion":1,"occurrenceId":"late","runId":"late-run","leaseMs":1000,"now":fixture.now+2}))
+            .is_err());
+    }
+
+    #[test]
+    fn user_task_surfaces_exclude_legacy_proactive_tasks() {
+        let fixture = Fixture::new();
+        let revision = fixture.revision();
+        fixture
+            .store
+            .proactive_change(&json!({"operationId":"legacy-create","baseRevision":revision,"action":"create","owner":Fixture::owner(),"trustedUserEventId":"user-event","sourceRefs":[Fixture::source()],"taskPatch":{"id":"legacy","scope":"session","scopeId":"s1","sourceRefs":[Fixture::source()],"intent":{"text":"旧式提醒"},"nextCheckinAt":fixture.now+60_000,"validUntil":null,"timezone":"UTC","recurrence":null,"eventAt":null,"dueAt":null}}))
+            .expect("legacy create");
+        assert!(fixture
+            .store
+            .schedule_query(&json!({"owner":Fixture::owner()}))
+            .expect("legacy query")["tasks"]
+            .as_array()
+            .expect("tasks")
+            .is_empty());
+        assert!(fixture
+            .store
+            .schedule_change(&json!({"operationId":"legacy-update","baseRevision":fixture.revision(),"action":"update","owner":Fixture::owner(),"trustedUserEventId":"user-event","taskId":"legacy","expectedVersion":1,"sourceRefs":[Fixture::source()],"taskPatch":{"intent":{"text":"旧式提醒"}}}))
+            .is_err());
+    }
+
+    #[test]
+    fn schedule_query_requires_the_frozen_card_hash() {
+        let fixture = Fixture::new();
+        fixture.create("task");
+        let other = json!({"sessionId":"s1","cardId":"c1","cardHash":"other-hash","runGeneration":1});
+        assert!(fixture
+            .store
+            .schedule_query(&json!({"owner":other}))
+            .expect("other hash query")["tasks"]
+            .as_array()
+            .expect("tasks")
+            .is_empty());
+    }
+
+    #[test]
+    fn user_task_create_rejects_user_scope_and_malformed_anchors() {
+        let fixture = Fixture::new();
+        let conn = fixture
+            .store
+            .conn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tx = conn.unchecked_transaction().expect("transaction");
+        let mut user_scope = fixture.draft("bad-scope");
+        user_scope["scope"] = json!("user");
+        assert!(crate::proactive::store::validate_schedule_write(
+            &tx,
+            &user_scope,
+            &json!({"trustedUserEventId":"user-event"}),
+            &Fixture::owner(),
+        )
+        .is_err());
+        let mut malformed = fixture.draft("bad-anchor");
+        malformed["eventAt"] = json!({"precision":"minute"});
+        assert!(crate::proactive::store::validate_schedule_write(
+            &tx,
+            &malformed,
+            &json!({"trustedUserEventId":"user-event"}),
+            &Fixture::owner(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn legacy_memory_backup_without_scheduler_inventory_still_restores() {
+        let fixture = Fixture::new();
+        let backup = fixture.store.backup().expect("managed backup");
+        let backup_conn = Connection::open(&backup).expect("fixture backup connection");
+        backup_conn
+            .execute_batch(
+                "DROP TABLE scheduler_slots; DROP TABLE scheduler_periods; \
+                 DROP TABLE scheduler_runs; DROP TABLE scheduler_operations; \
+                 DELETE FROM memory_meta WHERE key='scheduler_schema_version';",
+            )
+            .expect("simulate legacy memory-only backup");
+        drop(backup_conn);
+        MemoryStore::restore_preview(std::path::Path::new(&backup)).expect("legacy preview");
+        fixture
+            .store
+            .restore(std::path::Path::new(&backup))
+            .expect("legacy restore");
     }
 
     #[test]

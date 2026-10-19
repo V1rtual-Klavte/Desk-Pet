@@ -7,6 +7,15 @@ export interface WorkArtifact {
   criterion: string
   sources: Array<{url:string;title:string;fetchedAt:number;publishedAt?:string;publicationDateVerified:boolean}>
 }
+/**
+ * Contract failures are not user-input failures by default. Only a model that
+ * explicitly reports an incomplete result (`completion_not_met` / missing
+ * artifact) can wait for the user; invalid provenance or unused capabilities
+ * are execution failures and must not be re-offered as `needs_input`.
+ */
+export function classifyWorkFailure(error: string): "needs_input" | "failed" {
+  return error === "completion_not_met" || error === "missing_artifact" ? "needs_input" : "failed"
+}
 /** Source claims are accepted only when grounded in successful tool receipts. */
 export function validateWorkArtifact(value: unknown, work: WorkSpec, evidence: PiSubAgentEvidence, now: number, timezone = "UTC"): string | WorkArtifact {
   if (!value || typeof value !== "object") return "missing_artifact"

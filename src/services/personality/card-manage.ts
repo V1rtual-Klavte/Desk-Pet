@@ -12,7 +12,7 @@ import { importUserCard, loadCard, readCardMeta, safeCardFileName, saveUserCard 
 import { getActiveCard, getActivePersonalityId, reloadActiveCard } from "./registry"
 import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
-import { errorCode, formatError } from "@/services/error"
+import { errorCode, formatError, reportError } from "@/services/error"
 
 const log = createLogger("Persona")
 
@@ -260,6 +260,18 @@ export async function deleteCard(cardId: string): Promise<CardOpResult> {
   }
 
   // 激活卡拒删（上方已拦）；非激活卡无常驻副本，删除后无需刷新内存。
+  try {
+    // The Card is gone; stop its work and invalidate its tasks so a late result
+    // cannot be delivered under another Card with the same session id.
+    const [{ cancelRuns }, { invalidateOwnerTasks }] = await Promise.all([
+      import("@/services/user-tasks/active-runs"), import("@/services/user-tasks/client"),
+    ])
+    cancelRuns(owner => owner.cardId === cardId)
+    await invalidateOwnerTasks({ cardId })
+  } catch (error) {
+    log.warn("Card: 删除后失效定时任务失败:", cardId, formatError(error))
+    reportError("Persona", error, { kind: "删除后失效定时任务失败", overlay: false })
+  }
   log.info(`已删除 Card: ${cardId}`)
   return ok(`已删除「${label}」`)
 }

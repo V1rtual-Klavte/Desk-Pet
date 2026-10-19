@@ -33,15 +33,15 @@
 
 长期事实仍只经 MemoryProvider 解引用。扫描只返回目标 id、版本、范围和时间元数据，不把 SQLite 扫描变成另一条正文注入通道。主动目的按精确目标本地选择，允许核对已过普通召回有效期的目标，仍拒绝遗忘、失效版本和不匹配 scope，不调用记忆重排模型。规划输入的目标记忆证据（`targets → recallMemory`）与主回合记忆投影、scanner 机会来源、观察决策同一口径，受 `ai.memory.enabled` 总闸：关闭时不召回、`evidence` 按空降级（照常产出可判输入、不报错）。规划子运行不给模型 `memory_query`——它硬需本轮已提交可信用户事件；主动规划不在用户回合内、没有事件可绑，调用必失败。模型驱动的记忆查询本批不开（2026-10-05 口径），证据仍只走运行时绑定的 targets。
 
-事项的 `eventAt/dueAt` 保存 day 或 minute 精度与 IANA 时区；`expiresAt` 只决定普通召回有效期。`workingState` 为 open/completed/cancelled。日期精度的临期窗口在前一日09–22点，跟进从该日期结束起48小时；分钟精度在发生前24小时和发生后48小时。完成、取消、更正或遗忘会事务性关闭关联旧机会；没有用户结果证据不写现实成果。
+事项的 `eventAt/dueAt` 保存 day 或 minute 精度与 IANA 时区；`expiresAt` 只决定普通召回有效期。`workingState` 为 open/completed/cancelled。日期精度的临期窗口在前一日09–22点，跟进从该日期结束起48小时；分钟精度在发生前24小时和发生后48小时。观察事件按真实 `occurredAt` 归属周期（23:50 的事件跨午夜仍归前一天，窗口可延伸到次日），同日两次事件各有独立 period 身份和抽样。完成、取消、更正或遗忘会事务性关闭关联旧机会；没有用户结果证据不写现实成果。
 
-用户任务只有 `schedule_query`、`schedule_change` 两个工具，分别提供分页查询（id、状态、结果）与 propose/create/update/reschedule/snooze/complete/cancel。内部 proactive、静默了解、dreaming 不在列表、上下文或可修改对象中；现有频率设置仍从设置窗或斜杠入口管理。旧模型工具名已删除。
+用户任务只有 `schedule_query`、`schedule_change` 两个工具，分别提供分页查询（id、状态、结果）与 propose/create/update/reschedule/snooze/complete/cancel。内部 proactive、静默了解、dreaming 不在列表、上下文或可修改对象中；现有频率设置仍从设置窗或斜杠入口管理。旧模型工具名已删除。用户任务必须绑定当前会话或 Card（不接受 `scope=user`），查询同时核对冻结的 `session/Card/cardHash`；删除所属会话或 Card 时先取消在飞运行，再把对应 active 任务置为 invalidated，晚到结果不能按新 owner 交付。
 
 任务定义保存在 `proactive_tasks.intent`，类型为 reminder 或 agent_job；`schedule` 保存时区、日历周期、固定点／窗口／已确认作息锚／真实观测事件、固定或随机次数、最小间隔、有效期及错过策略。次数以成功送达为准；随机次数和时间点每周期只抽一次并持久化，重启、重试和延后均沿用。一次性、日、周、月、年、跨午夜、DST 与月末均由用户任务日历单点解释；观察事件缺失时不降级成固定时刻。
 
 创建和修改必须绑定本轮已提交可信用户事件、来源版本与任务版本。信息缺失时返回具体缺项，不强制创建；关键推断需要提出具体安排，用户接受须匹配 proposalId、完整参数指纹、来源和工具描述符。完整明确指令可直接创建。改期改变事项锚；snooze 仅改变下次交付时间、不改变定义版本；送达不等于现实事项完成。
 
-执行型任务在独立任务 owner 下调用唯一 `runPiSubAgent`，不会启动主会话规划或占用主聊天槽。任务保存 low/medium/high 思考强度，执行时冻结实际辅助模型、能力及预算。后台逐次复核持久授权、参数范围和描述符；MCP 的只读提示仅说明资格，仍保持 DANGER、效果互斥、不重放和 PermissionKernel 终裁。必要授权或能力缺失直接记录 needs_input，不挂后台确认面板。
+执行型任务在独立任务 owner 下调用唯一 `runPiSubAgent`，不会启动主会话规划或占用主聊天槽。任务保存 low/medium/high 思考强度，执行时冻结实际辅助模型、能力及预算。后台只借用任务声明的已启用 MCP server，不把全部 MCP 下放；逐次复核持久授权、参数范围和描述符；MCP 的只读提示仅说明资格，仍保持 DANGER、效果互斥、不重放和 PermissionKernel 终裁。**2026-10-19 产品裁定：首期走保守路径**——`readOnlyHint` 不满足 DANGER、不绕过权限内核；后台任务遇到 `ask` 记 needs_input，需要交互时回主会话确认，任务路径不弹后台确认面板。必要授权或能力缺失直接记录 needs_input；只有明确的未完成/缺产物归为 needs_input，来源与能力合同失败归 failed，未知副作用归 unresolved。
 
 工作产物通过完成条件、工具回执、链接和日期校验后保存为 ready_to_deliver，再用无工具的 Card 表达进入原有消息提交／回执链。今天新闻须有真实回执的当天日期证据；模型自报日期不算。聊天忙、当前会话/Card 不匹配或交付被门禁挡住时保留产物，窗口内再交付，不重跑工作；无法确认副作用或提交状态时先对账，不盲重放。创建结果走同一主聊天工具回合，以真实结构化结果为依据，由当前 Card 和拟人化设置表达，不另加固定成功台词。
 

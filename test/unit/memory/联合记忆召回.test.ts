@@ -521,7 +521,7 @@ describe("联合记忆召回", () => {
     fake.expandNeighbors.mockImplementation(async snapshot => ({ ...snapshot, entries: [...snapshot.entries, neighbor] }))
 
     const result = await sqliteMemoryProvider.recall(request({
-      query: "Answer using our conversation history:\nWhat desserts does Nate like?",
+      query: "Answer using our conversation history:\nWhat did Nate say about the cake?",
       queryRewriteMode: "off", rerankMode: "off", tokenBudget: 10_000,
     }))
 

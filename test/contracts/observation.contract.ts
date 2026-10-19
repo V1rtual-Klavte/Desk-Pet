@@ -308,7 +308,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-18 列项答案补全批次：观察域行为未变，仅共享 runtime/trace 变化；定向复核后刷新。
-  sourceHash: "c6abd354841106c46b53c20ce78577bda62736fb8698875229632968e0bdf6e3",
+  sourceHash: "01d460ef667a74255de72149aa8a50dbeca4e9481b820a715bdc175fa1a3a70c",
   coverage: [
     {
       id: "ob-01",

@@ -192,7 +192,10 @@ export interface CapabilityPrepResult {
  * root 在 run preflight 冻结 snapshot。
  * 借用失败的服务器名交回调用方，由它决定是否把「本次能力不全」变成可见结论。
  */
-export async function prepareConversationCapabilities(owner: string): Promise<CapabilityPrepResult> {
+export async function prepareConversationCapabilities(
+  owner: string,
+  mcpServers?: readonly string[],
+): Promise<CapabilityPrepResult> {
   await registerDefaultTools()
   const unavailableMcp: string[] = []
   // 借用面与「MCP 是否生效」同源（config 的 enabledMcpServerNames）：总闸已删，控制面在
@@ -203,7 +206,12 @@ export async function prepareConversationCapabilities(owner: string): Promise<Ca
   // 保活连接不代表仍然启用：先撤掉配置里已关闭、且没有 owner 的服务器，
   // 避免它们的工具在保活窗口内继续进请求。
   await disconnectUnlistedMcpServers(enabledMcp)
-  for (const name of enabledMcp) {
+  // Scheduled work passes its declared set so a background task never borrows
+  // every enabled server. `undefined` keeps the conversation-wide contract.
+  const borrow = mcpServers === undefined
+    ? enabledMcp
+    : enabledMcp.filter(name => mcpServers.includes(name))
+  for (const name of borrow) {
     const acquired = await acquireMcpServer(name, owner)
     if (!acquired.success) {
       unavailableMcp.push(name)
@@ -223,10 +231,10 @@ export async function prepareConversationCapabilities(owner: string): Promise<Ca
  * `assertCurrent` 在准备前后各调一次 —— 准备期间回合可能已被取消。
  */
 export async function prepareRunCapabilities(
-  owner: string, assertCurrent?: () => void,
+  owner: string, assertCurrent?: () => void, mcpServers?: readonly string[],
 ): Promise<CapabilityPrepResult> {
   assertCurrent?.()
-  const result = await prepareConversationCapabilities(owner)
+  const result = await prepareConversationCapabilities(owner, mcpServers)
   assertCurrent?.()
   return result
 }

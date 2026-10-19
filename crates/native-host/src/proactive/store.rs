@@ -374,13 +374,23 @@ fn task_is_recurring(task: &Value) -> bool {
 fn recurring_count(tx: &Transaction<'_>) -> AppResult<i64> {
     tx.query_row("SELECT COUNT(*) FROM proactive_tasks WHERE state='active' AND (recurrence_json IS NOT NULL OR COALESCE(json_extract(intent_json,'$.schedule.calendar.frequency')<>'once',0))",[],|r|r.get(0)).map_err(db)
 }
-fn validate_schedule_write(
+pub(crate) fn validate_schedule_write(
     tx: &Transaction<'_>,
     task: &Value,
     request: &Value,
     owner: &Value,
 ) -> AppResult<()> {
     crate::scheduler::store::validate_definition(task)?;
+    // User tasks are delivered to a concrete session/Card; a `user` scope would
+    // let a task escape the frozen delivery owner and be picked up elsewhere.
+    if text(task, "scope") == "user" {
+        return Err(fail("用户定时任务必须绑定当前会话或 Card"));
+    }
+    for key in ["eventAt", "dueAt"] {
+        if let Some(anchor) = task.get(key).filter(|value| !value.is_null()) {
+            validate_anchor(anchor, key)?;
+        }
+    }
     let authorization = &task["intent"]["authorization"];
     if authorization["trustedUserEventId"] != request["trustedUserEventId"] {
         return Err(fail("任务授权必须绑定本轮可信用户事件"));

@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { installNodeHostBridge } from "../../host/install-node-bridge"
@@ -189,6 +189,7 @@ describe("Card 管理", () => {
 
   it("删除：卡文件与 stages 文件一起删，列表随之移除 [card-manage-delete]", async () => {
     await activate("existing")
+    const request = vi.spyOn(getHostBridge(), "request")
 
     const result = await deleteCard("doomed")
 
@@ -199,6 +200,10 @@ describe("Card 管理", () => {
     expect(await currentIds()).not.toContain("doomed")
     // 删的不是激活卡，激活状态不受影响
     expect(getActivePersonalityId()).toBe("existing")
+    expect(request.mock.calls.some(([command, payload]) => command === "scheduler_state"
+      && (payload as { request?: { operation?: string; cardId?: string } }).request?.operation === "owner_invalidate"
+      && (payload as { request?: { cardId?: string } }).request?.cardId === "doomed")).toBe(true)
+    request.mockRestore()
   })
 
   it("删除：激活卡拒删，文件与注册表原封不动 [card-manage-delete-active]", async () => {

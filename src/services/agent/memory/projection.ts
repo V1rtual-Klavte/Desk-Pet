@@ -3,6 +3,7 @@ import type { MemoryProjection } from "./provider"
 import type { MemoryQueryPlan } from "./query"
 import { memoryReviewSourceIds } from "./evidence-review"
 import type { MemoryEvidenceReview } from "./evidence-review"
+import { MEMORY_QUERY_FUNCTION_WORDS, memoryAspectSeedTerms } from "./query-shape"
 
 export interface MemoryQuestionCheck {
   kind: "premise" | "detail"
@@ -147,21 +148,15 @@ export function selectMemoryAnswerEvidence(
   return projections.filter(item => selected.has(item.sourceId))
 }
 
-const CONDITION_STOP_WORDS = new Set([
-  "the", "and", "for", "with", "that", "this", "was", "were", "has", "had",
-  "from", "are", "not", "but", "you", "your", "what", "which", "when", "where",
-  "who", "why", "how", "did", "does", "into", "about", "over", "under", "after",
-  "before", "have", "been", "they", "them", "their", "his", "her", "its",
-])
-
 function conditionContentTerms(text: string): string[] {
   const normalized = text.normalize("NFKC").toLowerCase()
   const terms = (normalized.match(/[\p{L}\p{N}]+/gu) ?? [])
-    .filter(term => term.length > 2 && !CONDITION_STOP_WORDS.has(term))
+    .filter(term => term.length > 2 && !MEMORY_QUERY_FUNCTION_WORDS.has(term))
   for (const run of normalized.match(/[\p{Script=Han}]+/gu) ?? []) {
     const points = [...run]
     for (let index = 0; index < points.length - 1; index += 1) {
-      terms.push(points.slice(index, index + 2).join(""))
+      const bigram = points.slice(index, index + 2).join("")
+      if (!MEMORY_QUERY_FUNCTION_WORDS.has(bigram)) terms.push(bigram)
     }
   }
   return [...new Set(terms)]
@@ -181,17 +176,18 @@ export function memoryQuestionContentTerms(query: string): string[] {
 }
 
 export function memoryEnumerationTerms(
-  plan: Pick<MemoryQueryPlan, "originalQuery" | "aspectQueries">,
+  plan: Pick<MemoryQueryPlan, "originalQuery" | "aspectQueries"> & { aspectCategories?: MemoryQueryPlan["aspectCategories"] },
 ): string[] {
   return [...new Set([
     ...conditionContentTerms(plan.originalQuery),
     ...(plan.aspectQueries ?? []).flatMap(query => conditionContentTerms(query)),
+    ...memoryAspectSeedTerms(plan.aspectCategories ?? []),
   ])]
 }
 
 export function enumerationEvidenceIds(
   projections: readonly MemoryProjection[],
-  plan: Pick<MemoryQueryPlan, "originalQuery" | "aspectQueries" | "evidenceNeeds">,
+  plan: Pick<MemoryQueryPlan, "originalQuery" | "aspectQueries" | "aspectCategories" | "evidenceNeeds">,
 ): string[] {
   if (!plan.evidenceNeeds.includes("enumeration")) return []
   const terms = memoryEnumerationTerms(plan)
@@ -203,8 +199,8 @@ export function enumerationEvidenceIds(
     return terms.some(term => normalized.includes(term))
   })
   // Rank sessions by their first item-bearing turn, then keep only item-bearing
-  // turns. This reaches D3:4/D12:6 before incidental matches in later sessions
-  // without sweeping unrelated chatter from the matched sessions.
+  // turns. This reaches relevant evidence before incidental matches in later
+  // sessions without sweeping unrelated chatter from the matched sessions.
   const bySession = new Map<string, MemoryProjection[][]>()
   const sessionRank = new Map<string, number>()
   for (const unit of memoryEvidenceUnits(projections)) {

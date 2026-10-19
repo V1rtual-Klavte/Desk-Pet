@@ -104,6 +104,23 @@ describe("用户安排日历与内容授权", () => {
     expect(event.windows).toEqual([{ from: now, until: now + 120 * 60_000, localDate: "2026-10-18" }])
     expect(sampleSchedulePeriod(definition.schedule, event, () => 0).windowUntil).toBe(instant("2026-10-18T20:00:00Z"))
   })
+  it("观察事件以真实发生时刻归属周期：跨午夜不丢、同日两次不共用样本 [schedule-observed-event-period-identity]", () => {
+    const definition = task()
+    definition.schedule.trigger = { kind: "observed_event", event: "work_ended", signal: "working_to_idle", onUnavailable: "skip", offsetMinutes: 0, windowMinutes: 120, selection: "random" }
+    const late = instant("2026-10-18T23:50:00Z")
+    const event = { event: "work_ended" as const, signal: "working_to_idle" as const, occurredAt: late }
+    const period = currentSchedulePeriod(definition.schedule, late, event)
+    expect(period.key).toBe(`day:2026-10-18:UTC:event:${late}`)
+    expect(period.windows[0]).toEqual({ from: late, until: late + 120 * 60_000, localDate: "2026-10-18" })
+    const second = currentSchedulePeriod(definition.schedule, late + 60 * 60_000, { ...event, occurredAt: late + 60 * 60_000 })
+    expect(second.key).not.toBe(period.key)
+    definition.schedule.calendar = { frequency: "once", timezone: "UTC", date: "2026-10-18" }
+    definition.schedule.count = { kind: "fixed", value: 1, per: "once" }
+    expect(currentSchedulePeriod(definition.schedule, instant("2026-10-19T00:10:00Z"), event)).toMatchObject({
+      key: `once:2026-10-18:UTC:event:${late}`, awaitingEvent: false,
+      windows: [{ from: late, until: late + 120 * 60_000, localDate: "2026-10-18" }],
+    })
+  })
   it("当前额度、冷却与全静默窗口冲突不能被创建承诺掩盖 [schedule-delivery-feasibility]", () => {
     const definition = task(), constraints = { enabled: true, dailySuccessLimit: 10, cooldownMs: 3_000, quietStartHour: 23, quietEndHour: 9, quietTimezone: "UTC" }
     definition.schedule.trigger = { kind: "window", start: "18:00", end: "22:00", selection: "random" }

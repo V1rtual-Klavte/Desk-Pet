@@ -531,7 +531,12 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   request.rerankedSelection = rerankSelection.ordered
   if (request.signal.aborted) return []
   const evidencePlan = request.queryPlan ?? retrievalPlan
-  const wholeContext = evidencePlan.recallIntent === "overview" || hasExplicitConversationReference(request.query)
+  const enumeration = evidencePlan.evidenceNeeds?.includes("enumeration") ?? false
+  const broadContext = evidencePlan.recallIntent === "advice" || enumeration
+  // Set/advice questions need the surrounding session, not only the exact hit:
+  // list items and adaptive advice are often spread across one thread.
+  const wholeContext = evidencePlan.recallIntent === "overview" || evidencePlan.recallIntent === "advice"
+    || enumeration || hasExplicitConversationReference(request.query)
   const contextIds = new Set(request.contextSourceIds ?? [])
   const applyConversationDiagnostics = (diagnostics: ConversationEvidenceResult["diagnostics"]): void => {
     if (!diagnostics) return
@@ -595,8 +600,10 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
     && (wholeContext || contextIds.size > 0)) {
     // First read matched complete turns. Only explicit session review or validated
     // gap references authorize paging other turns; spare headroom is not a demand.
-    const seeds = selectedDynamic.flatMap(candidate => candidate.channel === "conversation"
-      && (wholeContext || contextIds.has(candidate.id)) ? [candidate.entry] : [])
+    const seeds = broadContext
+      ? conversationSnapshot.entries.slice(0, MEMORY_NEIGHBOR_SEED_LIMIT)
+      : selectedDynamic.flatMap(candidate => candidate.channel === "conversation"
+        && (wholeContext || contextIds.has(candidate.id)) ? [candidate.entry] : [])
     if (seeds.length) {
       request.localFallbackFailureChannel = "conversation"
       try {
@@ -616,9 +623,13 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
           const selectedIds = new Set(selectedDynamic.map(candidateId))
           const localIds = new Set(localDynamic.map(candidateId))
           const selectedEntries = new Set(seeds.map(entry => `${entry.sessionId}\0${entry.entryId}`))
-          const declinedEntries = new Set(localDynamic.flatMap(candidate => candidate.channel === "conversation"
-            && !selectedEntries.has(`${candidate.entry.sessionId}\0${candidate.entry.entryId}`)
-            ? [`${candidate.entry.sessionId}\0${candidate.entry.entryId}`] : []))
+          // Enumeration/advice deliberately expands the whole matched session:
+          // a sibling item may not have survived rerank itself, but it belongs
+          // to a session the user question already matched.
+          const declinedEntries = wholeContext ? new Set<string>()
+            : new Set(localDynamic.flatMap(candidate => candidate.channel === "conversation"
+              && !selectedEntries.has(`${candidate.entry.sessionId}\0${candidate.entry.entryId}`)
+              ? [`${candidate.entry.sessionId}\0${candidate.entry.entryId}`] : []))
           const additions = interleaveCandidates([], expanded.entries).filter(candidate => candidate.channel === "conversation"
             && !selectedIds.has(candidate.id) && !declinedEntries.has(`${candidate.entry.sessionId}\0${candidate.entry.entryId}`))
           selectedDynamic.push(...additions)

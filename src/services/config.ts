@@ -662,9 +662,11 @@ async function refreshConfigConsumers(): Promise<void> {
   } catch (error) {
     log.warn("导入配置后静默了解未重应用（配置已落盘；失败项在下次启动时生效）", formatError(error))
   }
-  await refreshProactiveConsumer()
+  // Recompute every job first, then wake proactive: `refreshAll` would overwrite
+  // the immediate wake queued by `refreshProactive` if it ran afterwards.
   const { internalScheduler } = await import("@/services/scheduler")
   internalScheduler.refreshAll()
+  await refreshProactiveConsumer()
 }
 
 /**
@@ -821,9 +823,11 @@ export const proactiveConfig = {
 export async function setProactiveFrequency(tier: FrequencyTier): Promise<void> {
   setOverride("ai.proactive.frequency", tier)
   await flushConfig()
-  await refreshProactiveConsumer()
+  // Recompute every job first, then wake proactive: `refreshAll` would overwrite
+  // the immediate wake queued by `refreshProactive` if it ran afterwards.
   const { internalScheduler } = await import("@/services/scheduler")
   internalScheduler.refreshAll()
+  await refreshProactiveConsumer()
 }
 
 export const silentAccessConfig = {

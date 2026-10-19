@@ -14,6 +14,18 @@ export function subscribeUserTaskChanges(listener: (change: UserTaskChange) => v
 }
 
 export const queryUserTasks = (request: ScheduleQueryRequest): Promise<ScheduleQueryResponse> => getHostBridge().request("schedule_query", { request })
+/** A deleted session/Card must not leave an active task that can still execute or deliver. */
+export async function invalidateOwnerTasks(request: { sessionId?: string; cardId?: string; cardHash?: string; operationId?: string }): Promise<number> {
+  const result = await getHostBridge().request("scheduler_state", { request: {
+    operation: "owner_invalidate",
+    ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+    ...(request.cardId ? { cardId: request.cardId } : {}),
+    ...(request.cardHash ? { cardHash: request.cardHash } : {}),
+    operationId: request.operationId ?? crypto.randomUUID(),
+    now: Date.now(),
+  } })
+  return "invalidated" in result ? result.invalidated : 0
+}
 export async function changeUserTask(request: ScheduleChangeRequest): Promise<ScheduleChangeResponse> {
   let result: ScheduleChangeResponse
   try { result = await getHostBridge().request("schedule_change", { request }) }

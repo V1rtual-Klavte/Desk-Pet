@@ -63,8 +63,8 @@ const MEMORY_EVIDENCE_CUES: Record<string, Record<MemoryAspectLanguage, readonly
  */
 const MEMORY_ASPECT_SEEDS: Record<MemoryAspectCategory, Record<MemoryAspectLanguage, readonly string[]>> = {
   activity: {
-    en: ["hiking", "surfing", "camping", "swimming", "running", "cycling", "fishing", "skiing", "climbing", "yoga"],
-    zh: ["徒步", "冲浪", "露营", "游泳", "跑步", "骑行", "钓鱼", "滑雪", "爬山", "瑜伽"],
+    en: ["hiking", "surfing", "camping", "swimming", "running", "cycling", "fishing", "skiing", "climbing", "yoga", "birdwatching", "birds", "binoculars", "binos", "feeder"],
+    zh: ["徒步", "冲浪", "露营", "游泳", "跑步", "骑行", "钓鱼", "滑雪", "爬山", "瑜伽", "观鸟", "鸟类", "望远镜", "喂鸟器"],
   },
   food: {
     en: ["cake", "icecream", "ice cream", "chocolate", "cookie", "pie", "dessert", "mousse", "pizza", "pasta"],
@@ -77,7 +77,7 @@ const MEMORY_ASPECT_SEEDS: Record<MemoryAspectCategory, Record<MemoryAspectLangu
 }
 
 const MEMORY_ASPECT_CATEGORY_TESTS: ReadonlyArray<{ category: MemoryAspectCategory; test: RegExp }> = [
-  { category: "activity", test: /\b(?:activities|hobbies|sports|outdoor|exercise|pastimes)\b|(?:活动|爱好|运动|户外)/iu },
+  { category: "activity", test: /\b(?:activities|hobb(?:y|ies)|sports|outdoor|exercise|pastimes)\b|(?:活动|爱好|运动|户外)/iu },
   { category: "food", test: /\b(?:foods?|desserts?|snacks?|meals?|dishes?|treats?)\b|(?:食物|甜点|零食|菜)/iu },
   { category: "book", test: /\b(?:books?|authors?|novels?)\b|(?:书|作者|小说)/iu },
 ]
@@ -88,6 +88,14 @@ function detectAspectCategories(query: string): MemoryAspectCategory[] {
 
 function aspectSeedTerms(categories: readonly MemoryAspectCategory[], language: MemoryAspectLanguage): string[] {
   return [...new Set(categories.flatMap(category => MEMORY_ASPECT_SEEDS[category][language]))]
+}
+
+/** Full category vocabulary for enumeration selection (not the bounded query facets). */
+export function memoryAspectSeedTerms(categories: readonly MemoryAspectCategory[]): string[] {
+  return [...new Set(categories.flatMap(category => [
+    ...MEMORY_ASPECT_SEEDS[category].en,
+    ...MEMORY_ASPECT_SEEDS[category].zh,
+  ]))]
 }
 
 function aspectLanguage(entities: readonly string[]): MemoryAspectLanguage {
@@ -126,12 +134,20 @@ function selectAspectAnchors(entities: readonly string[], language: MemoryAspect
  * content facets, then add intent-specific cues. The original query stays the
  * primary RRF anchor; these only add independent lexical channels.
  */
-export function deriveAspectSubqueries(shape: LocalMemoryQueryShape): string[] {
+export function deriveAspectSubqueries(shape: LocalMemoryQueryShape, query = ""): string[] {
   if (!shouldDeriveAspectSubqueries(shape)) return []
   const language = aspectLanguage(shape.entities)
   const cues = memoryAspectCues(shape)
   const anchors = selectAspectAnchors(shape.entities, language)
   const seedTerms = aspectSeedTerms(shape.aspectCategories ?? [], language)
+  // Prefer category words that share a prefix with the question (birdwatching ->
+  // birds) before spending the bounded facet budget on unrelated activities.
+  const queryTokens = query.toLowerCase().match(/[a-z]{4,}/g) ?? []
+  const sharedPrefix = (seed: string): boolean => queryTokens.some(token => {
+    const prefix = seed.toLowerCase().slice(0, 4)
+    return prefix.length === 4 && token.startsWith(prefix)
+  })
+  seedTerms.sort((left, right) => Number(sharedPrefix(right)) - Number(sharedPrefix(left)))
   if (anchors.length === 0 || (cues.length === 0 && seedTerms.length === 0)) return []
   const anchorSet = new Set(anchors)
   const aspects = shape.entities.filter(entity => !anchorSet.has(entity))
@@ -171,6 +187,91 @@ export function deriveAspectSubqueries(shape: LocalMemoryQueryShape): string[] {
     addQuery(seed)
   }
   return result.length >= 2 ? result.slice(0, 6) : []
+}
+
+/**
+ * Shared function words for lexical feedback and condition-term filtering.
+ * Kept next to the query-shape vocabulary so projections and feedback do not
+ * each grow a private English-only copy.
+ */
+export const MEMORY_QUERY_FUNCTION_WORDS: ReadonlySet<string> = new Set([
+  ...MEMORY_QUERY_STOP_WORDS,
+  "the", "and", "that", "this", "with", "from", "have", "been", "they", "their", "there",
+  "what", "when", "where", "which", "who", "how", "about", "into", "over", "under", "after", "before",
+  "also", "just", "very", "really", "much", "many", "some", "like", "would", "could", "should",
+  "will", "your", "you", "his", "her", "its", "our", "not", "but", "for", "are", "was", "were",
+  "has", "had", "did", "does", "can", "may", "might", "one", "two", "said", "says", "get", "got",
+  "make", "made", "know", "think", "yeah", "well", "great", "good", "nice", "sure", "thanks",
+  "hey", "hi", "hello", "what's", "that's", "it's", "i'm", "don't", "can't", "didn't", "series",
+  "them", "their", "off", "once", "here", "all", "any", "both", "each", "few", "more", "most",
+  "other", "such", "no", "nor", "only", "own", "same", "too", "now",
+  "什么", "怎么", "如何", "为什么", "哪些", "哪个", "这个", "那个", "一个", "一些", "我们",
+  "你们", "他们", "她们", "以及", "还有", "但是", "因为", "所以", "如果", "然后", "就是",
+  "可以", "应该", "已经", "没有", "不是", "非常", "很多", "东西", "事情", "时间",
+])
+
+/**
+ * Pseudo-relevance terms from the strongest lexical hits. Titles and named
+ * works rarely occur in the question but bridge to the session that names the
+ * author, activity or related object. These are search hypotheses, never
+ * asserted facts; the caller fuses them only
+ * for enumeration/advice intents and bounds the number of extra searches.
+ * Chinese uses bounded 2–4 character runs because it has no word delimiter.
+ */
+export function deriveFeedbackQueries(
+  entries: ReadonlyArray<{ text: string }>,
+  originalQueries: readonly string[],
+): string[] {
+  const normalize = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/gu, " ").trim()
+  const originals = originalQueries.map(normalize)
+  const seen = new Set<string>()
+  const quoted: string[] = []
+  const phrases: string[] = []
+  const words = new Map<string, number>()
+  const add = (raw: string, target: string[]): void => {
+    const value = raw.trim().replace(/^["'“”]+|["'“”]+$/g, "")
+    const key = normalize(value)
+    const minimum = /[\p{Script=Han}]/u.test(value) ? 2 : 3
+    if (value.length < minimum || value.length > 64 || seen.has(key) || MEMORY_QUERY_FUNCTION_WORDS.has(key)) return
+    if (originals.some(query => query && (query.includes(key) || key.includes(query)))) return
+    if (!/[\p{L}]/u.test(value)) return
+    seen.add(key)
+    target.push(value)
+  }
+  for (const entry of entries.slice(0, 24)) {
+    const text = entry.text
+    for (const match of text.matchAll(/[《"“]([^》"”\n]{2,64})[》"”]/g)) add(match[1]!, quoted)
+    for (const match of text.matchAll(/\b[A-Z][\p{L}'’-]+(?:\s+(?:of|the|and|a|an)?\s*[A-Z][\p{L}'’-]+){0,3}\b/gu)) {
+      // "Title A and Title B" is two works, not one title.
+      for (const value of match[0].split(/\s+and\s+/u)) {
+        const tokens = value.split(/\s+/u)
+        if (tokens.length === 1 && value.length < 5) continue
+        add(value, phrases)
+      }
+    }
+    for (const match of text.matchAll(/\b[A-Za-z][A-Za-z'’-]{4,}\b/g)) {
+      const key = normalize(match[0])
+      if (MEMORY_QUERY_FUNCTION_WORDS.has(key) || originals.some(query => query.includes(key))) continue
+      words.set(key, (words.get(key) ?? 0) + 1)
+    }
+    for (const match of text.matchAll(/[\p{Script=Han}]{2,12}/gu)) {
+      const run = match[0]
+      const terms = new Set<string>()
+      if (run.length <= 8) terms.add(run)
+      for (let index = 0; index < run.length - 1; index += 1) {
+        terms.add(run.slice(index, index + 2))
+        if (index + 3 <= run.length) terms.add(run.slice(index, index + 3))
+        if (index + 4 <= run.length) terms.add(run.slice(index, index + 4))
+      }
+      for (const term of terms) add(term, phrases)
+    }
+  }
+  const rankedWords = [...words.entries()]
+    .filter(([word]) => !seen.has(word)
+      && ![...quoted, ...phrases].some(phrase => normalize(phrase).includes(word)))
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([word]) => word)
+  return [...quoted, ...phrases, ...rankedWords].slice(0, 6)
 }
 
 export function hasExplicitRewriteHint(query: string): boolean {
@@ -243,23 +344,34 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
   const count = /(?:多少|几(?:次|件|个|本|条|项|种)|数量|一共|总共|次数|how many|how much|number of|count\b)/iu.test(text)
   const procedure = /(?:怎么(?:做|弄|用|操作|实现)|如何(?:做|使用|操作)|步骤|流程|办法|方法|过程|how to|how did i\b|how have i\b|steps?\b|process\b|procedure\b)/iu.test(text)
   const explanation = /(?:为什么|为何|原因|缘由|怎么会|what(?:'s| is) the reason|why\b|explain\b)/iu.test(text)
-  const advice = !PAST_RECOMMENDATION.test(text) && (PERSONAL_ADVICE.test(text) || CURRENT_ADVICE_REQUEST.test(text))
+  // A third-person potential action (what could a named person do to adjust)
+  // is an advice question even though the user did not say "I" or "me".
+  const potentialAction = /\b(?:can|could|should|might|may)\b[^?]{0,80}\b(?:do|try|help|improve|change|fit|make|handle|manage|start|use|adjust)\b/iu.test(text)
+    || /(?:可以|能|应该|要不要)[^。？！?！]{0,40}(?:怎么|如何|做|改善|调整|安排|开始|使用|适应)/u.test(text)
+  const advice = !PAST_RECOMMENDATION.test(text) && (PERSONAL_ADVICE.test(text) || CURRENT_ADVICE_REQUEST.test(text) || potentialAction)
   const overview = datedConversationOverview || /(?:总结|概括|整体|总体|所有|全部|有哪些|哪些|哪类|列出|回顾|梳理|聊了什么|讨论了什么|谈了什么|overview|summari[sz]e|list all|all of my)/iu.test(text)
+  const entities = extractEntities(text)
+  const aspectCategories = detectAspectCategories(text)
+  // Third-person set questions (what books has X read, what kind of items does
+  // X know) are still memory lookups; without this they never reach aspect
+  // fan-out or session-wide completion.
+  const thirdPersonLookup = entities.length > 0 && (aspectCategories.length > 0
+    || /\b(?:what|which)\s+(?:kind|type|sort)\s+of\b/iu.test(text))
 
   let recallIntent: MemoryRecallIntent = "none"
-  if (explicitRecall || personal || personalEvent || personalQuestion) {
+  if (explicitRecall || personal || personalEvent || personalQuestion || advice || thirdPersonLookup) {
     recallIntent = count ? "count" : procedure ? "procedure" : explanation ? "explanation" : overview ? "overview" : advice ? "advice" : "lookup"
   }
   const sourceRoles: LocalMemoryQueryShape["sourceRoles"] = /我[^。？！?！]{0,20}(?:分享|说|经历)/u.test(text)
     ? ["user"]
     : /你[^。？！?！]{0,20}(?:推荐|解释|说)/u.test(text) ? ["assistant"] : ["user", "assistant"]
-  const entities = extractEntities(text)
   const inference = memoryEvidenceReviewKind(text, recallIntent) === "inference"
   const contextualSource = hasExplicitConversationReference(text)
   // A plural what/which question asks for a set of items, not one fact. This
   // signal lets the renderer keep every directly named item across sessions.
   const enumeration = recallIntent === "lookup" && !inference && (
-    /\b(?:what|which)\b[^?]{0,80}\b\w+s\b/iu.test(text)
+    // A plural item noun, not auxiliaries like "was"/"is"/"has".
+    /\b(?:what|which)\b[^?]{0,80}\b(?!was\b|is\b|has\b|does\b|this\b|his\b|its\b|us\b|yes\b|always\b)[\p{L}]{2,}s\b/iu.test(text)
     || /\b(?:list|all|every|several)\b/iu.test(text)
     || /(?:哪些|有什么|列出|所有|全部)/u.test(text)
   )
@@ -275,7 +387,6 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
     ...(!count && !procedure && !explanation && !advice && !overview && !inference ? ["specific_fact"] : []),
   ]
   const timeConstraint = parseTimeConstraint(text, before)
-  const aspectCategories = detectAspectCategories(text)
   const temporalOrder = detectTemporalOrder(text)
   return {
     recallIntent, sourceRoles, entities, evidenceNeeds,
@@ -287,7 +398,7 @@ export function deriveLocalMemoryQueryShape(query: string, before?: number): Loc
 
 export function deriveMemoryQueryPlan(originalQuery: string, before?: number): DerivedMemoryQueryPlan {
   const shape = deriveLocalMemoryQueryShape(originalQuery, before)
-  const aspectQueries = deriveAspectSubqueries(shape)
+  const aspectQueries = deriveAspectSubqueries(shape, originalQuery)
   return {
     originalQuery,
     queries: originalQuery.trim() ? [originalQuery] : [],
@@ -301,7 +412,7 @@ export function deriveMemoryQueryPlan(originalQuery: string, before?: number): D
 // common-sense mapping (Stamford -> Connecticut, Mount Talkeetna -> Alaska).
 const DERIVED_LOCATION_ATTRIBUTE = /\b(?:which|what)\s+(?:us\s+)?(?:state|country|city|region|province|county|nationality|language)\b|\b(?:which|what)\s+\w+\s+(?:state|country|city|region)\b/iu
 const DERIVED_LOCATION_ATTRIBUTE_ZH = /(?:哪个|哪一|什么)(?:州|国家|城市|地区|省|国籍|语言)/u
-const LOCATION_VERIFICATION = /\b(?:does|do|did|is|are|was|were|has|have)\s+[^?]{0,80}\b(?:live|living|from|born|raised|grow(?:n)?\s+up|located|based|reside|residing)\b/iu
+const LOCATION_VERIFICATION = /\b(?:does|do|did|is|are|was|were)\s+[^?]{0,80}\b(?:live|living|from|born|raised|grow(?:n)?\s+up|located|based|reside|residing)\b|\b(?:has|have)\s+[^?]{0,80}\b(?:lived|living|been|grown(?:\s+up)?|resided|residing)\b/iu
 const LOCATION_VERIFICATION_ZH = /(?:是不是|是否|有没有)[^。？！?！]{0,40}(?:住在|居住在|来自|出生于|家在)/u
 const POTENTIAL_ACTION = /\b(?:can|could|should|might|may)\s+[^?]{0,100}\b(?:do|try|help|improve|change|deal|handle|make|reduce|manage|accommodate|fit|arrange|adjust)\b/iu
 const POTENTIAL_ACTION_ZH = /(?:可以|能|应该|可能)[^。？！?！]{0,60}(?:怎么|如何|做|尝试|改善|缓解|改变|安排|调整)/u
