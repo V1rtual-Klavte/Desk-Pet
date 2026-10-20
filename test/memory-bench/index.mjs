@@ -121,6 +121,9 @@ function caseRefOf(dataset, caseDef) {
 }
 
 function judgeInputFor(dataset, file, caseDef, outcome) {
+  if (dataset === "longmemeval")
+    return { kind: "longmemeval", questionType: caseDef.questionType, question: caseDef.question,
+      answer: caseDef.answer, abstention: caseDef.abstention === true, response: outcome.answer ?? "" }
   if (dataset === "memorybank") {
     const persona = file.personas.find(item => item.name === caseDef.persona)
     if (!persona) throw new Error(`${caseDef.caseId}: 找不到角色 ${caseDef.persona}`)
@@ -134,7 +137,8 @@ function judgeInputFor(dataset, file, caseDef, outcome) {
 
 /** 同一数据集的判分调度；judgments 缺省时只出检索确定性指标。 */
 export function scoreBenchDataset(dataset, file, outcomes, judgments = {}, cases = file.cases) {
-  if (dataset === "longmemeval") return scoreLongMemEval(cases, outcomes, {})
+  if (dataset === "longmemeval") return scoreLongMemEval(cases, outcomes, judgments,
+    { scoringStatus: Object.keys(judgments).length ? "adapter" : "pending_official" })
   if (dataset === "locomo") return scoreLocomo(cases, outcomes, judgments)
   if (dataset === "memorybank") return scoreMemoryBank(cases, outcomes, judgments)
   throw new Error(`未登记的判分数据集: ${dataset}`)
@@ -148,7 +152,8 @@ export async function runMemoryBenchEvaluation({
   if (seed === undefined || seed === null || String(seed).length === 0) throw new TypeError("seed is required")
   const errors = validateBenchCaseFile(dataset, file)
   if (errors.length) throw new Error(`memory bench 案例文件非法: ${errors.join("; ")}`)
-  const judgeEnabled = judge !== "off" && judge !== false && (dataset === "memorybank" || dataset === "locomo")
+  const judgeEnabled = judge !== "off" && judge !== false
+    && (dataset === "longmemeval" || dataset === "memorybank" || dataset === "locomo")
   if (judgeEnabled && (typeof judgeModel !== "string" || !judgeModel.trim()))
     throw new TypeError("judge 开启时必须提供 judgeModel")
   const cells = planBenchCells(dataset, file, { limit, caseFilter, seed, perCategory })

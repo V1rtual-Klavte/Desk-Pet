@@ -62,7 +62,7 @@ export function summarizeBenchReport(report) {
   const failures = Array.isArray(report?.failures) ? report.failures : []
   const externalAdjudication = report?.externalAdjudication ?? null
   const officialPending = dataset === "longmemeval"
-    && scores.officialScoring?.status !== "official" && scores.officialScoring?.status !== "manual"
+    && !["official", "manual", "adapter"].includes(scores.officialScoring?.status)
 
   // 质量口径按数据集归一；LoCoMo 呈现异构 LLM judge 的语义正确率。
   let quality = { kind: dataset, overall: null, buckets: [], breakdown: [], breakdownLabel: "分组" }
@@ -74,7 +74,9 @@ export function summarizeBenchReport(report) {
     const pending = officialPending
     quality.overall = { ...bucket("overall"), judged: pending ? 0 : scores.overall?.judged ?? 0,
       correct: pending ? 0 : scores.overall?.correct ?? 0, accuracy: pending ? null : scores.overall?.accuracy ?? null, pending,
-      metric: scores.officialScoring?.status === "manual" ? "manual external verdict" : "official autoeval_label" }
+      metric: scores.officialScoring?.status === "manual" ? "manual external verdict"
+        : scores.officialScoring?.status === "adapter" ? "heterogeneous LLM judge (official templates)"
+          : "official autoeval_label" }
     const assistantBucket = { ...bucket("assistantOnly"),
       name: scores.assistantOnly?.includedInOverall === true ? "助手题型（计入总计）" : "助手题型（原报告未声明纳入总计）" }
     quality.buckets = [bucket("regular"), bucket("abstention"),

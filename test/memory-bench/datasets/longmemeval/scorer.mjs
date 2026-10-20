@@ -184,7 +184,8 @@ export function scoreLongMemEval(cases, outcomes, judgments = {}, plan = {}) {
     completed: rows.filter(row => row.status === "complete").length,
     judgeFailures,
     officialScoring: { status: scoringStatus,
-      metric: scoringStatus === "official" ? "LongMemEval src/evaluation/evaluate_qa.py autoeval_label" : null },
+      metric: scoringStatus === "official" ? "LongMemEval src/evaluation/evaluate_qa.py autoeval_label"
+        : scoringStatus === "adapter" ? "heterogeneous LLM judge using official LongMemEval templates" : null },
     overall: withAccuracy(overall),
     abstention: withAccuracy(abstention),
     regular: withAccuracy(regular),

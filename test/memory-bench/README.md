@@ -140,11 +140,16 @@ node test/memory-bench/import-verdicts.mjs test/reports/bench/STAMP.json test/re
 
 ## 5. 判分口径
 
-### LongMemEval（judge + 确定性检索）
+### LongMemEval（异构 judge + 确定性检索）
 
 - 答案判分：**五套题型模板逐字移植自官方 `src/evaluation/evaluate_qa.py`**（通用 yes/no、
   temporal 免 off-by-one、knowledge-update 允新旧并述、preference rubric、abstention）。
   判定解析保持官方语义（`'yes' in response.lower()`），原始回答落盘可复判。
+- 默认 `--bench-judge on` 走**测试侧异构 judge**（当前 `deepseek-v4-pro`），报告
+  `scores.officialScoring.status=adapter`，metric 明确写「heterogeneous LLM judge using
+  official LongMemEval templates」。这不是 LongMemEval 官方榜单分数；需要官方口径时再运行
+  锁定的 `evaluate_qa.py` 并用 `import-verdicts` 回填（status 变为 `official`）。
+  `--bench-judge off` 时保持 `pending_official`，只出确定性检索指标。
 - judge 走测试侧网关的端点与 api_key（同 key 异构；本地 `eval-models.local.json` 可覆盖网关端点与凭据；默认 judge 模型由
   [test/eval-models.json](../eval-models.json) 提供——当前 `deepseek-v4-pro`，可用
   `--bench-judge-model` 或 `DESKPET_EVAL_JUDGE_MODEL` 覆盖；被测模型以本机配置为准，也可在

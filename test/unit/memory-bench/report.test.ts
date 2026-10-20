@@ -155,6 +155,18 @@ describe("记忆基准报告呈现", () => {
     expect(formatBenchSummary(summary)).toContain("LongMemEval evaluate_qa.py")
   })
 
+  it("LongMemEval 的异构 adapter judge 直接呈现准确率 [bench-report-lme-adapter-accuracy]", () => {
+    const report = longMemEvalReport() as Record<string, any>
+    report.scores.officialScoring = { status: "adapter",
+      metric: "heterogeneous LLM judge using official LongMemEval templates" }
+    const summary = summarizeBenchReport(report)
+    expect(summary.quality.overall).toMatchObject({ cases: 2, judged: 1, correct: 1, accuracy: 1, pending: false,
+      metric: "heterogeneous LLM judge (official templates)" })
+    const text = formatBenchSummary(summary)
+    expect(text).toContain("正确率 100.0%（1/1）")
+    expect(text).not.toContain("pending_official")
+  })
+
   it("MemoryBank 与 LoCoMo 都使用 judge accuracy [bench-report-judge-accuracy]", () => {
     const memorybank = summarizeBenchReport({
       dataset: "memorybank", split: "cn", splitLabel: "MemoryBank/cn", status: "observational",

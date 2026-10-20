@@ -174,15 +174,15 @@ describe("bench runner 编排（fake adapter）", () => {
     expect(ended).toHaveLength(3)
   })
 
-  it("LongMemEval 完成采集但质量分 pending_official，产品本地模板不参与主评分 [bench-lme-pending-official]", async () => {
+  it("LongMemEval 默认用异构 judge 按官方题型模板判分，报告标 adapter [bench-lme-adapter-judge]", async () => {
     const adapter = fakeAdapter()
     const report = await runMemoryBenchEvaluation({ adapter, dataset: "longmemeval", split: "oracle",
-      file, seed: "s" }) as Record<string, any>
+      file, seed: "s", judgeModel: "judge-model-x" }) as Record<string, any>
     expect(report.schemaVersion).toBe("desk-pet-memory-bench/v1")
     expect(report.source).toBe("external")
     expect(report.status).toBe("observational")
     expect(report.qualityThresholds).toBe(null)
-    expect(report.judgeModel).toBe(null)
+    expect(report.judgeModel).toBe("judge-model-x")
     expect(report.upstream).toEqual({ fileSha256: "deadbeef" })
     expect(report.license).toEqual({ spdx: "MIT" })
     expect(report.plannedCells).toBe(3)
@@ -190,13 +190,17 @@ describe("bench runner 编排（fake adapter）", () => {
     expect(report.gates.complete).toBe(true)
     expect(report.failures).toEqual([])
     expect(adapter.calls.cells).toHaveLength(3)
-    expect(adapter.calls.judges).toHaveLength(0)
-    expect(report.scores.officialScoring.status).toBe("pending_official")
+    expect(adapter.calls.judges).toHaveLength(3)
+    expect(adapter.calls.judges[0]).toMatchObject({ judgeModel: "judge-model-x",
+      input: { kind: "longmemeval", questionType: "single-session-user", question: "question a", answer: "answer a" } })
+    expect(report.scores.officialScoring).toMatchObject({ status: "adapter",
+      metric: "heterogeneous LLM judge using official LongMemEval templates" })
+    expect(report.scores.overall).toMatchObject({ judged: 3, correct: 3, accuracy: 1 })
   })
 
   it("outcome 携带 caseRef（导出 hypotheses 的题面来源）", async () => {
     const report = await runMemoryBenchEvaluation({ adapter: fakeAdapter(), dataset: "longmemeval",
-      split: "oracle", file, seed: "s" }) as Record<string, any>
+      split: "oracle", file, seed: "s", judge: "off" }) as Record<string, any>
     const first = report.outcomes.find((outcome: Record<string, unknown>) => outcome.caseId === "lme-oracle-a")
     expect(first.caseRef).toMatchObject({ questionId: "a", questionType: "single-session-user" })
     expect(first.judgment).toBe(null)
@@ -205,7 +209,7 @@ describe("bench runner 编排（fake adapter）", () => {
   it("最后一题隔离会话清理失败仍保留回答且将整场标为不完整 [bench-runner-fixture-cleanup-failure]", async () => {
     const one = lmeFile([lmeCase("a")])
     const report = await runMemoryBenchEvaluation({ adapter: fakeAdapter({ cleanupFailure: true }),
-      dataset: "longmemeval", split: "oracle", file: one, seed: "s" }) as Record<string, any>
+      dataset: "longmemeval", split: "oracle", file: one, seed: "s", judge: "off" }) as Record<string, any>
     expect(report.outcomes[0]).toMatchObject({ status: "complete", answer: "a:lme-oracle-a",
       fixtureCleanup: { ok: false, error: "delete failed" } })
     expect(report.gates.complete).toBe(false)
@@ -220,6 +224,7 @@ describe("bench runner 编排（fake adapter）", () => {
     expect(report.judge).toEqual({ enabled: false, model: null })
     expect(report.judgeModel).toBe(null)
     expect(report.scores.overall.judged).toBe(0)
+    expect(report.scores.officialScoring.status).toBe("pending_official")
     expect(report.gates.complete).toBe(true)
   })
 
