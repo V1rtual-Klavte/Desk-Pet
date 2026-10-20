@@ -3,6 +3,22 @@ export { PROACTIVE_LIMITS } from "./protocol"
 export const OPPORTUNITY_LIMIT = 100
 export const RECENT_TARGET_LIMIT = 2
 /**
+ * 非时间敏感主动消息的用户静默门（2026-10-20 用户裁定，硬编码、不开放用户配置）：
+ * 最后一条用户消息距今不足 3 分钟时不发；提醒/约定/临期（scheduled_task、
+ * memory_checkin）不受此限。
+ */
+export const PROACTIVE_USER_IDLE_MS = 3 * 60_000
+
+export function isProactiveBlockedByUserActivity(
+  ruleId: string,
+  lastUserAt: number | null,
+  now: number,
+): boolean {
+  // lastUserAt > now：测试固定钟或系统时钟回拨，时间基准不一致，按未知放行。
+  if (lastUserAt === null || lastUserAt > now || now - lastUserAt >= PROACTIVE_USER_IDLE_MS) return false
+  return ruleId !== "scheduled_task" && ruleId !== "memory_checkin"
+}
+/**
  * 主动台账查询（`proactive_query`）的单次取回上限。
  *
  * 与协议侧 `PROACTIVE_LIMITS.maxTasks` / `scanBatch`（100）同量级：三个消费点

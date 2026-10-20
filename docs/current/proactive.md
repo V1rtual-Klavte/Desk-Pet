@@ -19,6 +19,8 @@
 
 **随机唤醒（不形成固定节拍）**：主动消息不再用固定 `tickMs` 节拍——每次唤醒后从档位区间 `[min, max)` 内随机抽下一次检查时刻（主动业务计算期限，统一调度核心安排唤醒，扫描收尾再抽下一次）。事件唤醒保留：前台身份变化、解锁、系统 idle 跨过 5 分钟阈值、变量提交、会话/Card 变化与配置刷新都会立即唤醒一次；事件唤醒覆盖该扫描作业的旧期限；用户任务的提醒专用检查只处理到期约定，不产生随机话题，也不重排随机扫描期限。`tickMs` 不再充当扫描节拍，只作 planner `set_presence` 有效期的短窗（5 分钟）。
 
+**用户静默门（硬编码 3 分钟，不开放配置）**：非时间敏感机会要求最后一条用户消息距今 ≥3 分钟；不足 3 分钟时在扫描选择前丢弃并留痕 `proactive_skipped(user_recently_active)`。`scheduled_task` 与 `memory_checkin` 属于提醒、约定、临期，不受此门禁限制；没有用户消息的会话直接放行。
+
 **静默时间段（设置项，出厂默认 0/0 不静默）**：仅约束**主动消息**——该时段不唤醒、不产生机会、不发送；静默了解与记忆整理不受它门禁（两链的固定钟点表本身避开 23–9，不随 quietStartHour/quietEndHour 变化）。`quietStartHour`/`quietEndHour` 是本地小时 0–23 整数（AI 设置「主动陪伴」区两个 Number），跨夜语义 `start > end`；`start == end` = 不静默（显式关闭）；白天不设窗口。晚安窗口由静默开始时刻派生：`(quietStartHour + 23) % 24` 那一小时到静默开始为止（如 start=23 时为 22:00–23:00），只保留一次晚安机会；不静默时晚安窗口一并关闭；约期前置窗口下界同样由静默值派生；变量池 `isNightTime` 与主动链共用 `isQuietHour` 同一公式。
 
 **白天窗口删除**：原写死的 9–12 / 18–22 硬窗口（`SHARE_START_HOUR`/`SHARE_END_HOUR`/`MIDDAY_HOUR`/`EVENING_HOUR`）全部删除，rhythm（晨/晚）、retrospective（周日）、anniversary、calendar、topic_share、curiosity 改为本地整日（00:00–次日 00:00）有效，夜间边界只由静默时间段门禁负责。画像逐小时资格（可靠画像时 `observedHours[hour] > 0`）保留；小时值只统计 active 时长，idle、unknown、unobserved 不算用户活跃。它是自适应信号而不是硬窗口；画像不可靠时不限小时。

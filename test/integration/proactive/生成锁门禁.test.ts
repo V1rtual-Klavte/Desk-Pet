@@ -207,7 +207,7 @@ describe("生成锁门禁", () => {
     })
     start()
     offer(opportunity(owner, "rhythm", `${localDayKey(fixedNow, Intl.DateTimeFormat().resolvedOptions().timeZone)}:ai-lock`,
-      [source("behavior", "ai-lock-gate", 1, `ai-lock:${fixedNow}`, owner)], fixedNow - 60_000, fixedNow + 10 * 60_000, 1000,
+      [source("behavior", "ai-lock-gate", 1, `ai-lock:${fixedNow}`, owner)], fixedNow - 60_000, fixedNow + 5 * 60 * 60_000, 1000,
       "生成锁门禁测试机会：不依赖窗口的显式机会。", true))
 
     hoisted.activity.screenState = "observed"
@@ -229,12 +229,17 @@ describe("生成锁门禁", () => {
     expect(skippedEvents.some(event => event.reason === "lane_busy"),
       "生成锁门禁被越过、留痕退化成 lane_busy（分支删除或顺序回归）").toBe(false)
 
-    // 分支 2：回合收口 → 锁归假；同一机会、同一档位照常放行（唯一变量是回合状态）。
+    // 分支 2：回合收口 → 锁归假；再等用户静默门（3 分钟）到期，同一机会照常放行。
     releaseGate()
     const turn = await pendingTurn
     expect(turn.outcome, `回合没有按脚本完成: ${turn.failure?.message ?? "(无失败)"}`).toBe("succeeded")
     expect(isAIGenerating(), "回合结束后锁仍为 true：受理没有交回").toBe(false)
     hoisted.ownerArmed = true
-    await tickUntil(() => hoisted.expressCalls === 1, fixedNow)
+    // 固定钟是当天 12:00；把 tick 推到 16:00，既覆盖静默门，也仍在机会有效期内。
+    // lastUserAt 取真实会话时间：早于 16:00 时时差 ≥4 小时；晚于 16:00 时按时间基准
+    // 不一致放行（见 isProactiveBlockedByUserActivity 的未来时间分支）。
+    const laterNow = fixedNow + 4 * 60 * 60_000
+    hoisted.activity.observedAt = laterNow - 1_000
+    await tickUntil(() => hoisted.expressCalls === 1, laterNow)
   }, 40_000)
 })

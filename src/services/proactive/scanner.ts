@@ -1,6 +1,6 @@
 import { watch } from "vue"
 import { internalScheduler } from "@/services/scheduler"
-import { activeSessionId, unansweredCount, getUnansweredPolicyHistory, readPiSessionEntriesOnce } from "@/services/session"
+import { activeSessionId, unansweredCount, getUnansweredPolicyHistory, listPiSessionMetadata, readSessionActivityAt } from "@/services/session"
 import { getActiveCard, getActivePersonalityId, subscribeVariableCommits, getPoolSnapshot } from "@/services/personality"
 import { getBehaviorSnapshot, IDLE_ACTIVE_LIMIT_MS } from "@/services/behavior"
 import { subscribeWindowObservations, getRuntimeActivity, getLatestWindowObservation } from "@/services/window"
@@ -14,7 +14,7 @@ import type { ActiveExpressionAdapter } from "./delivery"
 import { advanceFinishedWorkTracker, collectOpportunities, isLeisureOrIdle, opportunity, qualifiesFinishedWork, source, selectOpportunities, usesRandomFallbackInterval } from "./opportunities"
 import { contentPool } from "./content/pool"
 import { isQuietTime, localDayKey } from "./time"
-import { PROACTIVE_LIMITS, OPPORTUNITY_LIMIT, OBSERVATION_MAX_AGE_MS, WORK_SILENCE_MS, DAY_MS } from "./config"
+import { PROACTIVE_LIMITS, OPPORTUNITY_LIMIT, OBSERVATION_MAX_AGE_MS, WORK_SILENCE_MS, DAY_MS, isProactiveBlockedByUserActivity } from "./config"
 import { proactiveFrequency, proactiveTierLimits, silentAccessFrequency } from "./tiers"
 import { planningInput, plan } from "./planner"
 import { observePresence, setPresence, stopPresence, requestBriefMotion } from "./presence"
@@ -193,6 +193,12 @@ export function refreshProactive():void {
   enqueueTick()
 }
 
+/** 最后一条用户消息时间（会话活动时间的既有缓存口径；null = 没有用户消息）。 */
+async function lastUserMessageAt(sessionId: string): Promise<number | null> {
+  const metadata = (await listPiSessionMetadata()).find(item => item.id === sessionId)
+  return metadata ? await readSessionActivityAt(metadata.path, metadata.modifiedAt) : null
+}
+
 export async function tick(now=Date.now(),mode?:{remindersOnly:boolean}):Promise<void> {
   if(!started||!adapters)return
   const context=createRuntimeTraceContext(activeSessionId.value??undefined)
@@ -206,6 +212,7 @@ export async function tick(now=Date.now(),mode?:{remindersOnly:boolean}):Promise
     jobOwner=owner
     await adapters.reconcileSession(owner.sessionId)
     if(!current(owner))return
+    const lastUserAt=mode?.remindersOnly?null:await lastUserMessageAt(owner.sessionId)
     const timezone=Intl.DateTimeFormat().resolvedOptions().timeZone,day=localDayKey(now,timezone),card=getActiveCard()!
     const unansweredPolicy=getUnansweredPolicyHistory()
     const unansweredThresholdDate=unansweredPolicy.thresholdReachedAt===null?null:localDayKey(unansweredPolicy.thresholdReachedAt,timezone)
@@ -263,7 +270,9 @@ export async function tick(now=Date.now(),mode?:{remindersOnly:boolean}):Promise
       :!screenUsable?"observation_unavailable":now-activity.observedAt>OBSERVATION_MAX_AGE_MS?"stale_observation"
       :typeof scan.budget.cooldownUntil==="number"&&scan.budget.cooldownUntil>now?"cooldown":isAIGenerating()?"ai_generating":laneBusy?"lane_busy"
       :scan.budget.successfulMessages>=successLimit?"daily_quota"
-      :respectRandomInterval&&typeof scan.budget.nextSuccessAfter==="number"&&scan.budget.nextSuccessAfter>now?"success_interval":null
+      :respectRandomInterval&&typeof scan.budget.nextSuccessAfter==="number"&&scan.budget.nextSuccessAfter>now?"success_interval"
+      // 用户静默门排在既有门禁之后：回合在飞/冷却/配额等理由优先，不遮住原留痕。
+      :isProactiveBlockedByUserActivity(selected.ruleId,lastUserAt,now)?"user_recently_active":null
     if(guardReason){trace(context,"proactive_skipped",()=>({reason:guardReason,ruleId:eligible[0]?.ruleId,opportunityIds:eligible.map(item=>item.id)}));return}
     trace(context,"proactive_opportunity",()=>({ruleId:eligible[0]!.ruleId,opportunityIds:eligible.map(item=>item.id),sourceIds:eligible.flatMap(item=>item.sourceRefs.map(ref=>ref.id))}))
     const sourceRefs=[...new Map(eligible.flatMap(item=>item.sourceRefs).map(ref=>[`${ref.kind}:${ref.id}`,ref])).values()]
