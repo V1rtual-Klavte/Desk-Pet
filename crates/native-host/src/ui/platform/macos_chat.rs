@@ -284,6 +284,9 @@ const TRANSCRIPT_BOTTOM_PAD: f64 = 10.0;
 const MESSAGE_SPACING: f64 = 12.0;
 const PART_SPACING: f64 = 6.0;
 const ROLE_LABEL_HEIGHT: f64 = 16.0;
+/// 正文分段加载的每页条数：首屏只渲染尾段，上滑到顶再静默补一页，
+/// 直到第一条；滚回底部丢弃已展开的旧段（2026-10-20 用户规则）。
+const TRANSCRIPT_PAGE_MESSAGES: usize = 20;
 /// 气泡几何（留白/上限/下限/内边距）与宽度算法是**平台无关**的
 /// （[`crate::ui::chat::panels`] 的 `BUBBLE_*` 与 `bubble_cap`/`bubble_content_width`）
 /// —— 2026-10-05 起两平台共用「贴合内容宽度」：用户泡右对齐、助手泡左对齐，
@@ -1506,6 +1509,8 @@ struct ChatContentIvars {
     min_width: Cell<f64>,
     /// 消息部分（不含流式尾巴）的高度（流式尾巴定位用）。
     content_height: Cell<f64>,
+    /// 正文渲染窗口起点（`usize::MAX` = 尾段自动；上滑分页后指向已渲染的最早消息下标）。
+    message_window_start: Cell<usize>,
     /// 流式尾巴视图（增量更新时单独替换，避免整条消息列表重建）。
     tail: RefCell<Option<Retained<ChatStackView>>>,
     /// 占位按钮 tag → (entryId, imageIndex)。
@@ -1850,6 +1855,8 @@ define_class!(
             self.sync_inline_visible();
             // 用户滚动是「是否在底部」变化的唯一非渲染来源：同步「↓ 新消息」。
             self.update_jump_button();
+            // 上滑到顶静默补一页；回到底部丢弃已展开的旧段。
+            self.page_transcript_if_needed();
         }
 
         /// 停止当前运行（运行态由 `deskpet-run-state` 回推收起按钮）。
@@ -2147,6 +2154,39 @@ impl ChatContentController {
         }
     }
 
+    /// 正文分段加载（2026-10-20 用户规则）：上滑到顶静默补更早一页，直到第一条；
+    /// 回到底部丢弃已展开的旧段，下次重新从尾段开始。不展示加载态 ——
+    /// 消息已在投影快照里，这里只伸缩渲染窗口。
+    fn page_transcript_if_needed(&self) {
+        let (Some(scroll), Some(stack)) = (self.ivars().scroll.get(), self.ivars().stack.get())
+        else {
+            return;
+        };
+        let total = crate::ui::chat::snapshot().messages.len();
+        let start = self.ivars().message_window_start.get();
+        if start == usize::MAX {
+            return; // 尚未重建过；下一次整帧重建会落到尾段。
+        }
+        let tail_start = total.saturating_sub(TRANSCRIPT_PAGE_MESSAGES);
+        let origin = scroll.contentView().bounds().origin.y;
+        if origin <= 8.0 && start > 0 {
+            let old_doc = stack.frame().size.height;
+            self.ivars()
+                .message_window_start
+                .set(start.saturating_sub(TRANSCRIPT_PAGE_MESSAGES));
+            self.rebuild_from_model();
+            // 前插后文档变高：把可视原点前移同一差值，保持用户正在看的内容不动。
+            let delta = (stack.frame().size.height - old_doc).max(0.0);
+            stack.scrollPoint(NSPoint::new(0.0, origin + delta));
+            return;
+        }
+        if start < tail_start && is_at_bottom(scroll, stack) {
+            // 回到底部：丢弃已展开的旧段（下次上滑重新分段加载）。
+            self.ivars().message_window_start.set(usize::MAX);
+            self.rebuild_from_model();
+        }
+    }
+
     fn sync_inline_visible(&self) {
         let Some(scroll) = self.ivars().scroll.get() else {
             return;
@@ -2334,6 +2374,7 @@ impl ChatContentController {
             width: Cell::new(CHAT_WINDOW_WIDTH),
             min_width: Cell::new(CHAT_WINDOW_MIN_WIDTH),
             content_height: Cell::new(TRANSCRIPT_TOP_PAD),
+            message_window_start: Cell::new(usize::MAX),
             tail: RefCell::new(None),
             image_targets: RefCell::new(Vec::new()),
             active_session: RefCell::new(None),
@@ -3727,8 +3768,15 @@ impl ChatContentController {
         *self.ivars().tail.borrow_mut() = None;
         self.ivars().image_targets.borrow_mut().clear();
 
+        // 分段加载：首屏只渲染尾段；窗口起点记在 ivars，滚动到顶时向前扩页。
+        let total_messages = snapshot.messages.len();
+        let start = match self.ivars().message_window_start.get() {
+            usize::MAX => total_messages.saturating_sub(TRANSCRIPT_PAGE_MESSAGES),
+            requested => requested.min(total_messages),
+        };
+        self.ivars().message_window_start.set(start);
         let mut y = TRANSCRIPT_TOP_PAD;
-        for message in &snapshot.messages {
+        for message in &snapshot.messages[start..] {
             let target_start = self.ivars().image_targets.borrow().len();
             let message_top = y;
             let Some(view) = self.build_message_view(mtm, message, width, &speaker) else {

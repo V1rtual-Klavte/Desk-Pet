@@ -410,6 +410,9 @@ const LABEL_HEIGHT: i32 = 16;
 /// 「聊天气泡太大」的直接来源（旧值 19 + `rich_edit_height` 的 +8 余量，
 /// 两行泡 64px vs mac 46px）。
 const LINE_HEIGHT: f64 = 18.0;
+/// 正文分段加载每页条数（与 macOS `TRANSCRIPT_PAGE_MESSAGES` 对称）：
+/// 首屏只渲染尾段，上滑到顶静默补一页，直到第一条；回底丢弃旧段。
+const TRANSCRIPT_PAGE_MESSAGES: usize = 20;
 const CODE_BLOCK_MAX_HEIGHT: i32 = 240;
 /// 输入区左缘留白（输入框本体与按钮列的布局基准，与 macOS 的 `8.0` 同值）。
 const SIDE_MARGIN: i32 = 8;
@@ -666,6 +669,8 @@ struct ChatWinState {
     /// 画布内容总高与当前滚动位置（物理像素）。
     content_height: i32,
     scroll_y: i32,
+    /// 正文渲染窗口起点（`usize::MAX` = 尾段自动；上滑分页后指向最早消息下标）。
+    message_window_start: usize,
     viewport_height: i32,
     /// 画布子控件及基准位置（滚动时按 scroll_y 重排）。
     children: Vec<ChildEntry>,
@@ -4635,6 +4640,7 @@ unsafe fn build_children(hwnd: HWND) {
             fonts: vec![body, small, bold, mono, symbol],
             content_height: 0,
             scroll_y: 0,
+            message_window_start: usize::MAX,
             viewport_height: 0,
             children: Vec::new(),
             base_height: 0,
@@ -6344,7 +6350,38 @@ fn canvas_scroll(command: i32) {
             _ => {}
         }
         apply_scroll(state);
+        page_transcript_if_needed(state);
     });
+}
+
+/// 正文分段加载（与 macOS `page_transcript_if_needed` 对称）：上滑到顶静默补
+/// 更早一页，直到第一条；回到底部丢弃已展开的旧段。不展示加载态 ——
+/// 消息已在投影快照里，这里只伸缩渲染窗口。
+fn page_transcript_if_needed(state: &mut ChatWinState) {
+    let snapshot = crate::ui::chat::snapshot();
+    let total = snapshot.messages.len();
+    let start = state.message_window_start;
+    if start == usize::MAX {
+        return;
+    }
+    let tail_start = total.saturating_sub(TRANSCRIPT_PAGE_MESSAGES);
+    if state.scroll_y <= 8 && start > 0 {
+        let old_doc = state.content_height;
+        state.message_window_start = start.saturating_sub(TRANSCRIPT_PAGE_MESSAGES);
+        unsafe { rebuild_canvas(state, &snapshot) };
+        // 前插后内容变高：滚动位置前移同一差值，保持用户正在看的内容不动。
+        let delta = (state.content_height - old_doc).max(0);
+        state.scroll_y += delta;
+        unsafe { apply_scroll(state) };
+        return;
+    }
+    if start < tail_start
+        && scroll_at_bottom(state.scroll_y, state.viewport_height, state.content_height)
+    {
+        // 回到底部：丢弃已展开的旧段（下次上滑重新分段加载）。
+        state.message_window_start = usize::MAX;
+        unsafe { rebuild_canvas(state, &snapshot) };
+    }
 }
 
 /// 按 scroll_y 重排子控件并更新滚动条（子控件随 scroll_y 上移）。
@@ -6519,8 +6556,15 @@ unsafe fn rebuild_canvas(state: &mut ChatWinState, snapshot: &crate::ui::chat::C
         let speaker = snapshot.speaker.clone().unwrap_or_default();
         state.speaker = speaker.clone();
 
+        // 分段加载：首屏只渲染尾段；窗口起点记在状态里，滚动到顶时向前扩页。
+        let total_messages = snapshot.messages.len();
+        let start = match state.message_window_start {
+            usize::MAX => total_messages.saturating_sub(TRANSCRIPT_PAGE_MESSAGES),
+            requested => requested.min(total_messages),
+        };
+        state.message_window_start = start;
         let mut y = scaled(6, scale);
-        for message in &snapshot.messages {
+        for message in &snapshot.messages[start..] {
             y = build_message_controls(state, message, &speaker, canvas_width, y, scale);
         }
         state.base_height = y;
