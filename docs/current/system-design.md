@@ -11,7 +11,7 @@
 | 原生宿主可执行 | 窗口/托盘/全局快捷键/五层渲染、屏幕与窗口观测、SQLite（记忆与主动链）、子进程监督（Node/Bash/MCP）、图片解码缩放编码、应用内更新与安装 helper、全部最终路径与命令裁决 | [main.rs](../../crates/native-host/src/main.rs)、[lib.rs](../../crates/native-host/src/lib.rs) |
 | Node Harness（唯一 Node bootstrap） | 全部业务与模型侧：会话、上下文、Pi Agent 回合、工具/MCP/Skill、记忆、主动陪伴、人格；`pnpm run build:harness` 把 [src/harness/main.ts](../../src/harness/main.ts) 打成 `packaging/dist/harness/main.mjs`，由随包 Node 运行 | [harness/main.ts](../../src/harness/main.ts) |
 | 开发入口 | `pnpm dev` = `dev:prepare`（暂存随包 Node、构建 harness 产物、建 defaults 链接）+ `dev-run.mjs`（`cargo build` → `target/debug/native-host`，追加参数与退出码原样透传） | [scripts/dev-prepare.mjs](../../scripts/dev-prepare.mjs)、[scripts/dev-run.mjs](../../scripts/dev-run.mjs) |
-| 打包 | cargo-packager（`packaging/desktop.json`）：`native-host` + `deskpet-update-helper` 两个可执行 + `node/`、`harness/`、`defaults/` 三件随包资源；随包 Node 版本锁定在 [packaging/node-runtime.json](../../packaging/node-runtime.json)（22.22.3） | [packaging/desktop.json](../../packaging/desktop.json)、[node-runtime.json](../../packaging/node-runtime.json) |
+| 打包 | cargo-packager（`packaging/desktop.json`）：`native-host` + `deskpet-update-helper` 两个可执行 + `node/`、`harness/`、`version-set.json`、`defaults/` 四件随包资源；随包 Node 版本锁定在 [packaging/node-runtime.json](../../packaging/node-runtime.json)（22.22.3） | [packaging/desktop.json](../../packaging/desktop.json)、[node-runtime.json](../../packaging/node-runtime.json) |
 
 Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传入；Node 的 stdout/stderr 只作日志采集，RPC 不经过标准流（[supervisor.rs](../../crates/native-host/src/host/supervisor.rs)）。
 
@@ -57,7 +57,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 | session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | humanizer | 引擎拟人协议、沉默护栏、提交后逐泡揭示（只存瞬态进度） | [humanizer/](../../src/services/humanizer/) |
 | native-ui | Node ↔ 原生宿主数据流：状态推送（快捷键/字体/主题/舞台/聊天列/图片预览/摆位尺寸/自动呼出/音效/顶栏文本/揭示进度/权限确认）、宿主请求应答（设置读写、编辑器 I/O、聊天与会话意图、决策动作、管理面）、会话投影帧组装的唯一入口 | [native-ui/](../../src/services/native-ui/)、[session-projection.ts](../../src/services/native-ui/session-projection.ts)、[host-requests.ts](../../src/services/native-ui/host-requests.ts) |
-| images | 原图路径准入、预览与请求投影；聊天图片自动预览开关的 Node 侧消费（默认关，占位零预读、只按可见加载）；read/请求链路的图片处理端口见[工具系统](tool-system.md) | [images/](../../src/services/images/) |
+| images | 原图路径准入、预览与请求投影；聊天图片自动预览开关的 Node 侧消费（出厂开启，缺键按关处理；占位零预读、只按可见加载）；read/请求链路的图片处理端口见[工具系统](tool-system.md) | [images/](../../src/services/images/) |
 | observation | 截图／手边文件的可验证了解、带立场的对话参与度，独立派生域（原生实现见 [observation_cmd.rs](../../crates/native-host/src/commands/observation_cmd.rs)） | [observation/](../../src/services/observation/) |
 | personality / reply | Card（加载切换 + 设置页的增删改查、导入导出与作者模版）、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
@@ -69,7 +69,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 
 ## 通信面
 
-- **Node → 宿主命令**：`HostCommandMap`（145 条 = 107 冻结 + 38 条有意扩展；冻结件已删 `profile_clone`（改「新建 Profile」）与 `mcp_send`（裸行收发改 `mcp_write` / `mcp_read`）；有意扩展如界面主题下发 `apply_theme`（只传预设 id、色值真相在宿主 `ui/theme`）、记忆整理的前置查询 `memory_pending_source_count`（水位之后有无待处理来源，开作业前查；只读、不带副作用）、MCP 凭据读写 `mcp_credential_set` / `_delete` / `_status` / `_get`（值存记忆库同库的 `mcp_credentials` 表、不写 CONFIG；唯一的值出口是 `_get`，供 MCP 连接期注入）、删会话清理托管聊天图片 `chat_delete_session_images`（只删 `screenshots/` / `pasted/` 两个托管根内的常规文件，根外路径、目录与符号链接一律不删）、会话原文索引/检索/受控展开的五条 `conversation_*` 与会话根专用写入 `session_write_text`（折叠结果超工具面 5 MiB 时的落地路径；相对路径 + 会话根 canonical 边界，maxBytes 由 Node 下发））逐条对应 Rust `NativeDispatcher` 分派；失败以结构化 `HostError` reject（错误码与 `AppError::code()` 同表），不降级为字符串。超过控制帧上限的字段自动编码为 blob，经二进制通道物化，应用层结果类型不缩水。 请求参数与结果的完整 JSON 聚合超限时，也自动经 blob 传输并恢复完整对象；单帧限额不成为业务总量上限，业务无须另算线格式预算。 Node 的自动物化以整份结果为 owner：完成、失败或取消后归还结果里全部有效句柄（包括尚未读取的兄弟字段），释放失败明确留痕；显式 `readBlob` 仍由调用方归还。异常取消产生的未消费孤儿在后续签发、上传或读取时按 300 秒空闲期限机会回收，不新增常驻计时器。
+- **Node → 宿主命令**：`HostCommandMap`（145 条 = 107 冻结 + 38 条有意扩展；冻结件已删 `profile_clone`（改「新建 Profile」）与 `mcp_send`（裸行收发改 `mcp_write` / `mcp_read`）；有意扩展如界面主题下发 `apply_theme`（只传预设 id、色值真相在宿主 `ui/theme`）、记忆整理的前置查询 `memory_pending_source_count`（水位之后有无待处理来源，开作业前查；只读、不带副作用）、MCP 凭据读写 `mcp_credential_set` / `_delete` / `_status` / `_get`（值存记忆库同库的 `mcp_credentials` 表、不写 CONFIG；唯一的值出口是 `_get`，供 MCP 连接期注入）、删会话清理托管聊天图片 `chat_delete_session_images`（只删 `screenshots/` / `pasted/` 两个托管根内的常规文件，根外路径、目录与符号链接一律不删）、会话原文索引/检索/受控展开的六条 `conversation_*`（`index_status` / `index_replace` / `index_prune` / `search` / `term_check` / `context`）与会话根专用写入 `session_write_text`（折叠结果超工具面 5 MiB 时的落地路径；相对路径 + 会话根 canonical 边界，maxBytes 由 Node 下发））逐条对应 Rust `NativeDispatcher` 分派；失败以结构化 `HostError` reject（错误码与 `AppError::code()` 同表），不降级为字符串。超过控制帧上限的字段自动编码为 blob，经二进制通道物化，应用层结果类型不缩水。 请求参数与结果的完整 JSON 聚合超限时，也自动经 blob 传输并恢复完整对象；单帧限额不成为业务总量上限，业务无须另算线格式预算。 Node 的自动物化以整份结果为 owner：完成、失败或取消后归还结果里全部有效句柄（包括尚未读取的兄弟字段），释放失败明确留痕；显式 `readBlob` 仍由调用方归还。异常取消产生的未消费孤儿在后续签发、上传或读取时按 300 秒空闲期限机会回收，不新增常驻计时器。
 - **宿主 → Node 请求**：`HostRequestMap`（设置读写、弹窗几何写回、人格卡/Profile 列表、编辑器 I/O、会话标签与历史意图、核心聊天链路、决策类面板动作、设置页管理面）。传输复用两条既有通道：宿主投事件 `deskpet-host-request`，Node 用 `host_request_result` 命令回执；发送/停止等热路径用非阻塞提交，有界等待只用于用户尺度低频动作。
 - **事件（宿主/Node → 原生 UI）**：`HostEventMap`。宿主的 `window-observed` **双投**原生 UI 与当前代际 Node，`bash-background-finished` 只投 Node；光标由原生窗口在可见期直接采样，收回后停采样，不经事件/Node；Node 生产聊天流式、运行状态、阶段提示、计划、权限确认与揭示进度等事件，经桥按当前代际路由进 `ChatUi`。UI → Node 的回执（计划确认、步骤裁决、权限确认）走 `UiReceiptMap`，不进 `HostEventMap`。
 - **纯 UI 的窗口间协调不经 Node**（设置窗↔主窗、编辑器↔主窗、revision 同步、主动控制、观察治理），由原生 UI 内部承接（[types.ts](../../src/services/host/types.ts) 末尾的 (b) 类清单）。
@@ -85,7 +85,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
       → 按 `ai.plan.enabled` 执行可选 Plan（复杂度评估决定是否触发），取得步骤结果
       → recallMemory（默认空）→ Harness Lane：transform_context 投影 → Provider → before_tool 权限与执行
       → 条目提交、逐请求 usage、流式正文事件
-      → ReplyGenerator：RUNTIME_DATA、变量与显示文本
+      → generateReply：RUNTIME_DATA、变量与显示文本
   → 固定 session 的条目/状态完成 → 投影帧（apply_chat_projection）与事件（deskpet-*）回推原生 UI
 ```
 
@@ -108,10 +108,10 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 
 **原生宿主**（[main.rs](../../crates/native-host/src/main.rs)）：解析宿主环境与 `AppPaths`（数据根、随包资源根、开发工作区）→ 日志文件 sink → 更新域装配（幂等，失败只留痕）→ 校验随包 Node 与 harness 产物存在（缺失即启动失败，不回落系统 Node）→ 建主窗/托盘/快捷键（`ui::start_service`；Node 未就绪时窗口显隐与快捷键仍由 Rust 本地完成）→ UI 就绪后由后台线程拉起 Node（监督器握手校验协议版本、Node 版本与一次性握手值）→ 常驻观察退出。
 
-**Node**（[harness/main.ts](../../src/harness/main.ts)）：连端点（hello/welcome）→ `get_runtime_paths`（必要时核对与 welcome 的运行模式口径）→ 校验必需路径字段 → 安装错误出口与生命周期钩子（宿主关停先 flush 并如实回报；宿主断开即退出）→ `initDomainBootstrap()`（[init.ts](../../src/services/init.ts)）：路径与运行时 CONFIG → memory/V1RTUAL → Profile → Card → proactive/session 接线 → 工具与 slash 命令表 → 会话恢复 + Plan checkpoint 恢复 → 欢迎语 → debug → 原生 UI 桥（宿主请求处理器 + 首帧推送）→ 窗口观察接线 → 统一注册主动扫描、静默了解、dreaming 与用户任务。任一步失败向上抛给 bootstrap（记录并退出），不做「吞掉继续」。
+**Node**（[harness/main.ts](../../src/harness/main.ts)）：连端点（hello/welcome）→ `get_runtime_paths`（必要时核对与 welcome 的运行模式口径）→ 校验必需路径字段 → 安装错误出口与生命周期钩子（宿主关停先 flush 并如实回报；宿主断开即退出）→ `initDomainBootstrap()`（[init.ts](../../src/services/init.ts)）：路径与运行时 CONFIG → memory/V1RTUAL → Profile → Card → proactive/session 接线 → 工具与 slash 命令表 → 会话恢复 + Plan checkpoint 恢复 → 欢迎语 → debug → 原生 UI 桥（宿主请求处理器 + 首帧推送）→ 窗口观察接线 → 后台命令完成通知 → 统一注册主动扫描、静默了解、dreaming 与用户任务。任一步失败向上抛给 bootstrap（记录并退出），不做「吞掉继续」。
 
 **退出序列**（[生命周期契约](../history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md) §4.3 第 5 条）：托盘「退出」/系统终止/命令侧 `app_restart` 经同一个只跑一次的 `HostExitHook`——先回收 MCP 与 Bash 子进程池，再让监督器封宿主新工作入口 → 交付已排队请求 → 请求 Node 排空在途 handler 与 CONFIG/会话/审计/日志 → 等真实报告 → 停 Node；排空阶段保留 Node 的 RPC 与 blob 传输，仍执行原来的 scope 与命令裁决，报告返回后才完全封闭 admission；超时如实记中断，不伪报成功；有 staged 更新时由独立 helper 在整套进程退出后替换并重启。
 
-MCP 不随应用启动连接；按运行 owner 借用，末位释放后空闲宽限内复用。Skill 按目录指纹刷新清单（每回合一次核对，不读正文），披露块只含名称/说明/位置。记忆整理默认由空闲调度器在配置条件和持久预算内触发，手动整理共用同一自动提交协议。Profile 与默认资源的位置见[运行时数据](runtime-data.md)，构建/平台/日志诊断见[工程参考](development.md)。
+MCP 不随应用启动连接；按运行 owner 借用，末位释放后空闲宽限内复用。Skill 按目录指纹刷新清单（每回合一次核对，不读正文），披露块只含名称/说明/位置。记忆整理在档位非 `off` 时由固定钟点调度器触发，手动整理共用同一自动提交协议。Profile 与默认资源的位置见[运行时数据](runtime-data.md)，构建/平台/日志诊断见[工程参考](development.md)。
 
 Node 崩溃由监督器按策略自动重启（换代际、回收旧句柄与 blob；连续失败上限 5 次、退避 2 秒），只把待处置状态交还新 Node，不自动重放有未知副作用的操作。

@@ -43,7 +43,7 @@ dev 与 release 的路径区分：
 
 | 维度 | dev（debug 构建） | release（打包产物） |
 |---|---|---|
-| 数据根 | `<仓库>/data/desk-pet/` | `{用户数据目录}/com.v1rtual.deskpet/`（macOS 为 `~/Library/Application Support`，Windows 为 `%LOCALAPPDATA%`） |
+| 数据根 | `<仓库>/data/desk-pet/` | `{用户数据目录}/com.v1rtual.deskpet/`（macOS 为 `~/Library/Application Support`；Windows 默认安装目录旁 `data/`，不可写时回退 `%LOCALAPPDATA%\com.v1rtual.deskpet`） |
 | CONFIG | `<仓库>/CONFIG-DEV.yaml`（缺失回落 `<仓库>/CONFIG.yaml`） | `<数据根>/settings/CONFIG.yaml`（首启由嵌入的 `CONFIG.yaml` 模板写入） |
 | 资源根 | `<仓库>/packaging/dist/`（`DEV_RESOURCE_SUBDIR`；node / harness / defaults 与打包闭包同形） | macOS：`.app/Contents/Resources/`；Windows：安装目录（与可执行文件同目录） |
 | runtime_mode | `development` | `production` |
@@ -57,7 +57,7 @@ dev 与 release 的路径区分：
 - 产物位置：CI 在 GitHub Release；本地打包 `cargo packager --release --config packaging/desktop.json --formats app,dmg`（与 release.yml 同一条链，产物落 `packaging/dist/`）。
 - 发布产物三类：macOS `.dmg`（手动安装）与 `.app.tar.gz`（更新制品，helper 只接受恰好一个顶层 `.app`）；Windows `x64-setup.exe`（NSIS 静默安装）。
 - 体积控制三个落点：① `[profile.release]` 只认 **workspace 根** `Cargo.toml`（成员 crate 里的 `[profile]` 会被 Cargo 忽略且不报错），本仓开 `strip`/`lto`/`codegen-units = 1`；② 打包清单是白名单 `packaging/desktop.json` 的 `resources`（node / harness / version-set / defaults），随包 Node 闭包在 `packaging/node-runtime.json` 锁定并由 `.github/scripts/stage-node.mjs` 裁剪（含 npm 自带 docs/man 与 corepack，2026-10-06 裁撤）；③ 加载期大头是随包 Node 与 `resources/defaults` 素材。
-- 体积参考（2026-10-06 本机 macOS arm64 实测）：随包 Node 闭包约 121 MB（已排除 include/share 约 62 MB、npm docs/man 约 2.5 MB、corepack 约 1.2 MB）；harness `main.mjs` 2.8 MB（esbuild `--minify --keep-names`，未压缩约 5.9 MB；生产栈追踪行号可用性下降，函数名经 `--keep-names` 保留）；`resources/defaults` 约 21 MB；Rust 二进制约 1.3 MB/枚。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让更新 feed 静默缺失）。
+- 体积参考（2026-10-06 本机 macOS arm64 实测）：随包 Node 闭包约 121 MB（已排除 include/share 约 62 MB、npm docs/man 约 2.5 MB、corepack 约 1.2 MB）；harness `main.mjs` 2.8 MB（esbuild `--minify --keep-names`，未压缩约 5.9 MB；生产栈追踪行号可用性下降，函数名经 `--keep-names` 保留）；`resources/defaults` 约 21 MB；Rust 二进制约 1.3 MB/枚。产物名：macOS 由 `productName` 决定，Windows 安装包由主二进制名（`native-host`）决定；`productName` 与主二进制名都必须是 ASCII（中文会被 GitHub 剥掉并让更新 feed 静默缺失）。
 - 发布验收：Release 资产中必须存在 `update.json`，且 `macos/aarch64` 与 `windows/x86_64` 两条 component（含 sha256 与 minisign 签名）齐备；缺一 `update-feed.mjs` 不汇总（见[工作流说明](../../.github/workflows/README.md)）。
 - 签名：安装包**未做**代码签名与公证（决策暂缓，首启按 README 的 Gatekeeper/SmartScreen 提示放行）；更新 feed 的制品哈希与 minisign 签名由 CI 现场生成并验签。
 - **更新取字节的网络出口**：`update/proxy.rs` 在装配时定一次代理——**环境变量 → 系统设置 → 直连**。只认环境变量是不够的：`ureq` 自己的 `Proxy::try_from_system` 名字像系统代理、实际只读 env，而 GUI App 由 launchd / Explorer 启动、拿不到 shell 的 `HTTPS_PROXY`——只靠它会让「系统设置里配了代理」的用户永远直连（2026-10-08 实机：直连 github.com 时通时不通，连测 6 次全超时而走系统代理稳定 200）。macOS 读 `SCDynamicStoreCopyProxies`，Windows 读 `WinHttpGetIEProxyConfigForCurrentUser`；**「返回了但没启用」按正常路径直连**，解析任何一步失败也退回直连、不报错。PAC / 自动检测（`ProxyAutoConfigEnable`、`fAutoDetect` / `lzAutoConfigUrl`）不解析——执行 PAC 要 JS 引擎，那种形态下同样直连（TUN / 全局 VPN 用户本来直连就是对的）。装配时留痕一条 `更新网络出口: 代理来源=…`，用户报「更新失败」先看它。
@@ -78,7 +78,7 @@ Rust 命令落在 [commands/](../../crates/native-host/src/commands/)（按域�
 
 进程级重启走设置窗的「重启」入口（[`ui/settings/updates.rs`](../../crates/native-host/src/ui/settings/updates.rs) 的 `request_restart` → `LifecyclePort::restart()`），与更新安装**共用同一个退出序列**：MCP/Bash 子进程回收与 Node flush 都由退出钩子完成，不另起第二实例。重启前先把未落盘的配置写盘——有草稿先提交，提交失败就不重启（文案可见），避免把未落盘的设置丢掉。
 
-开发模式（debug 构建）下 `app_restart` 不走进程重启，改为关闭其他窗口并重载主窗口：`pnpm tauri dev` 的 CLI 把 app 当子进程，子进程一退出就结束整个 dev 会话并关掉 Vite，`process::restart()` 拉起的孤儿进程没有页面可加载，只剩一个空白窗口（终端 Ctrl+C 也因 CLI 已退出而失效）。重载后前端从零 boot，设置同样从磁盘重新读取；打包版仍走真进程重启。
+开发模式（debug 构建）下 `app_restart` 与打包版走同一条 `lifecycle.restart()`：有暂存更新时交给 update helper，否则先拉起新实例再退出当前进程；不再依赖 `pnpm tauri dev`，也不重载主窗口。
 
 ## 日志
 

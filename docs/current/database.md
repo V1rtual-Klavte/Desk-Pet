@@ -6,7 +6,7 @@
 
 - 打开点：**命令分派器惰性打开**（[host/dispatch.rs](../../crates/native-host/src/host/dispatch.rs) 的 `NativeDispatcher::memory()`）——第一条记忆命令到达时才打开；打开失败如实透出原错误（含 `MEMORY` 码），不缓存失败结论、下一条命令会重报同一个错误（不降级、不假成功）。`--smoke` 不触库。用短锁串行化并发首开。
 - 打开参数：`busy_timeout = 750ms`；[memory/schema.rs](../../crates/native-host/src/memory/schema.rs) 的 `ensure` 设 `foreign_keys = ON`、`journal_mode = WAL`、`synchronous = NORMAL`。
-- 库文件：`memory.sqlite3`；`-wal` / `-shm` 是 WAL 模式的伴生文件（`paths::is_managed_memory_path` 一并纳管，通用文件工具不能绕过 MemoryStore 改写）。应用运行期间新结构和新数据先落 `-wal`，主文件要等干净退出（最后一次 checkpoint）才合并——外部查看器排查时请带上伴生文件，或退出应用后再打开；只复制主文件会看到空库。
+- 库文件：`memory.sqlite3`；`-wal` / `-shm` 是 WAL 模式的伴生文件（`paths::is_managed_memory_path` 一并纳管，通用文件工具不能绕过 MemoryStore 改写）。应用运行期间新结构和新数据先落 `-wal`；SQLite 会自动 checkpoint，主文件可能已部分合并，也可能仍有未合并内容——外部查看器排查时请带上伴生文件，或退出应用后再打开；只复制主文件可能看到不完整或空的库。
 - 写入并发：单连接（`MemoryStore` 持 `Mutex<Connection>`，锁中毒按恢复处理而非 panic），写入一律走事务；两侧各有 `operation_id` 幂等账本，提交结果未知时先查账、不盲重放。
 - 备份与恢复走 SQLite 备份接口（不复制写入中的主文件）；恢复前与预览都校验备份的 `schema_version` 与必需表集合，不匹配的备份不应用；恢复时把「当前生效的遗忘墓碑」带过去，旧快照不能复活已忘内容。
 

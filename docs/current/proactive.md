@@ -13,7 +13,7 @@
 | 主动消息开口后冷却 / 每日 token（记账阈值，非门禁） | 3–5 小时 / 8000 | 1–3 小时 / 24000 | 30–90 分钟 / 40000 |
 | 静默了解固定钟点 / 批次间隔 | 12:00、20:00 / 2 小时 | 10:00、14:00、18:00、22:00 / 30 分钟 | 09:00、11:00、13:00、15:00、17:00、19:00 / 15 分钟 |
 | 静默了解每日轮数（=钟点表）/ 每小时读取名额 | 2 / 4 | 4 / 8 | 6 / 12 |
-| 记忆整理固定钟点 / 最小间隔 / 每日 token | 同静默了解表 / 4 小时 / 24000 | 同静默了解表 / 60 分钟 / 72000 | 同静默了解表 / 30 分钟 / 120000 |
+| 记忆整理固定钟点 / 最小间隔 | 同静默了解表 / 4 小时 | 同静默了解表 / 60 分钟 | 同静默了解表 / 30 分钟 |
 
 成本：主动消息低→高约 5 倍 token，设置页「高」档 help 已提示。完整字段与逐值以生成表的 `tiers` 为准。每日 token 总量自 2026-10-06 起只记账、不设闸：唯一硬边界是次数上限（见「规则、预算与送达」）。
 
@@ -25,7 +25,7 @@
 
 **白天窗口删除**：原写死的 9–12 / 18–22 硬窗口（`SHARE_START_HOUR`/`SHARE_END_HOUR`/`MIDDAY_HOUR`/`EVENING_HOUR`）全部删除，rhythm（晨/晚）、retrospective（周日）、anniversary、calendar、topic_share、curiosity 改为本地整日（00:00–次日 00:00）有效，夜间边界只由静默时间段门禁负责。画像逐小时资格（可靠画像时 `observedHours[hour] > 0`）保留；小时值只统计 active 时长，idle、unknown、unobserved 不算用户活跃。它是自适应信号而不是硬窗口；画像不可靠时不限小时。
 
-**主动开关从 SQLite 撤出**：Rust `proactive_control` 表删除 `enabled` 列（保留 `mute_until`/`revision`——运行期暂停状态，不是设置；claim 拒绝理由 `muted` 只来自暂停）。`MEMORY_SCHEMA_VERSION` 递增到 3，旧库按既有策略 abort，开发需删 `memory.sqlite3` 三件套（含 `-wal`/`-shm`）重建（旧数据可弃）。
+**主动开关从 SQLite 撤出**：Rust `proactive_control` 表删除 `enabled` 列（保留 `mute_until`/`revision`——运行期暂停状态，不是设置；claim 拒绝理由 `muted` 只来自暂停）。该批把 `MEMORY_SCHEMA_VERSION` 递增到 3；当前版本为 5，旧库由 Rust 迁移自动补齐，不要删除 `memory.sqlite3` 三件套（含 `-wal`/`-shm`）。
 
 **档位投影到 Rust（终裁）**：Node 在 scanner 启动与每次 `refreshProactive()`（设置保存 / `/proactive on|off` / 配置导入的消费者刷新）把当前档位派生的 13 项 limits 经 `proactive_control` 通道下发；Rust 存为 **dispatcher 级运行期投影**（与 MonitorState 并列，不进 SQLite、不读 CONFIG、不回写），用于 claim 的间隔/配额终裁与辅助尝试天花板；缺省回落中档。校验口径：13 字段全必填且必须与 low/medium/high 任一行逐字段全等，不匹配拒绝整条请求并留痕（拒绝不改投影现值）；`off` 档不推送（Rust 保持现值/缺省）。真相源仍是 CONFIG。辅助尝试天花板按 kind 取档位最大值的静态上限（observation→静默档钟点表最高 6 轮、其他→主动档最高 8），不再按旧常量 4 截断。`dailyTokens` 自 2026-10-06 起是**观测阈值**：token 账（reserved/used/unknown）照记，不作 claim 或辅助预留的拒绝条件。
 

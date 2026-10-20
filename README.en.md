@@ -22,6 +22,8 @@
 
 </div>
 
+You can set reminders or scheduled work in chat — for example, "remind me to organize my files every Friday evening", "remind me twice at random times this afternoon", or "check today's headlines at noon every day". If the time, frequency, or required capability is missing, she asks first; creation results are delivered in the current character's voice. The app must stay running; silence, busy states, and other conditions may affect delivery. Internal system tasks do not appear in your task list.
+
 ## What it is
 
 V1rtual-Desk-Pet is a **desktop pet with customizable character cards and layered artwork**, built to do lightweight companionship and chatting really well.
@@ -50,7 +52,7 @@ Design goals: lightweight, low memory, high performance, token-efficient, featur
 ### Memory & proactive companionship
 
 - **Silent understanding**: under *AI → Silent access*, the *Silent understanding frequency* tier (off / low / medium / high) turns automatic understanding on and off — *off* means no automatic observation (reads only on request); low / medium / high run a fixed slot schedule of 2 / 4 / 6 rounds per day. At runtime it screenshots the foreground window first, and the AI decides which local files or directories to read based on the current window (whole-machine read-only, with credential paths, secret paths, and the app data root still blocked). The host validates every read item by item, never writes, and keeps sourced understanding separate from user facts.
-- **Long-term memory**: eligible trusted user sources are committed automatically after batch validation; right-click your own message in chat and choose *Remember this*, or simply say "remember …". The *Memory* settings page lets you inspect source quotes and version history, toggle core-profile marks, correct and forget items (invalidating stale memory projections in flight), continue or preview curation jobs, and back up/restore. Curation runs on an idle policy with a persistent budget by default, and can also be triggered manually from settings.
+- **Long-term memory**: eligible trusted user sources are committed automatically after batch validation; right-click your own message in chat and choose *Remember this*, or simply say "remember …". The *Memory* settings page lets you inspect source quotes and version history, toggle core-profile marks, correct and forget items (invalidating stale memory projections in flight), continue or preview curation jobs, and back up/restore. Curation runs on fixed clock slots by default (setting the tier to off leaves only the manual entry point), and can also be triggered manually from settings.
 - **Proactive companionship**: under *AI → Proactive*, choose a *Proactive message tier* (off / low / medium / high, roughly 1–2 / 2–4 / 4–8 messages per day) and quiet hours (optional; she stays silent in that window). When enabled she follows up on sourced items, explicit agreements, seasonal moments, light topics, and limited show-and-tell — all bounded by busy state, unreplied-message tiers, and a daily budget. Humanized delivery and silent understanding are independent switches; agreements still run when silent understanding is off. Send `/behavior clear` in chat to erase the derived observation profile. See [Proactive companionship](docs/current/proactive.md) for runtime boundaries.
 
 ### Tools & extensions
@@ -104,7 +106,7 @@ Desk-Pet/
 │       ├── proactive/             Opportunities · agreements · budgets · delivery receipts
 │       ├── native-ui/             Projection frame assembly · host request handling
 │       └── personality/ reply/    Cards · interaction variables · reply metadata
-├── resources/defaults/            Factory resources: character cards · themes · font assets
+├── resources/defaults/            Factory resources: character cards and Profile assets
 ├── packaging/                     Packaging config and locked bundled Node version
 ├── scripts/                       Dev and verification scripts: dev launch · versioning · packaging
 ├── test/                          Three-layer tests · contracts · benchmarks (rules in test/AGENTS.md)
@@ -116,7 +118,7 @@ Per-directory module maps, state ownership, and full call chains live in the [sy
 ### Dependencies
 
 - **Zero external runtime dependencies**: Node 22.22.3 ships in the bundle and the UI is drawn natively; MCP servers are borrowed on demand and never connected or resident while disabled.
-- **The only network egress is the model service**: OpenAI-compatible endpoints (DeepSeek by default; OpenAI / Ollama / LM Studio etc. also work). Provider calls are funneled through one point, `engine/harness/model-gateway.ts`.
+- **Outbound requests occur only for the model service, update checks, and remote MCP connections**: model traffic uses OpenAI-compatible endpoints (DeepSeek by default; OpenAI / Ollama / LM Studio etc. also work). Provider calls are funneled through one point, `engine/harness/model-gateway.ts`.
 - **The only cross-process channel is private IPC** (macOS Unix socket / Windows named pipe): Node → host commands (`HostCommandMap`, one-to-one with the Rust `NativeDispatcher`), host → Node requests (`HostRequestMap` with `host_request_result` receipts), and events (`HostEventMap`); oversized fields automatically travel as binary blob frames. The business layer never touches windows directly, and the host never touches the model directly.
 
 ## Download & install
@@ -127,7 +129,7 @@ Grab the file for your platform from [Releases](https://github.com/V1rtual-Klavt
 | Platform | File | Notes |
 |---|---|---|
 | macOS (Apple Silicon) | `v1rtual-desk-pet_x.y.z_aarch64.dmg` | Open and drag the app into *Applications*. Intel Macs are not supported yet |
-| Windows (installer) | `v1rtual-desk-pet_x.y.z_x64-setup.exe` | Double-click to install |
+| Windows (installer) | `native-host_x.y.z_x64-setup.exe` | Double-click to install |
 
 > **The first launch will be blocked by the system** — the current installers are **not code-signed or notarized**:
 > - If macOS says the app "is damaged and can't be opened", drag the app into *Applications* and run

@@ -90,7 +90,7 @@ Actions 页面选 `Release` → Run workflow → 填一个**已存在**的 tag�
 | macOS 打包报 `ERROR No matching IconType` | `desktop.json` 的 `icons` 里没有 `.icns`，而主图是 1024×1024 PNG：它是 2 的整数幂、不进缩小分支，于是按 density=1 去 `tauri-icns` 找 1024 槽位——该槽位不存在。补 `resources/icons/mascot-app-icon.icns`（`iconutil -c icns` 由 1024 主图生成）并保留 PNG（Windows 的 `find_ico()` 要回落取它） |
 | Release 没建出来 / 只有部分平台产物 | `publish` 只在两个平台都成功后跑（不会发半份 `update.json`）；看挂掉那个 build job 的日志 |
 | 打包报 create-dmg / DMG 相关错误 | macOS 侧预置的 create-dmg 校验失败或失效（固定 commit URL + sha256 在 release.yml 里；上游不可达时失败是刻意的） |
-| 本机想验一次打包 | 依次跑 `pnpm run build:harness`、`node .github/scripts/stage-node.mjs`、`cargo build --release -p native-host --bin native-host --bin deskpet-update-helper`、`cargo packager --release --config packaging/desktop.json`（需先 `cargo install cargo-packager --version 0.11.8 --locked`）；产物在 `packaging/dist/` |
+| 本机想验一次打包 | 依次跑 `pnpm run build:harness`、`node .github/scripts/stage-node.mjs`、`node .github/scripts/write-version-set.mjs`、`cargo build --release -p native-host --bin native-host --bin deskpet-update-helper`、`cargo packager --release --config packaging/desktop.json`（需先 `cargo install cargo-packager --version 0.11.8 --locked`）；产物在 `packaging/dist/` |
 
 ## 相关
 

@@ -129,13 +129,13 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 | 字段 | 取值 | 语义 | 生效 |
 |---|---|---|---|
-| `appearance.theme` | `brushed` / `chrome` / `verdigris`，默认 `brushed` | 产品级界面主题（拉丝金属 / 铬 / 铜绿），覆盖舞台、聊天面板、顶栏、设置窗与图层编辑器。**预设不可调**：不开放改色值，也不跟随系统深浅色（主题自己就是外观，`brushed` 与 `verdigris` 是暗、`chrome` 是浅面板 + 深紫舞台） | 保存即写回同一 cfg 并随 `flushConfig` 落盘；宿主在启动与设置保存后经桥命令 `apply_theme` 收到新值并立即重绘（命令登记在 [src/services/host/types.ts](../../src/services/host/types.ts)，收到前宿主用默认主题） |
+| `appearance.theme` | `brushed` / `chrome` / `verdigris` / `nightfall` / `azurite`；出厂 `chrome`，读取兜底 `brushed` | 产品级界面主题（拉丝金属 / 铬 / 铜绿 / 暮蓝 / 青花），覆盖舞台、聊天面板、顶栏、设置窗与图层编辑器。**预设不可调**：不开放改色值，也不跟随系统深浅色（`brushed`、`verdigris`、`nightfall` 为暗色，`chrome` 为浅面板 + 深紫舞台，`azurite` 为白瓷釉面 + 靛蓝） | 保存即写回同一 cfg 并随 `flushConfig` 落盘；宿主在启动与设置保存后经桥命令 `apply_theme` 收到新值并立即重绘（命令登记在 [src/services/host/types.ts](../../src/services/host/types.ts)，收到前宿主用默认主题） |
 
 **主题与 Profile 正交**：换 Profile 不换主题，换主题不换 Profile。Profile 不保存任何颜色或图标（见下文「Profile 是自包含闭包」）。
 
 读取只经 `userConfig.theme`（唯一默认值 `DEFAULT_THEME` 在 [config.ts](../../src/services/config.ts)，设置窗 schema 与宿主都不复制默认值）；非法值按读取期规则收拢为默认并记一条中性诊断、**不写盘**，也不为旧取值建兼容映射。设置窗字段在 [schema.rs](../../crates/native-host/src/ui/settings/schema.rs) 的「外观 → 角色展示」区（选项与 `ui::theme::ThemeId::ALL` 有对账测试钉住）。**色值真相只在宿主** [ui/theme/tokens.rs](../../crates/native-host/src/ui/theme/tokens.rs)，Node 只传 id，不复制任何 token。视觉基准是 [theme-candidates.html](../../docs/history/design/theme-candidates.html)。
 
-**只加载选中的主题**：token 表是三份编译期常量（没有"加载"这一步）；有代价的是**纹理**，按需程序化生成（磁盘零图片资源），同一时刻只驻留当前主题用到的那张，切主题时释放旧的（`ui::theme::release_unused_textures`）。本批未同步真实 `CONFIG-DEV.yaml`。
+**只加载选中的主题**：token 表是五份编译期常量（没有"加载"这一步）；有代价的是**纹理**，按需程序化生成（磁盘零图片资源），同一时刻只驻留当前主题用到的那张，切主题时释放旧的（`ui::theme::release_unused_textures`）。本批未同步真实 `CONFIG-DEV.yaml`。
 
 ### 聊天图片自动预览字段的语义与生效时机
 
@@ -193,11 +193,11 @@ Card 管理（设置页「人格」节）走同一条运行时路径：新建以
 
 | 数据 | 唯一所有者 |
 |---|---|
-| 界面主题（三套预设） | CONFIG 的 `appearance.theme`（产品级，不随 Profile） |
+| 界面主题（五套预设） | CONFIG 的 `appearance.theme`（产品级，不随 Profile） |
 | 展示模式 off/parallax | CONFIG 的 `appearance.effectMode` |
 | 灵动图层全局强度 | CONFIG 的 `appearance.parallax.intensity` |
 | 全局字体（家族与字号） | CONFIG 的 `appearance.font`（系统已安装字体，不随 Profile） |
-| 聊天图片自动预览开关 | CONFIG 的 `appearance.chatImagePreview`（默认关闭；不随 Profile） |
+| 聊天图片自动预览开关 | CONFIG 的 `appearance.chatImagePreview`（出厂开启，缺键按关处理；不随 Profile） |
 | 每层素材和参数 | 当前 Profile 的 `theme.parallax.layers` |
 
 `appearance.effectMode` 只认 `off | parallax`。手写 YAML 的其它取值（含已删除的景深 `dof`）按同一读取期规则收拢为 `off` 并记一条中性诊断，不为某个旧取值写专项兼容映射；读取只收拢内存值、不写盘，最终有效值只在设置窗「外观 → 角色展示」明确保存时落盘。
@@ -212,7 +212,7 @@ Card 管理（设置页「人格」节）走同一条运行时路径：新建以
 
 导入 zip 时，归一化后指向同一路径的条目（含大小写不敏感文件系统下的同名不同大小写）按后写覆盖前者，被覆盖的条目列在导入结果的详情里。
 
-Profile 是自包含闭包：图层素材只从 Profile 自身目录读取，不跨 Profile 回退；缺失时对应层停止渲染并在编辑器提示。Profile 不保存颜色或图标：界面主题是产品级三套预设（CONFIG `appearance.theme`，实现在 [ui/theme/](../../crates/native-host/src/ui/theme/)），不随 Profile。内置 Profile 共四个：`sugar-pink`（默认，`appearance.activeProfile`）、`yuki`、`profile1`（黍）与 `profile2`（void）。各自启用哪几层由它自己的 `profile.yaml` 决定，本文件不逐个复述层配置——那些值随用户在编辑器里的调整而变，实际资源与配置以[默认 Profile 目录](../../resources/defaults/profiles/)为准；同一 Profile 的各层素材应保持相同画布与主体位置。
+Profile 是自包含闭包：图层素材只从 Profile 自身目录读取，不跨 Profile 回退；缺失时对应层停止渲染并在编辑器提示。Profile 不保存颜色或图标：界面主题是产品级五套预设（CONFIG `appearance.theme`，实现在 [ui/theme/](../../crates/native-host/src/ui/theme/)），不随 Profile。内置 Profile 共四个：`sugar-pink`（默认，`appearance.activeProfile`）、`yuki`、`profile1`（黍）与 `profile2`（void）。各自启用哪几层由它自己的 `profile.yaml` 决定，本文件不逐个复述层配置——那些值随用户在编辑器里的调整而变，实际资源与配置以[默认 Profile 目录](../../resources/defaults/profiles/)为准；同一 Profile 的各层素材应保持相同画布与主体位置。
 
 内存只保留当前激活 Profile（含资产目录 URL）：`activateProfile()` 与 `ensureProfileLoaded()` 都会淘汰非激活缓存；设置页列 Profile 用 `readProfileMeta()` 轻量读 meta，不进缓存。
 

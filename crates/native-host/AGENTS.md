@@ -82,6 +82,7 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
 | `render/` | 几何核、帧循环、平台表面 | `geometry.rs` 是灵动几何的单一实现点 |
 | `images/` | 解码、缩放、编码、内联预览 | 格式准入是白名单，不是黑名单 |
 | `memory/` | SQLite 存储、schema、命令 | 事实与治理决定的唯一归属 |
+| `scheduler/` | 钟点调度与追赶窗 | |
 | `proactive/` | 主动陪伴调度与存储 | |
 | `monitor/` | 窗口观察（事件驱动，无轮询） | |
 | `window/` | 窗口层级数值单源、系统能力 | `WindowLevel` 是层级数值的单一真相源 |
@@ -92,6 +93,7 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
 
 - `platform/` 下**只有平台 API 调用**，业务逻辑放平台无关模块（`chat/`、`settings/`、`editor/`、`state.rs`、
   `stage.rs`、`titlebar.rs` 等），两平台共享同一份模型 —— 不要在 `macos_chat.rs` 里写状态机。
+  例外：平台视图的局部状态（如聊天分页游标）可以留在平台聊天文件；不得在平台文件承载跨窗口共享状态或领域状态机。
 - **`define_class!` 里自定义 target-action 必须放在裸 `impl 类名 {}` 块**：写进 `unsafe impl <协议>` 块
   会让 objc2 拿它去协议定义里核对，找不到就在**类注册期 panic**
   （`failed overriding protocol method …: method not found`）。同理，协议方法要放进**它自己的协议块**
@@ -145,7 +147,7 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
 ## 8. 已知的坑（本机会撞到）
 
 - 本机**没有 `timeout` 命令**（macOS）；需要限时用别的手段。
-- `crates/` 整个目录当前**未被 git 跟踪**，`git stash` 对它无效；移动/删除文件前先确认可逆。
+- `crates/` 已被 git 跟踪（当前 156 个文件）；未跟踪的是 `target/` 等构建产物。移动/删除文件前仍先确认可逆。
 - 删文件前用 `rg` 查**字符串形式**的引用（路径常量、`include_str!`、`include_bytes!`、
   `CARGO_MANIFEST_DIR` 拼接）—— 那些 `rg "mod xxx"` 查不到。
 

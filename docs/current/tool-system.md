@@ -54,7 +54,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 - `context.resultProjection`：`preserve` 是**禁止二次处理**，不缩短、不清空（地址标注不在此列，照旧带），避免「引用 → 读取 → 又变引用」的循环 —— 回读工具 `read_session_event` 自身即声明 `preserve`；`reference` 的结果可被 L0 缩短或清空，且**无条件带地址**（不论是否超阈值）。两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，请求视图里工具结果的改动只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
 - `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）；该取值维持保留：生产无消费者（全部生产工具声明 `summarize`），由 `memory-retain-guard` 场景驱动，不删。
 
-[defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`shared_read` 搭配非只读效果、未知策略版本、非法权限意见都是注册错误，不做缺省猜测；未经它构造的定义在注册时直接抛错（结构上没有执行体），不会进入注册表。`actionCategory` 由 ToolDef 唯一声明，经 `actionCategoryOf`（[registry.ts](../../src/services/tool/registry.ts)）解析后驱动人格阶段文案（`getStagePrompt`）；不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
+[defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`shared_read` 搭配非只读效果、未知策略版本、非法权限意见都是注册错误，不做缺省猜测；未经它构造的定义在注册时直接抛错（结构上没有执行体），不会进入注册表。`actionCategory` 由 ToolDef 唯一声明，经 `actionCategoryOf`（[registry.ts](../../src/services/tool/registry.ts)）解析后驱动人格阶段文案（`getStagePrompt`）；不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果；工具默认 `never`，幂等只读查询 `memory_query`、`schedule_query` 为 `safe`。
 
 工具策略不再声明逐工具调度模式：Harness 的批次调度只看 run 级 `toolExecution`（现为 `parallel`），互斥由 `execution.isolation` 与下面的执行许可保证。
 
@@ -64,7 +64,7 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由原
 
 - `shared_read` 走有界共享额度（默认 4，由 [`ai.loop.maxParallelTools`](runtime-data.md#工具并行上限字段的语义与生效时机) 配置，范围 1–8），两个只读可真正重叠；`exclusive_effect`（write/edit/bash/app_open/clipboard_write/MCP）与进行中的读写互斥，效果按借用顺序串行。
 - `delegate`（agent_spawn / propose_plan / ask_user）不占父批次额度，子运行的工具各自取许可；编排入口不自行执行文件写入。子代理运行随父运行取消（取消域级联：子槽挂到父槽下，父槽停止/关闭/释放都会级联到子运行），许可借用身份绑定父会话 + 代际。
-- Harness 的工具 memo 持久位（`invocation.getMemo` / `setMemo`）维持不实现：没有任何 V1rtual-Desk-Pet 工具把中间状态放进 memo（[harness-adapter.ts](../../src/services/tool/pi/harness-adapter.ts) 是空实现），恢复判定只按会话条目与工具结果条目这一份证据；`replay: "never"` 已保证不重放，恢复位无消费者。
+- Harness 的工具 memo 持久位（`invocation.getMemo` / `setMemo`）维持不实现：没有任何 V1rtual-Desk-Pet 工具把中间状态放进 memo（[harness-adapter.ts](../../src/services/tool/pi/harness-adapter.ts) 是空实现），恢复判定只按会话条目与工具结果条目这一份证据；需要防重放的工具都声明 `never`，恢复位无消费者。
 - 等待可取消（取消会移出排队项），没有超时自动释放；拿到额度后重新核对取消与代际，排队不能成为绕过检查的通道。
 - `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它调用方即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
 - 释放与上线声明的 IPC 失败不再只留日志：失败的释放按 requestId 入队（请求标识是确定量，Rust 对未知 id 返回 Ok，重放幂等），由运行槽在**下一次 run 开始前**补偿重放；上线声明失败同样记欠账并在同一时机重试。补偿失败只留痕、不阻断本次 run。
@@ -131,4 +131,4 @@ MCP 工具的取消链与预算（2026-10-06 体检报告 R2 对齐）：`toTool
 验证规则见[测试边界](testing.md)。
 
 
-用户定时任务工具为 `schedule_query` / `schedule_change`，只接受当前可信用户事件与宿主冻结的任务/来源/提议身份；没有系统任务枚举或控制操作。后台工具授权保存实际 toolName 与完整 schema/策略/只读提示描述符指纹；每次调用重读任务版本、授权和参数范围，描述符变更后不能沿用。MCP readOnlyHint 只影响任务能力资格，不降低原有风险和效果策略；最终仍经 PermissionKernel deny-first 和持久任务授权裁决。后台不等待交互确认，缺授权记录 needs_input。详见[主动陪伴](proactive.md)。
+用户定时任务工具为 `schedule_query` / `schedule_change`，只接受当前可信用户事件与宿主冻结的任务/来源/提议身份；没有系统任务枚举或控制操作。后台工具授权保存实际 toolName 与完整 schema/策略/只读提示描述符指纹；每次调用重读任务版本、授权和参数范围，描述符变更后不能沿用。MCP readOnlyHint 只影响任务能力资格，不降低原有风险和效果策略；最终仍经 PermissionKernel deny-first 和持久任务授权裁决。权限提示可用时以 `interactive` 等待确认；不可用才退回 `background`，并把缺失授权记为 `needs_input`。详见[主动陪伴](proactive.md)。

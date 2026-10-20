@@ -20,7 +20,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 设置页「人格」节的 Card 管理面（新建/编辑/重命名/导入/导出/删除/模版）与切换同属一条链：动作对象是**草稿里选中的卡**，不是「当前已激活的卡」；新建与重命名先经原生输入框取名字，id 由 Node 从显示名推导（沿用 `saveUserCard` 的清洗规则，撞名加后缀，绝不覆盖已有卡）。**重命名只改 frontmatter 的 `name`** —— 文件名、`stages/{id}.json` 与变量归属都挂在 id 上，改名不该牵连它们；**删除连带删掉该卡的 stages 文件**，激活中的卡拒删（先切到别的卡）；**导入以「能解析出有效 id」为唯一准入**（解析不出就整份拒绝，不写坏文件），同名即覆盖。列表刷新后若草稿选中项已消失（刚被删），宿主回落到运行时仍在激活的卡，避免保存时拿一个不存在的 id 去切换。`_template.md` 是模版面板的**唯一正文来源**（运行时文件，可被「恢复默认资源」覆盖），面板首行引导语由宿主定义、与正文拼成同一段文本 —— 面板显示什么，复制就是什么。
 
-随包种子提供 `default`（本体卡）、`yuki`、`angelkawaii` 与 `shu` 四张 Card；没有可用 Card 时允许无活动 Card 降级运行。默认卡的名字由用户起：frontmatter `name` 只是产品标签（「默认」），`nameVar: 名字` 声明承载名字的 Card 变量——用户在对话里起名或改名时由模型经 RUNTIME_DATA 写入（进 Card 身份、随卡持久化，不进用户长期记忆），聊天气泡的说话人标签优先显示它；未起名时返回空串交界面兜底（ChatPanel 显示「桌宠」），不回落到卡标签；未声明 `nameVar` 的 Card 仍显示卡 `name`。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
+随包种子提供 `default`（本体卡）、`yuki`、`angelkawaii` 与 `shu` 四张 Card；没有可用 Card 时允许无活动 Card 降级运行。默认卡的名字由用户起：`default.md` 的 frontmatter `name` 为 `void`，`nameVar: 名字` 声明承载名字的 Card 变量——用户在对话里起名或改名时由模型经 RUNTIME_DATA 写入（进 Card 身份、随卡持久化，不进用户长期记忆），聊天气泡的说话人标签优先显示它；未起名时返回空串，界面不显示角色标签，也不回落到卡标签或「桌宠」文案；未声明 `nameVar` 的 Card 仍显示卡 `name`。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
 
 阶段文案先读持久化缓存，缺失时可经模型生成；任一 Card 首次激活、角色设定/语言风格变化，或 `stages-prompt.md` 模板变化时会重新生成一次（一次 LLM 调用/卡）。失效判定键是生成输入 `sourceHash`（`SHA-256(stages-prompt.md + "\n" + roleSetting + "\n" + languageStyle)`），`version:` 只作元数据、不参与判定；重新生成只覆写 stages 段，不清空变量区。
 
