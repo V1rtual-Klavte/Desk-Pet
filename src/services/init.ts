@@ -23,8 +23,9 @@ import { initDebug } from "@/services/debug"
 import { initSlashCommands } from "@/services/engine/slash"
 import { initSessions, chatHistory, initWelcome, getActiveSessionId } from "@/services/session"
 import { applyLogLevel, computeMcpEnabled, enabledMcpServerNames, initConfig } from "@/services/config"
-import { initPaths } from "@/services/paths"
+import { initPaths, getRuntimeMode } from "@/services/paths"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Init")
 
@@ -173,6 +174,24 @@ async function runDomainBootstrap(): Promise<void> {
   const { startUserTaskRuntime } = await import("@/services/user-tasks")
   startUserTaskRuntime()
   log.info("12/12 主动陪伴与静默了解调度就绪")
+
+  // 开发期闭环演练：只有显式设置环境变量才启动；生产构建不进入这条分支。
+  // 走真实 app 进程内的业务入口（观察/整理/主动/任务/聊天），不是 E2E 测试宿主。
+  if (getRuntimeMode() === "development" && process.env.DESKPET_SIM_LOOP) {
+    const requested = Number(process.env.DESKPET_SIM_LOOP)
+    // 轮数由调用方显式给出，不设上限；未给出时只跑 1 轮。
+    const rounds = Number.isFinite(requested) && requested > 0 ? Math.round(requested) : 1
+    void import("@/services/sim")
+      .then(({ runSimLoop }) => runSimLoop({ rounds }))
+      .catch(error => log.error("闭环演练启动失败:", formatError(error)))
+  }
+
+  // Claude 直接驱动的聊天通道：我写 inbox、读 outbox，桌宠走真实 sendMessage。
+  if (getRuntimeMode() === "development" && process.env.DESKPET_SIM_CHAT) {
+    void import("@/services/sim")
+      .then(({ startSimChatBridge }) => startSimChatBridge())
+      .catch(error => log.error("聊天控制通道启动失败:", formatError(error)))
+  }
 
   log.info("──── 初始化完成 ────")
 }

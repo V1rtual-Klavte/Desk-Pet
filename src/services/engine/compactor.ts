@@ -347,7 +347,9 @@ async function callOnce(input: {
   const { completePiText } = await import("./harness")
   const response = await completePiText({
     purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText: material.userText,
-    thinkingEffort: "low", maxTokens: input.summaryMaxTokens,
+    // Provider 输出不按摘要内容预算卡死：推理也会吃输出额度，卡 2048 会把完整摘要判成
+    // 「长度上限」。摘要正文仍由下方 estimateValueTokens 对照 summaryMaxTokens 校验。
+    thinkingEffort: "low",
     signal: input.signal, model: input.model,
     // 有归属才落快照：摘要是一次性请求，但「这次压缩问了什么」必须可查。K 片各写各的快照 ——
     // 每片由 model-gateway 落 1 条 provider_payload（请求前）+ 1 条 provider_usage（响应到达后，

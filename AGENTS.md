@@ -63,6 +63,13 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
   （规则入口与维护义务表）；命令与保留细节见其 [README](test/README.md)。本文件不重复测试域规则。
 - pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
   `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
+
+## 开发期陪伴闭环演练
+
+- 需要和桌宠自然聊天、或跑“了解 → dreaming → 主动消息 → 定时任务”的真实链路时，
+  先读 [`test/sim/desk-pet-chat/SKILL.md`](test/sim/desk-pet-chat/SKILL.md)，按其中的控制文件协议与聊天规范执行。
+- 控制通道只对 development 模式开放；控制文件、报告与 trace 位于开发数据根的 `logs/sim/` 下，
+  具体路径和命令见该 skill。演练产物不提交到 git，也不指向生产数据根。
 - CI 分两条线：push/PR 走 `ci.yml`（双平台验证 + `bundle-config` 配置与契约源码校验，不做构建）；
   tag `v*` 走 `release.yml`（双平台打包并发布到 GitHub Release）。
   发版前先跑 `pnpm run version:set <x.y.z>`，tag 与三处 version（根 `Cargo.toml`、

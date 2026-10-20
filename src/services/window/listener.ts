@@ -17,13 +17,24 @@ let latestObservation: WindowObservation | null = null
 let latestGeneration = 0
 let latestSequence = 0
 const subscribers = new Set<(observation: WindowObservation) => void>()
+/**
+ * 有界近期观察：演练入口在桌宠自己占据前台时，仍能用「最近一次非桌宠窗口」
+ * 作为真实观察来源，而不是伪造窗口或直接跳过本批。
+ */
+const recentObservations: WindowObservation[] = []
+const MAX_RECENT_OBSERVATIONS = 12
 
 export function getLatestWindowObservation(): WindowObservation | null {
   return silentAccessFrequency() !== "off" ? latestObservation : null
 }
 
+export function getRecentWindowObservations(): readonly WindowObservation[] {
+  return silentAccessFrequency() !== "off" ? [...recentObservations] : []
+}
+
 export function clearLatestWindowObservation(): void {
   latestObservation = null
+  recentObservations.length = 0
 }
 
 export function subscribeWindowObservations(callback: (observation: WindowObservation) => void): () => void {
@@ -53,6 +64,10 @@ export function acceptWindowObservation(value: unknown): boolean {
     latestSequence = 0
   }
   latestSequence = observation.sequence
+  if (observation.observationState === "observed" || observation.observationState === "locked") {
+    recentObservations.push(observation)
+    if (recentObservations.length > MAX_RECENT_OBSERVATIONS) recentObservations.shift()
+  }
   latestObservation = observation.observationState === "disabled" ? null : observation
   void observeBehavior(observation)
   for (const callback of subscribers) {

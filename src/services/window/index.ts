@@ -9,6 +9,7 @@ export {
   clearLatestWindowObservation,
   clearWindowObservationSubscribers,
   getLatestWindowObservation,
+  getRecentWindowObservations,
   subscribeWindowObservations,
 } from "./listener"
 export { getRuntimeActivity, initWindowObservation, setMonitorEnabled, disconnectWindowObservation, shouldWarnObservationGate } from "./monitor"

@@ -1428,8 +1428,10 @@ function createTurnSpec(kernel: TurnKernel, options: {
       enabled: options.humanizerEnabled ?? kernel.humanizerEnabled ?? false,
       sessionId: kernel.sessionId,
       fallbackReply: kernel.silentRejectedReply ?? getFallbackReply("silentRejected"),
+      // 只有真正的计划/任务步骤走 task；普通聊天即使调过工具也仍是 casual，
+      // 否则任何一次工具调用都会把闲聊压成一条（2026-10-20 实机）。
       flow: () => options.activeRequest ? "casual"
-        : (options.taskReply ?? kernel.taskReply) || kernel.toolRun.history.length > 0 ? "task" : "casual",
+        : (options.taskReply ?? kernel.taskReply) ? "task" : "casual",
       traceContext: kernel.traceContext,
     },
     enumerationAnswer: () => enumerationAnswer,
@@ -1666,8 +1668,10 @@ function releaseStaleProcessTitlebarOwners(sessionId: string, generation: number
 export function defersTitlebarReleaseToReveal(
   output: Pick<PiAgentTurnOutput, "humanized" | "silent" | "reply" | "abortedByStop" | "toolCallHistory">,
 ): boolean {
+  // 工具轮不再是 task 流：只要本轮走的是 casual 拟人表达，就交给延迟揭示队列。
+  // 计划/任务步骤的 humanized=false，不会走到这里。
   return output.humanized === true && output.silent !== true && Boolean(output.reply)
-    && output.abortedByStop !== true && output.toolCallHistory.length === 0
+    && output.abortedByStop !== true
 }
 
 // The scheduler runs after the committed message reaches the runner; its first visible bubble ends
@@ -1722,7 +1726,8 @@ function createTurnSinks(kernel: TurnKernel, visible: boolean): HarnessRunSinks 
     if (!visible || !delta || !sessionId || getActiveSessionId() !== sessionId) return
     void emitUiEvent(HOST_EVENT_ASSISTANT_STREAM, { sessionId, delta })
   }
-  const taskFlow = (): boolean => Boolean(kernel.taskReply) || kernel.toolRun.history.length > 0
+  // 与 stripReply 的 flow 同口径：工具调用不是 task 信号，只有计划/任务步骤才是。
+  const taskFlow = (): boolean => Boolean(kernel.taskReply)
   const suppressCasualStream = (): boolean => kernel.humanizerEnabled === true && !taskFlow()
   return {
     onTurnStart: () => {
@@ -2935,8 +2940,9 @@ async function settleMainTurn(args: {
   const committedText = completionApplied ? state.completedReply!.text : settledText
   const rawReply = kernel.rawTextForSettledReply(committedText)
   const humanized = kernel.humanizedForSettledReply(committedText)
+  // 同口径：工具调用不改变 flow；只有 taskReply 的回合不是 casual。
   const casualFlow = Boolean(kernel.humanizerEnabled)
-    && (Boolean(args.input.activeRequest) || (!kernel.taskReply && kernel.toolRun.history.length === 0))
+    && (Boolean(args.input.activeRequest) || !kernel.taskReply)
   const liveCard = getActiveCard()
   // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
   const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version

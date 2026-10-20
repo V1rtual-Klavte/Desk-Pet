@@ -479,7 +479,7 @@ export interface PiTextCallInput {
   /** 调用方在 preflight 冻结的模型；提供后不得重新读取运行时配置。 */
   model?: PiModel
   maxTokens?: number
-  /** 总时限，默认 PROVIDER_TIMEOUT_MS */
+  /** 硬总时限；默认按输出预算推导（60–180s），显式值优先。 */
   timeoutMs?: number
   /** 审计归属：有会话可归属时给出，这次请求就进快照体系（无归属的调用不落证据）。 */
   audit?: PiTextCallAudit
@@ -554,7 +554,6 @@ function thinkingText(content: AssistantMessage["content"]): string {
  */
 export async function completePiText(input: PiTextCallInput): Promise<PiTextCallResult> {
   const startedAt = Date.now()
-  const timeoutMs = input.timeoutMs ?? PROVIDER_TIMEOUT_MS
   const override = piRuntimeProviderOverride
   const baseModel = input.model ?? override?.model ?? getPiModel()
   // 显式关闭思考（thinkingEffort: "off"）：pi 的 deepseek 分支只在模型 thinkingLevelMap.off 非空时
@@ -573,6 +572,9 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     throw new Error("maxTokens 必须是正整数")
   }
   const maxTokens = input.maxTokens === undefined ? outputBudget : Math.min(input.maxTokens, outputBudget)
+  // 一次性调用是硬总时限（到点 abort）。按输出预算给 60–180s：8k 输出约 60s，
+  // 16k 约 120s，32k 封顶 180s；显式 timeoutMs 仍优先（召回 4s / 计划 300s / dreaming 30–180s）。
+  const timeoutMs = input.timeoutMs ?? Math.min(180_000, Math.max(PROVIDER_TIMEOUT_MS, Math.ceil(maxTokens / 8_000) * 60_000))
 
   let systemPrompt = input.systemPrompt
   // 非推理模型 + low 时的兜底提示：旧 provider 对 LM Studio / Ollama 这类不认 reasoning_effort

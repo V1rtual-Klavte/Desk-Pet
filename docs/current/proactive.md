@@ -4,7 +4,7 @@
 
 ## 频率档位与静默时间段
 
-三处频率统一为「关 / 低 / 中 / 高」四档，**独立启用开关全部并入档位**（档位就是唯一开关）；「关」= 不自动跑，手动入口保留（如记忆面板的手动整理按钮不受档位约束）。三处档位彼此独立：`ai.proactive.frequency`、`ai.silentAccess.frequency`、`ai.memory.dreaming.tier`（默认均 `medium`）。档位数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧；[tiers.ts](../../src/services/proactive/tiers.ts) 只负责读取收拢与查表）；记忆整理档的三档只含固定钟点表与最小间隔——其每日 token 上限已于 2026-10-06 撤除（与主动链同批口径，token 只记观测账）。
+三处频率统一为「关 / 低 / 中 / 高」四档，**独立启用开关全部并入档位**（档位就是唯一开关）；「关」= 不自动跑，手动入口保留（如记忆面板的手动整理按钮、静默了解页的「立即了解一次」都不受档位约束；后者不计当天自动批数，上一批未结束前不重复触发）。三处档位彼此独立：`ai.proactive.frequency`、`ai.silentAccess.frequency`、`ai.memory.dreaming.tier`（默认均 `medium`）。档位数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧；[tiers.ts](../../src/services/proactive/tiers.ts) 只负责读取收拢与查表）；记忆整理档的三档只含固定钟点表与最小间隔——其每日 token 上限已于 2026-10-06 撤除（与主动链同批口径，token 只记观测账）。
 
 | | 低 | 中 | 高 |
 |---|---|---|---|
@@ -65,7 +65,7 @@
 
 观察／话题辅助请求tools=[]，复用同一 SQLite token 账做预留记账与实际用量结算（token 总量不再参与拒绝，2026-10-06；唯一边界是每日批数）；静默了解的每日轮数随档位（2/4/6，即钟点表轮数），话题链保持每日 4 批、不受档位治理；未知用量保留预留。零业务依赖公开预算端口是[auxiliary-budget.ts](../../src/services/proactive/auxiliary-budget.ts)，调用方不拉入scanner循环依赖。
 
-静默了解的读取数值上限已删除（2026-10-05 用户口径）：单文件 32KB、目录 40 条、单批 ≤3 目标、目录扫描预算 256 都不再设硬顶，读什么由模型裁断；路径边界全部保留并由宿主终裁（绝对路径、canonical 解析、排除数据根与凭据路径；整机只读——2026-10-06 用户裁决，不再限于用户主目录、不再排除 home 系统目录）。保留的两个数不是「读取大小上限」：每小时读取名额是防突发闸（随档位 4/8/12，`silentTierLimits(tier).maxReadsPerHour`，`MAX_READS_PER_HOUR` 常量已删），喂给整理调用的单文件字符预算（`MAX_TEXT_CHARS_PER_FILE`）是请求 token 截断。风险如实：大目录或大文件没有硬顶，靠模型裁断。
+静默了解每批随机选广度（breadth：多个方面/目录铺开）或深度（depth：围绕当前项目/主题读深），避免长期只盯一个方向；Provider 输出不设 `maxTokens`，输入侧仍保留每小时读取名额与单文件字符预算。读取数值上限已删除（2026-10-05 用户口径）：单文件 32KB、目录 40 条、单批 ≤3 目标、目录扫描预算 256 都不再设硬顶，读什么由模型裁断；路径边界全部保留并由宿主终裁（绝对路径、canonical 解析、排除数据根与凭据路径；整机只读——2026-10-06 用户裁决，不再限于用户主目录、不再排除 home 系统目录）。保留的两个数不是「读取大小上限」：每小时读取名额是防突发闸（随档位 4/8/12，`silentTierLimits(tier).maxReadsPerHour`，`MAX_READS_PER_HOUR` 常量已删），喂给整理调用的单文件字符预算（`MAX_TEXT_CHARS_PER_FILE`）是请求 token 截断。风险如实：大目录或大文件没有硬顶，靠模型裁断。
 
 **状态**：以上规划工具面与规划输入补齐为 W4 代码事实（2026-10-05 落地）；新增 L2/L3 用例已写、**未运行**，统一留收口波验证。
 

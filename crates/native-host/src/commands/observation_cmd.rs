@@ -19,7 +19,7 @@ use crate::paths::{is_credential_path, AppPaths};
 use crate::rust_debug;
 
 /// 静默了解的空闲地板：档位值由 Node 侧强制、只会更严，Rust 终裁不低于 30 分钟。
-const MIN_IDLE_MS: u64 = 30 * 60_000;
+// 静默了解由子代理后台读取，不再要求用户空闲；保留屏幕状态与桌宠前台两项边界。
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,34 +61,37 @@ fn require_enabled(state: &MonitorState) -> AppResult<()> {
     }
 }
 
-/// 静默了解（读取类）资格口径：`screen_state ∈ {observed, locked}` —— 锁屏=用户离开，
-/// 读取不依赖屏幕内容；`unavailable`（真不可知）、桌宠前台、空闲未达地板都拒绝。
+/// 静默了解（读取类）资格口径：`screen_state ∈ {observed, locked}`，且桌宠不在前台。
+/// 不再要求用户空闲：静默了解由子代理后台读取，用户正常使用电脑时也可以跑。
 /// 判定拆成纯函数：资格语义在没有系统采样桩的环境下也能被单测钉住。
-fn idle_observation_allowed(current: &RuntimeActivity) -> bool {
-    matches!(current.screen_state, "observed" | "locked")
-        && !current.is_pet_foreground
-        && !current.idle_for_ms.map_or(true, |idle| idle < MIN_IDLE_MS)
+fn observation_allowed(current: &RuntimeActivity) -> bool {
+    matches!(current.screen_state, "observed" | "locked") && !current.is_pet_foreground
 }
 
 /// 截图类资格：在读取资格之上追加屏幕维度 —— 锁屏时截图无意义，仅 `observed` 放行。
-fn idle_capture_allowed(current: &RuntimeActivity) -> bool {
-    idle_observation_allowed(current) && current.screen_state == "observed"
+fn capture_allowed(current: &RuntimeActivity) -> bool {
+    observation_allowed(current) && current.screen_state == "observed"
 }
 
-fn require_idle_observation(window: &dyn WindowPort, state: &MonitorState) -> AppResult<()> {
-    require_enabled(state)?;
+fn require_observation(window: &dyn WindowPort, state: &MonitorState, force: bool) -> AppResult<()> {
+    // force 只绕总闸（设置页手动触发），屏幕与桌宠前台边界仍由下方判定保留。
+    if !force {
+        require_enabled(state)?;
+    }
     let current = runtime_activity(window);
-    if !idle_observation_allowed(&current) {
+    if !observation_allowed(&current) {
         return Err(AppError::Cancelled);
     }
     Ok(())
 }
 
 /// 截图类终裁：沿用既有拒绝语义（`AppError::Cancelled`，不新增错误变体）。
-fn require_idle_capture(window: &dyn WindowPort, state: &MonitorState) -> AppResult<()> {
-    require_enabled(state)?;
+fn require_capture(window: &dyn WindowPort, state: &MonitorState, force: bool) -> AppResult<()> {
+    if !force {
+        require_enabled(state)?;
+    }
     let current = runtime_activity(window);
-    if !idle_capture_allowed(&current) {
+    if !capture_allowed(&current) {
         return Err(AppError::Cancelled);
     }
     Ok(())
@@ -100,8 +103,9 @@ fn require_idle_capture(window: &dyn WindowPort, state: &MonitorState) -> AppRes
 pub fn observation_capture_screen(
     port: &dyn WindowPort,
     state: &MonitorState,
+    force: bool,
 ) -> AppResult<ScreenCapture> {
-    require_idle_capture(port, state)?;
+    require_capture(port, state, force)?;
     let windows = Window::all().map_err(|_| AppError::Other("无法枚举前台窗口".into()))?;
     let mut focused = None;
     for window in windows {
@@ -117,7 +121,7 @@ pub fn observation_capture_screen(
     let image = window
         .capture_image()
         .map_err(|_| AppError::Other("截图不可用".into()))?;
-    require_idle_capture(port, state)?;
+    require_capture(port, state, force)?;
 
     // 缩放/编码统一走图片域的 `encode_screenshot`（契约 §2.1/§5.4：解码/缩放/编码集中
     // 到 Rust 图片域，不给截图另建缩放器）。口径逐项固定为：
@@ -125,7 +129,7 @@ pub fn observation_capture_screen(
     // Triangle 滤波、PNG、8 MiB 传输上限；「尺寸无效 / 编码失败 / 超传输上限」的
     // 错误文案与错误码由该实现给出，调用方可见行为不变。
     let encoded = encode_screenshot(&image)?;
-    require_idle_capture(port, state)?;
+    require_capture(port, state, force)?;
     Ok(ScreenCapture {
         data: STANDARD.encode(encoded.bytes),
         mime_type: encoded.mime_type,
@@ -249,8 +253,9 @@ pub fn observation_read_targets(
     monitor: &MonitorState,
     paths: &AppPaths,
     targets: Vec<ReadTarget>,
+    force: bool,
 ) -> AppResult<Vec<TargetReadResult>> {
-    require_idle_observation(port, monitor)?;
+    require_observation(port, monitor, force)?;
     // 数据根必须参与边界判定；解析失败时 fail closed（不放行任何目标），
     // 静默退回「没有数据根」会让会话与记忆目录变成可读。
     let data_root = paths
@@ -259,10 +264,10 @@ pub fn observation_read_targets(
         .map_err(|error| AppError::Io(format!("无法解析应用数据根: {error}")))?;
     let mut output = Vec::with_capacity(targets.len());
     for target in &targets {
-        require_idle_observation(port, monitor)?;
+        require_observation(port, monitor, force)?;
         output.push(read_one_target(target, &data_root));
     }
-    require_idle_observation(port, monitor)?;
+    require_observation(port, monitor, force)?;
     Ok(output)
 }
 
@@ -455,34 +460,29 @@ mod tests {
     }
 
     #[test]
-    fn locked_gates_reads_in_but_rejects_capture() {
+    fn screen_state_and_pet_foreground_gate_reads_and_capture() {
         // 锁屏=用户离开：读取放行（终裁 `screen_state ∈ {observed, locked}`）、截图拒绝。
-        let locked = activity("locked", Some(MIN_IDLE_MS), false);
-        assert!(idle_observation_allowed(&locked));
-        assert!(!idle_capture_allowed(&locked));
+        let locked = activity("locked", Some(0), false);
+        assert!(observation_allowed(&locked));
+        assert!(!capture_allowed(&locked));
 
-        // 未锁屏：读取与截图都放行（空闲正好等于地板也放行）。
-        let observed = activity("observed", Some(MIN_IDLE_MS), false);
-        assert!(idle_observation_allowed(&observed));
-        assert!(idle_capture_allowed(&observed));
+        // 未锁屏：读取与截图都放行。
+        let observed = activity("observed", Some(0), false);
+        assert!(observation_allowed(&observed));
+        assert!(capture_allowed(&observed));
 
         // 真不可知：两者都拒绝。
-        let unavailable = activity("unavailable", Some(MIN_IDLE_MS), false);
-        assert!(!idle_observation_allowed(&unavailable));
-        assert!(!idle_capture_allowed(&unavailable));
+        let unavailable = activity("unavailable", Some(0), false);
+        assert!(!observation_allowed(&unavailable));
+        assert!(!capture_allowed(&unavailable));
 
-        // 既有排除项不变：桌宠前台、空闲不足/未知。
-        assert!(!idle_observation_allowed(&activity(
-            "observed",
-            Some(MIN_IDLE_MS),
-            true
-        )));
-        assert!(!idle_observation_allowed(&activity(
-            "locked",
-            Some(MIN_IDLE_MS - 1),
-            false
-        )));
-        assert!(!idle_observation_allowed(&activity("locked", None, false)));
+        // 既有排除项不变：桌宠前台。
+        assert!(!observation_allowed(&activity("observed", Some(0), true)));
+
+        // 空闲不再是资格条件：刚有输入、空闲未知都放行。
+        assert!(observation_allowed(&activity("observed", Some(1), false)));
+        assert!(capture_allowed(&activity("observed", Some(1), false)));
+        assert!(observation_allowed(&activity("locked", None, false)));
     }
 
     #[test]

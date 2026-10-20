@@ -153,7 +153,9 @@ const changeTool = defineTool({ id: "local-schedule-change", name: "schedule_cha
         capabilityGrants = definition.work!.capabilities.map(name => ({ toolName: name, descriptorHash: taskCapabilityFingerprint(getToolByName(name)!) }))
       }
       first = firstWindow(definition, now)
-      if (!first || first.until <= now) throw new Error("安排没有未来有效窗口")
+      if (!first || first.until <= now) {
+        throw new Error(`安排没有未来有效窗口：calendar=${JSON.stringify(definition.schedule.calendar)} trigger=${JSON.stringify(definition.schedule.trigger)} validity=${JSON.stringify(definition.schedule.validity)}；请让触发时间落在 validity 内，或延长 validity.until`)
+      }
       const proposalTarget: ScheduleProposal["target"] = target ? { taskId: target.id, expectedVersion: target.version,
         action: action === "propose" ? params.targetAction as "update" | "reschedule" : action as "update" | "reschedule" } : undefined
       if (proposalTarget && !["update", "reschedule"].includes(proposalTarget.action)) throw new Error("现有任务提议须指明 targetAction")
@@ -164,7 +166,10 @@ const changeTool = defineTool({ id: "local-schedule-change", name: "schedule_cha
           contentFingerprint: taskContentFingerprint(definition), sourceVersions: sourceRefs.map(({ kind, id, version, revision, fingerprint }) => ({ kind, id, version, revision, fingerprint })),
           capabilityGrants,
           validUntil: Math.min(now + 7 * 86_400_000, definition.schedule.validity.until ?? Infinity), ...(proposalTarget ? { target: proposalTarget } : {}) }
-        return { success: true, content: JSON.stringify({ status: "needs_confirmation", proposal, firstWindow: first, limitations: validation.limitations }) }
+        return { success: true, content: JSON.stringify({
+          status: "needs_confirmation", proposal, firstWindow: first, limitations: validation.limitations,
+          declineGuidance: "如果用户选择不提醒/取消，对 proposal.sourceVersions 里 kind=memory 的 working 条目调用 memory_change action=cancel；若已有 active 任务由这些记忆派生，用 schedule_change 取消它们，不要让被拒绝的提醒继续留在库或主动任务里。",
+        }) }
       }
       const direct = directScheduleAuthorization(definition, evidence, now)
       const changes = changedPaths(params.task)

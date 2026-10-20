@@ -851,6 +851,16 @@ impl SettingsPort for SettingsPortImpl {
         required_text(&value, "message", "memory_dreaming_sweep")
     }
 
+    fn silent_understanding_run_now(&self) -> AppResult<String> {
+        // 手动了解含截图/读取与模型调用：等待上限按用户尺度。
+        let value = self.link.request(
+            "silent_understanding_run_now",
+            json!({}),
+            USER_INTERACTION_TIMEOUT,
+        )?;
+        required_text(&value, "message", "silent_understanding_run_now")
+    }
+
     fn memory_maintenance(&self, op: MemoryMaintenanceOp) -> AppResult<String> {
         let op = match op {
             MemoryMaintenanceOp::Backup => "backup",

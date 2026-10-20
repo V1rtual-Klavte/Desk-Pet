@@ -1,5 +1,5 @@
-export { startSilentUnderstanding, stopSilentUnderstanding } from "./scheduler"
-export type { ScreenCaptureResult } from "./scheduler"
+export { runObservationBatchNow, startSilentUnderstanding, stopSilentUnderstanding } from "./scheduler"
+export type { ObservationNowResult, ObserveBatchOptions, ScreenCaptureResult } from "./scheduler"
 // 领域侧协议：本地应用与（原生 UI 万一需要的）路由注入点（原生宿主迁移过程记录 §9.4 第 7 条）。
 export {
   applyObservationGovernance,

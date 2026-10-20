@@ -1005,12 +1005,13 @@ export type HostCommandMap = {
 
   // ── 静默观察与截图（observation_cmd.rs / screenshot_cmd.rs）──
   observation_capture_screen: {
-    args: Record<string, never>
+    /** force = 设置页手动触发：绕过静默了解总闸，仍保留屏幕/桌宠前台边界。 */
+    args: { force?: boolean }
     /** 类型复用 @/services/observation 的 ScreenCaptureResult（scheduler.ts 为唯一定义点）。 */
     result: ScreenCaptureResult
   }
   observation_read_targets: {
-    args: { targets: ReadTargetRequest[] }
+    args: { targets: ReadTargetRequest[]; force?: boolean }
     result: TargetReadResult[]
   }
   capture_screenshot: {
@@ -1763,6 +1764,8 @@ export type HostRequestMap = {
   memory_source_evidence: { args: { sourceId: string }; result: MemorySourceEvidencePayload }
   /** 记忆页：手动整理（`runDreamingSweep`；无 LLM 配置等情况如实报错）。 */
   memory_dreaming_sweep: { args: Record<string, never>; result: MemoryMaintenanceResult }
+  /** 设置页：手动触发一次静默了解（不受档位开关限制，不计入当天自动次数）。 */
+  silent_understanding_run_now: { args: Record<string, never>; result: { message: string } }
   /** 记忆页：一致性备份 / 导出只读副本 / 重建索引（既有 memory ipc）。 */
   memory_maintenance: {
     args: { op: "backup" | "export" | "rebuild_index" }

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest"
 import { SilenceGuard, transformHumanizerText } from "@/services/humanizer/protocol"
 
 describe("humanizer protocol", () => {
-  it("splits normalized standalone markers and merges overflow into the fourth bubble [humanizer-protocol-split-merge]", () => {
+  it("splits normalized standalone markers without a total part cap [humanizer-protocol-split-no-cap]", () => {
     const result = transformHumanizerText("one\n<<SPLIT>>\ntwo\n <<SPLIT>> \nthree\n<<SPLIT>>\nfour\n<<SPLIT>>\nfive")
-    expect(result.parts).toEqual(["one", "two", "three", "four\nfive"])
+    expect(result.parts).toEqual(["one", "two", "three", "four", "five"])
     expect(result.text).toBe("one\ntwo\nthree\nfour\nfive")
     expect(result.split).toBe(true)
   })
@@ -44,6 +44,24 @@ describe("humanizer protocol", () => {
       .toEqual(["看这个", "```ts\nconst a = 1\n\nconst b = 2\n```", "完事"])
     // task 流不受空行分段影响，保持整条。
     expect(transformHumanizerText("one\n\ntwo", "task").parts).toEqual(["one\n\ntwo"])
+  })
+
+  it("splits a long single-paragraph casual reply when the model emits no markers [humanizer-long-fallback]", () => {
+    const result = transformHumanizerText("package.json 里写的是 \"@earendil-works/pi-ai\": \"0.85.1\"，跟 pi-agent-core 同版本，lock 文件也是 0.85.1(ws@8.21.3)。")
+    expect(result.parts).toHaveLength(3)
+    expect(result.split).toBe(true)
+    expect(result.parts.every(part => !/[。，,；;]$/u.test(part))).toBe(true)
+    expect(transformHumanizerText("嗯 交给我").parts).toEqual(["嗯 交给我"])
+    expect(transformHumanizerText("今天先把简历的第一版写出来，不要卡在细节上。写完之后再回头补项目和数字，别一开始就追求完美。").parts)
+      .toHaveLength(2)
+    const multi = transformHumanizerText("简单说，HashMap 不是线程安全的，ConcurrentHashMap 是。它们底层都是数组、链表、红黑树\n多线程一起写 HashMap，轻则数据丢、size 记错，重则扩容时链成环、CPU 跑满；ConcurrentHashMap 用 CAS 加 synchronized 只锁单个桶，别的桶照常读写\n还有个小差别，ConcurrentHashMap 不允许 null 键和 null 值，HashMap 允许；它的 size 是估算值，迭代时拿到的也是弱一致快照")
+    expect(multi.parts.length).toBeGreaterThan(3)
+    const lineSplit = transformHumanizerText("回来啦\nhumanizer 那边结论还热着\n根因就一行\n工具一调 flow 就翻成 task\ntask 分支又把 SPLIT 直接滤掉\n所以看着像拟人化没起效\n要动就是 1432、1725、2938\n三处一起改\n我倾向先把工具历史那个条件摘掉\n跑一轮看看是不是就不再整段了")
+    expect(lineSplit.parts.length).toBeGreaterThan(1)
+    expect(lineSplit.parts.every(part => (part.match(/\n/g) ?? []).length <= 3)).toBe(true)
+    // 代码围栏不冒险拆；task 流保持整条。
+    expect(transformHumanizerText("这段够长了所以会触发兜底逻辑，但是里面有代码 ```ts\nconst a = 1\n``` 所以不拆。").parts).toHaveLength(1)
+    expect(transformHumanizerText("package.json 里写的是 \"@earendil-works/pi-ai\": \"0.85.1\"，跟 pi-agent-core 同版本，lock 文件也是 0.85.1(ws@8.21.3)。", "task").parts).toHaveLength(1)
   })
 
   it("keeps task output in one part and removes a stray split marker [humanizer-task-single-part]", () => {

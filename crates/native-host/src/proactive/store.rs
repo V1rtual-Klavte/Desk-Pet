@@ -1984,6 +1984,8 @@ impl MemoryStore {
         let date = text(request, "localDate");
         let reserved = number(request, "reservedTokens").unwrap_or(-1);
         let requested_limit = number(request, "dailyLimit").unwrap_or(0);
+        // 手动触发（设置页「立即了解一次」）：只记 token，不推进当日自动次数。
+        let count_attempt = request.get("countAttempt").and_then(Value::as_bool).unwrap_or(true);
         // 辅助尝试天花板按 kind 取相应字段的**档位最大值**（与请求无关的静态上限）：
         // 静默批次（observation）与主动 aux（topic）是两个量，Node 按各自档位下发
         // dailyLimit，Rust 只保证它不越过生成表的最高档，避免高阶档被旧值截断。
@@ -2061,7 +2063,7 @@ impl MemoryStore {
         };
         // token 账照记（下方预留增量与 settle 结算），但不再设 token 总量闸（2026-10-06
         // 用户裁决，与 claim 同口径）：唯一硬边界是次数 —— dailyLimit 与档位天花板。
-        if attempts >= limit {
+        if count_attempt && attempts >= limit {
             tx.commit().map_err(db)?;
             return Ok(json!({"reserved":false,"reason":"daily_limit"}));
         }
@@ -2071,7 +2073,11 @@ impl MemoryStore {
         } else {
             "topic_attempts"
         };
-        tx.execute(&format!("UPDATE proactive_budgets SET {counter}={counter}+1,reserved_tokens=reserved_tokens+?2,updated_at=?3 WHERE local_date=?1"), params![date, reserved, now]).map_err(db)?;
+        if count_attempt {
+            tx.execute(&format!("UPDATE proactive_budgets SET {counter}={counter}+1,reserved_tokens=reserved_tokens+?2,updated_at=?3 WHERE local_date=?1"), params![date, reserved, now]).map_err(db)?;
+        } else {
+            tx.execute("UPDATE proactive_budgets SET reserved_tokens=reserved_tokens+?2,updated_at=?3 WHERE local_date=?1", params![date, reserved, now]).map_err(db)?;
+        }
         tx.commit().map_err(db)?;
         Ok(json!({"reserved":true,"reason":null}))
     }
@@ -2907,6 +2913,36 @@ mod tests {
             json!(true),
             "清扫不得把冷却推到清扫时刻之后"
         );
+    }
+
+    /// 手动触发（countAttempt=false）只记 token，不占自动批数：连续两次手动跑完后，
+    /// 当天自动额度仍从 0 开始。
+    #[test]
+    fn manual_auxiliary_reservation_does_not_consume_daily_attempts() {
+        let fixture = Fixture::new();
+        let date = "2026-10-06";
+        let now = now_ms();
+        for index in 0..2 {
+            let manual = fixture.1.proactive_auxiliary_budget_reserve(&json!({
+                "reservationId": format!("manual-{index}"),
+                "requestId": format!("request-manual-{index}"),
+                "kind": "observation", "localDate": date, "reservedTokens": 10,
+                "dailyLimit": 1, "countAttempt": false, "now": now,
+            })).expect("手动静默了解预留");
+            assert_eq!(manual["reserved"], json!(true));
+        }
+        let automatic = fixture.1.proactive_auxiliary_budget_reserve(&json!({
+            "reservationId": "auto-0", "requestId": "request-auto-0",
+            "kind": "observation", "localDate": date, "reservedTokens": 10,
+            "dailyLimit": 1, "now": now,
+        })).expect("自动批仍有一次额度");
+        assert_eq!(automatic["reserved"], json!(true));
+        let capped = fixture.1.proactive_auxiliary_budget_reserve(&json!({
+            "reservationId": "auto-1", "requestId": "request-auto-1",
+            "kind": "observation", "localDate": date, "reservedTokens": 10,
+            "dailyLimit": 1, "now": now,
+        })).expect("自动批第二次应被日限挡住");
+        assert_eq!(capped["reason"], json!("daily_limit"));
     }
 
     /// 辅助预留：两个 kind 的次数（dailyLimit）各自独立；token 总量不再是门禁

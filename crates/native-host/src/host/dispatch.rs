@@ -585,6 +585,7 @@ impl NativeDispatcher {
             "observation_capture_screen" => ser(observation_cmd::observation_capture_screen(
                 self.windows.as_ref(),
                 &self.monitor,
+                args.get("force").and_then(Value::as_bool).unwrap_or(false),
             )?),
             "observation_read_targets" => {
                 let targets: Vec<observation_cmd::ReadTarget> =
@@ -596,6 +597,7 @@ impl NativeDispatcher {
                     &self.monitor,
                     &self.paths,
                     targets,
+                    args.get("force").and_then(Value::as_bool).unwrap_or(false),
                 )?)
             }
             "capture_screenshot" => ser(screenshot_cmd::capture_screenshot(

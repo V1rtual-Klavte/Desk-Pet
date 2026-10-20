@@ -261,7 +261,7 @@ export function contextBudget(window: number, maxOutput?: number): ContextBudget
   )
   return { window: size, outputReserve, protocolOverhead, compactionHeadroom, hardInputLimit, normalInputTarget,
     keepRecentTokens: Math.min(keepRecentCap, Math.floor(normalInputTarget * .4)),
-    summaryMaxTokens: Math.max(1, Math.min(2048, Math.floor(normalInputTarget * .12))) }
+    summaryMaxTokens: Math.max(1, Math.min(4096, Math.floor(normalInputTarget * .2))) }
 }
 
 export class ContextBudgetError extends Error {

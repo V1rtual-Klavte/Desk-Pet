@@ -19,19 +19,24 @@ export const HUMANIZER_PROMPT = `[拟人表达]
 仅约束可见闲聊正文；不改 RUNTIME_DATA 区块格式/位置。
 
 内容优先（高于以下所有形式与说话规则，任何问题都适用）：
-- 准确回答，并保留答案必需的事实、用户限制、条件、结论与必要步骤；不能为了简短、口语、分泡或避免文档腔删掉这些内容。
+- 准确回答，并保留答案必需的事实、用户限制、条件、结论与必要步骤；不能为了简短或口语删掉这些内容。
+- 内容完整不等于一次说完：可以分成 2–3 泡，每泡一到两句，不能因为分泡漏掉信息。
 - 先保证回答完整，再尽量自然简洁；形式规则与内容冲突时服从内容。
 
 形式（任何话题都适用）：
 - 短句自然、少句号；不用冒号/破折号/引号/书名号。技术和代码保留所需标点。
 - **不写 markdown 标题与加粗**（行首 #、**粗体**）。步骤清单可保留，但不套标题、不当文档写。
-- 分泡独占一行 ${HUMANIZER_SPLIT_MARKER}，1–3 泡、最多 4 泡。**代码块整块不拆**，但它前后的说话
-  各自成泡；讲解类回答尤其要分——每泡一两句、像一条条发出去，不要攒成一大段。
+- **闲聊默认 2–4 泡；超过 35 个字的回复必须分泡。** 每泡一到两句，分泡标记独占一行
+  ${HUMANIZER_SPLIT_MARKER}。只有 10 字以内的确认、表情或单句短答可以只发一泡。
+- 内容多时按句读继续分，不设固定条数上限；**不要把多句塞进最后一泡**。
+- **代码块整块不拆**，但它前后的说话各自成泡；讲解类回答尤其要分。
 - 称呼和 emoji 低频。
 
 说话（最难也最要紧）：
 - 以「我」为主：亮自己的观点、喜好、小道理。不点评对方、不分析对方状态、不补充对方没说的事。
 - 不解释自己的话，不加自我注解的尾巴，不追加「懂了吗」这类收尾。
+- **闲聊不是咨询**：用户没要方案时，先给态度，再给一句具体的；不列步骤、不写三点建议、不做总结段。
+  用户明确要方案或步骤时，可以分 2–4 泡说完，每泡一个点，仍然不写标题和总结段。
 - **讲知识也像朋友聊天，不像讲课**：不出现「学界叫…」「说白了就是…」「XX 是一种…」「不是 A 那种 B」
  这类定义句、术语点题与对比句；改用「就像…那样」「我理解是…」这类口语说法。不铺无关背景、不做总结段，
  但不能删掉回答所必需的信息。
@@ -66,6 +71,61 @@ export type HumanizerFlow = "casual" | "task"
  * 说话照样各自成泡（2026-10-08 实机：讲解带一段代码时整条一大块，用户要的是「像人发
  * 消息一样分成几条」。原实现是「含 ``` 就整条不拆」，一刀切把代码前后的说话也拦住了）。
  */
+/**
+ * 模型没按提示词分泡时的确定性兜底：casual 长段按行/句读切成多条。
+ * 不设总条数上限，只限制单条别太长（短行可以并成一条）；代码围栏整段跳过。
+ */
+const CASUAL_FALLBACK_MIN_CHARS = 35
+const CASUAL_BUBBLE_TARGET_CHARS = 45
+
+function groupPieces(pieces: string[]): string[] {
+  const groups: string[] = []
+  let current = ""
+  for (const piece of pieces) {
+    if (!current) { current = piece; continue }
+    if (current.length + piece.length + 1 <= CASUAL_BUBBLE_TARGET_CHARS) {
+      current += `\n${piece}`
+    } else {
+      groups.push(current)
+      current = piece
+    }
+  }
+  if (current) groups.push(current)
+  return groups
+}
+
+function splitByCommas(text: string): string[] {
+  const pieces: string[] = []
+  let current = ""
+  let inInline = false
+  for (const ch of text) {
+    if (ch === "`") inInline = !inInline
+    current += ch
+    if (!inInline && (ch === "，" || ch === "," || ch === "；" || ch === ";")) {
+      if (current.trim()) pieces.push(current.trim())
+      current = ""
+    }
+  }
+  if (current.trim()) pieces.push(current.trim())
+  return pieces
+}
+
+function splitSentenceOrComma(text: string): string[] {
+  const sentences = text.split(/(?<=[。！？!?；;])\s*/u).map(part => part.trim()).filter(Boolean)
+  return sentences.length > 1 ? sentences : splitByCommas(text)
+}
+
+function splitLongCasual(text: string): string[] {
+  const trimmed = text.trim()
+  if (trimmed.length <= CASUAL_FALLBACK_MIN_CHARS || trimmed.includes("```")) return [trimmed]
+  const lines = trimmed.split("\n").map(line => line.trim()).filter(Boolean)
+  const pieces = lines.length > 1
+    ? lines.flatMap(line => line.length > CASUAL_BUBBLE_TARGET_CHARS ? splitSentenceOrComma(line) : [line])
+    : splitSentenceOrComma(trimmed)
+  if (pieces.length <= 1) return [trimmed]
+  return groupPieces(pieces)
+}
+
 function splitByParagraphs(text: string): string[] {
   const pieces: string[] = []
   let current: string[] = []
@@ -160,6 +220,8 @@ export function transformHumanizerText(input: string, flow: HumanizerFlow = "cas
         }
       }
       pieces.push(current.join("\n").trim())
+      // 模型已经给了泡，但单泡仍长时再按句读细切；短泡原样保留。
+      pieces = pieces.flatMap(piece => splitLongCasual(piece))
     } else {
       // 空行分段兜底（2026-10-05 用户规则「开启拟人化后回车消息要分成几条」）：
       // 模型没发 SPLIT 标记、用空行分段时按段分泡，每个空行段独立成一条气泡；
@@ -167,11 +229,18 @@ export function transformHumanizerText(input: string, flow: HumanizerFlow = "cas
       // 但它前后的说话照常分泡 —— 见 `splitByParagraphs` 的注释。
       const paragraphs = splitByParagraphs(text)
       if (paragraphs.length <= 1) {
-        const restored = restoreLiteralMarkers(text)
-        return { parts: [restored], text: restored, silent: false, split: false }
+        const fallback = splitLongCasual(text)
+        if (fallback.length <= 1) {
+          const restored = restoreLiteralMarkers(text)
+          return { parts: [restored], text: restored, silent: false, split: false }
+        }
+        split = true
+        pieces = fallback
+      } else {
+        split = true
+        // 每个空行段再按句读细切：长段不整块发，短段保持一条。
+        pieces = paragraphs.flatMap(paragraph => splitLongCasual(paragraph))
       }
-      split = true
-      pieces = paragraphs
     }
   } else {
     // Task replies remain one message even if the model emits a stray split marker.
@@ -182,8 +251,14 @@ export function transformHumanizerText(input: string, flow: HumanizerFlow = "cas
   }
 
   pieces = pieces.filter(Boolean).map(restoreLiteralMarkers)
+  // casual 气泡去掉末尾句读：像微信一条条发，不在每条末尾挂「，」「。」「；」。
+  // task 流保留原标点（任务结果需要完整句子）。代码内容在分泡前已保护。
+  if (flow === "casual") {
+    pieces = pieces
+      .map(piece => piece.replace(/[。，,；;]\s*$/u, "").trim())
+      .filter(Boolean)
+  }
   if (pieces.length === 0) return { parts: [], text: "", silent: false, split }
-  if (pieces.length > 4) pieces = [...pieces.slice(0, 3), pieces.slice(3).join("\n")]
   return { parts: pieces, text: pieces.join("\n"), silent: false, split }
 }
 

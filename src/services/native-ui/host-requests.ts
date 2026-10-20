@@ -455,6 +455,16 @@ export async function dispatchHostRequest(method: string, args: unknown): Promis
       return memorySourceEvidence(args)
     case "memory_dreaming_sweep":
       return memoryDreamingSweep()
+    case "silent_understanding_run_now": {
+      const { runObservationBatchNow } = await import("@/services/observation")
+      const result = await runObservationBatchNow({ force: true })
+      const message = result.status === "committed"
+        ? "静默了解已完成"
+        : result.status === "skipped"
+          ? result.reason === "busy" ? "上一次静默了解还没结束" : `静默了解跳过：${result.reason ?? "未知原因"}`
+          : `静默了解失败：${result.reason ?? "未知错误"}`
+      return { message }
+    }
     case "memory_maintenance":
       return memoryMaintenance(args)
     case "memory_backup_list":

@@ -727,12 +727,20 @@ const AI_PROACTIVE: &[Field] = &[
 
 /// 静默了解：总闸 + 频率（原 `enabled` 与四个节奏数值字段随档位化删除；
 /// 节奏数值收进 `proactive/protocol.json` 的 `tiers`，钟点表是每日轮数的唯一来源）。
-const AI_SILENT: &[Field] = &[Field {
-    key: "ai.silentAccess.frequency",
-    label: "静默了解频率",
-    kind: FieldKind::Enum(FREQUENCY_TIERS),
-    help: "总闸 + 频率：「关」= 不自动了解（读取靠手动）；低/中/高按固定钟点每日 2/4/6 轮，到点即跑",
-}];
+const AI_SILENT: &[Field] = &[
+    Field {
+        key: "ai.silentAccess.frequency",
+        label: "静默了解频率",
+        kind: FieldKind::Enum(FREQUENCY_TIERS),
+        help: "总闸 + 频率：「关」= 不自动了解（读取靠手动）；低/中/高按固定钟点每日 2/4/6 轮，到点即跑",
+    },
+    Field {
+        key: "action.silentObservationNow",
+        label: "立即了解一次",
+        kind: FieldKind::Action,
+        help: "手动触发一次静默了解：开关关闭时也可用，不计入当天自动次数；上一批结束前不会重复触发",
+    },
+];
 
 // ── 工具 ──
 

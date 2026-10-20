@@ -96,7 +96,7 @@ export const humanizerContract: ModuleContract = {
       why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记；模型用空行分段时要分成几条气泡（2026-10-05 用户规则）",
       layer: "unit",
       depth: "shallow",
-      scenarios: ["humanizer-protocol-split-merge", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact"],
+      scenarios: ["humanizer-protocol-split-no-cap", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact", "humanizer-long-fallback"],
     },
     {
       id: "hz-02",

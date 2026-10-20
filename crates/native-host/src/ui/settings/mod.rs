@@ -494,6 +494,11 @@ pub trait SettingsPort: Send + Sync {
         Err(AppError::Other("记忆整理端口未接线".into()))
     }
 
+    /// 设置页：手动触发一次静默了解（不受档位开关限制，不计入当天自动次数）。
+    fn silent_understanding_run_now(&self) -> AppResult<String> {
+        Err(AppError::Other("静默了解端口未接线".into()))
+    }
+
     /// 记忆页：一致性备份 / 导出只读视图 / 重建索引。
     fn memory_maintenance(&self, _op: MemoryMaintenanceOp) -> AppResult<String> {
         Err(AppError::Other("记忆维护端口未接线".into()))
@@ -1332,6 +1337,8 @@ pub struct SettingsUi {
 }
 
 static SETTINGS_UI: OnceLock<SettingsUi> = OnceLock::new();
+/// 手动静默了解的单飞闩：上一批结束前，设置页按钮不重复触发。
+static SILENT_OBSERVATION_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// 进程级单例。
 pub fn settings_ui() -> &'static SettingsUi {
@@ -1599,6 +1606,7 @@ impl SettingsUi {
             "action.skillUpload" => self.skill_upload(),
             // ── 本批：记忆页 ──
             "action.memorySweep" => self.memory_sweep(),
+            "action.silentObservationNow" => self.silent_observation_now(),
             "action.memoryBackup" => self.memory_maintenance(MemoryMaintenanceOp::Backup),
             "action.memoryExport" => self.memory_maintenance(MemoryMaintenanceOp::Export),
             "action.memoryRebuildIndex" => {
@@ -2335,6 +2343,32 @@ impl SettingsUi {
         match spawn {
             Ok(_) => Ok(()),
             Err(error) => Err(AppError::Other(format!("记忆整理线程创建失败: {error}"))),
+        }
+    }
+
+    fn silent_observation_now(&self) -> AppResult<()> {
+        if SILENT_OBSERVATION_RUNNING.swap(true, Ordering::SeqCst) {
+            self.set_notice(Some("上一次静默了解还没结束".into()));
+            return Ok(());
+        }
+        self.set_notice(Some("正在静默了解…".into()));
+        let port = Self::lock(&self.port).clone();
+        let spawn = std::thread::Builder::new()
+            .name("deskpet-settings-silent-observation".into())
+            .spawn(move || {
+                let ui = settings_ui();
+                match port.silent_understanding_run_now() {
+                    Ok(message) => ui.set_notice(Some(message)),
+                    Err(error) => ui.set_notice(Some(format!("静默了解未完成：{error}"))),
+                }
+                SILENT_OBSERVATION_RUNNING.store(false, Ordering::SeqCst);
+            });
+        match spawn {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                SILENT_OBSERVATION_RUNNING.store(false, Ordering::SeqCst);
+                Err(AppError::Other(format!("静默了解线程创建失败: {error}")))
+            }
         }
     }
 

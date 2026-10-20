@@ -1,0 +1,258 @@
+{
+  "schemaVersion": 1,
+  "categories": [
+    {
+      "id": "chat",
+      "name": "基础聊天与多轮上下文",
+      "goal": "自然对话、上下文承接、停止/继续、图片输入",
+      "auto": false,
+      "steps": [
+        "按用户指定的轮数聊，不自行加码或截断；覆盖日常、开发中提问、知识、附近美食/生活、查资料/搜索、图片、情绪玩笑，不要全聊日常",
+        "开发中提问至少一次带 tools:auto，让它真实读文件/调工具；查资料至少一次让它搜索或查最新用法",
+        "知识问题至少一次，检查它像朋友聊天还是讲课",
+        "穿插一句只有前文才能回答的问题；至少一次自然纠正或改口",
+        "中途用 host chat_stop 停止一轮，再发一句继续",
+        "可选：message 带 imagePaths，检查图片进入请求"
+      ],
+      "evidence": ["sessionTranscript", "trace: turn_start/turn_end/message_end", "tool_execution_*", "memory_recall_*"]
+    },
+    {
+      "id": "memory",
+      "name": "记忆管线",
+      "goal": "写入、召回、纠正、遗忘、scope、核心画像、来源证据",
+      "auto": false,
+      "steps": [
+        "自然说出一个稳定事实和一个偏好，过几轮再问它记不记得",
+        "纠正一次，再问它当前值；用 host memory_overview 看条目版本",
+        "用 host memory_item_change 遗忘一条，再问它是否还记得",
+        "检查来源：memory_source_evidence 能回到原话；派生观察不能变成用户事实"
+      ],
+      "evidence": ["memory items/version/origin", "memory_recall_rendered sourceIds", "memory_source_evidence", "dreaming extraction"],
+      "autoCommands": [
+        { "type": "host", "method": "memory_overview", "args": {} },
+        { "type": "dream" },
+        { "type": "host", "method": "memory_overview", "args": {} }
+      ]
+    },
+    {
+      "id": "observation",
+      "name": "静默了解与行为画像",
+      "goal": "窗口/截图/文件读取、了解层、画像、话题参与、清除",
+      "auto": true,
+      "steps": [
+        "在真实工作窗口下触发一批了解；每批随机 breadth/depth，检查 targets 是铺面还是深读",
+        "设置页「立即了解一次」：开关关掉也能触发，不计当天自动次数；上一批未结束再点应提示",
+        "检查画像 quality/coverage 与话题权重",
+        "清除了解/画像后确认旧内容不能回灌"
+      ],
+      "evidence": ["understanding observations/targets", "manual trigger notice", "behavior rollup", "trace: observation provider calls", "memory derived entries"],
+      "autoCommands": [
+        { "type": "observe" },
+        { "type": "dream" },
+        { "type": "report" }
+      ]
+    },
+    {
+      "id": "proactive",
+      "name": "主动消息",
+      "goal": "机会、规划、表达、额度、冷却、未回复抑制、静默时段、档位",
+      "auto": true,
+      "steps": [
+        "触发主动扫描，检查机会类型、规划决定与跳过原因",
+        "检查当日成功/表达/规划额度与冷却",
+        "连续不回复后检查降档；设置静默时段后检查不唤醒"
+      ],
+      "evidence": ["trace: proactive_tick/opportunity/claim/settled/skipped", "session assistant messages", "budget snapshot"],
+      "autoCommands": [
+        { "type": "proactive" },
+        { "type": "report" }
+      ]
+    },
+    {
+      "id": "tasks",
+      "name": "定时任务",
+      "goal": "显式/隐式约定、提醒、执行型任务、到期送达、snooze/cancel、owner 绑定、能力缺失",
+      "auto": true,
+      "steps": [
+        "显式说“明天…提醒我…”，检查任务落库与到期送达",
+        "隐式说“后天…”，看它是否先问要不要提醒；同意后再落库",
+        "执行型任务用 test 下的隔离目录，检查子代理产物与完成条件",
+        "取消/延后后确认不重放；缺少能力时记 needs_input"
+      ],
+      "evidence": ["schedule_query task/run 状态", "proactive settled/taskIds", "产物与回执", "trace: tool_execution/provider_usage"],
+      "autoCommands": [
+        { "type": "task", "kind": "reminder", "text": "提醒我过一会儿起来走走" },
+        { "type": "task", "kind": "agent_job", "text": "检查当前窗口并写一句总结" },
+        { "type": "report" }
+      ]
+    },
+    {
+      "id": "plan",
+      "name": "复杂任务、计划与子代理",
+      "goal": "计划生成、确认、步骤门、执行、子代理、产物校验",
+      "auto": false,
+      "steps": [
+        "先发 plan auto，再用自然口吻提一个复杂但只读的任务",
+        "检查计划步骤、确认事件与步骤门；失败时继续/中止",
+        "把产出目录限定在 test/.tmp/sim-work/ 下，禁止改真实项目",
+        "检查子代理工具面、产物校验与最终交付"
+      ],
+      "evidence": ["session plan 事件/计划条目", "trace: plan_* / tool_execution_*", "隔离目录产物"],
+      "dependsOn": ["chat"]
+    },
+    {
+      "id": "tools",
+      "name": "工具与权限",
+      "goal": "SAFE/DANGER、ask/deny、会话信任、结果投影与回读",
+      "auto": false,
+      "steps": [
+        "让桌宠调用一个只读工具（窗口/系统/记忆查询）",
+        "触发一个需要确认的危险工具，分别测试允许与拒绝",
+        "检查工具结果进入请求时是否按 L0 投影，回读地址是否可用"
+      ],
+      "evidence": ["trace: permission_asked/decided/tool_execution_*", "request payload 工具结果投影", "回读结果"],
+      "dependsOn": ["chat"]
+    },
+    {
+      "id": "settings",
+      "name": "设置与配置",
+      "goal": "读/写设置、档位、静默时段、安全模式、思考强度、投递模式",
+      "auto": false,
+      "steps": [
+        "host settings_read 读取当前值",
+        "host settings_commit 改一个安全键（如拟人开关），再读回确认",
+        "改档位/静默时段后触发主动扫描，检查行为变化",
+        "改完恢复原值，确认没有残留"
+      ],
+      "evidence": ["settings_read 回读", "trace: 配置刷新后的行为", "CONFIG 写盘结果"],
+      "autoCommands": [
+        { "type": "host", "method": "settings_read", "args": {} }
+      ]
+    },
+    {
+      "id": "session",
+      "name": "会话管理",
+      "goal": "新建/切换/关闭/恢复、历史、steer/followUp/nextRun、停止/继续、压缩",
+      "auto": false,
+      "steps": [
+        "新一轮测试先 host chat_new_session；用 sessions 看列表与 active",
+        "新建会话、切换会话、查看历史，再切回原会话；确认正文不串、记忆仍全局",
+        "在回合中插入输入，分别验证 steer/followUp/nextRun",
+        "停止后继续、丢弃暂停输入；压缩后继续见 context 类",
+        "关闭/恢复会话，确认正文和标签不丢",
+        "收尾列出本次 SQLite/会话新增，问用户是否保留，不自动删"
+      ],
+      "evidence": ["sessionTranscript", "trace: input_accepted/input_consumed/compaction_*", "sessions/active", "会话 JSONL"],
+      "autoCommands": [
+        { "type": "host", "method": "chat_new_session", "args": {} }
+      ]
+    },
+    {
+      "id": "persona",
+      "name": "Card、Profile 与人格",
+      "goal": "切卡、问候、变量池、阶段文案、拟人化、派生观察",
+      "auto": false,
+      "steps": [
+        "切换 Card/Profile，检查问候与阶段文案来自当前 Card",
+        "触发变量跨档，检查变量迁移机会与主动表达",
+        "清除画像后确认派生观察失效"
+      ],
+      "evidence": ["Card/Profile 切换回执", "变量池值", "derived 条目"],
+      "dependsOn": ["chat"],
+      "autoCommands": [
+        { "type": "host", "method": "personality_cards", "args": {} }
+      ]
+    },
+    {
+      "id": "humanizer",
+      "name": "拟人化表达",
+      "goal": "默认开启拟人化、分泡与节奏、沉默判定、回复像不像人",
+      "auto": false,
+      "steps": [
+        "先 humanize status，不是 true 就 humanize on，并记下原值",
+        "按用户指定轮数自然聊天；每轮保留桌宠原话，不替它改写",
+        "按 SKILL 的六维表打分，并逐条对照 ideal trace 的【输出】",
+        "查 trace：humanizer_transform 的 flow/status/split/silent/partCount",
+        "收尾恢复原值（开始时是 false 才恢复），报告写明总分与最不像人的三句"
+      ],
+      "evidence": ["settings_read 回读", "humanizer_transform", "session parts/silent", "回复与 ideal trace 对照"],
+      "dependsOn": ["chat"],
+      "autoCommands": [
+        { "type": "host", "method": "settings_read", "args": {} }
+      ]
+    },
+    {
+      "id": "context",
+      "name": "上下文与压缩",
+      "goal": "查看上下文占用、手动压缩、长对话阈值压缩、压缩后记忆与继续对话",
+      "auto": false,
+      "steps": [
+        "用 context 记录 lastPromptTokens/lastContextUsage/contextMaxTokens",
+        "host chat_slash_command /compact 触发手动压缩；再查 context 与 trace",
+        "压缩后追问一句压缩前的事实，确认摘要没有丢",
+        "按用户指定轮数继续聊；需要稳定触发自动压缩时临时调低 ai.contextMaxTokens 并记下原值",
+        "查 trace：compaction_start 的 reason、compaction_end 的 status、provider_usage.compaction",
+        "收尾恢复 ai.contextMaxTokens 原值；没触发就如实写未触发"
+      ],
+      "evidence": ["context 快照", "trace: compaction_start/end", "provider_usage.compaction", "压缩后召回与继续对话"],
+      "dependsOn": ["chat"],
+      "autoCommands": [
+        { "type": "context" }
+      ]
+    },
+    {
+      "id": "extensions",
+      "name": "MCP 与 Skill",
+      "goal": "MCP 服务器启停/调用、Skill 目录/显式调用/权限",
+      "auto": false,
+      "steps": [
+        "列出 MCP/Skill，启用一个只读 server 或 skill",
+        "显式调用 skill，检查正文进入请求与权限不提升",
+        "关闭后确认不再借用；失败时如实报错"
+      ],
+      "evidence": ["tools_mcp_servers / tools_skills 回执", "trace: tool_execution_*", "请求工具 schema"],
+      "dependsOn": ["chat"]
+    },
+    {
+      "id": "safety",
+      "name": "安全、隐私与治理",
+      "goal": "凭据、路径边界、清除/恢复、数据根隔离、遗忘闭包",
+      "auto": false,
+      "steps": [
+        "尝试读取凭据/数据根，确认被拒绝且留痕",
+        "清除了解/画像/记忆，确认墓碑与不回灌",
+        "备份、导出、恢复预览；恢复只在托管备份目录内",
+        "检查控制通道/报告不输出密钥"
+      ],
+      "evidence": ["路径拒绝回执", "forget/tombstone 记录", "备份/恢复回执", "报告脱敏"],
+      "dependsOn": ["memory", "observation"]
+    },
+    {
+      "id": "resilience",
+      "name": "错误与恢复",
+      "goal": "Provider 失败、超时、取消、崩溃对账、未知副作用",
+      "auto": false,
+      "steps": [
+        "模拟 Provider 失败/超时，检查失败分类与可继续性",
+        "取消回合、取消计划、取消任务，确认不重放",
+        "重启后对账未完成尝试/未知提交",
+        "检查消息不丢、不重复、不伪装成功"
+      ],
+      "evidence": ["failure kind", "trace: retry/provider_request_end/agent_end", "JSONL/SQLite 对账"],
+      "dependsOn": ["chat"]
+    },
+    {
+      "id": "surface",
+      "name": "音效、presence 与顶栏",
+      "goal": "提示音、presence 状态、顶栏文案所有权",
+      "auto": false,
+      "steps": [
+        "触发提示音分配与试听，检查设置持久化",
+        "检查 presence 状态与短动作频率上限",
+        "检查顶栏过程文案在回合收尾释放"
+      ],
+      "evidence": ["sound 设置回执", "trace: presence_changed", "顶栏状态快照"],
+      "dependsOn": ["chat"]
+    }
+  ]
+}
