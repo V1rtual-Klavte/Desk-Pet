@@ -21,7 +21,7 @@ import {
   readPiSessionEntries, releasePiSession, persistPiSessionName,
 } from "./repo"
 import type { PiSessionSummary } from "./repo"
-import { prependSessionHistory, removeSessionHistory, renameSessionHistory, sessionHistoryError } from "./history"
+import { prependSessionHistory, rememberSessionSummary, removeSessionHistory, renameSessionHistory, sessionHistoryError } from "./history"
 import { messagesFromEntries, reconcileActiveReceipts } from "./read-model"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
@@ -173,8 +173,11 @@ export async function initSessions(): Promise<SessionMeta[]> {
   let failed = 0
   for (const item of selected) {
     const summary = await readPiSessionSummary(item)
-    if (summary) rebuilt.push(summaryToMeta(summary))
-    else failed++
+    if (summary) {
+      rebuilt.push(summaryToMeta(summary))
+      // 历史面板首次打开会全量刷新；启动期已经读过同一份摘要，先登记避免重读大会话。
+      rememberSessionSummary(summary)
+    } else failed++
   }
   if (failed > 0) {
     // 复用既有可见位（历史面板的失败提示）：列表不完整与「确实没有会话」不同形。

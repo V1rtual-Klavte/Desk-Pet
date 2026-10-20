@@ -19,18 +19,75 @@ export const sessionHistory = ref<PiSessionSummary[]>([])
 export const sessionHistoryLoading = ref(false)
 export const sessionHistoryError = ref(false)
 
+/**
+ * 启动期已经读过的**派生摘要**缓存：文件 mtime 未变就不再打开/关闭/折叠整个 JSONL。
+ * 只存 JSONL 头里没有的字段（name/messageCount/activityAt）；id/createdAt/path 每次
+ * 从 `listPiSessionMetadata()` 现拼，不重复存，也不缓存任何正文。
+ */
+interface CachedSummary {
+  modifiedAt: number
+  name: string
+  messageCount: number
+  activityAt: number | null
+}
+const summaryCache = new Map<string, CachedSummary>()
+
+function cacheSummary(summary: PiSessionSummary): void {
+  summaryCache.set(summary.id, {
+    modifiedAt: summary.modifiedAt,
+    name: summary.name,
+    messageCount: summary.messageCount,
+    activityAt: summary.activityAt,
+  })
+}
+
+/** 启动期读到一个摘要后登记，供历史面板首次打开复用。 */
+export function rememberSessionSummary(summary: PiSessionSummary): void {
+  cacheSummary(summary)
+}
+
+/** 有界并发：历史面板可能有很多会话，串行打开/折叠会让首帧明显变慢。 */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let index = 0
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const current = index++
+      if (current >= items.length) return
+      results[current] = await fn(items[current]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
+
 /** 全量重读仓库；面板打开时调用。 */
 export async function refreshSessionHistory(): Promise<void> {
   sessionHistoryLoading.value = true
   try {
     const metadata = await listPiSessionMetadata()
-    const items: PiSessionSummary[] = []
+    // 外部删掉/归档掉的会话不留在进程里：缓存只跟随当前仓库清单。
+    const liveIds = new Set(metadata.map(item => item.id))
+    for (const id of summaryCache.keys()) if (!liveIds.has(id)) summaryCache.delete(id)
     let failed = 0
-    for (const item of metadata) {
+    const items = (await mapLimit(metadata, 3, async item => {
+      const cached = summaryCache.get(item.id)
+      if (cached && cached.modifiedAt === item.modifiedAt) {
+        return {
+          id: item.id, name: cached.name, createdAt: item.createdAt,
+          messageCount: cached.messageCount, activityAt: cached.activityAt,
+          modifiedAt: item.modifiedAt, path: item.path,
+        } satisfies PiSessionSummary
+      }
       const summary = await readPiSessionSummary(item)
-      if (summary) items.push(summary)
-      else failed++
-    }
+      if (!summary) return null
+      cacheSummary(summary)
+      return summary
+    })).filter((summary): summary is PiSessionSummary => {
+      if (summary) return true
+      failed++
+      return false
+    })
     if (failed > 0) {
       // 单个会话读失败时列表不完整：复用同一个可见位，不把部分列表说成全部。
       sessionHistoryError.value = true
@@ -53,11 +110,13 @@ export async function refreshSessionHistory(): Promise<void> {
 
 /** 新会话落盘后插入表头（还没有用户消息，活动时间回退 createdAt = 最新，排在最前）。 */
 export function prependSessionHistory(summary: PiSessionSummary): void {
+  cacheSummary(summary)
   sessionHistory.value = [summary, ...sessionHistory.value.filter(item => item.id !== summary.id)]
 }
 
 /** 会话文件删除成功后移出列表。 */
 export function removeSessionHistory(sessionId: string): void {
+  summaryCache.delete(sessionId)
   sessionHistory.value = sessionHistory.value.filter(item => item.id !== sessionId)
 }
 
@@ -66,4 +125,6 @@ export function renameSessionHistory(sessionId: string, name: string): void {
   const item = sessionHistory.value.find(entry => entry.id === sessionId)
   if (!item) return
   item.name = name
+  const cached = summaryCache.get(sessionId)
+  if (cached) cached.name = name
 }
