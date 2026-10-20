@@ -445,6 +445,12 @@ const RTF_TOOL_INK: u32 = 6;
 /// 行内代码底纹（`field_bg` 合成面板底后的实色）。
 const RTF_CODE_BG: u32 = 7;
 
+/// RTF 正文半磅值（20 半磅 = 10pt）。RichEdit 的正文大小走 RTF，不走 `WM_SETFONT`；
+/// 估宽必须用同一字号，否则 CJK 每字少算 0.333 逻辑像素，接近泡宽上限时末字被裁。
+const RTF_BODY_HALF_POINTS: i32 = 20;
+/// 正文逻辑像素（96 DPI）：20 半磅 = 10pt = 13.333px。
+const RTF_BODY_LOGICAL_SIZE: f64 = 13.333_333_333_333_334;
+
 /// `EM_SETCHARFORMAT`（RichEdit 取值 = WM_USER + 68；windows-sys 0.52 未登记）。
 const EM_SETCHARFORMAT: u32 = WM_USER_MSG + 68; // 0x444
 /// `SCF_ALL`：作用于全部文本（对空文本设置即成为默认格式）。
@@ -6924,9 +6930,14 @@ unsafe fn flush_prose(
     };
     // 泡宽：内容自然宽（逐行估宽的最大值）夹在上下限之间；含代码块时直接给上限
     // （`bubble_content_width` 的共享口径；footer 位传 0 = 无入口）。
-    let used = prose_estimated_width(segment, 13.0);
+    let used = prose_estimated_width(segment, RTF_BODY_LOGICAL_SIZE);
     let cap_logic = f64::from(cap) / scale;
-    let bubble_w = scaled_f(bubble_content_width(used, has_code, 0.0, cap_logic), scale);
+    // RichEdit 不能透明：承载控件为 1px 描边 + 1px 立体线，每侧让出 2px（共 4px）；
+    // 共享泡宽只含 2px 总余量 —— 卡片补 2px，控件正文区才等于估宽。夹回列宽上限。
+    let border_extra = if card.is_some() { scaled(2, scale) } else { 0 };
+    let bubble_w = (scaled_f(bubble_content_width(used, has_code, 0.0, cap_logic), scale)
+        + border_extra)
+        .min(cap);
     let margin = scaled_f(BUBBLE_SIDE_MARGIN, scale);
     let x = if role == Role::User {
         (canvas_width - margin - bubble_w).max(margin)
@@ -7204,8 +7215,9 @@ unsafe fn create_code_control(
     }
     let palette = rtf_palette();
     let rtf = format!(
-        "{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f1\\fmodern Consolas;}}}}{}\\pard\\f1\\fs20\\cf{RTF_TOOL_INK} {}\\par}}",
+        "{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f1\\fmodern Consolas;}}}}{}\\pard\\f1\\fs{}\\cf{RTF_TOOL_INK} {}\\par}}",
         palette.table,
+        RTF_BODY_HALF_POINTS,
         rtf_escape(&text)
     );
     let (control, measured) = unsafe {
@@ -7297,18 +7309,21 @@ unsafe fn build_tail_controls(
         }
         let tail_text = format!("{text}▍");
         let cap = scaled_f(bubble_cap(f64::from(canvas_width) / scale), scale);
-        let used = estimated_natural_width(&tail_text, 13.0);
-        let bubble_w = scaled_f(
+        let used = estimated_natural_width(&tail_text, RTF_BODY_LOGICAL_SIZE);
+        // 尾巴同样是 AssistantBubble 卡片：补 RichEdit 边框让位的 2px（同 flush_prose）。
+        let bubble_w = (scaled_f(
             bubble_content_width(used, false, 0.0, f64::from(cap) / scale),
             scale,
-        );
+        ) + scaled(2, scale))
+        .min(cap);
         let palette = rtf_palette();
         // 末行后不追加 `\par`（同 `prose_to_rtf_colored` 的口径：尾随段落标记
         // 会被 `EM_GETLINECOUNT` 多算一行）；尾巴文本自带的光标 `▍` 落在末行上。
         let rtf = format!(
-            "{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0\\fnil\\fcharset134 {};}}}}{}\\pard\\f0\\fs20\\cf{RTF_INK} {}}}",
+            "{{\\rtf1\\ansi\\deff0{{\\fonttbl{{\\f0\\fnil\\fcharset134 {};}}}}{}\\pard\\f0\\fs{}\\cf{RTF_INK} {}}}",
             rtf_body_font_family(),
             palette.table,
+            RTF_BODY_HALF_POINTS,
             rtf_escape(&tail_text)
         );
         let (control, height) = create_rtf_control(
@@ -7424,7 +7439,7 @@ fn prose_to_rtf_colored(blocks: &[Block], default_color: u32) -> (String, Vec<(S
         let mut chunk = String::new();
         match block {
             Block::Paragraph(spans) => {
-                chunk.push_str("\\pard\\f0\\fs20 ");
+                chunk.push_str(&format!("\\pard\\f0\\fs{} ", RTF_BODY_HALF_POINTS));
                 chunk.push_str(&format!("\\cf{default_color} "));
                 push_spans_rtf(&mut chunk, spans, &mut links);
             }
@@ -9021,5 +9036,40 @@ mod tests {
         let full = dib(24, 0, 0, 40);
         let truncated = &full[..20];
         assert!(bmp_container_from_dib(truncated).is_none());
+    }
+
+    /// 正文估宽必须与 RTF 正文字号同源（2026-10-20 与 macOS「卡住」裁字同批核对）：
+    /// 正文走 20 半磅 = 10pt = 13.333px，估宽若按 13.0 会每字少 0.333px，
+    /// 接近泡宽上限时末字被 RichEdit 裁掉；字号插值也必须走同一常量。
+    #[test]
+    fn 正文估宽与RTF字号同源_源码守门() {
+        let source = include_str!("windows_chat.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap_or(source.len())];
+        assert!(
+            production.contains("prose_estimated_width(segment, RTF_BODY_LOGICAL_SIZE)"),
+            "正文估宽必须用 RTF 正文字号常量"
+        );
+        assert!(
+            production.contains("estimated_natural_width(&tail_text, RTF_BODY_LOGICAL_SIZE)"),
+            "流式尾巴估宽同样要用 RTF 正文字号常量"
+        );
+        assert!(
+            !production.contains("prose_estimated_width(segment, 13.0)"),
+            "不得回落到写死的 13.0（与 RTF 10pt 不一致）"
+        );
+        assert!(
+            production.contains(r"\\fs{}"),
+            "RTF 正文字号必须走 RTF_BODY_HALF_POINTS 插值"
+        );
+        assert!(
+            !production.contains("fs20"),
+            "不得再写死 RTF 字号字面量（会与估宽常量分叉）"
+        );
+        // 卡片外框：RichEdit 每侧让出 2px 边框 + 泡内边距；共享泡宽只含 2px 总余量，
+        // 平台侧必须补足 2px，否则控件正文区比估宽少 2px（末字会被裁）。
+        assert!(
+            production.contains("let border_extra = if card.is_some()"),
+            "卡片泡宽必须补 RichEdit 边框让位的 2px"
+        );
     }
 }

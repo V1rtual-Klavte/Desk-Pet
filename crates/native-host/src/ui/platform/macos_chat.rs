@@ -94,9 +94,9 @@ use objc2_quartz_core::{CALayer, CATransaction, CATransform3D};
 use crate::host::WindowId;
 use crate::images::DecodedFrame;
 use crate::ui::chat::panels::{
-    bubble_cap, bubble_content_width, fit_chip_label, handle_arrow_frame, handle_status_width,
-    role_label_text, PanelFrame, BUBBLE_PAD_X, BUBBLE_PAD_Y, BUBBLE_SIDE_MARGIN,
-    HANDLE_ARROW_WIDTH, HANDLE_HEIGHT,
+    bubble_cap, bubble_content_width, bubble_inner_width, fit_chip_label, handle_arrow_frame,
+    handle_status_width, role_label_text, PanelFrame, BUBBLE_PAD_X, BUBBLE_PAD_Y,
+    BUBBLE_SIDE_MARGIN, HANDLE_ARROW_WIDTH, HANDLE_HEIGHT,
 };
 use crate::ui::chat::pending_strip;
 use crate::ui::chat::placeholders::placeholder_label;
@@ -5895,7 +5895,7 @@ fn build_bubble_view(
     remember_event_id: Option<&str>,
 ) -> Retained<ChatStackView> {
     let bubble = ChatStackView::new(mtm, max_width);
-    let inner_width = (max_width - BUBBLE_PAD_X * 2.0).max(40.0);
+    let inner_width = bubble_inner_width(max_width);
     let fonts = Fonts::new(mtm);
     let mut y = BUBBLE_PAD_Y;
     let mut segment: Vec<Block> = Vec::new();
@@ -7209,6 +7209,24 @@ mod tests {
         assert!(
             !production.contains("fn prose_used_width"),
             "二次量测函数 prose_used_width 已合并删除，不得回潮"
+        );
+    }
+
+    /// 泡宽量测与渲染必须用同一个整点宽度（2026-10-20 实机「卡住」右半被裁）：
+    /// 窗口外按 1x 量到 198.44 → 折在「卡」，窗口里按 2x 取整 198.5 → 折在「卡住」，
+    /// 泡宽按前者算就比渲染行宽少一截。共享函数的 ceil 是唯一写入点，不得回落到
+    /// 浮点内联表达式。
+    #[test]
+    fn 气泡正文宽度走共享整点函数_源码守门() {
+        let source = include_str!("macos_chat.rs");
+        let production = &source[..source.find("#[cfg(test)]").unwrap_or(source.len())];
+        assert!(
+            production.contains("bubble_inner_width(max_width)"),
+            "泡量测/渲染宽度必须走共享 `bubble_inner_width`（整点取整）"
+        );
+        assert!(
+            !production.contains("max_width - BUBBLE_PAD_X * 2.0"),
+            "不得回落到浮点内联宽度（1x 量测与 2x 渲染会折出不同行宽）"
         );
     }
 }

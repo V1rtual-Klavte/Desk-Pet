@@ -638,6 +638,17 @@ pub fn bubble_cap(width: f64) -> f64 {
     ((width - BUBBLE_SIDE_MARGIN * 2.0) * BUBBLE_MAX_FRACTION).max(40.0)
 }
 
+/// 正文量测/渲染宽度：上限减左右内边距后**向上取整**。
+///
+/// 文本视图 frame 是浮点宽度，但 AppKit 在窗口里按 backing scale 取整
+/// （实测 2x 下 198.44pt → 397px → 198.5pt）。量测发生在窗口挂载前（1x），
+/// 渲染发生在窗口里（2x）：同一段文本会量到「放不下」而渲染「放得下」，
+/// 行宽比泡宽计算时多出一截，右侧文字被裁（2026-10-20 实机「卡住」缺半字）。
+/// 量测与渲染统一用整点宽度，两端取整结果一致。
+pub fn bubble_inner_width(max_width: f64) -> f64 {
+    (max_width - BUBBLE_PAD_X * 2.0).ceil().max(40.0)
+}
+
 /// chip 文案适配：超出可用宽度时**中段省略**（保留头尾、`…` 居中）。
 ///
 /// 2026-10-05 评审：附件 chip 的末尾是「（不可用）」这类状态后缀，尾部硬裁会把
@@ -1727,6 +1738,16 @@ mod tests {
         assert!((bubble_cap(300.0) - 247.68).abs() < 0.01);
         // 极窄容器：保住可读下限 40。
         assert_eq!(bubble_cap(20.0), 40.0);
+    }
+
+    /// 量测与渲染必须用同一个整点宽度：198.44 在窗口外按 1x 折成「卡」、
+    /// 窗口里按 2x 取整成 198.5 折成「卡住」，泡宽按前者算就会裁掉后者。
+    #[test]
+    fn 气泡正文宽度取整保证量测与渲染一致() {
+        assert_eq!(bubble_inner_width(218.44), 199.0);
+        assert!(bubble_inner_width(123.4).fract() == 0.0);
+        // 极窄时仍保住可读下限。
+        assert_eq!(bubble_inner_width(50.0), 40.0);
     }
 
     #[test]
