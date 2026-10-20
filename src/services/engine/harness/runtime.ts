@@ -1263,6 +1263,36 @@ function createRuntimeDataStripHook(args: {
     const raw = contentText(message.content)
     const visibleText = contentText(stripped.content)
     if (message.content.some(part => part.type === "toolCall")) {
+      // 工具轮的可见台词同样要过拟人化（2026-10-20 用户规则：任何消息都要拟人化）。
+      // 只改 text part，toolCall 原样保留；不跑沉默护栏，避免中间轮被吞。
+      if (args.humanizer?.enabled && visibleText.trim()) {
+        try {
+          const transformed = transformHumanizerText(visibleText, args.humanizer.flow())
+          const parts = transformed.parts.filter(part => part.trim().length > 0)
+          if (parts.length > 0) {
+            let inserted = false
+            const content = stripped.content.flatMap<typeof stripped.content[number]>(part => {
+              if (part.type !== "text") return [part]
+              if (inserted) return []
+              inserted = true
+              return parts.map(text => ({ type: "text" as const, text }))
+            })
+            if (!inserted) content.push(...parts.map(text => ({ type: "text" as const, text })))
+            if (args.humanizer.traceContext) publishRuntimeTrace(args.humanizer.traceContext, "humanizer_transform", () => ({
+              flow: args.humanizer?.flow() ?? "casual",
+              status: "transformed",
+              split: transformed.split,
+              silent: false,
+              partCount: parts.length,
+            }))
+            const output = { ...stripped, content }
+            args.recordSettledReply?.(raw, contentText(output.content))
+            return output
+          }
+        } catch (error) {
+          log.warn("工具轮拟人表达变换失败，按原文提交:", formatError(error))
+        }
+      }
       args.recordSettledReply?.(raw, visibleText)
       return stripped
     }
