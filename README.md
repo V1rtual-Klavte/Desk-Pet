@@ -227,7 +227,14 @@ macOS 的窗口观察需要在「系统设置 → 隐私与安全性 → 辅助�
 
 上表引用的是**认定后的终态结果**：逐份报告、逐题 hypothesis 与完整运行线路归档在 [`test/reports/bench/final/`](test/reports/bench/final/README.md)，长期留存、不被滚动报告淘汰。
 
-评测框架对 trace 的正式追踪尚未接线 —— trace 现在只作运行证据留存与理想线路审阅的输入，还没进入自动评测闭环。
+评测报告会归档完整 trace 与逐题诊断，可用于复盘与理想稿审阅。
+
+### 测试工作流与演练
+
+- 契约分析与生成：[test/SKILL.md](test/SKILL.md)：`/analyze test` → `/generate test` → `/audit test`；选层、caseId 与 sourceHash 的规则都在这里。
+- 真实陪伴闭环：[test/sim/README.md](test/sim/README.md) 与 [desk-pet-chat/SKILL.md](test/sim/desk-pet-chat/SKILL.md)：`DESKPET_SIM_CHAT=1 pnpm dev` 启动，`scripts/desk-pet-chat.mjs` 发消息 / `cmd report` / `tail` / `context`；报告与 trace 落在 `data/desk-pet/logs/sim/chat-<stamp>.{json,md,trace.jsonl}`。这条演练只在 development 模式跑，不进 CI，也不是 pass/fail 测试。
+- trace 审阅：`pnpm run test:trace-review -- <理想稿> <trace> <manifest> <审阅>`；完整 trace bundle 在 `test/reports/traces/`（bench / quality 各自子目录），trace 模式 `full` / `light` / `off`。
+- 分层命令：`pnpm test`（L2+L3）、`pnpm run test:e2e`（L4）、`pnpm run test:release`（发布门禁）。
 
 
 ## 数据与配置

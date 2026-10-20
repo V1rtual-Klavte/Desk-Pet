@@ -244,8 +244,14 @@ one trial per question, quote the numbers together with the flip noise.
 
 The table cites the **accepted final results**: per-run reports, per-question hypotheses, and full run traces are archived under [`test/reports/bench/final/`](test/reports/bench/final/README.md) — kept long-term, outside rolling-report eviction.
 
-Formal trace tracking in the evaluation framework is not wired up yet: traces are kept as run
-evidence and as input to ideal-trace review, not as an automated evaluation loop.
+Evaluation reports archive full traces and per-question diagnostics for retrospective and ideal-trace review.
+
+### Test workflow & drills
+
+- Contract analysis and generation: [test/SKILL.md](test/SKILL.md) — `/analyze test` → `/generate test` → `/audit test`; layer selection, caseIds, and sourceHash rules live there.
+- Real companionship loop: [test/sim/README.md](test/sim/README.md) and [desk-pet-chat/SKILL.md](test/sim/desk-pet-chat/SKILL.md) — start with `DESKPET_SIM_CHAT=1 pnpm dev`, then use `scripts/desk-pet-chat.mjs` to chat / `cmd report` / `tail` / `context`; reports and traces land in `data/desk-pet/logs/sim/chat-<stamp>.{json,md,trace.jsonl}`. This drill runs in development mode only; it is not a CI layer and not a pass/fail test.
+- Trace review: `pnpm run test:trace-review -- <ideal> <trace> <manifest> <review>`; full trace bundles live under `test/reports/traces/` (bench / quality in their own subdirectories), with trace modes `full` / `light` / `off`.
+- Layer commands: `pnpm test` (L2+L3), `pnpm run test:e2e` (L4), `pnpm run test:release` (release gate).
 
 ## Data & configuration
 
