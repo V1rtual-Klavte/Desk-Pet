@@ -2,8 +2,9 @@
 // 阶段文案失效判定 —— 从 test/e2e/scenes/personality-card/阶段文案失效.scene.ts 迁到 L2
 // ==========================================
 //
-// 判定键只有一个：`sourceHash` = SHA-256(角色设定 + "\n" + 语言风格)，
-// 即 buildStagesPrompt 真正消费的两段输入（定义点 `stageSourceHash`）。
+// 判定键只有一个：`sourceHash` = SHA-256(模板 + "\n" + 角色设定 + "\n" + 语言风格)，
+// 即 buildStagesPrompt 真正消费的三段输入（定义点 `stageSourceHash`）。
+// 模板必须参与：改 stages-prompt.md 时旧缓存要判过期，否则新规则对老用户不生效。
 // `cardVersion` 只是落盘元数据，不参与 —— 它对「阶段文案是否还配得上这张卡」
 // 没有信息量，参与判定只会让无关改动触发一次多余的 LLM 生成。
 //
@@ -16,7 +17,8 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
-import { importUserCard } from "@/services/personality/loader"
+import { hashCardText, importUserCard } from "@/services/personality/loader"
+import stagesTemplate from "@/services/personality/stages-prompt.md?raw"
 import { COMMAND_KEYS, FALLBACK_STAGES, stageSourceHash, validateStagesForCard } from "@/services/personality/stages-cache"
 
 /** 最小可解析 Card：只有角色设定与语言风格是阶段文案的生成输入 */
@@ -81,6 +83,9 @@ describe("阶段文案失效判定", () => {
     const hash = await stageSourceHash(card)
     // 空 hash 会让缓存永远判过期，必须单独钉住
     expect(hash).toBeTruthy()
+    // 模板也是生成输入：公式 = SHA-256(模板 + "\n" + 角色设定 + "\n" + 语言风格)。
+    // 去掉模板这一段，下面的断言必须红。
+    expect(hash).toBe(await hashCardText(`${stagesTemplate}\n${ROLE}\n${STYLE}`))
 
     const data = {
       cardId: card.id, cardVersion: card.version, sourceHash: hash,
@@ -131,7 +136,7 @@ describe("阶段文案失效判定", () => {
     expect(validateStagesForCard({ ...data, stages: { ...legacyFallbacks, fallbacks: prunedFallbacks } }, card.id, hash)).toBe(false)
 
     // ⑤ 失效键与生成输入严格同源：只改非生成输入（行为进阶、变量定义）不变，
-    // 改角色设定或语言风格必变
+    // 改角色设定、语言风格或模板必变（模板变化由上方的公式断言覆盖）
     expect(await stageSourceHash(await importUserCard(OTHER_SECTIONS))).toBe(hash)
     expect(await stageSourceHash(await importUserCard(OTHER_ROLE))).not.toBe(hash)
     expect(await stageSourceHash(await importUserCard(OTHER_STYLE))).not.toBe(hash)

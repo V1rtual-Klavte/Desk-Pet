@@ -222,13 +222,14 @@ export function validateStagesForCard(
 }
 
 /**
- * 阶段文案的失效键 —— 与生成输入严格同源（buildStagesPrompt 只用这两段），
+ * 阶段文案的失效键 —— 与生成输入严格同源（buildStagesPrompt 用模板 + 角色设定 + 语言风格），
  * 是全仓唯一定义点。分隔符固定为 "\n"：改它等于让所有 Card 的缓存失效一次。
+ * 模板也纳入 hash：改 stages-prompt.md 时旧缓存必须判过期，否则新规则对老用户不生效。
  */
 export async function stageSourceHash(
   card: { sections: { roleSetting: string; languageStyle: string } },
 ): Promise<string> {
-  return hashCardText(`${card.sections.roleSetting}\n${card.sections.languageStyle}`)
+  return hashCardText(`${stagesTemplate}\n${card.sections.roleSetting}\n${card.sections.languageStyle}`)
 }
 
 export async function loadStagesFromDisk(
