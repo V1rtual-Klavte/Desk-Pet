@@ -98,9 +98,20 @@ pub struct Tab {
     pub sections: &'static [Section],
 }
 
-// `POPUP_MODE` 删除记录（2026-10-05）：`general.popup.mode`（弹窗位置）随窗口几何那批设置项
-// 一起从界面撤下，这个选项表没有消费者了。窗口位置模式仍由 CONFIG 的该键决定（默认值不变），
-// 只是不再提供界面切换。
+/// 弹窗摆位模式（`general.popup.mode`；值与 TS `popupMode` 的 `cursor` / `fixed` 逐字一致）。
+///
+/// 2026-10-05 原生设置首批随窗口几何项一起撤下（当时连坐标、尺寸一起瘦身）；
+/// 2026-10-20 按用户要求恢复 —— 它是行为开关，不属于几何/尺寸参数。
+const POPUP_MODE: &[Choice] = &[
+    Choice {
+        value: "cursor",
+        label: "跟随光标",
+    },
+    Choice {
+        value: "fixed",
+        label: "固定位置",
+    },
+];
 
 const LOG_LEVELS: &[Choice] = &[
     Choice {
@@ -262,13 +273,21 @@ static FREQUENCY_TIERS: &[Choice] = &[
 
 const GENERAL_POPUP: &[Field] = &[
     // 2026-10-05 收敛（用户规则「去掉当前坐标，以及窗口四个参数显示设置，以及预览尺寸，没必要留」）：
-    // 这一段原有 7 项，撤掉 6 项只留下面这一项。撤掉的是：
+    // 这一段原有 7 项，当时撤掉 6 项只留 autoPopupOnMessage；撤掉的是：
     //   general.popup.mode（弹窗位置）、general.popup.fixedPosition（当前坐标）、
     //   general.popup.defaultSize.w / .h、general.popup.chatWidth、action.previewPopupSize。
+    // 2026-10-20 按用户要求恢复 general.popup.mode —— 它是行为开关，不属于几何/尺寸参数；
+    // 固定位置的坐标仍由拖动窗口写回，不提供界面控件。
     //
-    // **它们仍是 CONFIG 里的有效键**：窗口拖动、分隔条拖动会持续写回，
+    // **其余键仍是 CONFIG 里的有效键**：窗口拖动、分隔条拖动会持续写回，
     // 只是不再摆到用户面前 —— 窗口尺寸用鼠标直接调更直观，设置页留一排 px 数字反而劝退。
     // 改这些键请编辑运行时配置文件（用途与入口见 docs/current/runtime-data.md 的同名清单）。
+    Field {
+        key: "general.popup.mode",
+        label: "弹出位置",
+        kind: FieldKind::Enum(POPUP_MODE),
+        help: "跟随光标：呼出时在光标附近弹出；固定位置：拖动窗口即可更新位置",
+    },
     Field {
         key: "general.popup.autoPopupOnMessage",
         label: "收到消息自动弹出",
@@ -1107,6 +1126,28 @@ mod tests {
                 "{key} 已按瘦身边界撤下界面，不得再有控件"
             );
         }
+    }
+
+    /// 2026-10-20 恢复「弹出位置」：两个摆位模式必须回到设置页；固定位置坐标仍不回到界面
+    /// （2026-10-05 的几何瘦身决定不变）。
+    #[test]
+    fn 弹出位置提供跟随光标与固定位置两个选项() {
+        let general = TABS.iter().find(|tab| tab.id == "general").unwrap();
+        let field = general
+            .sections
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .find(|field| field.key == "general.popup.mode")
+            .expect("通用页必须有「弹出位置」（CONFIG 行为开关不能只剩手改入口）");
+        let FieldKind::Enum(choices) = field.kind else {
+            panic!("弹出位置必须是枚举控件");
+        };
+        let values: Vec<&str> = choices.iter().map(|choice| choice.value).collect();
+        assert_eq!(values, vec!["cursor", "fixed"]);
+        assert!(
+            super::field("general.popup.fixedPosition").is_none(),
+            "固定位置坐标不再回到设置页（几何瘦身决定不变）"
+        );
     }
 
     /// 记忆页删空「记忆参数」后不留空壳小节（TABS 里不得出现空 fields）。

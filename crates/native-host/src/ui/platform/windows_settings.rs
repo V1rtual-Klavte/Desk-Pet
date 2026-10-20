@@ -6850,7 +6850,6 @@ mod tests {
         let production = &src[..src.find("#[cfg(test)]").expect("必须有测试段")];
         for key in [
             "action.previewPopupSize",
-            "general.popup.mode",
             "general.popup.fixedPosition",
             "general.popup.defaultSize",
             "general.popup.chatWidth",
