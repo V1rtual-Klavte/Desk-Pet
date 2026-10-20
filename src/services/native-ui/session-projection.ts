@@ -118,16 +118,6 @@ export interface ProjectedMessage {
 }
 
 /**
- * `messages` 的帧内字节预算。
- *
- * 控制帧上限是协议冻结值 64 KiB（Rust `ipc/protocol.rs` 的 `CONTROL_FRAME_MAX_BYTES`；
- * 经握手 limits 披露，但冻结的 `HostBridge` 取用面不含 limits），整帧（信封 + 标签 +
- * 历史 + 正文）都要放得下。取一半作为 messages 份额，其余字段与信封留余量；估算是
- * 未压缩 JSON 的保守上界（宁可少推一两条旧消息，也不撞上限）。
- */
-const MESSAGES_FRAME_BUDGET_BYTES = 32 * 1024
-
-/**
  * `Message` → 线上形状（只挑 Rust `ProjectedMessage` 的字段，不搬运 UI 专用位）。
  *
  * 工具调用/思考/失败位**取读模型现值，不从 entries 重推**（读模型的投影规则是
@@ -155,25 +145,16 @@ function toProjectedMessage(message: Message): ProjectedMessage {
 }
 
 /**
- * 正文窗口：从最新一条向前取到帧预算以内。
+ * 正文窗口：整份 `chatHistory` 推送。
  *
- * 长会话的整帧覆盖会超过 64 KiB 控制帧上限（单条消息的大字符串由传输层按既有规则
- * 编码为 blob，聚合体量没有；见 `connection.ts` 的 `prepareArgs`），因此只推装得下的
- * 尾部 —— 会话正文的完整读取语义在 SessionRepo / 读模型，不经这里改动；本函数只裁剪
- * **出站显示帧**，与既有 `ai.loop.maxVisibleMessages`（`chatHistory` 自身的显示裁剪）
- * 同一层。至少保留最新一条：单条超限的字段由传输层 blob 化后仍能送达。
+ * `chatHistory` 已按 `ai.loop.maxVisibleMessages`（默认 200 条）裁剪，条数本身有界；
+ * 帧体量由 HostBridge 的参数 blob 传输兜底（`connection.ts` 的 `prepareArgs`：超过
+ * 控制帧上限的参数整体走 JSON blob），不在这里再按字节裁尾 —— 旧实现按 32 KiB 截尾，
+ * 而宿主对 `messages` 是**整帧覆盖**，重启/历史刷新后的首帧只带尾部窗口，对话上半截
+ * 就在 UI 上静默消失（2026-10-20 实机：JSONL 完好、无压缩，窗口里却只剩最近几条）。
  */
 function transcriptWindow(): ProjectedMessage[] {
-  const window: ProjectedMessage[] = []
-  let used = 0
-  for (let index = chatHistory.length - 1; index >= 0; index--) {
-    const message = toProjectedMessage(chatHistory[index])
-    const size = JSON.stringify(message).length + 1
-    if (window.length > 0 && used + size > MESSAGES_FRAME_BUDGET_BYTES) break
-    window.push(message)
-    used += size
-  }
-  return window.reverse()
+  return chatHistory.map(toProjectedMessage)
 }
 
 /** 队列项的一条（Rust `ProjectedQueuedItem` 的线上形状；`listQueuedInputs` 的逐字段映射）。 */
@@ -407,11 +388,10 @@ export function markSessionHistoryResolved(): void {
  * 不必重发 —— 帧内缺省 = 宿主保持现值（见文件头缺省语义），历史列表的变化必然
  * 伴随 `session-signal` 的整帧重推。标签列表照带（`ai.memory.maxSessions` 有界）。
  *
- * 字节预算（见 `MESSAGES_FRAME_BUDGET_BYTES`）：尾窗**只裁 `messages`**；面板字段
- * 是域内有界的小表（队列在槽内、中断至多一条、待处置计划按会话、slash 注册表固定、
- * 用量分桶固定、投递意图单值），整表随帧、不另设窗口 —— 它们不进 32 KiB 尾窗，
- * 而是与信封共享另一半余量；`sessionHistory`（读全仓会话，天然无界）沿用既有语义：
- * 只在 `history:true` 的帧携带。
+ * `messages` 整份推送（条数已由 `ai.loop.maxVisibleMessages` 裁剪，帧体量走 blob）；
+ * 面板字段是域内有界的小表（队列在槽内、中断至多一条、待处置计划按会话、slash 注册表固定、
+ * 用量分桶固定、投递意图单值），整表随帧；`sessionHistory`（读全仓会话，天然无界）沿用
+ * 既有语义：只在 `history:true` 的帧携带。
  */
 export function buildSessionProjection(options: { history?: boolean } = {}): SessionProjectionPayload {
   const payload: SessionProjectionPayload = {
