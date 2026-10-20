@@ -55,6 +55,8 @@ const TURN1_TEXT = "落盘故障注入：这一轮 Provider 以错误终止。"
 const PROVIDER_ERROR = "落盘故障注入：回合以错误终止"
 const TURN2_TEXT = "落盘故障注入：故障注入之后的新一轮。"
 const TURN2_REPLY = "落盘故障注入：新一轮正常落盘的回复"
+/** 拟人化后的可见正文：冒号作为分泡边界，parts 以换行连接。 */
+const TURN2_VISIBLE = "落盘故障注入\n新一轮正常落盘的回复"
 /** runner.pushTurnOutcome 的既定语料；断言只取可区分的最短片段。 */
 const NOTICE_FRAGMENT = "没能写进会话文件"
 
@@ -189,7 +191,7 @@ describe("回合文案落盘故障（persistFailed 消费链）", () => {
     expect(second.failure, `恢复回合失败: ${second.failure?.message ?? "(无失败)"}`).toBeUndefined()
     expect(second.outcome, "恢复回合没有成功").toBe("succeeded")
     expect(second.persistFailed, "恢复回合被误报为落盘失败").toBeUndefined()
-    expect(second.reply, "恢复回合的回复不是脚本内容").toContain(TURN2_REPLY)
+    expect(second.reply, "恢复回合的回复不是脚本内容").toContain(TURN2_VISIBLE)
     expect(fault.hits, "故障被重试重放（应只命中第一回合那一条结算文案）").toBe(1)
 
     // 旧代际不覆盖新状态：关掉句柄、从盘上重新重放 —— 失败写入既不出现、也不顶掉后来的写入。
@@ -199,7 +201,7 @@ describe("回合文案落盘故障（persistFailed 消费链）", () => {
 
     expect(raw.includes(expectedFallback), "失败写入在后续时点被重放/合并进新状态").toBe(false)
     const replayed = await sessionMessages(sessionId)
-    expect(countTexts(assistantTexts(replayed), TURN2_REPLY), "重放后恢复回合的助手条目不唯一").toBe(1)
+    expect(countTexts(assistantTexts(replayed), TURN2_VISIBLE), "重放后恢复回合的助手条目不唯一").toBe(1)
     expect(countTexts(assistantTexts(replayed), expectedFallback), "重放后出现了未落盘的兜底文案").toBe(0)
     const users = userTexts(replayed)
     expect(users.filter(text => text.includes(TURN1_TEXT)).length, "第一回合的输入应仍在").toBe(1)

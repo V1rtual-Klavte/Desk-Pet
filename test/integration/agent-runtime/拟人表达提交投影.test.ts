@@ -145,9 +145,9 @@ describe("拟人表达原生提交", () => {
       const taskTurn = await runPiAgentTurn({ sessionId, userText: "读取 task.txt 并总结。",
         userPrompt: userInputMessage("读取 task.txt 并总结。", ""), unansweredCount: 0, isActiveMessage: false })
       expect(taskTurn.toolCallHistory.length, "task 分流应以真实工具执行记录为依据").toBeGreaterThan(0)
-      expect(taskTurn.humanized, "有工具调用的 task 回合不应进入 casual 揭示调度").toBe(false)
-      expect(taskTurn.silent, "task 回合不允许把 SILENT 当成合法沉默").not.toBe(true)
-      expect(taskTurn.reply, "task SILENT 哨兵应退为当前 Card 的单泡短回复").toBe(FALLBACK_STAGES.fallbacks.silentRejected)
+      expect(taskTurn.humanized, "工具调用不改变 flow：humanizer 开启时工具轮仍走 casual").toBe(true)
+      expect(taskTurn.silent, "工具调用不改变 flow：SILENT 在 casual 工具轮是合法沉默").toBe(true)
+      expect(taskTurn.reply, "合法沉默不产生可见正文").toBe("")
     } finally {
       provider.restore()
       restoreProvider = undefined

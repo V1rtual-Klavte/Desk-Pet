@@ -98,8 +98,10 @@ ${MOOD}:
 
 interface Round {
   userText: string
-  /** 给用户看的正文部分（RUNTIME_DATA 之外） */
+  /** 给用户看的正文部分（RUNTIME_DATA 之外，模型原文） */
   body: string
+  /** 拟人化后的可见正文；缺省等于 body（无标点变化时） */
+  visible?: string
   /** 脚本请求写入的变量名与请求值 —— 脚本是本测试唯一的 oracle */
   name: string
   requested: string
@@ -107,9 +109,9 @@ interface Round {
 }
 
 const ROUNDS: Round[] = [
-  { userText: "请在回复末尾用 RUNTIME_DATA 区块把亲密度设为 3。", body: "好呀，我把亲密度记下来了。", name: AFFECTION, requested: "3", type: "number" },
-  { userText: "再用 RUNTIME_DATA 把亲密度改成 5。", body: "亲密度再升一点，现在是 5 啦。", name: AFFECTION, requested: "5", type: "number" },
-  { userText: "再用 RUNTIME_DATA 把心情设为 开心。", body: "心情变得很开心。", name: MOOD, requested: "开心", type: "string" },
+  { userText: "请在回复末尾用 RUNTIME_DATA 区块把亲密度设为 3。", body: "好呀 我把亲密度记下来了", name: AFFECTION, requested: "3", type: "number" },
+  { userText: "再用 RUNTIME_DATA 把亲密度改成 5。", body: "亲密度再升一点，现在是 5 啦。", visible: "亲密度再升一点\n现在是 5 啦", name: AFFECTION, requested: "5", type: "number" },
+  { userText: "再用 RUNTIME_DATA 把心情设为 开心。", body: "心情变得很开心。", visible: "心情变得很开心", name: MOOD, requested: "开心", type: "string" },
 ]
 
 function replyOf(round: Round): string {
@@ -205,7 +207,7 @@ describe("亲密度提升", () => {
         expect(state?.updatedBy, `${roundLabel}：${round.name} 的写入来源`).toBe("llm")
 
         // RUNTIME_DATA 是内部元数据：用户正文照常，区块本身不得出现在回复里
-        expect(output.reply).toContain(round.body)
+        expect(output.reply).toContain(round.visible ?? round.body)
         expect(output.reply).not.toContain("RUNTIME_DATA")
 
         writesByVariable.set(round.name, (writesByVariable.get(round.name) ?? 0) + 1)

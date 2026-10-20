@@ -42,7 +42,7 @@ import { runRuntimeTurn } from "./回合夹具"
 
 const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
 const USER_TEXT = "压缩拒绝留痕探针。"
-const REPLY = "压缩拒绝留痕探针回复完成。"
+const REPLY = "压缩拒绝留痕探针回复完成"
 
 let dataRoot = ""
 

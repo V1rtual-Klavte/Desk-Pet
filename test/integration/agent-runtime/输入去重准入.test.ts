@@ -17,7 +17,7 @@ import { initPaths } from "@/services/paths"
 import { getActiveSessionId } from "@/services/session/store"
 
 const RETRY_TEXT = "准入去重：结构操作拒绝后应能原文重发。"
-const REPLY_TEXT = "准入去重：重发已完成并写入正文。"
+const REPLY_TEXT = "准入去重 重发已完成并写入正文"
 
 let dataRoot = ""
 

@@ -202,7 +202,7 @@ describe("等待不占用回合墙钟", () => {
     try {
       const provider = installFakeProvider([
         fakeToolCall(TOOL, { question: "选一个", options: ["甲", "乙"] }, "ask-exempt-1"),
-        fakeText("好，按你的选择来"),
+        fakeText("好 按你的选择来"),
       ])
       // 面板等价物：先挂 2.2 秒（超过 1.5s 的回合墙钟）再作答 —— 模拟「用户想了一会儿」。
       const holdMs = 2200
@@ -223,7 +223,7 @@ describe("等待不占用回合墙钟", () => {
       // 前提：停留确实超过了墙钟（否则本用例没有测到豁免）。
       expect(elapsed, "停留时间没有超过回合墙钟，本用例失去意义").toBeGreaterThanOrEqual(holdMs)
       expect(output.failure, `回合被墙钟打断（等待期没有停表）：${output.failure?.message ?? "(无失败)"}`).toBeUndefined()
-      expect(output.reply, "回合没有以模型正文收尾").toContain("好，按你的选择来")
+      expect(output.reply, "回合没有以模型正文收尾").toContain("好 按你的选择来")
       // 工具结果按所选返回（回合走到了下一次 Provider 请求）。
       const payload = provider.payloads[1] as { messages?: readonly unknown[] } | undefined
       const texts = (payload?.messages ?? []).map(raw => {

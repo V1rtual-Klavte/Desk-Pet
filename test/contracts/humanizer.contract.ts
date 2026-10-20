@@ -67,6 +67,26 @@
 // 覆盖点未修订、无 caseId 迁移。
 // 2026-10-09 提示优先级：对任何问题，准确性与必要事实/用户限制/条件/步骤高于简短口语、分泡和避免文档腔；
 // 「不追求体系完整」收窄为不铺无关背景，不再暗示可以省略答案必需信息。
+// 2026-10-20 分泡兜底修正（本批刷新）：protocol.ts 去掉 15 字硬切与连接词/语气词切分
+// （会切断「浮层」「老实」并留下单词泡），改为只按句读、逗号和空白边界切，短片段按 30 字合并
+// 且不单独成泡；约 40% 的文本按哈希走 15 字细切（气泡数随机但不抖动）；技术/中英混排按
+// 同文种空白边界切并保持英文词与代码标识完整；casual 气泡剥行首/行尾标点，中英之间不再
+// 自动补空格（2026-10-20 用户裁定：补空格会与分泡抢边界）。
+// runtime.ts 的工具轮可见台词也过拟人变换（任何可见消息不漏）。hz-01/hz-04 描述与场景同步
+// （新增 humanizer-technical-split / humanizer-no-fragment / humanizer-fine-split）；
+// hz-02..03 行为面未变。sourceHash 按当前源码复算。
+// 2026-10-20 标点收口（本批刷新）：用户裁定沿用原有分泡粒度，只保留问号/叹号，其余标点可剥；
+// 分号、顿号、冒号在正文侧换成空格（围栏与行内代码保留），约 40% 的逗号按文本+位置哈希换成空格；
+// 冒号同时作为长句兜底分泡的硬边界；长句兜底分泡时带 ?! 的前一句不被并回，连续 ?! 作为一个
+// 边界不拆开。hz-01 描述同步；hz-02..04 行为面未变。sourceHash 按当前源码复算。
+// 2026-10-20 提示词精简（同批）：humanizer 提示词不再下发 <<SPLIT>> 分泡标记，只保留内容优先、
+// 说话方式/说话内容/长度与沉默；分泡完全由代码承担。细切档把所有全角标点当硬边界，
+// 普通档只把 ?! 和冒号当硬边界；ASCII `. , :` 不切，保护版本号/URL/时间。sourceHash 复算。
+// 2026-10-20 列表收口（同批）：分点内容要求每点前输出 <<SPLIT>>；代码把阿拉伯数字/中文数字/
+// 圈号/项目符号的列表起始当硬边界，编号后的点/括号换成空格，避免气泡以 `1.` 开头被渲染成
+// markdown 列表，也避免 `2.` 黏进上一条。sourceHash 复算。
+// 2026-10-20 空格不再切分（同批）：splitByWhitespace 删除，空格只留在泡内；
+// 「JDK 8」「Java 8」这类技术词不再被空格切开；提示词分句改说短逗号。sourceHash 复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
@@ -87,16 +107,16 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "fec48a3aaef44dfaea82af0d1b0a57e4b29cd5fc1c3126f19e5cfbf2ee32ff46",
+  sourceHash: "1e1c4496c46086c8ab7d8b0e1832e575d16d05210b72a63da2f4b65c0ab6e222",
   coverage: [
     {
       id: "hz-01",
       feature: "表达标记解析",
-      description: "识别正文中代码围栏和行内代码外的 SPLIT token（含行内、空格或大小写变化）并将超过四泡的尾部合并；casual 流在无标记时按空行分段成泡（单个换行与围栏内空行不分，task 流只剥标记且保持单泡）；SILENT 只在 casual 整条可见正文等于哨兵时成立",
-      why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记；模型用空行分段时要分成几条气泡（2026-10-05 用户规则）",
+      description: "识别正文中代码围栏和行内代码外的 SPLIT token（含行内、空格或大小写变化）并按其分泡（不设总条数上限）；casual 流无标记时按空行分段成泡（单个换行与围栏内空行不分），长段兜底只按句读、逗号、冒号等标点切分（空格不再当边界，`JDK 8` 这类技术词保持完整；不做字数硬切，也不从连接词/语气词下刀；技术/中英混排保持英文词与代码标识完整），短片段按 30 字目标合并且不留下单词孤泡；问号/叹号保留，长句兜底分泡时不把带 ?! 或冒号的前一句并回下一句，连续 ?! 不被拆开；细切档把所有全角标点（。！？；：，、…—–引号括号）当硬边界，普通档只把 ?! 和冒号当硬边界，ASCII `. , :` 不切；列表起始（阿拉伯数字/中文数字/圈号/项目符号）是硬边界，编号后的点或括号换成空格，多行短列表也按项拆开；分号、顿号、冒号在正文侧换成空格，约 40% 的逗号按文本+位置哈希换成空格，其余泡首/泡尾句读剥掉，中英之间不自动补空格；task 流只剥标记且保持单泡；SILENT 只在 casual 整条可见正文等于哨兵时成立",
+      why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记；模型用空行分段时要分成几条气泡（2026-10-05 用户规则）；技术类可以多泡但不能切在句子中间（2026-10-20 用户规则）",
       layer: "unit",
       depth: "shallow",
-      scenarios: ["humanizer-protocol-split-no-cap", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact", "humanizer-long-fallback"],
+      scenarios: ["humanizer-protocol-split-no-cap", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact", "humanizer-long-fallback", "humanizer-technical-split", "humanizer-no-fragment", "humanizer-fine-split", "humanizer-bubble-single-line", "humanizer-connective-split", "humanizer-punct-cleanup", "humanizer-task-bubble-lines"],
     },
     {
       id: "hz-02",
@@ -122,7 +142,7 @@ export const humanizerContract: ModuleContract = {
     // （minScenarios / minDeepScenarios / requireBoundary），那等于把组件级证据的缺口
     // 洗成「本层没有可核对内容」。组件渲染的实机证据待原生 UI 测试驱动承接，不在服务级
     // 场景里冒充；caseId 保留为稳定历史标识（personality-card pc-09 也按它引用）。
-    { id: "hz-04", feature: "生产入口分泡与顶栏所有权", description: "真实 sendMessage 提交的普通聊天多泡正文进入逐泡揭示：生成期 Card typing 文案由顶栏状态通道持有、首泡揭示时释放；提交后首个揭示状态为 held（不整条全显）、第二泡按泡间节奏延后、停止立即全显并回收瞬态状态。组件渲染的 DOM 证据随 WebView 退役，本点只承担服务级链路", why: "调度器单测不能证明真实生产入口（runner/runtime）消费了瞬态揭示与阶段所有权通道", layer: "e2e", depth: "deep", scenarios: ["humanizer-real-component-reveal"] },
+    { id: "hz-04", feature: "生产入口分泡与顶栏所有权", description: "真实 sendMessage 提交的普通聊天多泡正文进入逐泡揭示：生成期 Card typing 文案由顶栏状态通道持有、首泡揭示时释放；提交后首个揭示状态为 held（不整条全显）、第二泡按泡间节奏延后、停止立即全显并回收瞬态状态；带工具调用的中间回合，其可见台词同样经过拟人变换（toolCall part 原样保留）。组件渲染的 DOM 证据随 WebView 退役，本点只承担服务级链路", why: "调度器单测不能证明真实生产入口（runner/runtime）消费了瞬态揭示与阶段所有权通道，也不能证明工具轮可见台词没有绕过拟人化", layer: "e2e", depth: "deep", scenarios: ["humanizer-real-component-reveal"] },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: false },
 }
