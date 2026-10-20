@@ -137,7 +137,7 @@ import type { ModuleContract } from "../host/types"
 export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/engine/user-wait.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/paths/security.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
-  sourceHash: "b8ad109181615893bf20d4ef48880df1a3566aa5a00d9dbfba6167fcc4f2c613",
+  sourceHash: "d1df44af2ba68acabbda533500789f9153c412896ef8dc58fed905651564a24e",
   coverage: [
     { id: "sf-25", feature: "持久任务授权与后台非交互权限",
       description: "PermissionKernel 接收 host 绑定的 TaskToolAuthorization，NOWAY 与工具 deny 仍先裁决，不能被任务授权覆盖；其余每件工具（含 SAFE）都校验精确工具/参数范围及 inputHash/policyHash，并在授权 await 后复查任务生命周期。有效持久授权可满足已授权任务的 ask；范围外返回 ask，需要额外输入。permissionMode=background 的 ask 立即返回，不创建交互确认等待；没有 taskAuthorization 的主回合保持原确认与会话授权语义。",
