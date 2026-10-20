@@ -132,6 +132,30 @@ describe("query-focused memory reading", () => {
     expect(json.answerSourceIds?.length).toBeGreaterThanOrEqual(2)
   })
 
+  it("枚举会话按轮转覆盖，单个早会话不能吃满 32 条预算 [memory-reading-enumeration-session-rotation]", () => {
+    const makeUnit = (sessionId: string, index: number, userText: string, replyText: string) => [
+      projection({
+        sourceId: `${sessionId}-${index}-user`, text: userText,
+        conversation: { ...projection().conversation!, sessionId, entryId: `${sessionId}-${index}-user`, role: "user", seq: index * 10 },
+      }),
+      projection({
+        sourceId: `${sessionId}-${index}-reply`, text: replyText,
+        conversation: { ...projection().conversation!, sessionId, entryId: `${sessionId}-${index}-reply`, role: "assistant", seq: index * 10 + 1 },
+      }),
+    ]
+    const early = Array.from({ length: 16 }, (_, index) =>
+      makeUnit("early", index, "We talked about cake.", "Cake is great.")).flat()
+    const later = [
+      ...makeUnit("later", 0, "Sam also likes cake.", "Yes, cake."),
+      ...makeUnit("later", 1, "What can the dog do?", "He can swim and catch frisbees."),
+    ]
+    const unrelated = makeUnit("unrelated", 0, "The blue route is sunny.", "Indeed.")
+    const plan = { originalQuery: "What treats does Sam like?", aspectQueries: ["cake"], evidenceNeeds: ["enumeration"] }
+    const ids = enumerationEvidenceIds([...early, ...later, ...unrelated], plan)
+    expect(ids).toContain("later-1-reply")
+    expect(ids).not.toContain("unrelated-0-user")
+  })
+
   it("retains exact notes independently and drops invalid ids, stitched quotes, and duplicates [memory-reading-partial-validation]", () => {
     const second = { id: "conv:2", text: "The wireless charging pad is already in my bag." }
     const legalSecond = { id: second.id, quote: "wireless charging pad is already in my bag", relevance: "已有无线充电板可用于建议" }

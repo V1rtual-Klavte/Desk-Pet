@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { answerIncludesEnumerationItem, enumerationAnswerSuffix, missingEnumerationItems } from "@/services/agent/memory"
+import { answerIncludesEnumerationItem, completeEnumerationTexts, enumerationAnswerSuffix, isNoInformationAnswer, missingEnumerationItems } from "@/services/agent/memory"
 
 describe("列项答案确定性补全", () => {
   it("只补主答遗漏的项目，保留已有项目 [memory-answer-enumeration-append]", () => {
@@ -37,5 +37,23 @@ describe("列项答案确定性补全", () => {
     expect(missingEnumerationItems("", ["cake", "Cake", "cake"])).toEqual(["cake"])
     expect(missingEnumerationItems("任意回答", [])).toEqual([])
     expect(enumerationAnswerSuffix([], "任意问题")).toBe("")
+  })
+
+  it("弃答句被已校验列项替换，不追加 Also [memory-answer-enumeration-replace-refusal]", () => {
+    expect(isNoInformationAnswer("No information available.")).toBe(true)
+    expect(isNoInformationAnswer("No information about the route, but yoga helped.")).toBe(false)
+    expect(completeEnumerationTexts(["No information available."], {
+      items: ["yoga"], question: "What activity helped?",
+    })).toEqual(["yoga."])
+    expect(completeEnumerationTexts(["John made cake."], {
+      items: ["cake", "mousse"], question: "What desserts did John make?",
+    })).toEqual(["John made cake.\n\nAlso: mousse."])
+  })
+
+  it("中文弃答句同样被替换为中文列项 [memory-answer-enumeration-replace-refusal-cjk]", () => {
+    expect(isNoInformationAnswer("没有相关信息。")).toBe(true)
+    expect(completeEnumerationTexts(["没有相关信息。"], {
+      items: ["露营"], question: "约翰喜欢哪些户外活动？",
+    })).toEqual(["露营。"])
   })
 })

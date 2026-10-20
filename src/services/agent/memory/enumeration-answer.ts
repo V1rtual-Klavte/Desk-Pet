@@ -70,13 +70,56 @@ export function missingEnumerationItems(answer: string, items: readonly string[]
   return missing
 }
 
+function answerList(items: readonly string[], question = ""): string {
+  const values = items.map(item => item.trim()).filter(Boolean)
+  if (!values.length) return ""
+  const cjk = CJK.test(question) || values.some(item => CJK.test(item))
+  const separator = cjk ? "、" : ", "
+  const period = cjk ? "。" : "."
+  return `${values.join(separator)}${period}`
+}
+
 /** 最小补全后缀；保留主答原文，只补缺失项，并沿用问题/项目的语言。 */
 export function enumerationAnswerSuffix(missing: readonly string[], question = ""): string {
-  const items = missing.map(item => item.trim()).filter(Boolean)
-  if (!items.length) return ""
-  const cjk = CJK.test(question) || items.some(item => CJK.test(item))
-  const separator = cjk ? "、" : ", "
-  const prefix = cjk ? "补充：" : "Also: "
-  const period = cjk ? "。" : "."
-  return `\n\n${prefix}${items.join(separator)}${period}`
+  const values = missing.map(item => item.trim()).filter(Boolean)
+  if (!values.length) return ""
+  const cjk = CJK.test(question) || values.some(item => CJK.test(item))
+  return `\n\n${cjk ? "补充：" : "Also: "}${answerList(values, question)}`
+}
+
+/**
+ * 主答是否只是“无信息/无法确认”的弃答句。
+ *
+ * 宿主已经有逐字校验过的列项时，这种弃答会被直接替换成列项，而不是追加
+ * `Also:`——否则会得到「No information available. Also: yoga.」这种自相矛盾的回答。
+ * 只匹配短的单一弃答句；带具体解释的回答仍走最小后缀补全。
+ */
+export function isNoInformationAnswer(answer: string): boolean {
+  const normalized = answer.trim().normalize("NFKC")
+  if (!normalized || [...normalized].length > 80) return false
+  return [
+    /^(?:i(?:'m| am) sorry[,，]?\s*)?(?:there is |there's )?no information(?: available)?[.!。]?$/iu,
+    /^(?:i\s+)?(?:could|can)(?:'t| not)\s+(?:find|confirm|determine|answer)[^.!。]*[.!。]?$/iu,
+    /^(?:没有|无|找不到)(?:可用|相关|足够|更多)?(?:的)?(?:信息|资料|记录)[。.!]?$/u,
+    /^(?:无法|不能|未能)(?:从|在)?(?:记录|资料|信息|原文)(?:中)?(?:确认|找到|回答|判断)[^。.!]*[。.!]?$/u,
+  ].some(pattern => pattern.test(normalized))
+}
+
+/**
+ * 把主答缺失的列项补到最后一个可见段。
+ *
+ * 主答整体是弃答句时，用已校验列项替换弃答，避免“无信息 + Also”并存；
+ * 其余情况保持原有最小后缀语义：不重写主答，只补缺失项。
+ */
+export function completeEnumerationTexts(
+  parts: readonly string[],
+  context: EnumerationAnswerContext | undefined,
+): string[] {
+  if (!context?.items.length || parts.length === 0) return [...parts]
+  const answer = parts.join("\n")
+  const missing = missingEnumerationItems(answer, context.items)
+  if (!missing.length) return [...parts]
+  if (isNoInformationAnswer(answer)) return [answerList(missing, context.question)]
+  const suffix = enumerationAnswerSuffix(missing, context.question)
+  return parts.map((part, index) => index === parts.length - 1 ? `${part}${suffix}` : part)
 }

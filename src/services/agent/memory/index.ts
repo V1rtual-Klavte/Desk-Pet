@@ -22,7 +22,7 @@ export { focusMemoryEvidence } from "./reader"
 export { completeMemoryEvidence } from "./coverage"
 export { deriveMemoryQueryPlan } from "./query"
 export type { FocusedMemoryEvidence } from "./reader"
-export { answerIncludesEnumerationItem, enumerationAnswerSuffix, missingEnumerationItems } from "./enumeration-answer"
+export { answerIncludesEnumerationItem, completeEnumerationTexts, enumerationAnswerSuffix, isNoInformationAnswer, missingEnumerationItems } from "./enumeration-answer"
 export type { EnumerationAnswerContext } from "./enumeration-answer"
 
 export { parseRerankIds } from "./rerank"

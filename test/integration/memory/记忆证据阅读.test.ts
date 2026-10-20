@@ -604,6 +604,7 @@ describe("记忆证据阅读接线", () => {
     expect(call.systemPrompt).toContain("premise和conflicting一律required")
     expect(call.systemPrompt).toContain("目标对象或选项的直接历史提及只是额外佐证")
     expect(MEMORY_READING_POLICY).toContain("必须把它落实在建议理由或具体步骤中，不得只给与用户无关的通用建议")
+    expect(MEMORY_READING_POLICY).toContain("建议先针对该限制本身（例如工作方式、居住地点、时间安排），再用既有习惯或临时活动作辅助，不能只列现有爱好")
     expect(MEMORY_READING_POLICY).toContain("更晚的确认记录更新先前值")
     expect(MEMORY_READING_POLICY).toContain("不以看不出、不敢确定或没翻到收尾")
     expect(MEMORY_READING_POLICY).toContain("相似事实只能作为附带说明，不得作为答案主体")

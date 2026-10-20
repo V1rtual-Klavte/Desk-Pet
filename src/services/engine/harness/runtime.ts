@@ -10,7 +10,7 @@ import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, CompactionDeclineKind, CompactionDeclineRecord, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, completeMemoryEvidence, enumerationAnswerSuffix, missingEnumerationItems, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
+import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, completeMemoryEvidence, completeEnumerationTexts, missingEnumerationItems, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
 import type { EnumerationAnswerContext, FocusedMemoryEvidence, MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
 import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
@@ -1226,8 +1226,7 @@ function completeEnumerationParts(
     itemCount: context.items.length,
     appendedCount: missing.length,
   }))
-  const suffix = enumerationAnswerSuffix(missing, context.question)
-  return parts.map((part, index) => index === parts.length - 1 ? `${part}${suffix}` : part)
+  return completeEnumerationTexts(parts, context)
 }
 
 function completeEnumerationMessage(
