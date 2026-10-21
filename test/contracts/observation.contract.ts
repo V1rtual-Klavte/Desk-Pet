@@ -309,7 +309,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "df594fe55e088c36b8933a1877bf4a7ff22b0b386c3dd0597acb015e8ed83ba7",
+  sourceHash: "f627f8b70ac245136ffe8f39074a2ec535d4c88cbc6a1b325706ca4b561a0f1f",
   coverage: [
     {
       id: "ob-01",
@@ -409,6 +409,15 @@ export const observationContract: ModuleContract = {
       layer: "unit",
       depth: "shallow",
       scenarios: ["observation-window-artifact-stable"],
+    },
+    {
+      id: "ob-12",
+      feature: "了解方向、摘要质量与沉淀时机",
+      description: "批次方向：breadth 铺开整台电脑、depth 挑一个方向往下钻，两种 depth 走法各 50%——existing 贴着已知观察读过的路径（宿主按路径边界终裁，越界目标丢弃）、new 自己另找方面深入（不设路径限制）；了解层为空时强制 breadth；决策提示按方向拆分（公共段 + 单一方向段），模型不再从 mode 文本里自选规则。摘要质量：纯否定结论（截图无有效内容、目录里没有项目文件、读取失败）在写入与快照两侧都不进入了解层，不计覆盖率、不参与沉淀；ready 只数有信息的观察。截图：宽高退化的扁带（高 <120 或不足宽 1/10）判不可用，回退窗口快照。沉淀：了解批次落盘后事件驱动触发一次派生整理，同批观察不等下一个钟点，幂等且失败留痕",
+      why: "2026-10-21 实机：depth 读了三个顶层目录、噪声观察凑满 ready 并被沉淀、截图只有标题栏、同钟点 dreaming 赶在了解之前跑完",
+      layer: "unit",
+      depth: "deep",
+      scenarios: ["observation-mode-empty-breadth", "observation-depth-filter", "observation-depth-anchors", "observation-summary-noise", "observation-summary-informative"],
     },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: true },

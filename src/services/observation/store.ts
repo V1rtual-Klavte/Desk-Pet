@@ -5,6 +5,7 @@ import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
 import { BEHAVIOR_DIR, UNDERSTANDING_FILE } from "@/services/behavior"
 import { MAX_AUDIT_PATH_CHARS, OBSERVATION_SOURCE_TTL_MS, READ_WINDOW_MS, TOPIC_EVIDENCE_TTL_MS } from "./config"
+import { isInformativeSummary } from "./quality"
 import type { TopicEvidence, TopicWeight, UnderstandingRecord, UnderstandingSnapshot } from "./types"
 
 const log = createLogger("ObservationStore")
@@ -191,7 +192,11 @@ export async function appendUnderstanding(records: UnderstandingRecord[]): Promi
     const now = Date.now()
     data.observations = uniqueObservations([
       ...data.observations.filter(row => row.expiresAt > now),
-      ...records.filter(row => hasEvidence(row) && row.expiresAt > now && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS),
+      // 不携带用户信息的摘要（截图窄条、目录里没有项目文件）不入库：它们不构成了解，
+      // 还会被 dreaming 沉淀成长期记忆（2026-10-21 实机）。
+      ...records.filter(row => hasEvidence(row) && row.expiresAt > now
+        && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS
+        && isInformativeSummary(row.summary)),
     ])
     revision += 1
     await persist()
@@ -212,8 +217,10 @@ export async function appendTopicEvidence(records: TopicEvidence[]): Promise<voi
 
 export function getUnderstandingSnapshot(now = Date.now()): UnderstandingSnapshot {
   if (silentAccessFrequency() === "off") return { revision, generatedAt: now, quality: "unavailable", coverage: 0, independentSources: 0, observations: [] }
+  // 旧版本落盘的噪声观察也在这里挡掉：展示、覆盖率与沉淀读同一份快照。
   const observations = data.observations.filter(row => row.expiresAt > now
-    && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS).slice(-MAX_OBSERVATIONS)
+    && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS
+    && isInformativeSummary(row.summary)).slice(-MAX_OBSERVATIONS)
   const independentSources = new Set(observations.filter(hasEvidence).map(row => row.evidenceId!)).size
   return {
     revision,

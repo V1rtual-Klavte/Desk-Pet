@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { SilenceGuard, transformHumanizerText } from "@/services/humanizer/protocol"
 
-// 生产默认按文本哈希约 40% 走细切；单测固定成 normal，避免断言随哈希抖动。
+// 生产默认按文本哈希约 60% 走细切；单测固定成 normal，避免断言随哈希抖动。
 const transform = (text: string, flow?: "casual" | "task") =>
   transformHumanizerText(text, flow, { split: "normal" })
 
@@ -31,6 +31,19 @@ describe("humanizer protocol", () => {
       .toEqual(["write `<<SPLIT>>` literally"])
   })
 
+  it("splits prose around fenced code even when the model emitted split markers [humanizer-split-marker-code-fence]", () => {
+    // 2026-10-21 实机：带 <<SPLIT>> 的技术回答里，第四点、配置说明和 YAML 块
+    // 被 `includes("```")` 整段留成一泡；标记段也要先按空行分段。
+    const text = "一、第一点。\n<<SPLIT>>四、Hystrix 的超时和网关的 retry filter，它们也会再叠加一次。\n\n超时的配置，我用的是 2022 之后的版本：\n\n```yaml\nspring:\n  cloud:\n```\n\n后面的话"
+    const result = transform(text)
+    expect(result.parts.find(part => part.includes("```yaml"))).toBe("```yaml\nspring:\n  cloud:\n```")
+    const prose = result.parts.filter(part => part.includes("超时的配置"))
+    expect(prose.length).toBeGreaterThan(0)
+    expect(prose.every(part => !part.includes("```"))).toBe(true)
+    expect(result.parts.some(part => part.startsWith("四"))).toBe(true)
+    expect(result.parts.some(part => part.includes("后面的话"))).toBe(true)
+  })
+
   it("splits blank-line casual paragraphs into bubbles while single breaks stay together [humanizer-blank-line-split]", () => {
     const result = transform("看到了\n\n在改 Desk-Pet\n\n周末也这么拼")
     expect(result.parts).toEqual(["看到了", "在改 Desk-Pet", "周末也这么拼"])
@@ -52,12 +65,14 @@ describe("humanizer protocol", () => {
 
   it("splits a long single-paragraph casual reply when the model emits no markers [humanizer-long-fallback]", () => {
     const result = transform("package.json 里写的是 \"@earendil-works/pi-ai\": \"0.85.1\"，跟 pi-agent-core 同版本，lock 文件也是 0.85.1(ws@8.21.3)。")
+    // 2026-10-21：空格兜底只认「中文 中文」之间的空格，这条按逗号切成 3 泡。
     expect(result.parts).toHaveLength(3)
     expect(result.split).toBe(true)
     expect(result.parts.every(part => !/[。，,；;]$/u.test(part))).toBe(true)
     expect(transform("嗯 交给我").parts).toEqual(["嗯 交给我"])
+    // 2026-10-21 用户口径：去掉并泡，按逗号切出几段就是几泡。
     expect(transform("今天先把简历的第一版写出来，不要卡在细节上。写完之后再回头补项目和数字，别一开始就追求完美。").parts)
-      .toEqual(["今天先把简历的第一版写出来，不要卡在细节上", "写完之后再回头补项目和数字，别一开始就追求完美"])
+      .toEqual(["今天先把简历的第一版写出来", "不要卡在细节上", "写完之后再回头补项目和数字", "别一开始就追求完美"])
     const multi = transform("简单说，HashMap 不是线程安全的，ConcurrentHashMap 是。它们底层都是数组、链表、红黑树\n多线程一起写 HashMap，轻则数据丢、size 记错，重则扩容时链成环、CPU 跑满；ConcurrentHashMap 用 CAS 加 synchronized 只锁单个桶，别的桶照常读写\n还有个小差别，ConcurrentHashMap 不允许 null 键和 null 值，HashMap 允许；它的 size 是估算值，迭代时拿到的也是弱一致快照")
     expect(multi.parts.length).toBeGreaterThan(3)
     const lineSplit = transform("回来啦\nhumanizer 那边结论还热着\n根因就一行\n工具一调 flow 就翻成 task\ntask 分支又把 SPLIT 直接滤掉\n所以看着像拟人化没起效\n要动就是 1432、1725、2938\n三处一起改\n我倾向先把工具历史那个条件摘掉\n跑一轮看看是不是就不再整段了")
@@ -77,7 +92,7 @@ describe("humanizer protocol", () => {
     expect(result.parts.every(part => part.length > 4)).toBe(true)
     // 不再自动补 CJK/英文空格；正文保持模型原样，避免和分泡抢边界。
     expect(transform("锁粒度HashMap").parts[0]).toBe("锁粒度HashMap")
-    // 空格不再切分：超长英文句保持完整，不切在单词中间。
+    // 纯英文长句没有中英边界：保持完整，不切在单词中间。
     const english = "The reranker receives a query and a list of candidate documents and returns a relevance score for each candidate"
     expect(transform(english).parts).toEqual([english])
   })
@@ -95,13 +110,15 @@ describe("humanizer protocol", () => {
   })
 
   it("uses finer bubbles when the split mode is fine [humanizer-fine-split]", () => {
-    // 约 40% 的回复走细切（生产由文本哈希决定）；细切仍只落在空格/标点上。
+    // 约 60% 的回复走细切（生产由文本哈希决定）；细切仍只落在自然边界上。
     const text = "这句我今天听第三遍了 看来是真累着了 今晚就别定什么计划了 躺着要紧 明天还得早起去公司开一个特别长的会"
     const normal = transformHumanizerText(text, "casual", { split: "normal" })
     const fine = transformHumanizerText(text, "casual", { split: "fine" })
-    // 空格不再切分：两档都保持一泡；细切档的差异由下面的标点用例证明。
-    expect(normal.parts).toEqual([text])
-    expect(fine.parts).toEqual([text])
+    // 2026-10-21 用户口径：整段只用空格断句时也要分泡（此前两档都留成一大泡）；
+    // 细切档目标更短，气泡数应当更多。
+    expect(normal.parts.length).toBeGreaterThan(1)
+    expect(fine.parts.length).toBeGreaterThan(normal.parts.length)
+    expect(normal.parts.join("").replace(/\s/gu, "")).toBe(text.replace(/\s/gu, ""))
     // 细切档把所有全角标点也当边界；普通档同一句不拆。
     const punct = transformHumanizerText("先热身十分钟。再慢慢跑两圈、最后拉伸一下", "casual", { split: "fine" })
     expect(punct.parts).toEqual(["先热身十分钟", "再慢慢跑两圈", "最后拉伸一下"])
@@ -109,11 +126,59 @@ describe("humanizer protocol", () => {
     expect(q.parts).toEqual(["真的假的？！", "你再多说两句我听听到底是怎么回事"])
   })
 
+  it("uses fine bubbles for roughly 60% of replies [humanizer-fine-share]", () => {
+    // 2026-10-21 用户口径：细切概率 60%（此前 40%）。顿号只有细切档当边界，
+    // 所以 parts>1 等价于这一条走了细切；400 条样本的占比被钉在 0.6 附近。
+    let fine = 0
+    const total = 400
+    for (let index = 0; index < total; index += 1) {
+      const text = `第${index}项甲乙丙丁戊己庚辛壬癸子丑寅卯、第二项戊己庚辛壬癸子丑寅卯辰巳、第三项壬癸子丑寅卯辰巳午未申酉`
+      if (transformHumanizerText(text, "casual").parts.length > 1) fine += 1
+    }
+    expect(fine / total).toBeGreaterThan(0.52)
+    expect(fine / total).toBeLessThan(0.68)
+  })
+
+  it("splits a long reply that only uses spaces as separators [humanizer-space-only-split]", () => {
+    // 2026-10-21 实机：模型整段用空格断句，一条 200 字挤成一个气泡。
+    // 无标点时改为在中英边界空格处兜底切开，技术词保持完整。
+    const text = "简历上一堆基于大模型的智能体记忆系统值钱的是你手里那些能接住追问的东西水位为什么只能在 commit 那个事务里推 租约过期为什么算审计位不算在飞 两条链撞同一分钟你怎么保证不写坏这些写进简历是加分 讲出来才是分"
+    const result = transform(text)
+    expect(result.parts.length).toBeGreaterThan(1)
+    expect(result.split).toBe(true)
+    // 切分不能吃掉或改写正文，也不能留下碎泡。
+    expect(result.parts.join("").replace(/\s/gu, "")).toBe(text.replace(/\s/gu, ""))
+    expect(result.parts.every(part => part.length > 4)).toBe(true)
+    // 技术词不因空格被劈开。
+    expect(result.parts.join(" ")).toContain("commit")
+    // 没有中英边界的纯英文长句仍保持一泡（见 technical-split 用例）。
+    expect(transform("嗯 交给我").parts).toEqual(["嗯 交给我"])
+    // 2026-10-21 用户口径：只有「中文 中文」之间的空格是边界；
+    // 中文与英文/数字相邻的空格不切，这类混排长句保持一泡。
+    const runOn = transform("后端岗大多还是 Java 和 Go 的天下 rust 在简历上是加分项八股得按人家的路数来要是被问为什么不用")
+    expect(runOn.parts).toHaveLength(1)
+    // 前半句带句号、后半句只有空格且远超上限（2026-10-21 实机 13:28 那条 75 字长泡）：
+    // 标点切分后必须对剩余片段再做一次空格兜底。
+    const mixed = transform("这份 agent 项目在简历里挺值钱 现在懂 agent 记忆的后端候选人不多。写的时候别写负责记忆模块 要写你定的规则 分区存放 召回怎么命中 什么时候算不该记 怎么纠正和遗忘再配一个数字 比如条目量 命中率 整理轮次 面试官就有得追了你现在的面试多半就会往这儿问")
+    expect(mixed.parts.length).toBeGreaterThan(2)
+    expect(mixed.parts.every(part => part.length <= 38)).toBe(true)
+  })
+
+  it("splits list items written one per line without a split marker [humanizer-list-lines]", () => {
+    // 2026-10-21：提示词不再要求 <<SPLIT>>，分点靠「行首编号/短横」这一硬边界。
+    // 编号用点（1.），代码把点收成空格；裸数字+空格会误伤「10 月 15 号」这类句子，不做列表起始。
+    const result = transform("建议这么写\n1. 记忆分层与写入门禁\n2. 候选隔离与单事务提交\n3. 可纠正与可遗忘")
+    expect(result.parts).toEqual(["建议这么写", "1 记忆分层与写入门禁", "2 候选隔离与单事务提交", "3 可纠正与可遗忘"])
+    // 短横是项目符号：分条时被收掉，气泡里不带「- 」。
+    const dashes = transform("先做这三件\n- 看日志\n- 跑单测\n- 再提交")
+    expect(dashes.parts).toEqual(["先做这三件", "看日志", "跑单测", "再提交"])
+  })
+
   it("keeps each casual bubble on a single line and preserves fenced code [humanizer-bubble-single-line]", () => {
     // 2026-10-20 实机：模型按句一行输出，兜底并泡用换行连接，气泡里就显示成多行。
     const result = transform("查了一下，\n最新是 1.3.0，\n10 月 15 号发的，\n你项目里还停在 0.85.1")
-    // 第一个逗号按哈希换成了空格，后两个保留（随机逗号规则，同一句稳定）。
-    expect(result.parts).toEqual(["查了一下 最新是 1.3.0，10 月 15 号发的，你项目里还停在 0.85.1"])
+    // 2026-10-21 用户口径：去掉并泡，逗号边界各自成泡。
+    expect(result.parts).toEqual(["查了一下", "最新是 1.3.0", "10 月 15 号发的", "你项目里还停在 0.85.1"])
     expect(result.parts.every(part => !part.includes("\n"))).toBe(true)
     // 围栏代码块整块保留换行；块前后的说话各自成泡、泡内归并。
     const withCode = transform("先看这段\n用 createModels 就行\n\n```ts\nconst models = createModels()\n```\n\n再配 provider")
@@ -162,12 +227,16 @@ describe("humanizer protocol", () => {
     expect(transform("写成 `a;b` 就行").parts).toEqual(["写成 `a;b` 就行"])
   })
 
-  it("keeps long casual replies without punctuation intact [humanizer-connective-split]", () => {
-    // 2026-10-20 用户规则：只按标点切，不从连接词/语气词下刀；
-    // 空格不再当分泡边界，没有标点的长句宁可留长泡。
+  it("splits long punctuation-free casual replies without cutting connective words [humanizer-connective-split]", () => {
+    // 2026-10-21 用户规则：整段只用空格断句时，按中英边界空格兜底分泡
+    // （2026-10-20 的「没有标点宁可留长泡」已被实机一大段黏成一泡推翻）。
+    // 仍不从连接词/语气词下刀：不产生「另外」这类孤泡。
     const text = "这句我今天听第三遍了 看来是真累着了 今晚就别定什么计划了 躺着要紧 明天还得早起去公司开一个特别长的会"
     const result = transform(text)
-    expect(result.parts).toEqual([text])
+    expect(result.parts.length).toBeGreaterThan(1)
+    expect(result.parts.join("").replace(/\s/gu, "")).toBe(text.replace(/\s/gu, ""))
+    expect(result.parts.every(part => part.length > 4)).toBe(true)
+    // 短到不需要兜底的句子原样保留。
     expect(transform("并发下它没法区分没有这个 key 和值就是 null 迭代也不一样").parts.join(""))
       .toContain("和值就是 null")
   })

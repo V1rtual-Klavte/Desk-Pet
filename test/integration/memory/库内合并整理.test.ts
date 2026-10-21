@@ -253,7 +253,12 @@ describe("库内合并整理", () => {
     harness.completePiText.mockResolvedValue({ text: '{"candidates":[]}', usage: { input: 50, output: 10 } })
 
     await dreaming.runDreamingSweep()
-    expect(ipc.memoryList, "有用户区新来源时仍做了库内整理列举").not.toHaveBeenCalled()
+    // 2026-10-21：Review 判重也会读在库条目（memoryList(undefined, undefined, 500)），
+    // 因此这里改判「有没有走库内合并」——合并提示词一次都不该出现。
+    const mergeCalls = harness.completePiText.mock.calls.filter(
+      ([args]) => String((args as { systemPrompt?: string }).systemPrompt ?? "").includes("合并成更少"),
+    )
+    expect(mergeCalls, "有用户区新来源时仍做了库内合并整理").toHaveLength(0)
     expect(harness.completePiText, "用户区 Review 没有走模型").toHaveBeenCalledTimes(1)
   })
 })

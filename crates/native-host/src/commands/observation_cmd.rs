@@ -97,6 +97,15 @@ fn require_capture(window: &dyn WindowPort, state: &MonitorState, force: bool) -
     Ok(())
 }
 
+/// 截图尺寸是否可用。
+///
+/// 2026-10-21 实机：窗口捕获只返回标题栏，得到 1280×27 的窄条 —— 这种图对模型没有
+/// 任何信息量，还曾被整理调用写成一条无用的长期记忆。判据：宽 ≥ 200、高 ≥ 120，
+/// 且高度不小于宽度的 1/10（真实窗口不会是一条扁带）。
+fn usable_capture(width: u32, height: u32) -> bool {
+    width >= 200 && height >= 120 && u64::from(height) * 10 >= u64::from(width)
+}
+
 /// Capture only the foreground window. The encoded bytes exist in memory for the IPC response;
 /// this command never creates a screenshot file or returns executable paths/window titles.
 /// 截图类资格在读取资格之上要求屏幕 `observed`：锁屏时截图无意义，直接拒绝。
@@ -122,6 +131,15 @@ pub fn observation_capture_screen(
         .capture_image()
         .map_err(|_| AppError::Other("截图不可用".into()))?;
     require_capture(port, state, force)?;
+    // 退化截图（只有标题栏的扁带）直接按不可用处理：Node 侧会回退到窗口快照与目标读取，
+    // 不让模型把「截图为窄条」写成一条了解。
+    if !usable_capture(image.width(), image.height()) {
+        return Err(AppError::Other(format!(
+            "截图无效（{}×{}，可能缺少屏幕录制权限）",
+            image.width(),
+            image.height()
+        )));
+    }
 
     // 缩放/编码统一走图片域的 `encode_screenshot`（契约 §2.1/§5.4：解码/缩放/编码集中
     // 到 Rust 图片域，不给截图另建缩放器）。口径逐项固定为：
@@ -483,6 +501,20 @@ mod tests {
         assert!(observation_allowed(&activity("observed", Some(1), false)));
         assert!(capture_allowed(&activity("observed", Some(1), false)));
         assert!(observation_allowed(&activity("locked", None, false)));
+    }
+
+    #[test]
+    fn degenerate_title_bar_only_captures_are_rejected() {
+        // 2026-10-21 实机：窗口捕获只返回标题栏（1280×27）。这种扁带对模型没有信息量，
+        // 必须判不可用，让 Node 回退到窗口快照，而不是让模型写成一条无用了解。
+        assert!(!usable_capture(1280, 27));
+        assert!(!usable_capture(1280, 100));
+        // 正常窗口尺寸放行（含小窗与超宽窗）。
+        assert!(usable_capture(1280, 800));
+        assert!(usable_capture(320, 200));
+        assert!(usable_capture(2560, 1440));
+        // 边界：高度达到下限且不小于宽度的 1/10 仍算可用。
+        assert!(usable_capture(1000, 120));
     }
 
     #[test]

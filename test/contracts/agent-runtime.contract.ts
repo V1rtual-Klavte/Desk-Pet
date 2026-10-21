@@ -153,6 +153,10 @@
 // 压缩、取消恢复与工具治理**的实现面上 —— 拟人化只作用于可见正文的后处理，不参与协议检测
 //（同一函数里 `runtimeDataReminder` 那句「主动表达回合不注入」正是这条边界的旁证）。
 // 覆盖点未修订、无 caseId 迁移。
+// 2026-10-21 分泡粒度批次（本批刷新）：sourceFiles 中 humanizer/protocol.ts 的细切概率
+// 40% → 60%，并为无标点长段补中英边界空格兜底；运行时只消费 transformHumanizerText 的
+// parts/text，接线与生命周期不变。ar-* 逐点核对实现点未变，未修订覆盖点，仅按当前源码
+// 刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-06 实测反馈收口（本批刷新）：sourceFiles 变化仅限 context/builder.ts 的计划提议指引
@@ -199,6 +203,9 @@ import type { ModuleContract } from "../host/types"
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 // 2026-10-14 阅读诊断定向复核：trace.ts 仅为 memory_reading_end 增加受控哈希数组过滤，
 // 未改回合、取消、Provider 或提交分支；安全字段由 memory mm-68 / evaluation eval-02 覆盖。
+// 2026-10-21 拟人分泡批次（本批刷新）：sourceFiles 中 humanizer/protocol.ts 变化（去并泡、
+// 空格边界收窄为中文-中文、标记段按空行拆开代码块前后）；本域覆盖面未变（表达分泡归
+// humanizer hz-01），sourceHash 按当前源码复算。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -248,7 +255,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "4fcfff16aac9105d9e3be1544922c644f61525fbc54f767d2a8cb867a430cb77",
+  sourceHash: "337dcde03fce1a271c5f480301e481a604c36ac993ec3655ec6fc58ee94be16d",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

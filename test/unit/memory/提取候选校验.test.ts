@@ -69,6 +69,27 @@ describe("Review 候选规范化", () => {
     expect(run).toThrow(/content-empty/)
   })
 
+  it("Review 带入在库条目后不重复记账 [memory-dreaming-existing-dedupe]", () => {
+    // 2026-10-21 实机：Review 只看新来源，把显式写入过的同一事实又记一遍。
+    const existing = [{ id: "mem-1", kind: "fact", scope: "user", content: "用户养了一只猫" }]
+    const prompt = buildReviewPrompt([SOURCE], existing)
+    expect(prompt).toContain('"existing":[{"id":"mem-1"')
+    // 更正：引用在库条目作为替换目标。
+    const replaced = parseReviewCandidates(JSON.stringify({
+      candidates: [{ sourceIds: ["s1"], content: "用户养了两只猫", kind: "fact", scope: "user", supersedesIds: ["mem-1"] }],
+    }), [SOURCE], existing)
+    expect(replaced[0]!.draft.supersedesIds).toEqual(["mem-1"])
+    // 引用不存在或 kind 不一致的 id 不生效，候选仍按新事实收录。
+    const unknown = parseReviewCandidates(JSON.stringify({
+      candidates: [{ sourceIds: ["s1"], content: "用户在写 Rust", kind: "preference", scope: "user", supersedesIds: ["mem-1", "mem-ghost"] }],
+    }), [SOURCE], existing)
+    expect(unknown[0]!.draft.supersedesIds).toBeUndefined()
+    // 与在库条目完全同文（忽略空白）且没有替换目标：整条丢弃，且不算批次失败。
+    expect(parseReviewCandidates(JSON.stringify({
+      candidates: [{ sourceIds: ["s1"], content: "用户 养了一只猫 ", kind: "fact", scope: "user" }],
+    }), [SOURCE], existing)).toHaveLength(0)
+  })
+
   it("非 working 候选不携带事项状态，来源白名单外的候选整条丢弃", () => {
     const parsed = parseReviewCandidates(JSON.stringify({
       candidates: [

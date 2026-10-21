@@ -66,6 +66,11 @@
 // pr-01..pr-17 无任何一条描述「可见性门禁」或跳过原因枚举（全文 grep `pet_hidden` /
 // `isPetVisible` 零命中），门禁清单本身不是覆盖点声明的行为面，跳过原因的变化由 trace
 // 证据承担（口径已写进 `docs/current/proactive.md`）。覆盖点未修订、无 caseId 迁移。
+// 2026-10-21 了解质量与沉淀批次（本批刷新）：sourceFiles 中 observation/store.ts 变化 ——
+// 了解层在写入与快照两侧过滤「无有效内容／无项目文件」这类纯否定摘要，覆盖率只数有信息的
+// 观察；了解批次落盘后事件驱动触发一次派生整理。主动机会/回执/规划/投影链本身不消费摘要
+// 正文（只经了解层快照与派生记忆），pr-* 逐点核对实现点未变，未修订覆盖点，仅按当前源码
+// 刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-18 analyze -> generate（仅编辑，未执行）：用户工具替换为 schedule_query/change；
@@ -272,7 +277,7 @@ import type { ModuleContract } from "../host/types"
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "2e2d5800a6909eba58dc6ab2f1f069fbe70edac75eb26b7a82d85f0693c0019c",
+  module:"proactive",sourceHash: "4020210972843b9073d2f5be746e39732ca35ff6e9b5a3f3eb4f4d99c0d55901",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

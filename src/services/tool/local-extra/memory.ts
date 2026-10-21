@@ -13,7 +13,7 @@ import { defineTool } from "../policy"
 import { register } from "../registry"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { applyMemoryChange, memoryDetail, memoryStatus, resolveCurrentTrustedMemorySource } from "@/services/agent/memory"
+import { applyMemoryChange, memoryDetail, memoryStatus, parseMemoryItemRef, resolveCurrentTrustedMemorySource } from "@/services/agent/memory"
 import { DRAFT_SUMMARY_CHARS } from "@/services/agent/memory/draft"
 import { queryMemoryVisibleToCurrentTurn } from "@/services/agent/memory/visible-query"
 import type { MemoryDraft, MemoryKind, MemoryScope, TemporalAnchor, WorkingState } from "@/services/agent/memory"
@@ -98,7 +98,7 @@ const memoryChangeTool: ToolDef = defineTool({
     properties: {
       action: { type: "string", description: "remember=记住新事实，correct=补丁式纠正条目，complete/cancel=完成或取消一件已记住的事项，forget=忘记条目", enum: ["remember", "correct", "complete", "cancel", "forget"] },
       content: { type: "string", description: "要记住或纠正后的正文；complete/cancel 时可省略" },
-      itemId: { type: "string", description: "纠正、完成、取消或忘记时的目标条目 id" },
+      itemId: { type: "string", description: "纠正、完成、取消或忘记时的目标条目 id；可直接用记忆块里的 `id@version` 形式" },
       kind: { type: "string", description: "记忆类型", enum: KINDS },
       scope: { type: "string", description: "记忆范围", enum: SCOPES },
       scopeId: { type: "string", description: "Card 或会话范围的 ID" },
@@ -140,20 +140,27 @@ const memoryChangeTool: ToolDef = defineTool({
     if (!ctx.sessionId || !ctx.trustedUserEventId) return { success: false, content: "", error: "记忆变更必须绑定本轮已提交的可信用户输入" }
     const source = await resolveCurrentTrustedMemorySource(ctx.sessionId, ctx.trustedUserEventId)
     const status = await memoryStatus()
+    // 记忆块里的条目身份是 `id@version`；模型原样回传时拆成裸 id + 版本，
+    // 否则这里会把它当成不存在的条目（2026-10-21 实机：纠正/忘记全部失败后退化成新增）。
+    const rawItemId = text(params.itemId)
+    const ref = rawItemId ? parseMemoryItemRef(rawItemId) : undefined
+    const itemId = ref?.id
+    const needsTarget = action !== "remember"
+    if (needsTarget && !itemId) return { success: false, content: "", error: `${action} 必须给出目标条目 id` }
     if (action === "forget") {
-      const itemId = text(params.itemId)
-      if (!itemId) return { success: false, content: "", error: "忘记必须给出目标条目 id" }
       const revision = await applyMemoryChange({
-        operationId: ctx.operationId ?? ctx.toolCallId ?? crypto.randomUUID(), baseRevision: status.revision, action: "forget", itemId,
+        operationId: ctx.operationId ?? ctx.toolCallId ?? crypto.randomUUID(), baseRevision: status.revision, action: "forget", itemId: itemId!,
+        ...(ref?.version !== undefined ? { expectedVersion: ref.version } : {}),
         actor: "current_input", trustedUserEventId: ctx.trustedUserEventId,
       })
       return { success: true, content: `已忘记该记忆（库版本 revision=${revision}）。原始聊天不受影响。` }
     }
-    const itemId = text(params.itemId)
-    const needsTarget = action !== "remember"
-    if (needsTarget && !itemId) return { success: false, content: "", error: `${action} 必须给出目标条目 id` }
     const target = needsTarget && itemId ? await memoryDetail(itemId) : null
     if (needsTarget && (!target || target.status !== "active")) return { success: false, content: "", error: "目标记忆不存在或已失效" }
+    // 引用里带了版本且与当前版本不符：内容已被更新过，如实报冲突，不拿旧引用去改新内容。
+    if (needsTarget && ref?.version !== undefined && target && ref.version !== target.version) {
+      return { success: false, content: "", error: `记忆条目已更新（当前 v${target.version}，引用 v${ref.version}）；请重新读取最新内容后再改` }
+    }
     if ((action === "complete" || action === "cancel") && (target?.draft.kind !== "working" || target.draft.workingState !== "open")) {
       return { success: false, content: "", error: "只能完成或取消仍处于 open 状态的 working 事项" }
     }

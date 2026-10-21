@@ -15,6 +15,8 @@ import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
 
 export type { TemporalAnchor, ProactiveRecurrence, ProactiveOwner, ProactiveTask, ProactiveSourceRef } from "./protocol"
 
+export { parseMemoryItemRef } from "./ref"
+export type { MemoryItemRef } from "./ref"
 export { deriveMemoryRecallBudget } from "./budget"
 export type { MemoryRecallBudget } from "./budget"
 export { renderMemoryRecall } from "./projection"

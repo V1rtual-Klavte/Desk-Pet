@@ -197,12 +197,40 @@ node scripts/desk-pet-chat.mjs tail
 
 ## 静默了解
 
-- 每批随机选 `breadth`（广度：多个方面/目录铺开）或 `depth`（深度：围绕当前项目/主题读深），
-  不要每批都只看同一个方向。
+- 每批在两种方向里选：`breadth`（广度：铺开了解整台电脑的所有方面，每批尽量换没看过的方面）
+  或 `depth`（深度：挑一个方向往下钻）。`depth` 还有两种走法各 50%：`existing` 贴着已知
+  了解读过的路径向下（宿主丢弃越界目标）、`new` 自己另找方面深入（不设路径限制）。
+  了解层为空时只会出现 `breadth`。
 - Provider 输出不再设 `maxTokens`；输入侧仍有单文件字符上限与每小时读取名额，这不是 token 上限。
 - 设置页「静默了解 → 立即了解一次」：不受频率开关限制，不计入当天自动次数；
   上一批没结束前再点只提示，不会并发跑第二批。
 - 手动批次仍保留屏幕状态、桌宠前台和读取边界；没有窗口观察时用当前活动构造快照。
+
+### 测试时直接触发，不要等钟点
+
+静默了解、主动消息、dreaming 都有固定钟点表；只有**专门验证「到点自动跑」**时才等整点。
+其余测试一律直接调接口，几秒内出结果：
+
+```bash
+# 静默了解（演练批次：最近一次非桌宠窗口，跳过截图，只读文件/目录）
+node scripts/desk-pet-chat.mjs observe --force
+# 静默了解（走当前前台窗口并截图；先把真实工作窗口切到前台）
+node scripts/desk-pet-chat.mjs observe --force --screenshot
+# 设置页同款的「立即了解一次」（不受档位与当天次数）
+node scripts/desk-pet-chat.mjs host silent_understanding_run_now '{}'
+
+# dreaming 手动整理（不受档位约束；没有新来源时转库内合并）
+node scripts/desk-pet-chat.mjs host memory_dreaming_sweep '{}'
+
+# 主动消息：立即触发一次扫描
+node scripts/desk-pet-chat.mjs cmd proactive
+```
+
+- 主动扫描返回 `count: 0` 不一定是故障：当天各类机会槽都评估过后就没有新机会。要测门禁
+  就在刚发完消息后立刻触发，看 trace 的 `proactive_skipped` 原因（如 `user_recently_active`）。
+- `observe --force` 绕过档位开关与当天次数，仍受屏幕状态、桌宠前台与每小时读取名额约束；
+  已在跑上一批时再触发只会提示，不会并发。
+- 写报告前先看 `understanding` / `memory_overview` / `proactive-state` 三份快照，别只信对话文本。
 
 ## 拟人化检测（默认开启）
 

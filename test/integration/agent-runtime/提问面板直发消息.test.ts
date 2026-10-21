@@ -64,6 +64,8 @@ const CONSUMED_REPLY = "提问面板用例：收到你的补充，继续处理"
 /** 拟人化后的可见正文：冒号换成空格。 */
 const FINAL_VISIBLE = "提问面板用例 好，按你说的来"
 const CONSUMED_VISIBLE = "提问面板用例 收到你的补充，继续处理"
+/** 分泡会插入换行并剥掉泡尾句读：比较可见正文时先归一空白与句读。 */
+const visible = (text: string) => text.replace(/[\s，。；：、]/gu, "")
 
 const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
 
@@ -181,7 +183,7 @@ describe("提问面板与直发消息", () => {
     // 回合带着工具结果继续，并消费直发消息后收尾。
     const output = await turn
     expect(output.failure, `回合没有正常收尾：${output.failure?.message ?? "(无失败)"}`).toBeUndefined()
-    expect(output.reply, "回合没有以模型正文收尾").toContain(FINAL_VISIBLE)
+    expect(visible(output.reply), "回合没有以模型正文收尾").toContain(visible(FINAL_VISIBLE))
 
     const second = provider.payloads[1]
     expect(second, "回合没有走到第二次 Provider 请求（工具结果未回到模型）").toBeDefined()
@@ -219,7 +221,7 @@ describe("提问面板与直发消息", () => {
     expect(second, "回合没有走到消费排队输入的第二次请求").toBeDefined()
     expect(userTextsInRequest(second).some(text => text.includes(STEER_TEXT)),
       "直发消息没有随下一次请求到达模型").toBe(true)
-    expect(output.reply, "回合没有以收尾脚本文本结束").toContain(CONSUMED_VISIBLE)
+    expect(visible(output.reply), "回合没有以收尾脚本文本结束").toContain(visible(CONSUMED_VISIBLE))
   }, 30_000)
 
   it("直发消息只取消提问：权限确认面板原样待答，仍由自己的通道结算 [ask-tool-direct-reply-keeps-permission]", async () => {

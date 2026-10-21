@@ -111,7 +111,7 @@ export interface DreamingOutcome {
 const REVIEW_SYSTEM_PROMPT = [
   "你负责把用户本人说过的话整理成长期记忆候选。",
   "只输出 JSON，不要解释，不要 markdown 代码块。",
-  '输出形如 {"candidates":[{"sourceIds":["..."],"content":"...","summary":"...","kind":"fact|preference|episode|working","scope":"user|card|session","aliases":["..."],"pinned":false,"importance":0-10,"confidence":0-1,"reason":"..."}]}。',
+  '输出形如 {"candidates":[{"sourceIds":["..."],"content":"...","summary":"...","kind":"fact|preference|episode|working","scope":"user|card|session","aliases":["..."],"pinned":false,"importance":0-10,"confidence":0-1,"supersedesIds":["已有条目 id"],"reason":"..."}]}。',
   "规则：",
   "1. 只记录用户本人的陈述。朋友的偏好、假设、举例、引用、翻译内容都不算用户事实。",
   "2. 每条候选必须带至少一个来源 id，且只能用输入里出现过的 id。",
@@ -124,6 +124,8 @@ const REVIEW_SYSTEM_PROMPT = [
   "8. 请求句不是偏好：「帮我 / 看看 / 猜猜 / 查一下 / 截个图」这类当场需求，即使重复几次也只说明在聊天或测试，不记；调试与测试性质的任务（让你临时建个文件、试试某功能）不记。",
   "9. 同一批输入里，同一类内容最多产出一条候选；没有新信息就少产出。",
   "10. 没有值得长期记住或更新的内容时返回空数组 —— 空数组是常见且正确的输出，不要为了「有产出」硬写（宁可少记不可滥记）。",
+  "11. 输入里的 existing 是库里已有的用户事实（id/kind/scope/content）。先比对 existing：同一个事实已经在库里、本批来源没有新增或更正信息的，不要产出候选；本批来源明确更新或更正了已有条目时，产出候选并用 supersedesIds 指向那一条。",
+  "12. supersedesIds 只能引用 existing 里出现过的 id，kind 与 scope 必须与该条目一致，最多 1 条；只替换直接对应的那一条，不要顺手合并无关条目。",
 ].join("\n")
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -163,8 +165,10 @@ function reviewSourceAlias(index: number): string {
 export function parseReviewCandidates(
   raw: string,
   batch: readonly MemorySource[],
+  existing: readonly ReviewExistingItem[] = [],
 ): { draft: MemoryDraft; reason?: string }[] {
   const aliasToSourceId = new Map(batch.map((source, index) => [reviewSourceAlias(index), source.sourceId]))
+  const existingById = new Map(existing.map(item => [item.id, item]))
   // Accept both the short alias and the full sourceId; the prompt emits only aliases.
   const allowed = new Set([...aliasToSourceId.keys(), ...batch.map(source => source.sourceId)])
   let parsed: unknown
@@ -214,6 +218,22 @@ export function parseReviewCandidates(
     const eventAt = kind === "episode" || kind === "working" ? parseEventAnchor(record.eventAt) : undefined
     // 只有称呼类的稳定事实才允许 pinned，避免模型把所有东西都塞进核心画像。
     const cardId = batch.find(source => resolvedSourceIds.includes(source.sourceId))?.cardId
+    // 替换目标：只认 existing 里、kind/scope 一致的那一条（Rust 发布口还会复核范围/类别）。
+    const requestedSupersede = Array.isArray(record.supersedesIds)
+      ? record.supersedesIds.filter((id): id is string => typeof id === "string")
+      : []
+    const supersedesIds: string[] = []
+    for (const id of requestedSupersede) {
+      const target = existingById.get(id)
+      if (!target || target.kind !== kind || target.scope !== scope) continue
+      supersedesIds.push(id)
+      break
+    }
+    // 与在库条目完全同文（忽略空白）且没有替换目标：不再新增一条重复记忆。
+    const normalizedContent = content.replace(/\s+/gu, "")
+    const duplicate = existing.some(item => item.kind === kind && item.scope === scope
+      && item.content.replace(/\s+/gu, "") === normalizedContent)
+    if (duplicate && supersedesIds.length === 0) { rejected.push("duplicate-existing"); continue }
     out.push({
       draft: {
         content,
@@ -229,6 +249,7 @@ export function parseReviewCandidates(
         ...(typeof record.expiresAt === "number" ? { expiresAt: record.expiresAt } : {}),
         ...(eventAt ? { eventAt } : {}),
         ...(workingState ? { workingState: workingState as MemoryDraft["workingState"] } : {}),
+        ...(supersedesIds.length ? { supersedesIds } : {}),
         sourceIds: resolvedSourceIds,
       },
       ...(typeof record.reason === "string" ? { reason: record.reason.slice(0, 400) } : {}),
@@ -239,7 +260,10 @@ export function parseReviewCandidates(
       last.draft.scope = "user"
     }
   }
-  if (list.length > 0 && out.length === 0) {
+  // 整批都是「与在库条目重复」不是失败：这是判重生效后的正常空结果，水位照常推进；
+  // 只有形状/来源非法才让批次失败并保留来源待下次重审。
+  const onlyDuplicates = rejected.length > 0 && rejected.every(reason => reason === "duplicate-existing")
+  if (list.length > 0 && out.length === 0 && !onlyDuplicates) {
     const reasons = [...new Set(rejected)].slice(0, 3).join("; ")
     throw new Error(`整理输出没有通过校验的候选: ${reasons || "unknown"}`)
   }
@@ -259,7 +283,46 @@ function parseEventAnchor(value: unknown): TemporalAnchor | undefined {
   return undefined
 }
 
-export function buildReviewPrompt(batch: readonly MemorySource[]): string {
+/** Review 时给模型的在库条目上限：只用于判重与替换，不参与召回。 */
+const REVIEW_EXISTING_LIMIT = 40
+const REVIEW_EXISTING_CONTENT_CHARS = 80
+
+/** 在库用户事实的只读摘要（判重用）。 */
+export interface ReviewExistingItem {
+  id: string
+  kind: string
+  scope: string
+  content: string
+}
+
+/**
+ * 读在库用户事实给 Review 判重（2026-10-21 实机：Review 只看新来源，把显式写入过的
+ * 同一事实又记一遍，同一件事在库里堆成 3–4 条）。派生条目、working 事项与置顶条目
+ * 不参与合并（Rust 发布口同样拒绝），这里先排除。读不到时降级为不做判重，不阻塞整理。
+ */
+export async function reviewExistingItems(): Promise<ReviewExistingItem[]> {
+  try {
+    const items = await memoryList(undefined, undefined, 500)
+    return items
+      .filter(item => item.status === "active" && item.origin !== "derived_behavior"
+        && item.draft.kind !== "working" && !item.draft.pinned)
+      .slice(0, REVIEW_EXISTING_LIMIT)
+      .map(item => ({
+        id: item.id,
+        kind: item.draft.kind,
+        scope: item.draft.scope,
+        content: item.draft.content.slice(0, REVIEW_EXISTING_CONTENT_CHARS),
+      }))
+  } catch (error) {
+    log.warn("读取在库条目失败，本轮整理不做判重", formatError(error))
+    return []
+  }
+}
+
+export function buildReviewPrompt(
+  batch: readonly MemorySource[],
+  existing: readonly ReviewExistingItem[] = [],
+): string {
   return JSON.stringify({
     now: Date.now(),
     sources: batch.map((source, index) => ({
@@ -268,6 +331,7 @@ export function buildReviewPrompt(batch: readonly MemorySource[]): string {
       at: source.observedAt,
       cardId: source.cardId ?? null,
     })),
+    existing,
   })
 }
 
@@ -606,6 +670,8 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
     // 同一轮内预留与调用共用同一个模型与预算，避免中途改配置造成账目口径不一致。
     // 模型按需解析：纯系统观察批次不过模型，没有可用模型时也不应被它拖住。
     let auxModel: ReturnType<typeof resolvePiAuxModel> | undefined
+    // 在库条目按整次作业读一次：判重与替换目标在批之间保持一致。
+    let reviewExisting: ReviewExistingItem[] | undefined
 
     for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch += 1) {
       if (options.signal?.aborted) {
@@ -665,7 +731,8 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
         const configuredReviewMaxTokens = memoryConfig.dreamingReviewMaxTokens
         const reviewMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR,
           Math.min(configuredReviewMaxTokens ?? outputBudget, outputBudget))
-        const userText = buildReviewPrompt(usable)
+        reviewExisting ??= await reviewExistingItems()
+        const userText = buildReviewPrompt(usable, reviewExisting)
         // 单批再按真实剩余窗口收紧：输入 + 输出 + 余量必须留在窗口内，避免大输入把输出逼到截断。
         const inputTokens = estimateContextTokens(userText)
         const reserveMargin = Math.max(512, Math.floor(contextWindow * .02))
@@ -699,7 +766,7 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
           await settleMemoryDreamingBudget(`${jobId}:${input.resumedBatchOffset + batch}`, today, reservation, actualUsage)
           reservedTokens -= reservation
         }
-        const parsed = parseReviewCandidates(result.text, usable)
+        const parsed = parseReviewCandidates(result.text, usable, reviewExisting)
         candidateCount += parsed.length
         if (parsed.length > 0) {
           candidatesAdded += await addMemoryCandidates(jobId, await candidatePayloads(parsed))

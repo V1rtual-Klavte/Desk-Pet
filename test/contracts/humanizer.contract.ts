@@ -87,9 +87,25 @@
 // markdown 列表，也避免 `2.` 黏进上一条。sourceHash 复算。
 // 2026-10-20 空格不再切分（同批）：splitByWhitespace 删除，空格只留在泡内；
 // 「JDK 8」「Java 8」这类技术词不再被空格切开；提示词分句改说短逗号。sourceHash 复算。
+// 2026-10-21 细切与空格兜底（本批刷新）：细切概率 40% → 60%（2026-10-21 用户口径：
+// 细切可以再多）；长段在句读切不出边界时按**中英边界空格**兜底切分（空格不切拉丁词之间，
+// `JDK 8`/`VS Code` 保持完整；纯英文长句仍不拆），修「整段只用空格断句时挤成一个气泡」。
+// hz-01 描述同步（新增 humanizer-fine-share / humanizer-space-only-split）；hz-02..04
+// 行为面未变。sourceHash 按当前源码复算。
+// 2026-10-21 粒度收口（同批）：普通档单泡目标 30 → 24 字、上限 50 → 38 字（用户口径：
+// 38–40 字的一条仍算「一大段」）；并泡上限从 max+15 收回 max；标点切分后仍超上限的片段
+// 再做一次空格兜底（修「前半句带句号、后半句 75 字原样留下」）。hz-01 描述同步；
+// sourceHash 按当前源码复算。
+// 2026-10-21 提示词收口（同批）：拟人提示只管内容与语气，排版（分条/换行/拆泡）全部归代码，
+// 删除「短句为主」「分点单独一行 + SPLIT」「不要模仿历史」等与代码抢边界的规则。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
+// 2026-10-21 拟人分泡批次（本批刷新）：去掉并泡（groupPieces / mergeShortGroups /
+// mergeCrossScriptParts 删除，切出几段就是几泡）；空格兜底只认「中文 中文」之间的空格，
+// 中文与英文/数字/行内代码相邻的空格不切；带 <<SPLIT>> 的标记段先按空行分段，代码围栏
+// 前后的说话各自成泡。hz-01 描述同步，新增 humanizer-split-marker-code-fence；
+// hz-02..04 行为面未变。sourceHash 按当前源码复算。
 export const humanizerContract: ModuleContract = {
   module: "humanizer",
   sourceFiles: [
@@ -107,16 +123,16 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "1e1c4496c46086c8ab7d8b0e1832e575d16d05210b72a63da2f4b65c0ab6e222",
+  sourceHash: "e2e177971a19de32a24f4b6db362a818efdf0af5e39d833020ef5d08f484af1e",
   coverage: [
     {
       id: "hz-01",
       feature: "表达标记解析",
-      description: "识别正文中代码围栏和行内代码外的 SPLIT token（含行内、空格或大小写变化）并按其分泡（不设总条数上限）；casual 流无标记时按空行分段成泡（单个换行与围栏内空行不分），长段兜底只按句读、逗号、冒号等标点切分（空格不再当边界，`JDK 8` 这类技术词保持完整；不做字数硬切，也不从连接词/语气词下刀；技术/中英混排保持英文词与代码标识完整），短片段按 30 字目标合并且不留下单词孤泡；问号/叹号保留，长句兜底分泡时不把带 ?! 或冒号的前一句并回下一句，连续 ?! 不被拆开；细切档把所有全角标点（。！？；：，、…—–引号括号）当硬边界，普通档只把 ?! 和冒号当硬边界，ASCII `. , :` 不切；列表起始（阿拉伯数字/中文数字/圈号/项目符号）是硬边界，编号后的点或括号换成空格，多行短列表也按项拆开；分号、顿号、冒号在正文侧换成空格，约 40% 的逗号按文本+位置哈希换成空格，其余泡首/泡尾句读剥掉，中英之间不自动补空格；task 流只剥标记且保持单泡；SILENT 只在 casual 整条可见正文等于哨兵时成立",
-      why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记；模型用空行分段时要分成几条气泡（2026-10-05 用户规则）；技术类可以多泡但不能切在句子中间（2026-10-20 用户规则）",
+      description: "识别正文中代码围栏和行内代码外的 SPLIT token（含行内、空格或大小写变化）并按其分泡（不设总条数上限）；casual 流无标记时按空行分段成泡（单个换行与围栏内空行不分），长段兜底先按句读、逗号、冒号等标点切分，句读切不出边界、或句读切完后仍有片段超过 38 字时，再按「中文 中文」之间的空格兜底切分（中文与英文/数字/行内代码相邻的空格不切，`JDK 8`/`VS Code` 这类技术词保持完整，纯英文长句仍不拆；不做字数硬切，也不从连接词/语气词下刀；技术/中英混排保持英文词与代码标识完整），切出几段就是几泡、不再按目标长度合并，没有任何标点或中文空格边界的片段保持原样；问号/叹号保留，长句兜底分泡时不把带 ?! 或冒号的前一句并回下一句，连续 ?! 不被拆开；约 60% 的文本按哈希走细切（气泡数随机但不抖动），细切档把所有全角标点（。！？；：，、…—–引号括号）当硬边界，普通档只把 ?! 和冒号当硬边界，ASCII `. , :` 不切；列表起始（阿拉伯数字/中文数字/圈号/项目符号）是硬边界，编号后的点或括号换成空格，多行短列表也按项拆开；分号、顿号、冒号在正文侧换成空格，约 40% 的逗号按文本+位置哈希换成空格，其余泡首/泡尾句读剥掉，中英之间不自动补空格；task 流只剥标记且保持单泡；SILENT 只在 casual 整条可见正文等于哨兵时成立",
+      why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记；模型用空行分段时要分成几条气泡（2026-10-05 用户规则）；技术类可以多泡但不能切在句子中间（2026-10-20 用户规则）；整段只用空格断句时要分泡，不能挤成一大条（2026-10-21 用户规则）",
       layer: "unit",
       depth: "shallow",
-      scenarios: ["humanizer-protocol-split-no-cap", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact", "humanizer-long-fallback", "humanizer-technical-split", "humanizer-no-fragment", "humanizer-fine-split", "humanizer-bubble-single-line", "humanizer-connective-split", "humanizer-punct-cleanup", "humanizer-task-bubble-lines"],
+      scenarios: ["humanizer-protocol-split-no-cap", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact", "humanizer-long-fallback", "humanizer-technical-split", "humanizer-no-fragment", "humanizer-fine-split", "humanizer-bubble-single-line", "humanizer-connective-split", "humanizer-punct-cleanup", "humanizer-task-bubble-lines", "humanizer-fine-share", "humanizer-space-only-split", "humanizer-split-marker-code-fence"],
     },
     {
       id: "hz-02",

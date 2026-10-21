@@ -25,23 +25,24 @@ export const HUMANIZER_PROMPT = `[拟人表达]
 - 先保证回答完整，再尽量自然简洁；形式与内容冲突时服从内容。
 
 说话方式：
-- 像微信聊天，短句为主，分句用短逗号；一次说一到两件事，不写成一整段。
-- 技术、知识、资料类回答也用短句说清楚；代码块整块保留，前后的说话分开。
+-【硬性】可见正文必须带标点：句子之间用逗号，句末用句号；不许用空格或直接连写代替标点；少用括号。
+- 像朋友聊天：用自己的口气，不写客服腔、不写文档腔。
 - 不写 markdown 标题与加粗；步骤清单可以保留，但不套标题、不当文档写。
-- 长短自然一点，别每条都一个样；问号、叹号按语气用，别每句都挂。
-- 分点说明时，每点单独一行，点前输出 ${HUMANIZER_SPLIT_MARKER}；编号用 1 2 3 或 一 二 三，编号后面不要用点。
-- 称呼和 emoji 低频。
+- 代码块整块保留，前后的说话照常写。
+- 称呼低频。
+- 分点说明时，每点前输出 ${HUMANIZER_SPLIT_MARKER}；编号用 1、2、3或 一、二、三，编号后面不要用点。
+- 可见正文的句子之间必须有标点或空格，不许整段连成一串。
 
 说话内容：
-- 以「我」为主：亮自己的观点、喜好、小道理；不点评对方、不分析对方状态、不补充对方没说的事。
-- 不解释自己的话，不加自我注解的尾巴，不追加「懂了吗」这类收尾。
+- 以「我」为主，可适当加自己的观点、喜好、小道理，不点评对方、不分析对方状态、不补充对方没说的事。
+- 不解释自己的话，不加自我注解的尾巴。
 - 闲聊不是咨询：用户没要方案时，先给态度，再给一句具体的；不列步骤、不写三点建议、不做总结段。
   用户明确要方案或步骤时，可以分条说，但每条仍然短，不写标题和总结段。
 - 讲知识也像朋友聊天，不像讲课：不铺无关背景、不做总结段，但不能删掉回答所必需的信息。
 - 接得住没头没尾，同频翻回去。
 
 长度与沉默：
-- 闲聊要短：日常、情绪、近况这类，整条回复两三句、40 字以内；技术、知识、资料、查询类问题才需要完整答案。
+- 闲聊要短：日常、情绪、近况这类，40 字以内；技术、知识、资料、查询类问题才需要完整答案。
 - 纯确认、接不上话时同档极短；好奇问题一个词可答，不追问。
 - 仅纯符号、误触、重复等闲聊噪音整条输出 ${HUMANIZER_SILENT_MARKER}；正常话题接不上时短答。
 
@@ -69,15 +70,16 @@ export type HumanizerFlow = "casual" | "task"
  * 不设总条数上限，只限制单条别太长（短行可以并成一条）；代码围栏整段跳过。
  */
 const CASUAL_FALLBACK_MIN_CHARS = 30
-/// 单泡目标长度（2026-10-20 用户裁定：15 字硬切太细，「浮层」「老实」会被劈成两半；
-/// 兜底只按句读、逗号和空白等自然边界切，短片段按目标长度合并；没有安全边界时
-/// 宁可留长泡，也不在词中间下刀。技术/中英混排同样按空白边界切，英文词、代码标识
-/// 与数字保持完整。
-const CASUAL_BUBBLE_TARGET_CHARS = 30
+/// 单泡目标长度（2026-10-21 用户口径：30 → 24 字；2026-10-20 裁定不再 15 字硬切，
+/// 「浮层」「老实」会被劈成两半）。兜底只按句读、逗号和空白等自然边界切，短片段按
+/// 目标长度合并；没有安全边界时宁可留长泡，也不在词中间下刀。技术/中英混排同样按
+/// 空白边界切，英文词、代码标识与数字保持完整。
+const CASUAL_BUBBLE_TARGET_CHARS = 24
 /// 短片段并泡时的上限：只为了让「另外」「CHM 两个都不允许」这类短句不要单独成泡，
 /// 允许略微超出目标，但不能把两条完整长句硬凑成一大泡。
-const CASUAL_BUBBLE_MAX_CHARS = 50
-/// 约 40% 的回复走更细的切分（2026-10-20 用户规则：随机一点，0.4 概率切得更碎）。
+/// 2026-10-21 用户口径：上限 50 → 38（38–40 字的一条仍被视为「一大段」）。
+const CASUAL_BUBBLE_MAX_CHARS = 38
+/// 约 60% 的回复走更细的切分（2026-10-21 用户规则：细切可以再多，0.6 概率切得更碎）。
 /// 用文本哈希决定，避免同一句每次刷新气泡数都变，也让单测可控。
 const CASUAL_FINE_MIN_CHARS = 15
 const CASUAL_FINE_TARGET_CHARS = 15
@@ -91,13 +93,6 @@ let casualLimits: CasualLimits = CASUAL_NORMAL_LIMITS
 /// 随机细切可在所有符号分泡，该保留的 `！？` 仍保留；ASCII `. , :` 不切，保护技术 token）。
 const NORMAL_SENTENCE_PATTERN = /[^。！？!?；;]+[。！？!?；;]*|[。！？!?；;]+/gu
 const FINE_SENTENCE_PATTERN = /[^。！？!?；;：，、…—–”’」』》〉）】]+[。！？!?；;：，、…—–”’」』》〉）】]*|[。！？!?；;：，、…—–”’」』》〉）】]+/gu
-/// 细切档所有全角标点都是硬边界；普通档只把 ?! 和冒号当硬边界。
-function endsWithBoundary(text: string): boolean {
-  return casualLimits.allPunctuation
-    ? /[。！？!?；;：，、…—–”’」』》〉）】]$/u.test(text)
-    : /[！？!?：]$/u.test(text)
-}
-
 /// FNV-1a；只用来决定粒度，不做安全用途。
 function textHash(text: string): number {
   let hash = 2166136261
@@ -108,9 +103,9 @@ function textHash(text: string): number {
   return hash >>> 0
 }
 
-/// 约 40% 的回复走细切；同一句稳定，不同句之间随机分布。
+/// 约 60% 的回复走细切；同一句稳定，不同句之间随机分布。
 function shouldUseFineBubbles(text: string): boolean {
-  return textHash(text) % 10 < 4
+  return textHash(text) % 10 < 6
 }
 
 /// 装饰性标点（破折号 / 省略号 / 中文引号 / 书名号）：代码侧统一去掉。
@@ -124,6 +119,8 @@ const DECOR_PUNCTUATION = /[—–―…“”‘’「」『』《》〈〉]/gu
 const PROSE_SEPARATOR = /[；;、：]/gu
 /// 列表项起始：阿拉伯数字/中文数字/圈号/项目符号。数字后的点必须不是小数点
 /// （`1.5` 不算列表），后面可以是空格或直接接正文。
+/// 列表起始只认**带分隔符**的编号（`1.` `1、`）与项目符号：裸数字 + 空格会把
+/// 「10 月 15 号发的」这类句子误判成列表项（2026-10-21 实测），不再接受。
 const LIST_MARKER_START = /^(?:[（(]?\d{1,2}(?:[）)、]|\.(?!\d))|[一二三四五六七八九十]{1,3}[、.]|[①-⑳]|[-*•]\s+)\s*/u
 /// 逗号随机换空格的比例（40%，与细切概率同档）；按文本+位置哈希决定，同一句稳定不抖动。
 const COMMA_TO_SPACE_PERCENT = 40
@@ -172,94 +169,6 @@ function stripDecorPunctuation(text: string): string {
   }).join("\n")
 }
 
-/// 短于这个长度的片段（实机「另外」「图片按钮却是亮的」）如果正好卡在目标边界，
-/// 允许并入上一泡，避免出现一个词一条气泡的孤泡。
-const CASUAL_SHORT_PIECE_CHARS = 12
-/// 句首连接词（「另外」「还有」「然后」）属于下一句，不能并进上一泡；
-/// 它们只允许向下一泡靠，避免出现「…号发的另外」这种尾巴。
-const CASUAL_CONNECTIVE_START = /^(?:然后|不过|但是|所以|反正|而且|其实|看来|就是|还有|另外|不然|要不|感觉|结果|最后|再说)/u
-
-function groupPieces(pieces: string[]): string[] {
-  const groups: string[] = []
-  let current = ""
-  for (const piece of pieces) {
-    if (!current) { current = piece; continue }
-    // 问号/叹号是硬分泡边界；细切档里所有全角标点也是硬边界，
-    // 前一句带着它收尾时，下一句另起一泡，不被目标长度并回去（2026-10-20 用户规则）。
-    const hardBreak = endsWithBoundary(current)
-    const listStart = LIST_MARKER_START.test(piece)
-    const fits = !hardBreak && !listStart && current.length + piece.length + 1 <= casualLimits.target
-    const absorbsShort = !hardBreak && !listStart && !CASUAL_CONNECTIVE_START.test(piece) &&
-      piece.length <= CASUAL_SHORT_PIECE_CHARS &&
-      current.length + piece.length + 1 <= casualLimits.max
-    if (fits || absorbsShort) {
-      current += `\n${piece}`
-    } else {
-      groups.push(current)
-      current = piece
-    }
-  }
-  if (current) groups.push(current)
-  return mergeShortGroups(groups)
-}
-
-/// 细切后跨中英边界的相邻碎泡并回一泡（2026-10-20 实机：
-/// 「sizeCtl」单独一泡、「低 16」/「位变成…」、「…会走」/「helpTransfer…」）。
-/// 只在同一段内使用（splitLongCasual 每次处理一个空行段/SPLIT 段），句读结尾不跨。
-function mergeCrossScriptParts(parts: string[]): string[] {
-  const merged: string[] = []
-  for (const part of parts) {
-    const previous = merged[merged.length - 1]
-    const previousTrimmed = previous?.trim() ?? ""
-    const partTrimmed = part.trim()
-    const previousEndsPunctuation = /[。！？!?；;，,：:、]$/u.test(previousTrimmed)
-    const previousEndsAscii = /[A-Za-z0-9`_.-]$/u.test(previousTrimmed)
-    const previousEndsCjk = /[㐀-䶿一-鿿]$/u.test(previousTrimmed)
-    const previousTail = previousTrimmed.split(/\s+/u).pop() ?? ""
-    const partStartsCjk = /^[㐀-䶿一-鿿]/u.test(partTrimmed)
-    const partStartsAscii = /^[A-Za-z0-9`]/u.test(partTrimmed)
-    const partStartsList = LIST_MARKER_START.test(partTrimmed)
-    const crossScript = previous !== undefined && !previousEndsPunctuation && !partStartsList && (
-      (previousEndsAscii && previousTail.length <= 12 && partStartsCjk) ||
-      (previousEndsCjk && partStartsAscii)
-    )
-    if (previous !== undefined && crossScript && previous.length + part.length + 1 <= casualLimits.max + 15) {
-      merged[merged.length - 1] = `${previous} ${part}`
-    } else {
-      merged.push(part)
-    }
-  }
-  return merged
-}
-
-/// 并泡后再扫一遍：如果相邻两泡里有一泡很短（「另外」「CHM 两个都不允许」），
-/// 在不超过上限的前提下并成一泡，避免孤泡。只处理相邻组，不跨泡重组。
-function mergeShortGroups(groups: string[]): string[] {
-  const merged: string[] = []
-  for (const group of groups) {
-    const previous = merged[merged.length - 1]
-    const hasShort = previous !== undefined &&
-      (previous.length <= CASUAL_SHORT_PIECE_CHARS + 4 || group.length <= CASUAL_SHORT_PIECE_CHARS + 4)
-    // 连接词开头的泡不往回并；但如果上一泡本身就是连接词（「另外」），
-    // 说明这一泡是它的下半句，允许向下一泡多让 10 个字。
-    const previousIsConnective = previous !== undefined && CASUAL_CONNECTIVE_START.test(previous)
-    const groupIsConnective = CASUAL_CONNECTIVE_START.test(group)
-    const previousIsHardBreak = previous !== undefined && endsWithBoundary(previous)
-    const groupIsListStart = LIST_MARKER_START.test(group)
-    const canMerge = previous !== undefined && !previousIsHardBreak && !groupIsListStart && hasShort &&
-      (!groupIsConnective || previousIsConnective)
-    const limit = previousIsConnective
-      ? casualLimits.max + 10
-      : casualLimits.max
-    if (canMerge && previous.length + group.length + 1 <= limit) {
-      merged[merged.length - 1] = `${previous}\n${group}`
-    } else {
-      merged.push(group)
-    }
-  }
-  return merged
-}
-
 function splitByCommas(text: string): string[] {
   const pieces: string[] = []
   let current = ""
@@ -287,17 +196,55 @@ function splitSentenceOrComma(text: string): string[] {
     .flatMap(segment => splitByCommas(segment))
 }
 
+/// 只有「中文 中文」之间的空格才是分泡边界（2026-10-21 用户口径）：
+/// 中文与英文/数字/行内代码相邻的空格不切，避免把 `LoadBalancer 那边把
+/// `spring...` 显式写成 false` 这类句子切成碎泡。
+const SPACE_BETWEEN_HAN = /(?<=\p{Script=Han})\s+(?=\p{Script=Han})/gu
+
+/**
+ * 无标点长段兜底（2026-10-21 用户口径）：模型偶尔整段用空格断句，句读切分
+ * 一条边界都找不到，整条就挤成一个气泡。只在两个汉字之间的空格切；
+ * 中文与拉丁字母/数字相邻的空格不切（「JDK 8」「VS Code」这类技术词保持完整，
+ * 行内代码与前后中文也不拆开）。
+ */
+function splitLongByHanSpaces(text: string): string[] {
+  if (text.length <= casualLimits.max) return [text]
+  const chunks = text.split(SPACE_BETWEEN_HAN).map(chunk => chunk.trim()).filter(Boolean)
+  if (chunks.length <= 1) return [text]
+  const pieces: string[] = []
+  let current = ""
+  for (const chunk of chunks) {
+    if (!current) { current = chunk; continue }
+    if (current.length + chunk.length + 1 <= casualLimits.target) {
+      current += ` ${chunk}`
+      continue
+    }
+    pieces.push(current)
+    current = chunk
+  }
+  if (current) pieces.push(current)
+  return pieces.length > 1 ? pieces : [text]
+}
+
 function splitLongCasual(text: string): string[] {
   const trimmed = text.trim()
   const lines = trimmed.split("\n").map(line => line.trim()).filter(Boolean)
   // 代码围栏整块不拆；短句默认不拆，但多行列表即使短也按项分开。
   if (trimmed.includes("```")) return [trimmed]
   if (trimmed.length <= casualLimits.min && !lines.some(line => LIST_MARKER_START.test(line))) return [trimmed]
-  const pieces = lines.length > 1
-    ? lines.flatMap(line => line.length > casualLimits.target ? splitSentenceOrComma(line) : [line])
-    : splitSentenceOrComma(trimmed)
+  // 句读切不出边界的长段再走「中文 中文」空格兜底；短行不进兜底，避免无谓拆泡。
+  const splitLine = (line: string): string[] => {
+    const byPunctuation = line.length > casualLimits.target ? splitSentenceOrComma(line) : [line]
+    // 标点切完不等于切够了：剩下的片段仍可能远超单泡上限（2026-10-21 实机：
+    // 「…不多。写的时候…」前半句带句号切开后，后半句 75 字没有逗号、原样留成一大泡）。
+    // 每个仍超上限的片段再走一次中文空格兜底。
+    return byPunctuation.flatMap(piece =>
+      piece.length > casualLimits.max ? splitLongByHanSpaces(piece) : [piece])
+  }
+  const pieces = lines.length > 1 ? lines.flatMap(splitLine) : splitLine(trimmed)
   if (pieces.length <= 1) return [trimmed]
-  return mergeCrossScriptParts(groupPieces(pieces))
+  // 2026-10-21 用户口径：先去掉并泡，切出几段就是几泡（不再按目标长度合并）。
+  return pieces
 }
 
 /**
@@ -420,7 +367,7 @@ function normalizeSplitMarkers(text: string): string {
 }
 
 export interface HumanizerOptions {
-  /** auto: 约 40% 文本走细切；normal/fine 仅供测试固定粒度。 */
+  /** auto: 约 60% 文本走细切；normal/fine 仅供测试固定粒度。 */
   split?: "auto" | "normal" | "fine"
 }
 
@@ -434,7 +381,7 @@ export function transformHumanizerText(
   options: HumanizerOptions = {},
 ): HumanizedText {
   const text = normalizeSplitMarkers(input.replace(/\r\n/g, "\n"))
-  // 同一段文本的粒度稳定（哈希决定），不同文本约 40% 走细切；
+  // 同一段文本的粒度稳定（哈希决定），不同文本约 60% 走细切；
   // 测试可用 options.split 固定成 normal/fine。
   casualLimits = flow === "casual" &&
     (options.split === "fine" || (options.split !== "normal" && shouldUseFineBubbles(text)))
@@ -465,7 +412,11 @@ export function transformHumanizerText(
       }
       pieces.push(current.join("\n").trim())
       // 模型已经给了泡，但单泡仍长时再按句读细切；短泡原样保留。
-      pieces = pieces.flatMap(piece => splitLongCasual(piece))
+      // 标记段内部还可能夹着空行与代码围栏：先按空行分段（围栏内空行不算断点），
+      // 再逐段细切，保证代码块前后的说话各自成泡（2026-10-21 实机：带 <<SPLIT>>
+      // 的技术回答里，第四点、配置说明和 YAML 块被 `includes("```")` 整段留成一泡）。
+      pieces = pieces.flatMap(piece =>
+        splitByParagraphs(piece).flatMap(paragraph => splitLongCasual(paragraph)))
     } else {
       // 空行分段兜底（2026-10-05 用户规则「开启拟人化后回车消息要分成几条」）：
       // 模型没发 SPLIT 标记、用空行分段时按段分泡，每个空行段独立成一条气泡；
