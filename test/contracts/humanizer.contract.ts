@@ -142,7 +142,7 @@ export const humanizerContract: ModuleContract = {
       why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记；模型用空行分段时要分成几条气泡（2026-10-05 用户规则）；技术类可以多泡但不能切在句子中间（2026-10-20 用户规则）；整段只用空格断句时要分泡，不能挤成一大条（2026-10-21 用户规则）",
       layer: "unit",
       depth: "shallow",
-      scenarios: ["humanizer-protocol-split-no-cap", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact", "humanizer-long-fallback", "humanizer-technical-split", "humanizer-no-fragment", "humanizer-fine-split", "humanizer-bubble-single-line", "humanizer-connective-split", "humanizer-punct-cleanup", "humanizer-task-bubble-lines", "humanizer-fine-share", "humanizer-space-only-split", "humanizer-split-marker-code-fence"],
+      scenarios: ["humanizer-protocol-split-no-cap", "humanizer-protocol-marker-normalization", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact", "humanizer-long-fallback", "humanizer-technical-split", "humanizer-no-fragment", "humanizer-fine-split", "humanizer-bubble-single-line", "humanizer-connective-split", "humanizer-punct-cleanup", "humanizer-task-bubble-lines", "humanizer-fine-share", "humanizer-space-only-split", "humanizer-split-marker-code-fence", "humanizer-list-lines"],
     },
     {
       id: "hz-02",
@@ -169,6 +169,15 @@ export const humanizerContract: ModuleContract = {
     // 洗成「本层没有可核对内容」。组件渲染的实机证据待原生 UI 测试驱动承接，不在服务级
     // 场景里冒充；caseId 保留为稳定历史标识（personality-card pc-09 也按它引用）。
     { id: "hz-04", feature: "生产入口分泡与顶栏所有权", description: "真实 sendMessage 提交的普通聊天多泡正文进入逐泡揭示：生成期 Card typing 文案由顶栏状态通道持有、首泡揭示时释放；提交后首个揭示状态为 held（不整条全显）、第二泡按泡间节奏延后、停止立即全显并回收瞬态状态；带工具调用的中间回合，其可见台词同样经过拟人变换（toolCall part 原样保留）。组件渲染的 DOM 证据随 WebView 退役，本点只承担服务级链路", why: "调度器单测不能证明真实生产入口（runner/runtime）消费了瞬态揭示与阶段所有权通道，也不能证明工具轮可见台词没有绕过拟人化", layer: "e2e", depth: "deep", scenarios: ["humanizer-real-component-reveal"] },
+    {
+      id: "hz-05",
+      feature: "请求视图保留拟人化前原文",
+      description: "历史助手正文进请求前只摘掉 SPLIT/SILENT 控制标记，保留模型原始标点与换行；围栏与行内代码里的字面标记保持原样；展示侧仍用拟人化 parts",
+      why: "2026-10-21 实机：历史里只剩无标点短泡时，模型把它们当风格范例，连续产出无法切分的连写长串",
+      layer: "unit",
+      depth: "shallow",
+      scenarios: ["humanizer-raw-visible-text"],
+    },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: false },
 }

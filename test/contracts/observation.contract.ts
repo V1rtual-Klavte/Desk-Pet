@@ -420,7 +420,7 @@ export const observationContract: ModuleContract = {
       why: "2026-10-21 实机：depth 读了三个顶层目录、噪声观察凑满 ready 并被沉淀、截图只有标题栏、同钟点 dreaming 赶在了解之前跑完",
       layer: "unit",
       depth: "deep",
-      scenarios: ["observation-mode-empty-breadth", "observation-depth-filter", "observation-depth-anchors", "observation-summary-noise", "observation-summary-informative"],
+      scenarios: ["observation-mode-empty-breadth", "observation-depth-filter", "observation-depth-anchors", "observation-depth-strategy", "observation-decision-prompt-variants", "observation-summary-noise", "observation-summary-informative"],
     },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: true },
