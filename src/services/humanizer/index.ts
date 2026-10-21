@@ -6,6 +6,7 @@ export {
   HUMANIZER_SILENT_MARKER,
   HUMANIZER_SPLIT_MARKER,
   SilenceGuard,
+  humanizerRawVisibleText,
   humanizerSilenceGuard,
   transformHumanizerText,
 } from "./protocol"

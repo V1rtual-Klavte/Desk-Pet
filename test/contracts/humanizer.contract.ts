@@ -106,6 +106,14 @@ import type { ModuleContract } from "../host/types"
 // 中文与英文/数字/行内代码相邻的空格不切；带 <<SPLIT>> 的标记段先按空行分段，代码围栏
 // 前后的说话各自成泡。hz-01 描述同步，新增 humanizer-split-marker-code-fence；
 // hz-02..04 行为面未变。sourceHash 按当前源码复算。
+// 2026-10-21 历史消息理解边界（本批刷新）：HUMANIZER_PROMPT 新增「历史消息仅用于理解」小节
+// —— 历史只提供对话事实与上下文、用户偏好与明确约定、当前话题及语义连续性，不得把历史
+// assistant 的语言形式当风格示例（尤其缺标点、连续短句、用换行代替断句）。此前同批精简删除的
+// 「不要模仿历史」以更窄的「仅用于理解」口径回归（用户口径：救回被拆泡历史带偏的风格）。
+// 纯提示词文本；分泡/沉默/提交代码路径未动，hz-01..04 行为面未变，sourceHash 按当前源码复算。
+// 2026-10-21 原始助手正文进请求视图（本批刷新）：protocol.ts 新增 humanizerRawVisibleText
+// （只摘控制标记，保留标点/换行）；runtime.ts 提交时记录、请求视图替换、Provider 前移除。
+// hz-01 的展示分泡与 hz-04 的提交/揭示行为未变；sourceHash 按当前源码复算。
 export const humanizerContract: ModuleContract = {
   module: "humanizer",
   sourceFiles: [
@@ -123,7 +131,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "e2e177971a19de32a24f4b6db362a818efdf0af5e39d833020ef5d08f484af1e",
+  sourceHash: "a41e859ac1bf4ce815aebc4a985b2837d9279cbb4ba3d4a3434b0c0080e8bbdb",
   coverage: [
     {
       id: "hz-01",

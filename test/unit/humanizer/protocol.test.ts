@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { SilenceGuard, transformHumanizerText } from "@/services/humanizer/protocol"
+import { humanizerRawVisibleText, SilenceGuard, transformHumanizerText } from "@/services/humanizer/protocol"
 
 // 生产默认按文本哈希约 60% 走细切；单测固定成 normal，避免断言随哈希抖动。
 const transform = (text: string, flow?: "casual" | "task") =>
@@ -29,6 +29,17 @@ describe("humanizer protocol", () => {
     expect(task.text).not.toContain("SPLIT")
     expect(transform("write `<<SPLIT>>` literally", "task").parts)
       .toEqual(["write `<<SPLIT>>` literally"])
+  })
+
+  it("keeps pre-humanizer prose intact for the request view [humanizer-raw-visible-text]", () => {
+    // 2026-10-21 用户口径：模型侧要看未拆原文，展示侧仍用拟人化泡。
+    expect(humanizerRawVisibleText("第一泡，第二泡？ <<SPLIT>> 第三泡。"))
+      .toBe("第一泡，第二泡？\n第三泡。")
+    expect(humanizerRawVisibleText("line\n<<split>>\nnext")).toBe("line\nnext")
+    expect(humanizerRawVisibleText("  \n<<SILENT>>\n  ")).toBe("")
+    // 围栏与行内代码里的字面标记是正文，不能被当作控制语法删掉。
+    expect(humanizerRawVisibleText("```text\n<<SPLIT>>\n```")).toBe("```text\n<<SPLIT>>\n```")
+    expect(humanizerRawVisibleText("write `<<split>>` literally")).toBe("write `<<split>>` literally")
   })
 
   it("splits prose around fenced code even when the model emitted split markers [humanizer-split-marker-code-fence]", () => {

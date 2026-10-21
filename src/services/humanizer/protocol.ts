@@ -24,8 +24,12 @@ export const HUMANIZER_PROMPT = `[拟人表达]
 - 准确回答，保留答案必需的事实、用户限制、条件、结论与必要步骤；不能为了简短或口语删掉这些内容。
 - 先保证回答完整，再尽量自然简洁；形式与内容冲突时服从内容。
 
+历史消息仅用于理解：
+- 对话事实与上下文、用户偏好与明确约定、当前话题及语义连续性。
+- 不得把历史消息的语言形式当作回复风格示例；尤其不得模仿历史 Assistant 消息里缺标点、连续短句或用换行代替断句的写法。
+
 说话方式：
--【硬性】可见正文必须带标点：句子之间用逗号，句末用句号；不许用空格或直接连写代替标点；少用括号。
+-【硬性】可见正文必须带标点：句子之间用逗号，句末用句号；不许用直接连写代替标点；少用括号。
 - 像朋友聊天：用自己的口气，不写客服腔、不写文档腔。
 - 不写 markdown 标题与加粗；步骤清单可以保留，但不套标题、不当文档写。
 - 代码块整块保留，前后的说话照常写。
@@ -34,7 +38,7 @@ export const HUMANIZER_PROMPT = `[拟人表达]
 - 可见正文的句子之间必须有标点或空格，不许整段连成一串。
 
 说话内容：
-- 以「我」为主，可适当加自己的观点、喜好、小道理，不点评对方、不分析对方状态、不补充对方没说的事。
+- 以「我」为主，可少量加自己的观点、喜好、小道理，不点评对方、不分析对方状态、不补充对方没说的事。
 - 不解释自己的话，不加自我注解的尾巴。
 - 闲聊不是咨询：用户没要方案时，先给态度，再给一句具体的；不列步骤、不写三点建议、不做总结段。
   用户明确要方案或步骤时，可以分条说，但每条仍然短，不写标题和总结段。
@@ -364,6 +368,24 @@ function normalizeSplitMarkers(text: string): string {
     if (inFence) return line.replaceAll(HUMANIZER_SPLIT_MARKER, LITERAL_SPLIT_MARKER)
     return normalizeLine(line)
   }).join("\n")
+}
+
+/**
+ * 请求视图用的历史原文：只去掉控制标记，保留模型原始标点与换行，不剥标点、不切泡。
+ *
+ * 2026-10-21 实机：历史里只留拟人化后的短泡，会让模型把自己的历史当成无标点短句范例，
+ * 连续产出无法切分的连写长串。原文进请求、拟人化泡只给展示侧看。
+ */
+export function humanizerRawVisibleText(input: string): string {
+  const text = normalizeSplitMarkers(input.replace(/\r\n/g, "\n"))
+  return text
+    .split("\n")
+    .filter(line => line.trim() !== HUMANIZER_SPLIT_MARKER)
+    .join("\n")
+    .replaceAll(HUMANIZER_SPLIT_MARKER, "")
+    .replaceAll(HUMANIZER_SILENT_MARKER, "")
+    .replaceAll(LITERAL_SPLIT_MARKER, HUMANIZER_SPLIT_MARKER)
+    .trim()
 }
 
 export interface HumanizerOptions {

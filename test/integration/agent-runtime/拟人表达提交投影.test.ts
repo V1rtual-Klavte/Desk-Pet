@@ -83,9 +83,19 @@ describe("拟人表达原生提交", () => {
       imageSeen = image?.type === "image" && Buffer.from(image.data, "base64").subarray(0, 8).equals(PNG.subarray(0, 8))
       return fakeText("图片请求完成")
     }
+    let historyText = ""
+    let historyFieldLeaked = false
+    const silenceReply: FauxResponseStep = (context: Context) => {
+      const assistant = context.messages.find(message => message.role === "assistant")
+      if (assistant) {
+        historyText = assistant.content.flatMap(part => part.type === "text" ? [part.text] : []).join("|")
+        historyFieldLeaked = Object.prototype.hasOwnProperty.call(assistant, "deskpetRawVisibleText")
+      }
+      return fakeText("<<SILENT>>")
+    }
     const provider = installFakeProvider([
-      fakeText(`第一泡 <<SPLIT>> 第二泡\n<RUNTIME_DATA>\n${VARIABLE}: 已写入\n</RUNTIME_DATA>`),
-      fakeText("<<SILENT>>"), fakeText("<<SILENT>>"), imageReply,
+      fakeText(`第一泡。<<SPLIT>>第二泡。\n<RUNTIME_DATA>\n${VARIABLE}: 已写入\n</RUNTIME_DATA>`),
+      silenceReply, fakeText("<<SILENT>>"), imageReply,
       fakeToolCall("read", { path: taskPath }), fakeText("<<SILENT>>"),
     ])
     restoreProvider = provider.restore
@@ -100,6 +110,8 @@ describe("拟人表达原生提交", () => {
 
       const silence = await runPiAgentTurn({ sessionId, userText: "没有可回应内容。",
         userPrompt: userInputMessage("没有可回应内容。", ""), unansweredCount: 0, isActiveMessage: false })
+      expect(historyText, "Provider 历史应看到未拆原文（含标点），而不是拟人化泡").toBe("第一泡。\n第二泡。")
+      expect(historyFieldLeaked, "自定义原文标注不得进入 Provider 上下文").toBe(false)
       expect(silence.silent, "纯 SILENT 应提交合法空结果").toBe(true)
       expect(silence.committedAssistantEntryId, "空结果仍须绑定原生助手条目").toBeTruthy()
 
@@ -123,6 +135,8 @@ describe("拟人表达原生提交", () => {
       const splitEntry = assistantEntries.find(entry => entry.id === first.committedAssistantEntryId)
       expect(splitEntry?.type === "message" && splitEntry.message.role === "assistant" ? splitEntry.message.content.filter(part => part.type === "text").map(part => part.text) : [],
         "JSONL 中的多泡必须与运行期 parts 同形").toEqual(["第一泡", "第二泡"])
+      expect(splitEntry?.type === "message" ? (splitEntry.message as { deskpetRawVisibleText?: string }).deskpetRawVisibleText : undefined,
+        "JSONL 需保留拟人化前原文供后续请求使用").toBe("第一泡。\n第二泡。")
       const silentEntry = assistantEntries.find(entry => entry.id === silence.committedAssistantEntryId)
       expect(silentEntry?.type === "message" && silentEntry.message.role === "assistant" ? silentEntry.message.content.filter(part => part.type === "text") : [],
         "沉默条目应保持空可见正文").toEqual([])

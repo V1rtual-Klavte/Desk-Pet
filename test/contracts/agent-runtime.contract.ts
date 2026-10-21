@@ -209,6 +209,12 @@ import type { ModuleContract } from "../host/types"
 // 2026-10-21 思考强度值域批次（本批刷新）：ThinkingEffort 增加 max，`ai.thinking.effort`
 // 默认 auto → high；sourceFiles 中 config/types/model-gateway 变化，本域覆盖描述未受影响，
 // sourceHash 按当前源码复算。
+// 2026-10-21 历史消息理解边界（同批）：sourceFiles 中 humanizer/protocol.ts 仅 HUMANIZER_PROMPT
+// 新增「历史消息仅用于理解」小节；请求装配、提交与取消路径未变，本域覆盖描述未受影响，
+// sourceHash 按当前源码复算。
+// 2026-10-21 原始助手正文进请求视图（本批刷新）：runtime.ts 在 after_response 把拟人化前
+// 可见正文记入助手消息 deskpetRawVisibleText，transform_context 开头用它替换历史 text parts
+// 并移除该标注；请求装配、取消与提交路径语义不变，本域覆盖描述未受影响，sourceHash 按当前源码复算。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -258,7 +264,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "a0984b885e830a55a25bb1af10d0a26dd62786acadbb75e306b1e24f9d1d0f8d",
+  sourceHash: "fa5c0fd5eaf7832a0c349b10fe8b0670491b4e7ec3541858f37e7b7ebce29b85",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

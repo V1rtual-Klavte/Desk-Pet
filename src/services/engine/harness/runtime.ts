@@ -65,7 +65,7 @@ import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
 import { ToolLoopGuard, toolLoopBlockReason, toolLoopNotice } from "./tool-loop-guard"
 import { hydrateImageMessages } from "@/services/images"
-import { humanizerSilenceGuard, setFirstRevealHandler, transformHumanizerText } from "@/services/humanizer"
+import { humanizerRawVisibleText, humanizerSilenceGuard, setFirstRevealHandler, transformHumanizerText } from "@/services/humanizer"
 import type { HumanizerFlow, HumanizedText } from "@/services/humanizer"
 import { describeCompactionFailure, ladderGate, summarizeCompaction } from "../compactor"
 import type { LadderGateInput } from "../compactor"
@@ -1028,6 +1028,37 @@ function committedSilentStreak(messages: readonly AgentMessage[]): number {
 
 
 
+/** 助手消息上仅供请求视图使用的原文标注：随 JSONL 落盘，Provider 前被移除。 */
+type RawVisibleAssistantMessage = SettledAssistantMessage & { deskpetRawVisibleText?: string }
+
+/**
+ * 请求视图用未拆原文替换历史助手正文（2026-10-21 用户口径）。
+ *
+ * 展示侧仍用拟人化 parts；模型侧看到自己上一轮真正写下的完整句子，避免把被拆过的
+ * 短泡当成风格范例。字段只存在于本应用提交的助手消息；旧会话没有字段时原样返回。
+ * 字段在这里删除，Provider payload 不会出现自定义属性。
+ */
+function restoreRawAssistantHistory(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map(message => {
+    if (message.role !== "assistant") return message
+    const { deskpetRawVisibleText, ...rest } = message as RawVisibleAssistantMessage
+    if (!deskpetRawVisibleText?.trim()) return message
+    let inserted = false
+    const content: SettledAssistantMessage["content"] = []
+    for (const part of rest.content) {
+      if (part.type !== "text") {
+        content.push(part)
+        continue
+      }
+      if (inserted) continue
+      inserted = true
+      content.push({ type: "text", text: deskpetRawVisibleText })
+    }
+    if (!inserted) content.unshift({ type: "text", text: deskpetRawVisibleText })
+    return { ...rest, content }
+  })
+}
+
 function createRequestViewHook(args: {
   projectToolResults: boolean
   toolsByName: ReadonlyMap<string, ToolDef>
@@ -1059,7 +1090,9 @@ function createRequestViewHook(args: {
 }): NonNullable<HarnessRunHooks["transformContext"]> {
   const tools = [...args.toolsByName.values()]
   let activeAdmissionChecked = false
-  return async ({ messages, systemPrompt, signal }) => {
+  return async ({ messages: historyMessages, systemPrompt, signal }) => {
+    // 模型侧看未拆原文；展示侧仍用拟人化 parts（见 restoreRawAssistantHistory）。
+    const messages = restoreRawAssistantHistory(historyMessages)
     if (args.silenceGuardSessionId) {
       humanizerSilenceGuard.seed(args.silenceGuardSessionId, committedSilentStreak(messages))
     }
@@ -1285,7 +1318,7 @@ function createRuntimeDataStripHook(args: {
               silent: false,
               partCount: parts.length,
             }))
-            const output = { ...stripped, content }
+            const output: RawVisibleAssistantMessage = { ...stripped, content, deskpetRawVisibleText: humanizerRawVisibleText(visibleText) }
             args.recordSettledReply?.(raw, contentText(output.content))
             return output
           }
@@ -1339,11 +1372,17 @@ function createRuntimeDataStripHook(args: {
         return completedParts.map(text => ({ type: "text" as const, text }))
       })
       if (!inserted) content.push(...completedParts.map(text => ({ type: "text" as const, text })))
+      // 历史原文：拟人化前的完整句子；列项补全过的把补上的条目一并留给模型。
+      const rawVisible = humanizerRawVisibleText(visibleText)
+      const rawForHistory = !resolved.silent && rawVisible
+        ? (missing.length ? `${rawVisible}\n${missing.join("\n")}` : rawVisible)
+        : undefined
       const output = {
         ...stripped,
         content,
         ...(resolved.silent ? { deskpetSilent: true } : {}),
-      } as typeof stripped
+        ...(rawForHistory ? { deskpetRawVisibleText: rawForHistory } : {}),
+      } as RawVisibleAssistantMessage
       args.recordSettledReply?.(raw, contentText(output.content), finalResult)
       if (missing.length) args.onCompleted?.(raw, contentText(output.content))
       return output
