@@ -763,7 +763,7 @@ const _ai = {
   get model() { return overrideOr("ai.model", cfg.ai?.model || "deepseek-chat"); },
   get auxModel() { return overrideOr("ai.auxModel", cfg.ai?.auxModel || ""); },
   get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai?.contextMaxTokens ?? DEFAULT_CONTEXT_WINDOW); },
-  get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "auto") as import("@/services/agent/types").ThinkingEffort; },
+  get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "high") as import("@/services/agent/types").ThinkingEffort; },
   get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai?.requireApiKey ?? true); },
   get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },
 };

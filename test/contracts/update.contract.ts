@@ -76,6 +76,9 @@
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
+// 2026-10-21 思考强度值域批次（本批刷新）：ThinkingEffort 增加 max，`ai.thinking.effort`
+// 默认 auto → high；sourceFiles 中 config/types 变化，更新链路不消费思考档位，
+// sourceHash 按当前源码复算。
 export const updateContract: ModuleContract = {
   module: "update",
   sourceFiles: [
@@ -84,7 +87,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "d8c98265b52230b27d46424dd487d3c431660254676e989b8656adcb0d0a6620",
+  sourceHash: "de09cfb49f327c6854e227ea1e8f2ef2e36ae7dabd9a5efbfaf7a5c2ac3682f5",
   coverage: [
     {
       id: "up-01",

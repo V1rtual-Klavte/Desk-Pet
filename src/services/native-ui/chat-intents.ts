@@ -371,9 +371,9 @@ export async function chatSetDefaultDelivery(args: unknown): Promise<void> {
 }
 
 /** `chat_set_thinking_effort` 的 effort：按 ThinkingEffort 值域拒绝其余形状。 */
-function parseThinkingEffort(value: unknown): "auto" | "low" | "medium" | "high" {
-  if (value === "auto" || value === "low" || value === "medium" || value === "high") return value
-  throw Object.assign(new Error("chat_set_thinking_effort 的 effort 只接受 auto/low/medium/high"), {
+function parseThinkingEffort(value: unknown): "auto" | "low" | "medium" | "high" | "max" {
+  if (value === "auto" || value === "low" || value === "medium" || value === "high" || value === "max") return value
+  throw Object.assign(new Error("chat_set_thinking_effort 的 effort 只接受 auto/low/medium/high/max"), {
     code: "CONFIG",
   })
 }

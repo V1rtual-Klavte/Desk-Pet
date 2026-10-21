@@ -156,11 +156,12 @@ export function getPiModel(modelId: string = aiConfig.model): Model<any> {
   return createConfiguredGateway(modelId).model
 }
 
-export function toPiAgentThinkingLevel(effort: ThinkingEffort | undefined): "off" | "low" | "medium" | "high" {
+export function toPiAgentThinkingLevel(effort: ThinkingEffort | undefined): "off" | "low" | "medium" | "high" | "max" {
   switch (effort) {
     case "low": return "low"
     case "medium": return "medium"
     case "high": return "high"
+    case "max": return "max"
     default: return "off"
   }
 }
@@ -176,6 +177,7 @@ export function toPiReasoningLevel(effort: ThinkingEffort | "off" | undefined): 
     case "low": return "low"
     case "medium": return "medium"
     case "high": return "high"
+    case "max": return "max"
     default: return undefined
   }
 }

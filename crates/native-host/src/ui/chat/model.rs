@@ -2264,11 +2264,11 @@ fn debug_spend_line(entries: &[super::projection::ProjectedUsageEntry]) -> Optio
 }
 
 /// 调试条的思考强度下拉：选项 = CONFIG `ai.thinking.effort` 的值域
-/// （auto/low/medium/high，与旧壳 `DebugBar.vue` 的 select 逐字一致），**没有
+/// （auto/low/medium/high/max，与旧壳 `DebugBar.vue` 的 select 逐字一致），**没有
 /// 「默认」项**；选中态来自投影里的配置现值（未知值按第一档显示）。
 fn thinking_effort_select(debug: &DebugState) -> super::panels::PanelSelect {
     use super::panels::{PanelAction, PanelOption, PanelSelect};
-    const VALUES: [&str; 4] = ["auto", "low", "medium", "high"];
+    const VALUES: [&str; 5] = ["auto", "low", "medium", "high", "max"];
     let options = VALUES
         .iter()
         .map(|value| PanelOption {
@@ -4198,5 +4198,22 @@ mod tests {
         let mut out = Vec::new();
         walk(&view.blocks, &mut out);
         out
+    }
+
+    #[test]
+    fn 思考强度下拉覆盖max档() {
+        let debug = DebugState {
+            last_context_usage: None,
+            last_tool_names: Vec::new(),
+            registered_tools: Vec::new(),
+            thinking_effort: "max".into(),
+            safety_mode: "just_do_it".into(),
+            tools_expanded: false,
+            registry_expanded: false,
+        };
+        let select = thinking_effort_select(&debug);
+        assert_eq!(select.options.len(), 5);
+        assert_eq!(select.options[4].label, "max");
+        assert_eq!(select.selected, 4);
     }
 }

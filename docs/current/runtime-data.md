@@ -85,7 +85,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | 字段 | 用途 | 运行期消费点 |
 |---|---|---|
 | `ai.contextMaxTokens` | 上下文窗口（低于 65536 在模型解析处报错，压缩按同一预算规划） | [context/builder.ts](../../src/services/context/builder.ts)、[compactor.ts](../../src/services/engine/compactor.ts)、[model-gateway.ts](../../src/services/engine/harness/model-gateway.ts) |
-| `ai.thinking.effort` | 思考强度默认值（聊天抽屉与设置页同键写入 `chat_set_thinking_effort`；无会话级覆盖） | [runtime.ts](../../src/services/engine/harness/runtime.ts) 的回合思考强度直读（`aiConfig.thinkingEffort`） |
+| `ai.thinking.effort` | 思考强度默认值（`auto`/`low`/`medium`/`high`/`max`，默认 `high`；聊天抽屉「思考」下拉写入 `chat_set_thinking_effort`；无会话级覆盖） | [runtime.ts](../../src/services/engine/harness/runtime.ts) 的回合思考强度直读（`aiConfig.thinkingEffort`） |
 | `ai.loop.maxRetry` | 生成级重试次数（0 = 关闭重试） | [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts) 的 RetryPolicy 下发 |
 | `ai.loop.subAgentRounds` | agent 子代理工具轮上限（无人值守子运行；主聊天回合已无计数上限，走循环病理检测） | [sub-agent.ts](../../src/services/agent/sub-agent.ts) |
 | `ai.loop.maxParallelTools` | 只读并行上限 | 见上一节（宿主许可所有者） |

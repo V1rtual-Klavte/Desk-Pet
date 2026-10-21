@@ -48,7 +48,7 @@ ai:
   contextMaxTokens: 262144
 
   thinking:
-    effort: auto
+    effort: high
 
   conversation:
     # 忙碌时未显式选择的默认投递方式：steer=插话（当前响应结束后处理）、followUp=稍后继续（当前任务结束后继续）。

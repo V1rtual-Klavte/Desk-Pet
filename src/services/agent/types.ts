@@ -47,7 +47,7 @@ export interface ToolCallRequest {
 export type { ToolResult, ToolDeclaration } from "@/services/tool/types"
 
 /** 思考强度 */
-export type ThinkingEffort = "auto" | "low" | "medium" | "high"
+export type ThinkingEffort = "auto" | "low" | "medium" | "high" | "max"
 
 import type { ProactiveOwner } from "@/services/agent/memory/protocol"
 export type { ProactiveOwner } from "@/services/agent/memory/protocol"

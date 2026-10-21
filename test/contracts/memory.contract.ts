@@ -301,6 +301,9 @@ import type { ModuleContract } from "../host/types"
 // 2026-10-10 oracle断点修复：mm-58/63归属受控会话分页及选择边界，mm-61/62归属逐条笔记与问题前提清单，mm-55覆盖主请求guide接线；mm-08以真Rust IPC补负对照、before与clear。
 // 2026-10-16 查询召回复核：provider.ts 将原问题与互补改写词逐条召回后稳定补位合并；protocol/IPC/store 增加 eventTime 约束，将 eventAt 按 [start,end) 与日历日期过滤，record 时间仍只约束会话记录。既有查询融合、事件时间和真实 IPC 覆盖点保留；本轮仅复核源码与覆盖声明并刷新指纹。
 // 2026-10-16 词面召回实现：fact 与 transcript 索引统一 NFKC/lowercase；facts 使用加权 bm25 + 确定性排序，eventTime 在 SQL 过滤，原问题查询锚定 RRF；proactive working-memory 版本写入沿用同一投影。
+// 2026-10-21 思考强度值域批次（本批刷新）：ThinkingEffort 增加 max，`ai.thinking.effort`
+// 默认 auto → high；sourceFiles 中 config/types 变化，本域覆盖描述未受影响，
+// sourceHash 按当前源码复算。
 export const memoryContract: ModuleContract = {
   module: "memory",
   sourceFiles: [
@@ -386,7 +389,7 @@ export const memoryContract: ModuleContract = {
   // 2026-10-10：预算/结构化证据归 mm-54..61，阅读器网关、缓存与取消组合归 mm-62；
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
   // 2026-10-18 列项答案补全批次：新增 enumeration-answer.ts，runtime afterResponse 补全并与结算同源；reader 抽取器来源上限与最终证据对齐到 32、按 8 条分批合并、类别/问句片段具体性过滤、完整口味组合保留、最长项目吸收短片段、去空格变体去重；人物归属留在 LoCoMo 适配器（memory-bench mb-12），产品不解析 speaker 头；mm-73/mm-74/mm-75 覆盖，刷新。
-  sourceHash: "6ebe66438d93580fc0726a676fc3d37a9ca902299d98f6c4e080ca71d3752251",
+  sourceHash: "0a734c4c28d6ec837ee91934bf88279543cc5ad6953a8628a239bdea93c809fd",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令；静态规程声明默认自然日期及显式机器格式/年份/相对量边界，接线断言核对system消费，表达质量另由固定证据与真模型专项观测，不以fake回复证明", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },

@@ -21,7 +21,7 @@ ai:
   # 上下文窗口（tokens）：默认 256k，最低 65536（再低压缩找不到可摘要范围）
   contextMaxTokens: 262144
   thinking:
-    effort: auto
+    effort: high
   conversation:
     # 忙碌时未显式选择的默认投递方式：steer=插话 / followUp=稍后继续（空闲发送不受影响）
     defaultDelivery: steer

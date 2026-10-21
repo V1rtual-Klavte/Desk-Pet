@@ -165,6 +165,9 @@
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
+// 2026-10-21 思考强度值域批次（本批刷新）：ThinkingEffort 增加 max，`ai.thinking.effort`
+// 默认 auto → high；抽屉「思考」下拉与 chat-intents 值域同步，覆盖描述未受影响，
+// sourceHash 按当前源码复算。
 export const nativeUiContract: ModuleContract = {
   module: "native-ui",
   sourceFiles: [
@@ -211,7 +214,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "4ea842cb78365b0c10ff5d59d8a4c8b30a5cccfe3ed9fe954452f561b8666e21",
+  sourceHash: "51d085d6c0a4569cd924975f1b12679ce22c6f9ddca697d68ab06c873426b09b",
   coverage: [
     {
       id: "nui-34",

@@ -392,7 +392,7 @@ pub enum ChatIntent {
     // ── 调试条（DebugBar 迁移）：抽屉三个下拉 = 与设置页同键的 CONFIG 写入 ──
     /// 默认投递方式（写 `ai.conversation.defaultDelivery`；值域 steer / followUp）。
     SetDefaultDelivery { delivery: SendDelivery },
-    /// 思考强度（写 `ai.thinking.effort`；值域 auto/low/medium/high）。
+    /// 思考强度（写 `ai.thinking.effort`；值域 auto/low/medium/high/max）。
     SetThinkingEffort { effort: String },
     /// 安全策略（写 `ai.safety.mode`；值域 just_do_it/tell_me/let_me_tk）。
     SetSafetyMode { mode: String },

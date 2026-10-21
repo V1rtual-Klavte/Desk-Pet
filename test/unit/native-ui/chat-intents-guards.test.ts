@@ -174,7 +174,7 @@ describe("抽屉三个下拉 = 与设置页同键的 CONFIG 写", () => {
       await dispatchHostRequest("chat_set_default_delivery", { delivery })
       expect(conversationConfig.defaultDelivery).toBe(delivery)
     }
-    for (const effort of ["auto", "low", "medium", "high"] as const) {
+    for (const effort of ["auto", "low", "medium", "high", "max"] as const) {
       await dispatchHostRequest("chat_set_thinking_effort", { effort })
       expect(aiConfig.thinkingEffort).toBe(effort)
     }

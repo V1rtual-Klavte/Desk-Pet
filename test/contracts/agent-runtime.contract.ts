@@ -206,6 +206,9 @@ import type { ModuleContract } from "../host/types"
 // 2026-10-21 拟人分泡批次（本批刷新）：sourceFiles 中 humanizer/protocol.ts 变化（去并泡、
 // 空格边界收窄为中文-中文、标记段按空行拆开代码块前后）；本域覆盖面未变（表达分泡归
 // humanizer hz-01），sourceHash 按当前源码复算。
+// 2026-10-21 思考强度值域批次（本批刷新）：ThinkingEffort 增加 max，`ai.thinking.effort`
+// 默认 auto → high；sourceFiles 中 config/types/model-gateway 变化，本域覆盖描述未受影响，
+// sourceHash 按当前源码复算。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -255,7 +258,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "337dcde03fce1a271c5f480301e481a604c36ac993ec3655ec6fc58ee94be16d",
+  sourceHash: "a0984b885e830a55a25bb1af10d0a26dd62786acadbb75e306b1e24f9d1d0f8d",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

@@ -1574,7 +1574,7 @@ export type HostRequestMap = {
   }
   /**
    * 思考强度（抽屉「思考」下拉）：写 CONFIG `ai.thinking.effort`（与设置页同键；
-   * 值域 auto/low/medium/high）。**没有「默认」档**（配置总有值）。
+   * 值域 auto/low/medium/high/max）。**没有「默认」档**（配置总有值）。
    */
   chat_set_thinking_effort: {
     args: { effort: ThinkingEffort }

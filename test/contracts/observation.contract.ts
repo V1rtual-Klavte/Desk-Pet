@@ -243,6 +243,9 @@
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
+// 2026-10-21 思考强度值域批次（本批刷新）：ThinkingEffort 增加 max，`ai.thinking.effort`
+// 默认 auto → high；sourceFiles 中 config/types 变化，观察链路不传 thinkingEffort，
+// 本域覆盖描述未受影响，sourceHash 按当前源码复算。
 export const observationContract: ModuleContract = {
   module: "observation",
   sourceFiles: [
@@ -309,7 +312,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "f627f8b70ac245136ffe8f39074a2ec535d4c88cbc6a1b325706ca4b561a0f1f",
+  sourceHash: "c6170c01917713cc1162ff162dbbeb421b013abdbfafa794f105ffcd29e054e9",
   coverage: [
     {
       id: "ob-01",

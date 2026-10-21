@@ -276,8 +276,11 @@ import type { ModuleContract } from "../host/types"
 // `setOverride + flushConfig` 组合（抽屉/设置/主动斜杠等）的写盘次数由 2 降为 1（内容不变），
 // 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
+// 2026-10-21 思考强度值域批次（本批刷新）：ThinkingEffort 增加 max，`ai.thinking.effort`
+// 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
+// sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "4020210972843b9073d2f5be746e39732ca35ff6e9b5a3f3eb4f4d99c0d55901",
+  module:"proactive",sourceHash: "d982584b16ca4d69c390e86ab301d43207a65b5ac399ba4e8f7cf42a3cb7ff61",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

@@ -325,7 +325,7 @@ pub enum PanelAction {
     },
     // ── 调试条（DebugBar 迁移）──
     /// 思考强度：写 CONFIG `ai.thinking.effort`（与设置页同键；选项即
-    /// auto/low/medium/high，没有「默认」项）。
+    /// auto/low/medium/high/max，没有「默认」项）。
     SetThinkingEffort {
         effort: String,
     },
