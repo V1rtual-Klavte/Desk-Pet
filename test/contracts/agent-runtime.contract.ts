@@ -215,6 +215,8 @@ import type { ModuleContract } from "../host/types"
 // 2026-10-21 原始助手正文进请求视图（本批刷新）：runtime.ts 在 after_response 把拟人化前
 // 可见正文记入助手消息 deskpetRawVisibleText，transform_context 开头用它替换历史 text parts
 // 并移除该标注；请求装配、取消与提交路径语义不变，本域覆盖描述未受影响，sourceHash 按当前源码复算。
+// 2026-10-21 提示词措辞微调（本批刷新）：HUMANIZER_PROMPT「可适当」→「可少量」，行为面未变，
+// sourceHash 按当前源码复算。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -264,7 +266,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "fa5c0fd5eaf7832a0c349b10fe8b0670491b4e7ec3541858f37e7b7ebce29b85",
+  sourceHash: "8e88342283b1ea5c2bb220068fd52f72ae570f744a9962625a84ba87df1567e5",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

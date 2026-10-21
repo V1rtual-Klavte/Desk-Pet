@@ -114,6 +114,8 @@ import type { ModuleContract } from "../host/types"
 // 2026-10-21 原始助手正文进请求视图（本批刷新）：protocol.ts 新增 humanizerRawVisibleText
 // （只摘控制标记，保留标点/换行）；runtime.ts 提交时记录、请求视图替换、Provider 前移除。
 // hz-01 的展示分泡与 hz-04 的提交/揭示行为未变；sourceHash 按当前源码复算。
+// 2026-10-21 提示词措辞微调（本批刷新）：HUMANIZER_PROMPT「可适当」→「可少量」，行为面未变，
+// sourceHash 按当前源码复算。
 export const humanizerContract: ModuleContract = {
   module: "humanizer",
   sourceFiles: [
@@ -131,7 +133,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "a41e859ac1bf4ce815aebc4a985b2837d9279cbb4ba3d4a3434b0c0080e8bbdb",
+  sourceHash: "f40cb37c2f8e00ed1afafc79714780c27876cb0ef8196821daa4ca0317a08641",
   coverage: [
     {
       id: "hz-01",
