@@ -27,11 +27,11 @@ export type { CompactionSummaryInput, CompactionSummaryOutcome, CompactionShardP
 
 // ── Planner ──
 export {
-  evaluateComplexity, generatePlan, executePlan, formatStepResults,
+  generatePlan, executePlan, formatStepResults,
   normalizePlan, planToRecords, recordsToPlan, planEffectClassFor,
 } from "./planner"
 export type {
-  PlanStep, PlanResult, ComplexityResult, PlanExecutionResult,
+  PlanStep, PlanResult, PlanExecutionResult,
   GeneratePlanContext, PlanRecordContext,
 } from "./planner"
 
@@ -59,7 +59,7 @@ export {
 export type { ChoiceOutcome, ChoiceResolution } from "./choice-confirmation"
 
 // ── 模型提议计划（propose_plan 工具的执行相位）──
-// 与自动入口（runtime 的 runPlanPhase）共用确认通道、执行器与记录存储；唯一消费者
+// 与显式命令入口（runtime 的 runPlanPhase）共用确认通道、执行器与记录存储；唯一消费者
 // 是 `tool/local-extra/plan.ts`，产物归宿是工具结果而不是主回合上下文。
 export { runProposedPlan } from "./plan/proposal"
 export type { ProposedPlanInput, ProposedPlanOutcome } from "./plan/proposal"

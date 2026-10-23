@@ -188,7 +188,6 @@ export interface ProactiveAuxiliaryBudgetReserveRequest {
   localDate: string
   reservedTokens: number
   dailyLimit: number
-  /** false = 只记 token，不推进 observation/topic 的当日次数（手动触发）。 */
   countAttempt?: boolean
   now: number
 }

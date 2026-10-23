@@ -1,3 +1,6 @@
+// 2026-10-23 执行许可批次：sourceFiles 中 host/types.ts 的 bash_exec 线形状新增
+// borrowerId/permitRequestId，与更新命令的名字、参数和 Node 请求面隔离无关；up-01 未修订
+// 覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-18 定向复核：本域行为未变；仅共享文件 src/services/host/types.ts 的增量（记忆命令线形状）导致 sourceHash 变化。
 // 2026-10-15 Windows UI 验收 analyze -> generate：types.ts/index.ts 仅删除光标事件定义/导出；更新命令、确认与退出序列形状不变，现有 coverage/caseId 不变。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 src/services/host/types.ts 变化 —— 仅 memory_job_checkpoint 命令形状新增可选 coveredSourceIds；更新命令的名字、参数与 Node 请求面隔离保持原义，up-01 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -87,7 +90,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "de09cfb49f327c6854e227ea1e8f2ef2e36ae7dabd9a5efbfaf7a5c2ac3682f5",
+  sourceHash: "96af6c07c94297c42972ff414de91e1ed01629514ffa34b1ffa231b07df848c0",
   coverage: [
     {
       id: "up-01",

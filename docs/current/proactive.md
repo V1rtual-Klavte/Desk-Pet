@@ -25,7 +25,7 @@
 
 **白天窗口删除**：原写死的 9–12 / 18–22 硬窗口（`SHARE_START_HOUR`/`SHARE_END_HOUR`/`MIDDAY_HOUR`/`EVENING_HOUR`）全部删除，rhythm（晨/晚）、retrospective（周日）、anniversary、calendar、topic_share、curiosity 改为本地整日（00:00–次日 00:00）有效，夜间边界只由静默时间段门禁负责。画像逐小时资格（可靠画像时 `observedHours[hour] > 0`）保留；小时值只统计 active 时长，idle、unknown、unobserved 不算用户活跃。它是自适应信号而不是硬窗口；画像不可靠时不限小时。
 
-**主动开关从 SQLite 撤出**：Rust `proactive_control` 表删除 `enabled` 列（保留 `mute_until`/`revision`——运行期暂停状态，不是设置；claim 拒绝理由 `muted` 只来自暂停）。该批把 `MEMORY_SCHEMA_VERSION` 递增到 3；当前版本为 5，旧库由 Rust 迁移自动补齐，不要删除 `memory.sqlite3` 三件套（含 `-wal`/`-shm`）。
+**主动开关从 SQLite 撤出**：Rust `proactive_control` 表删除 `enabled` 列（保留 `mute_until`/`revision`——运行期暂停状态，不是设置；claim 拒绝理由 `muted` 只来自暂停）。该批把 `MEMORY_SCHEMA_VERSION` 递增到 3；当前版本为 6，旧库由 Rust 迁移自动补齐，不要删除 `memory.sqlite3` 三件套（含 `-wal`/`-shm`）。
 
 **档位投影到 Rust（终裁）**：Node 在 scanner 启动与每次 `refreshProactive()`（设置保存 / `/proactive on|off` / 配置导入的消费者刷新）把当前档位派生的 13 项 limits 经 `proactive_control` 通道下发；Rust 存为 **dispatcher 级运行期投影**（与 MonitorState 并列，不进 SQLite、不读 CONFIG、不回写），用于 claim 的间隔/配额终裁与辅助尝试天花板；缺省回落中档。校验口径：13 字段全必填且必须与 low/medium/high 任一行逐字段全等，不匹配拒绝整条请求并留痕（拒绝不改投影现值）；`off` 档不推送（Rust 保持现值/缺省）。真相源仍是 CONFIG。辅助尝试天花板按 kind 取档位最大值的静态上限（observation→静默档钟点表最高 6 轮、其他→主动档最高 8），不再按旧常量 4 截断。`dailyTokens` 自 2026-10-06 起是**观测阈值**：token 账（reserved/used/unknown）照记，不作 claim 或辅助预留的拒绝条件。
 
@@ -37,11 +37,13 @@
 
 事项的 `eventAt/dueAt` 保存 day 或 minute 精度与 IANA 时区；`expiresAt` 只决定普通召回有效期。`workingState` 为 open/completed/cancelled。日期精度的临期窗口在前一日09–22点，跟进从该日期结束起48小时；分钟精度在发生前24小时和发生后48小时。观察事件按真实 `occurredAt` 归属周期（23:50 的事件跨午夜仍归前一天，窗口可延伸到次日），同日两次事件各有独立 period 身份和抽样。完成、取消、更正或遗忘会事务性关闭关联旧机会；没有用户结果证据不写现实成果。
 
-用户任务只有 `schedule_query`、`schedule_change` 两个工具，分别提供分页查询（id、状态、结果）与 propose/create/update/reschedule/snooze/complete/cancel。内部 proactive、静默了解、dreaming 不在列表、上下文或可修改对象中；现有频率设置仍从设置窗或斜杠入口管理。旧模型工具名已删除。用户任务必须绑定当前会话或 Card（不接受 `scope=user`），查询同时核对冻结的 `session/Card/cardHash`；删除所属会话或 Card 时先取消在飞运行，再把对应 active 任务置为 invalidated，晚到结果不能按新 owner 交付。
+用户任务只有 `schedule_query`、`schedule_change` 两个工具，分别提供分页查询（id、状态、结果）与 propose/create/update/reschedule/snooze/complete/cancel/decline。内部 proactive、静默了解、dreaming 不在列表、上下文或可修改对象中；现有频率设置仍从设置窗或斜杠入口管理。旧模型工具名已删除。用户任务必须绑定当前会话或 Card（不接受 `scope=user`），查询同时核对冻结的 `session/Card/cardHash`；删除所属会话或 Card 时先取消在飞运行，再把对应 active 任务置为 invalidated，晚到结果不能按新 owner 交付。
 
 任务定义保存在 `proactive_tasks.intent`，类型为 reminder 或 agent_job；`schedule` 保存时区、日历周期、固定点／窗口／已确认作息锚／真实观测事件、固定或随机次数、最小间隔、有效期及错过策略。次数以成功送达为准；随机次数和时间点每周期只抽一次并持久化，重启、重试和延后均沿用。一次性、日、周、月、年、跨午夜、DST 与月末均由用户任务日历单点解释；观察事件缺失时不降级成固定时刻。
 
-创建和修改必须绑定本轮已提交可信用户事件、来源版本与任务版本。信息缺失时返回具体缺项，不强制创建；关键推断需要提出具体安排，用户接受须匹配 proposalId、完整参数指纹、来源和工具描述符。完整明确指令可直接创建。改期改变事项锚；snooze 仅改变下次交付时间、不改变定义版本；送达不等于现实事项完成。
+创建和修改必须绑定本轮已提交可信用户事件、来源版本与任务版本。信息缺失时返回具体缺项，不强制创建；关键推断需要提出具体安排，用户接受须匹配 proposalId、完整参数指纹、来源和工具描述符。只有唯一可见提议允许简短同意；多提议或多任务时，接受、拒绝和取消的原话须唯一指向目标，模型传入的 id 本身不是用户授权。完整明确指令可直接创建。改期改变事项锚；snooze 仅改变下次交付时间、不改变定义版本；送达不等于现实事项完成。
+
+**拒绝提醒不等于取消事项**：`decline` 仅接收可见 proposalId，目标与来源从宿主冻结的提议取得，不允许模型附带替代任务、版本或事项。拒绝提议或取消关联提醒时，Rust 在同一事务写 `proactive_reminder_suppressions`（事项稳定 id、操作 id、时间）、关闭关联 active 任务并使调度产物失效，保留 working 事项正文、版本和 open 状态。抑制跨事项版本与重启保留，普通任务清理不会解除；扫描在分页前排除，claim、来源重验和结算再次拦截，避免重新派生。当前安装的抑制记录不随记忆备份恢复回退；事项本身被清除或整理删除后，记录随之修剪。只有用户明确重新创建、更新或改期且授权精确包含当前来源版本时才事务性解除，后续校验失败全部回滚。`memory_change` 的 cancel 与 correct→cancelled 拒绝仅表达「不用提醒」的证据；明确取消现实事项仍走原有事项治理。
 
 执行型任务在独立任务 owner 下调用唯一 `runPiSubAgent`，不会启动主会话规划或占用主聊天槽。任务保存 low/medium/high 思考强度，执行时冻结实际辅助模型、能力及预算。后台只借用任务声明的已启用 MCP server，不把全部 MCP 下放；逐次复核持久授权、参数范围和描述符；MCP 的只读提示仅说明资格，仍保持 DANGER、效果互斥、不重放和 PermissionKernel 终裁。**2026-10-19 产品裁定**——`readOnlyHint` 不满足 DANGER、不绕过权限内核；有原生确认面板时，定时任务遇到持久授权不足的 `ask` 走 interactive 权限模式弹窗，用户批准后继续执行；无确认面板的宿主保持 background，`ask` 记 needs_input。必要授权或能力缺失直接记录 needs_input；只有明确的未完成/缺产物归为 needs_input，来源与能力合同失败归 failed，未知副作用归 unresolved。
 

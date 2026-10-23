@@ -25,7 +25,7 @@
 // ==========================================
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{mpsc, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
 use crate::error::{AppError, AppResult};
 use crate::host::WindowId;
@@ -87,6 +87,7 @@ impl Borrower {
 struct ActiveLease {
     kind: PermitKind,
     borrower: Borrower,
+    native_owned: bool,
 }
 
 /// 排队中的等待者；许可被借出后不再保留。
@@ -108,6 +109,7 @@ enum ReleaseOutcome {
     NotFound,
     /// 调用方不是借出该额度的借用者：拒绝，额度保持不动。
     BorrowerMismatch,
+    NativeOwned,
     /// 已归还，等待者可被唤醒。
     Released,
 }
@@ -180,6 +182,7 @@ impl Gate {
                 ActiveLease {
                     kind: waiter.kind,
                     borrower: waiter.borrower,
+                    native_owned: false,
                 },
             );
         }
@@ -194,7 +197,7 @@ impl Gate {
         let stale: Vec<String> = self
             .active
             .iter()
-            .filter(|(_, lease)| current.replaces(&lease.borrower))
+            .filter(|(_, lease)| !lease.native_owned && current.replaces(&lease.borrower))
             .map(|(request_id, _)| request_id.clone())
             .collect();
         for request_id in stale {
@@ -250,12 +253,67 @@ impl Gate {
         if &lease.borrower != borrower {
             return ReleaseOutcome::BorrowerMismatch;
         }
+        if lease.native_owned {
+            return ReleaseOutcome::NativeOwned;
+        }
         if let Some(lease) = self.active.remove(request_id) {
             self.give_back(lease.kind);
             self.drain();
         }
         ReleaseOutcome::Released
     }
+
+    fn claim_native(&mut self, request_id: &str, borrower: &Borrower) -> AppResult<()> {
+        let lease = self.active.get_mut(request_id)
+            .ok_or_else(|| AppError::Tool("Bash 缺少在飞执行许可".into()))?;
+        if &lease.borrower != borrower || lease.kind != PermitKind::Exclusive || lease.native_owned {
+            return Err(AppError::Tool("Bash 执行许可归属、类型或状态不符".into()));
+        }
+        lease.native_owned = true;
+        Ok(())
+    }
+
+    fn release_native(&mut self, request_id: &str) {
+        if !self.active.get(request_id).is_some_and(|lease| lease.native_owned) {
+            return;
+        }
+        if let Some(lease) = self.active.remove(request_id) {
+            self.give_back(lease.kind);
+            self.drain();
+        }
+    }
+}
+
+pub struct NativeToolPermit {
+    pool: Arc<ToolPermitPool>,
+    domain: String,
+    request_id: String,
+    release_on_drop: bool,
+}
+
+impl NativeToolPermit {
+    pub fn retain(&mut self) {
+        self.release_on_drop = false;
+        rust_warn!("无法确认 Bash 退出，保留独占许可直到宿主退出: {}", self.request_id);
+    }
+}
+
+impl Drop for NativeToolPermit {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            if let Some(gate) = self.pool.domains().get_mut(&self.domain) {
+                gate.release_native(&self.request_id);
+            }
+        }
+    }
+}
+
+pub fn claim_native_permit(pool: Arc<ToolPermitPool>, paths: &AppPaths, window: WindowId,
+    borrower_id: String, request_id: String) -> AppResult<NativeToolPermit> {
+    let domain = domain_key(paths);
+    pool.domains().entry(domain.clone()).or_default()
+        .claim_native(&request_id, &Borrower::new(window, &borrower_id))?;
+    Ok(NativeToolPermit { pool, domain, request_id, release_on_drop: true })
 }
 
 #[derive(Default)]
@@ -365,7 +423,7 @@ pub fn tool_permit_acquire(
         if gate.queue.is_empty() && gate.can_admit(kind) {
             gate.take(kind);
             gate.active
-                .insert(request_id.clone(), ActiveLease { kind, borrower });
+                .insert(request_id.clone(), ActiveLease { kind, borrower, native_owned: false });
             return Ok(AcquireOutcome::Granted);
         }
         // 队列有等待者时不得插队，否则持续的读请求会让写任务饥饿。
@@ -441,10 +499,12 @@ pub fn tool_permit_release(
         return Ok(());
     };
     match gate.release(&request_id, &borrower) {
-        ReleaseOutcome::Released => Ok(()),
+        ReleaseOutcome::Released | ReleaseOutcome::NativeOwned => Ok(()),
         ReleaseOutcome::NotFound => {
             // 重复释放、未借出或已被回收：不报错，也不能凭空增加额度。
-            rust_warn!("工具许可释放时未找到记录: {request_id}");
+            // Bash 的许可随后台进程由宿主释放，Node 收尾再调一次属于正常重复释放 ——
+            // 按 debug 记录，避免每次前台 Bash 都留一条与事实相反的警告。
+            rust_debug!("工具许可释放时未找到记录: {request_id}");
             Ok(())
         }
         ReleaseOutcome::BorrowerMismatch => {
@@ -572,6 +632,7 @@ mod tests {
             ActiveLease {
                 kind,
                 borrower: Borrower::new(window, page),
+                native_owned: false,
             },
         );
     }
@@ -591,6 +652,27 @@ mod tests {
             tx,
         });
         rx
+    }
+
+    #[test]
+    fn native_process_keeps_its_permit_across_release_and_reattach() {
+        let mut gate = Gate::default();
+        lease(&mut gate, "bash", PermitKind::Exclusive, WindowId::Main, "old");
+        let borrower = Borrower::new(WindowId::Main, "old");
+        assert!(gate.claim_native("bash", &Borrower::new(WindowId::E2e, "old")).is_err());
+        assert!(gate.claim_native("bash", &borrower).is_ok());
+        assert!(gate.claim_native("bash", &borrower).is_err());
+        let waiting = enqueue(&mut gate, "read", PermitKind::Shared, WindowId::Main, "new");
+        assert!(matches!(gate.release("bash", &borrower), ReleaseOutcome::NativeOwned));
+        let reclaimed = gate.reclaim_other_borrowers(&Borrower::new(WindowId::Main, "new"));
+        assert_eq!(reclaimed.reclaimed_active, 0);
+        assert!(gate.exclusive_active);
+        assert!(waiting.try_recv().is_err());
+        gate.release_native("bash");
+        assert!(matches!(waiting.try_recv(), Ok(Outcome::Granted)));
+        assert!(!gate.exclusive_active);
+        assert_eq!(gate.shared_active, 1);
+        assert!(gate.claim_native("read", &Borrower::new(WindowId::Main, "new")).is_err());
     }
 
     #[test]

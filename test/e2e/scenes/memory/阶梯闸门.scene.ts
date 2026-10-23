@@ -88,8 +88,9 @@ const POST_VIEW_SAFETY = 4_000
 const PAD_UNIT = "ladder-gate-contrast-pad "
 const PAD_MARKER = "对照相垫入的不可投影用户正文。"
 
-const REPLY_1 = "第一轮回复完成。"
-const REPLY_2 = "第二轮回复完成。"
+// casual 拟人化会收掉气泡末尾句读：出口回复以提交后的实际文本为准。
+const REPLY_1 = "第一轮回复完成"
+const REPLY_2 = "第二轮回复完成"
 
 const SUMMARY_MARKER = "级 3 闸门对照压缩"
 const SUMMARY = JSON.stringify({

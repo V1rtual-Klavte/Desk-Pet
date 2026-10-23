@@ -7,8 +7,9 @@ import type { SceneDef } from "../../../e2e/types"
 // 后续回合不得把历史消息重复追加（重复会表现为会话被重放两次）。
 const USER_ONE = "先记个暗号：紫水晶七号，等下我要考你。"
 const USER_TWO = "再补一个暗号：柠檬四号。"
-const REPLY_ONE = "暗号记下了。"
-const REPLY_TWO = "又记下一个啦。"
+// casual 拟人化会收掉气泡末尾句读：断言用提交后的实际正文。
+const REPLY_ONE = "暗号记下了"
+const REPLY_TWO = "又记下一个啦"
 
 let provider: ReturnType<typeof installFakeProvider> | undefined
 

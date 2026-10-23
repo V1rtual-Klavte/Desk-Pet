@@ -54,9 +54,8 @@ ai:
     dreaming: { tier: high }
     maxSessions: 20
   plan:
+    # 仅控制显式 --plan 入口；普通请求由主模型决定是否调用 propose_plan。
     enabled: true
-    complexityThreshold: 3
-    complexityEval: keyword
     maxSteps: 8
     # 单个计划步骤的墙钟；计划由用户在场批准，按 bash 档位（5 分钟）对齐，避免 90s 截断长命令。
     stepTimeoutMs: 300000
@@ -64,7 +63,6 @@ ai:
     thinkingEffort: medium
     stepThinkingEffort: low
     onStepFailure: continue
-    keywords: [分析, 整理, 重构, 修复, 审查, 合并, 总结, 生成, 创建项目]
   humanizer:
     enabled: true
 

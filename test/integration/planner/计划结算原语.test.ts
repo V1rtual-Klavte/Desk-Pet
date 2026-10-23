@@ -2,7 +2,7 @@
 // 计划结算原语 —— 两条计划入口共享的写盘降级 / 收尾 / 取消归宿（L3）
 // ==========================================
 //
-// 被测模块 `engine/plan/settlement.ts`：自动入口（runtime.ts::runPlanPhase）与模型提议
+// 被测模块 `engine/plan/settlement.ts`：显式命令入口（runtime.ts::runPlanPhase）与模型提议
 // 入口（plan/proposal.ts）自 2026-10-06 起消费同一份实现（此前两处各存一份同形复刻）。
 // 本文件钉住共享机制的参数化分支，防止「提取时顺手合并语义」：
 // ① 写盘降级：写终态失败时不抛、不静默 —— 证据条目与用户提示都落，收尾照常走完；
@@ -11,7 +11,7 @@
 //    user 与确认未成立的原因静默；
 // ④ 活跃会话守卫：计划所属会话不是活跃会话时，收尾照发面板收起事件，但系统消息不落
 //    （不写盘、不落进别的会话）；
-// ⑤ traceContext 参数：自动入口的 `plan_settled` 轨迹只在传入时发布；
+// ⑤ traceContext 参数：显式命令入口的 `plan_settled` 轨迹只在传入时发布；
 // ⑥ 用户拒绝确认（failPlanOnUserDecline）：步骤全部 skipped、计划落 failed、面板收起。
 //
 // 归属 L3（不是 L2）：模块 import `@/services/session`（系统消息落盘），且断言依赖真 JSONL
@@ -192,7 +192,7 @@ describe("计划结算原语", () => {
     expect(planEndReasons(), "用户拒绝后面板没有收起").toEqual(["cancelled"])
   }, 30_000)
 
-  it("traceContext 参数：传入才发 plan_settled（自动入口口径，提议入口没有轨迹） [plan-settlement-trace]", async () => {
+  it("traceContext 参数：传入才发 plan_settled（显式命令入口口径，提议入口没有轨迹） [plan-settlement-trace]", async () => {
     const traced: RuntimeTraceEvent[] = []
     const stop = subscribeRuntimeTrace(event => { traced.push(event) })
     try {

@@ -28,7 +28,8 @@ const SCHEMA_TOOL = "large_query"
 const TOOL_NAME = `mcp_${SERVER}_${SCHEMA_TOOL}`
 const CALL_ID = "mcp-large-call"
 const ENABLE_CALL_ID = "enable-mcp-large"
-const REPLY = "大结果已经取回。"
+// casual 拟人化会收掉气泡末尾句读：出口正文以提交后的实际文本为准。
+const REPLY = "大结果已经取回"
 /** 正文远大于旧的 50,000 字符一次性截断上限；非 ASCII 计价让请求侧必然超 L0 预算。 */
 const PAYLOAD_CHARS = 60_000
 const READ_OFFSET = 50_000

@@ -90,8 +90,8 @@ let configSnapshot: ConfigTree | undefined
  *
  * 两个钉位的理由都是「不钉住就会静默改变被测行为」：
  *
- * - **计划门禁**：计划入口只看 `planConfig.enabled`（模式已在收敛中删除），而 `ai.plan.enabled`
- *   出厂即 `true` —— 不钉住它，任何命中复杂度关键词的 production 场景文本都会静默走进真实
+ * - **计划门禁**：显式计划入口只看 `planConfig.enabled` 与完整 `--plan` 前缀，而 `ai.plan.enabled`
+ *   出厂即 `true` —— 不钉住它，任何以 `--plan` 开头的 production 场景文本都会静默走进真实
  *   计划段。场景要跑计划段必须在自己的 setup 里显式打开（`计划生产闭环` 等场景都这么做）。
  * - **安全模式**：`DANGER` 的裁决完全由 `ai.safety.mode` 决定（`let_me_tk` → ask、
  *   `just_do_it` → allow、其余含出厂默认 `tell_me` → ask）。需要确认通道的场景（`子代理授权范围`、

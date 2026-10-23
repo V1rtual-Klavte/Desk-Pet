@@ -99,6 +99,49 @@ describe("用户安排工具治理", () => {
     expect(stale.error).toContain("来源版本")
     expect(state.changes).toHaveLength(1)
   })
+  it("拒绝提议只提交提醒停用，多提议短拒绝不能猜选 [schedule-decline-preserves-matter]", async () => {
+    const memory = { kind: "memory" as const, id: "matter-a", version: 2, revision: 2, fingerprint: "matter-a:2", scope: "session" as const, scopeId: "session-a", validUntil: null }
+    const turn = { text: "", taskRefs: [], memoryRefs: [memory], scheduleProposals: [] as import("@/services/user-tasks/types").ScheduleProposal[] }
+    const proposed = await invoke({ action: "propose", task: definition(), memoryItemId: memory.id, expectedMemoryVersion: memory.version }, context({ proactiveTurnContext: turn }))
+    const proposal = { ...JSON.parse(proposed.content).proposal, assistantEntryId: "assistant-a" }
+    turn.scheduleProposals = [proposal]
+    state.eventId = "event-b"; state.sources.push(source("event-b", "不用提醒", 2))
+    const declined = await invoke({ action: "decline", proposalId: proposal.proposalId }, context({ proactiveTurnContext: turn }))
+    expect(declined.success).toBe(true)
+    expect(state.changes[0]).toMatchObject({ action: "decline", sourceRefs: [expect.objectContaining({ id: "source-event-b" }), memory] })
+    expect(state.changes[0]!.taskPatch).toBeUndefined()
+    turn.scheduleProposals.push({ ...proposal, proposalId: "proposal-b", definition: { ...proposal.definition, text: "提醒吃药" } })
+    const ambiguous = await invoke({ action: "decline", proposalId: proposal.proposalId }, context({ proactiveTurnContext: turn }))
+    expect(ambiguous.success).toBe(false)
+    expect(ambiguous.error).toContain("多个")
+    expect(state.changes).toHaveLength(1)
+    turn.scheduleProposals = [proposal]
+    expect((await invoke({ action: "decline", proposalId: proposal.proposalId, targetAction: "update" }, context({ proactiveTurnContext: turn }))).success).toBe(false)
+    turn.memoryRefs = [{ ...memory, version: 3, revision: 3 }]
+    const stale = await invoke({ action: "decline", proposalId: proposal.proposalId }, context({ proactiveTurnContext: turn }))
+    expect(stale.success).toBe(false)
+    expect(stale.error).toContain("来源版本")
+    expect(state.changes).toHaveLength(1)
+    turn.memoryRefs = [memory]
+    turn.scheduleProposals = [{ ...proposal, target: { taskId: "task-a", expectedVersion: 2, action: "update" } }]
+    state.tasks = [persisted(definition()) as unknown as Record<string, unknown>]
+    const targeted = await invoke({ action: "decline", proposalId: proposal.proposalId }, context({ proactiveTurnContext: turn }))
+    expect(targeted.success).toBe(true)
+    expect(state.changes[1]).toMatchObject({ action: "cancel", taskId: "task-a", expectedVersion: 2 })
+  })
+  it("多个提醒时不能靠模型选定ID执行简短取消 [schedule-cancel-ambiguity]", async () => {
+    state.tasks = [persisted(definition()), { ...persisted(definition()), id: "task-b", intent: { ...definition(), text: "提醒吃药" } }] as unknown as Array<Record<string, unknown>>
+    for (const evidence of ["取消这个", "不用提醒"]) {
+      state.sources = [source(state.eventId, evidence)]
+      const result = await invoke({ action: "cancel", taskId: "task-a", expectedVersion: 2 })
+      expect(result.success).toBe(false)
+      expect(result.error).toContain("多个")
+    }
+    expect(state.changes).toEqual([])
+    state.sources = [source(state.eventId, "取消起来走走的提醒")]
+    expect((await invoke({ action: "cancel", taskId: "task-a", expectedVersion: 2 })).success).toBe(true)
+    expect(state.changes).toHaveLength(1)
+  })
   it("延后只提交提醒投影，保留事项时间与原有效期 [proactive-recurrence-snooze-validity]", async () => {
     state.tasks = [persisted(definition(), now + 3_600_000) as unknown as Record<string, unknown>]
     const result = await invoke({ action: "snooze", taskId: "task-a", expectedVersion: 2, nextCheckinAt: now + 1_800_000 })

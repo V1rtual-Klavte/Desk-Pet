@@ -20,13 +20,16 @@
 //   3. 首泡揭示释放顶栏 typing 所有权 —— 断开 runtime 的 setFirstRevealHandler
 //      接线即红。此处也是「defer 判据与 runner 入队条件分叉」的回归锚点：断言只读文本，
 //      早先回合残留的 owner 会顶住 typing 文案（2026-10-09 全量连跑首次暴露该分叉）；
-//   4. 第二泡按泡间节奏延后（首泡揭示后 1.5s 窗口内不得 revealed=2）—— 调度器
+//   4. 第二泡按泡间节奏延后（首泡揭示后 1.5s 窗口内不得 revealed≥2）—— 调度器
 //      退化成「首泡后立刻全显」即红（首泡刻意写长：延迟 = 字数 × 220ms 且封顶
 //      6000ms，窗口观测余量充足）；
 //   5. 停止立即全显并回收瞬态状态 —— stopActiveRun 不再取消揭示、或状态残留即红。
 //
+// 泡数不写死：casual 兜底会按句读再细切 SPLIT 段，实际泡数以首条发布为准，
+// 断言只要求「多泡」（partCount ≥ 2）并按该值校验揭示进度。
+//
 // repeat 隔离：订阅只在断言内建立并 finally 退订；每个 trial 的 setup 都重新建会话，
-// 过滤条件用「partCount === 2」（本回合的 SPLIT 两泡形态），上一 trial/暖场回合的
+// 过滤条件用「partCount ≥ 2」（本回合的多泡形态），上一 trial/暖场回合的
 // 单泡状态不会混入。
 
 import { initChat, sendMessage, stopActiveRun } from "@/services/agent"
@@ -74,8 +77,8 @@ export const 生产入口分泡呈现: SceneDef = {
 
         const seen: HumanizerRevealState[] = []
         const unsubscribe = subscribe(state => {
-          // 只收本回合的两泡形态：暖场回合是单泡（partCount=1），不混进断言窗口。
-          if (state.sessionId === sessionId && state.partCount === 2) seen.push({ ...state })
+          // 只收本回合的多泡形态：暖场回合是单泡（partCount=1），不混进断言窗口。
+          if (state.sessionId === sessionId && state.partCount >= 2) seen.push({ ...state })
         })
 
         let release!: () => void
@@ -119,9 +122,10 @@ export const 生产入口分泡呈现: SceneDef = {
           // 2. 提交即进入逐泡揭示：首个发布必须是 held（首泡未显、整条未全显）。
           const first = seen[0]
           if (!first) throw new Error("提交后没有发布任何揭示状态：消息没有进入逐泡揭示")
-          if (first.revealed !== 0 || first.partCount !== 2) {
+          if (first.revealed !== 0) {
             throw new Error(`提交后的首个揭示状态不是 held：revealed=${first.revealed} partCount=${first.partCount}`)
           }
+          const partCount = first.partCount
 
           // 3. 首泡揭示（有界等待）+ 顶栏 typing 所有权释放。
           const revealDeadline = Date.now() + FIRST_REVEAL_WAIT_MS
@@ -135,11 +139,11 @@ export const 生产入口分泡呈现: SceneDef = {
             throw new Error("首泡揭示后顶栏 typing 所有权未释放")
           }
 
-          // 4. 第二泡被泡间节奏挡住：窗口内出现 revealed=2 即为「退化成首泡后立刻全显」。
+          // 4. 第二泡被泡间节奏挡住：窗口内出现 revealed≥2 即为「退化成首泡后立刻全显」。
           const heldUntil = Date.now() + PART_HOLD_WINDOW_MS
           while (Date.now() < heldUntil) {
-            if (seen.some(state => state.revealed === 2)) {
-              throw new Error("第二泡没有经过泡间节奏（首泡揭示后窗口内已全显）")
+            if (seen.some(state => state.revealed >= 2)) {
+              throw new Error("第二泡没有经过泡间节奏（首泡揭示后窗口内已开始连显）")
             }
             await sleep(POLL_INTERVAL_MS)
           }
@@ -147,8 +151,8 @@ export const 生产入口分泡呈现: SceneDef = {
           // 5. 停止立即全显并回收瞬态状态：stopActiveRun 先同步发布完成态再停槽。
           await stopActiveRun(sessionId)
           const last = seen[seen.length - 1]
-          if (!last || last.revealed !== 2 || last.partCount !== 2 || last.typing) {
-            throw new Error(`停止后揭示状态不是「立即全显、typing 已结束」：${JSON.stringify(last)}`)
+          if (!last || last.revealed !== partCount || last.partCount !== partCount || last.typing) {
+            throw new Error(`停止后揭示状态不是「立即全显、typing 已结束」：${JSON.stringify(last)} partCount=${partCount}`)
           }
           if (getRevealState(sessionId, first.messageId) !== undefined) {
             throw new Error("停止后瞬态揭示状态没有回收")

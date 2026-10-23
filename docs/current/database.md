@@ -13,9 +13,9 @@
 ## 建表点与版本策略
 
 - 生产建表点只有两个：记忆侧 [memory/schema.rs](../../crates/native-host/src/memory/schema.rs)、主动链侧 [proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)；记忆侧 `ensure` 建完自己的表后调用主动链侧的 `ensure`（`proactive/store.rs` 里的建表语句属于 `#[cfg(test)]` 夹具，不是生产路径）。
-- 版本：`MEMORY_SCHEMA_VERSION` 当前为 5，存于 `memory_meta.schema_version`；2026-10-18 从 4 递增，为 `conversation_index_entries` 增加 `search_text/event_at_ms/event_at_date`、`conversation_fts` 增加 `search_text`、新增 `conversation_index_terms` 与 `memory_job_covered_sources`，会话缓存按 v5 结构重建；2026-10-16 的 v4 为 `memory_items` 增加事件时间及规范化检索投影，并重建事实与会话 FTS 缓存。2026-10-05 频率档位批曾随 `proactive_control.enabled` 列删除从 2 递增。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。启动时以及恢复提交后的活动库，会用记忆侧与主动链侧现有 DDL 构造期望结构，事务内补齐可无损添加的字段/表/索引并搬回既有列数据；不可恢复的事实、来源或遗忘治理缺失会明确失败，未知未来 schema_version 永不降级。显式选择的备份仍须通过已有 schema_version 和必需表校验。**派生结论批（2026-10-06）不涉版本变更**：条目/来源类别 `origin` 不落额外列（由来源类别派生），旧库照常打开，无需重建。
+- 版本：`MEMORY_SCHEMA_VERSION` 当前为 6，存于 `memory_meta.schema_version`；v6 新增按事项稳定 id 保存的提醒抑制账本，旧版本打开时在结构修复事务内补建；2026-10-18 从 4 递增，为 `conversation_index_entries` 增加 `search_text/event_at_ms/event_at_date`、`conversation_fts` 增加 `search_text`、新增 `conversation_index_terms` 与 `memory_job_covered_sources`，会话缓存按 v5 结构重建；2026-10-16 的 v4 为 `memory_items` 增加事件时间及规范化检索投影，并重建事实与会话 FTS 缓存。2026-10-05 频率档位批曾随 `proactive_control.enabled` 列删除从 2 递增。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。启动时以及恢复提交后的活动库，会用记忆侧与主动链侧现有 DDL 构造期望结构，事务内补齐可无损添加的字段/表/索引并搬回既有列数据；不可恢复的事实、来源或遗忘治理缺失会明确失败，未知未来 schema_version 永不降级。显式选择的备份仍须通过已有 schema_version 和必需表校验。**派生结论批（2026-10-06）不涉版本变更**：条目/来源类别 `origin` 不落额外列（由来源类别派生），旧库照常打开，无需重建。
 - 既有库首次需要结构修复前，MemoryStore 通过 SQLite backup API 在 `memory/backups/` 预留 `memory-repair-*.sqlite3` 快照；修复事务失败会回滚且保留快照，修复完成后的重复打开不会重复备份。事实 `memory_fts` 从已接受的 `memory_items` 重建；会话 FTS 与索引行属于可重建缓存，JSONL 仍是聊天正文真相源。恢复也会在提交后复核活动库结构。
-- 若清理来源清单曾声明完整但 fence 丢失，或缺失记忆作业/墓碑/来源关系、主动控制/预算等核心持久状态，启动不会创建空表掩盖缺口；会保留原库与诊断快照并返回可诊断错误。唯一同版本新增的可选模块例外是 `mcp_credentials`：缺表时可恢复空结构并保留修复前快照，`rust_warn!` 会说明原凭据无法由数据库重建，需重新录入或从备份恢复；应用不会伪造或声称恢复凭据值。旧库没有会话索引元数据时，clear 时间从操作/墓碑账本恢复；没有完整会话清单时只开放可证明晚于 cutoff 的缓存，TS 后续 clear 会提交稳定 seq fence。
+- 若清理来源清单曾声明完整但 fence 丢失，或缺失记忆作业/墓碑/来源关系、主动控制/预算或当前 v6 的提醒抑制账本等核心持久状态，启动不会创建空表掩盖缺口；会保留原库与诊断快照并返回可诊断错误。唯一同版本新增的可选模块例外是 `mcp_credentials`：缺表时可恢复空结构并保留修复前快照，`rust_warn!` 会说明原凭据无法由数据库重建，需重新录入或从备份恢复；应用不会伪造或声称恢复凭据值。旧库没有会话索引元数据时，clear 时间从操作/墓碑账本恢复；没有完整会话清单时只开放可证明晚于 cutoff 的缓存，TS 后续 clear 会提交稳定 seq fence。
 - 同一版本内的已知安全增列仍以 nullable 或有默认值的字段为主，不重置既有行（主动链的 `proactive_budgets` 增列即此模式）；会话检索缓存随 `ensure` 创建/校验，结构变化按 schema_version 版本策略处理。2026-10-16 的 v4 迁移增加 `memory_items.event_at_ms/event_at_date`、`content_norm/summary_norm/aliases_norm` 可空投影，旧行在结构修复事务内从既有事实回填；事实和会话 FTS 按规范化投影校验并重建。
 
 ## 表清单
@@ -54,6 +54,7 @@
 |---|---|
 | proactive_meta | 库级元数据（revision） |
 | proactive_tasks | 已确认的事项与任务：版本化（id+version）、scope 与来源引用、意图、due/checkin/时区/周期、状态、失效代、幂等 operation_id |
+| proactive_reminder_suppressions | 拒绝提醒治理：按事项稳定 id 保存操作 id 与时间，不复制正文、不改变事项版本；跨版本及重启保留，选择性记忆恢复不回退当前安装的抑制记录，事项被清除或整理删除后随闭包修剪 |
 | proactive_evaluations | 机会评估快照：按来源指纹去重（rule_id、来源引用、决定、有效期、来源 revision） |
 | proactive_topics | 已用话题登记（topic_key + used_at + 产生它的 attempt），话题去重的判定依据 |
 | proactive_source_registry | 来源登记（kind+source_id → 版本、revision、scope、指纹、有效期） |

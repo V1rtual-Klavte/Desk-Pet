@@ -159,5 +159,8 @@ describe("用户安排日历与内容授权", () => {
     expect(() => acceptScheduleProposal([proposal], "proposal-a", owner, definition, "好像可以试试", 10_000)).toThrow("没有匹配")
     expect(() => acceptScheduleProposal([proposal], "proposal-a", owner, definition, "好", 21_000)).toThrow("已过期")
     expect(() => acceptScheduleProposal([proposal], "proposal-a", owner, definition, "好", 10_000, { taskId: "task-b", expectedVersion: 2, action: "update" })).toThrow("目标或版本不一致")
+    const other = { ...proposal, proposalId: "proposal-b", definition: { ...definition, text: "提醒吃药" } }
+    expect(() => acceptScheduleProposal([proposal, other], "proposal-a", owner, definition, "好", 10_000)).toThrow("多个")
+    expect(acceptScheduleProposal([proposal, { ...other, validUntil: 5_000 }], "proposal-a", owner, definition, "好", 10_000)).toBe(proposal)
   })
 })

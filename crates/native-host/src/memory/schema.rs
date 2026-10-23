@@ -1150,6 +1150,7 @@ fn validate_missing_governance_tables(conn: &Connection) -> AppResult<()> {
             "memory_dreaming_budgets",
             "memory_dreaming_reservations",
             "proactive_tasks",
+            "proactive_reminder_suppressions",
             "proactive_evaluations",
             "proactive_topics",
             "proactive_source_registry",
@@ -1170,6 +1171,7 @@ fn validate_missing_governance_tables(conn: &Connection) -> AppResult<()> {
     }
     let proactive_tables = [
         "proactive_tasks",
+        "proactive_reminder_suppressions",
         "proactive_evaluations",
         "proactive_topics",
         "proactive_source_registry",
@@ -1184,6 +1186,7 @@ fn validate_missing_governance_tables(conn: &Connection) -> AppResult<()> {
     let missing_proactive = proactive_tables
         .iter()
         .filter_map(|table| match object_type(conn, table) {
+            Ok(None) if *table == "proactive_reminder_suppressions" && version.is_some_and(|value| value < 6) => None,
             Ok(None) => Some(Ok(*table)),
             Ok(Some(_)) => None,
             Err(error) => Some(Err(error)),

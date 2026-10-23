@@ -136,6 +136,7 @@ fn last_committed_expression_at(tx: &Transaction<'_>) -> AppResult<Option<i64>> 
     .map_err(db)
 }
 fn prune_tx(tx: &Transaction<'_>, now: i64) -> AppResult<()> {
+    tx.execute("DELETE FROM proactive_reminder_suppressions WHERE NOT EXISTS(SELECT 1 FROM memory_items i WHERE i.id=proactive_reminder_suppressions.item_id)", []).map_err(db)?;
     tx.execute(
         "DELETE FROM proactive_evaluations WHERE created_at<?1",
         [now - crate::memory::protocol::PROACTIVE_EVALUATION_RETENTION_DAYS * DAY_MS],
@@ -271,6 +272,10 @@ pub(crate) fn validate_source_ref(tx: &Transaction<'_>, reference: &Value) -> Ap
                 || text(reference, "fingerprint") != format!("{}:{}", id, version)
             {
                 return Err(AppError::MemoryConflict);
+            }
+            let suppressed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM proactive_reminder_suppressions WHERE item_id=?1)", [&id], |row| row.get(0)).map_err(db)?;
+            if suppressed {
+                return Err(fail("该事项已停止提醒，须由用户重新明确安排"));
             }
         }
         "task" => {
@@ -483,6 +488,31 @@ fn validate_refs_owner(refs: &[Value], owner: &Value) -> AppResult<()> {
     }
     Ok(())
 }
+fn suppress_memory_reminders_tx(tx: &Transaction<'_>, refs: &[Value], operation_id: &str) -> AppResult<()> {
+    let memory_refs = refs.iter().filter(|r| text(r, "kind") == "memory").collect::<Vec<_>>();
+    for reference in &memory_refs {
+        validate_source_ref(tx, reference)?;
+    }
+    let ids = memory_refs.into_iter().map(source_id).collect::<std::collections::HashSet<_>>();
+    for id in ids {
+        tx.execute("INSERT INTO proactive_reminder_suppressions(item_id,operation_id,created_at) VALUES (?1,?2,?3) ON CONFLICT(item_id) DO UPDATE SET operation_id=excluded.operation_id,created_at=excluded.created_at", params![id,operation_id,now_ms()]).map_err(db)?;
+        finish_working_closure_tx(tx, &id, "cancelled")?;
+        crate::scheduler::store::invalidate_memory_content(tx, &id, now_ms())?;
+    }
+    Ok(())
+}
+
+fn allow_memory_reminders_tx(tx: &Transaction<'_>, task: &Value) -> AppResult<()> {
+    for reference in value_array(task, "sourceRefs").iter().filter(|r| text(r, "kind") == "memory") {
+        let authorized = task["intent"]["authorization"]["sourceVersions"].as_array().is_some_and(|versions| versions.iter().any(|version| {
+            ["kind", "id", "version", "revision", "fingerprint"].iter().all(|key| version[key] == reference[key])
+        }));
+        if !authorized { return Err(fail("重新安排必须明确授权关联事项的当前版本")); }
+        tx.execute("DELETE FROM proactive_reminder_suppressions WHERE item_id=?1", [source_id(reference)]).map_err(db)?;
+    }
+    Ok(())
+}
+
 fn finish_linked_memory_tx(
     tx: &Transaction<'_>,
     task: &Value,
@@ -824,7 +854,7 @@ impl MemoryStore {
             .and_then(Value::as_str)
             .map(str::to_string);
         let target_cursor = text(request, "targetCursor");
-        let mut target_stmt=tx.prepare("SELECT i.id,i.version,i.scope,i.scope_id,i.event_at_json,i.due_at_json,i.working_state,i.kind,i.aliases_json,i.updated_at,COALESCE((SELECT json_group_array(source_id) FROM memory_item_sources s WHERE s.item_id=i.id AND s.item_version=i.version),'[]') FROM memory_items i WHERE i.status='active' AND ((i.kind='working' AND i.working_state='open') OR (i.kind IN ('fact','episode') AND i.event_at_json IS NOT NULL) OR i.kind='preference') AND i.id>?1 AND (i.scope='user' OR (i.scope='card' AND i.scope_id=?2) OR (i.scope='session' AND i.scope_id=?3)) ORDER BY i.id LIMIT ?4").map_err(db)?;
+        let mut target_stmt=tx.prepare("SELECT i.id,i.version,i.scope,i.scope_id,i.event_at_json,i.due_at_json,i.working_state,i.kind,i.aliases_json,i.updated_at,COALESCE((SELECT json_group_array(source_id) FROM memory_item_sources s WHERE s.item_id=i.id AND s.item_version=i.version),'[]') FROM memory_items i WHERE i.status='active' AND NOT EXISTS(SELECT 1 FROM proactive_reminder_suppressions s WHERE s.item_id=i.id) AND ((i.kind='working' AND i.working_state='open') OR (i.kind IN ('fact','episode') AND i.event_at_json IS NOT NULL) OR i.kind='preference') AND i.id>?1 AND (i.scope='user' OR (i.scope='card' AND i.scope_id=?2) OR (i.scope='session' AND i.scope_id=?3)) ORDER BY i.id LIMIT ?4").map_err(db)?;
         let target_rows=target_stmt.query_map(params![target_cursor,card_id,session_id,limit+1],|row| {
             let event:Option<String>=row.get(4)?; let due:Option<String>=row.get(5)?; let state:Option<String>=row.get(6)?;let aliases:String=row.get(8)?;let sources:String=row.get(10)?;
             Ok(json!({"id":row.get::<_,String>(0)?,"version":row.get::<_,i64>(1)?,"scope":row.get::<_,String>(2)?,"scopeId":row.get::<_,Option<String>>(3)?,"eventAt":event.and_then(|v|serde_json::from_str::<Value>(&v).ok()),"dueAt":due.and_then(|v|serde_json::from_str::<Value>(&v).ok()),"workingState":state,"kind":row.get::<_,String>(7)?,"aliases":serde_json::from_str::<Value>(&aliases).unwrap_or(json!([])),"updatedAt":row.get::<_,i64>(9)?,"sourceIds":serde_json::from_str::<Value>(&sources).unwrap_or(json!([]))}))
@@ -1032,7 +1062,7 @@ impl MemoryStore {
         let action = text(request, "action");
         if !matches!(
             action.as_str(),
-            "create" | "update" | "reschedule" | "snooze" | "complete" | "cancel"
+            "create" | "update" | "reschedule" | "snooze" | "complete" | "cancel" | "decline"
         ) {
             return Err(fail(
                 "schedule_change 只允许修改用户任务，不提供内部控制操作",
@@ -1147,8 +1177,19 @@ impl MemoryStore {
                 validate_task_owner(draft, &current_owner)?;
                 if user_schedule {
                     validate_schedule_write(&tx, draft, request, &current_owner)?;
+                    allow_memory_reminders_tx(&tx, draft)?;
                 }
                 Some(insert_task(&tx, draft, &operation_id)?)
+            }
+            "decline" if user_schedule => {
+                if ["taskPatch", "taskId", "expectedVersion"].iter().any(|key| request.get(key).is_some()) {
+                    return Err(fail("拒绝提议不可附带任务身份或补丁"));
+                }
+                let refs = value_array(request, "sourceRefs");
+                validate_refs_owner(&refs, &current_owner)?;
+                for reference in &refs { validate_source_ref(&tx, reference)?; }
+                suppress_memory_reminders_tx(&tx, &refs, &operation_id)?;
+                None
             }
             "update" | "reschedule" | "snooze" | "complete" | "cancel" => {
                 let id = text(request, "taskId");
@@ -1248,6 +1289,10 @@ impl MemoryStore {
                 }
                 current["sourceRefs"] = json!(source_refs);
                 validate_task_owner(&current, &current_owner)?;
+                if user_schedule && matches!(action.as_str(), "update" | "reschedule") {
+                    validate_schedule_write(&tx, &current, request, &current_owner)?;
+                    allow_memory_reminders_tx(&tx, &current)?;
+                }
                 for reference in value_array(&json!({"sourceRefs":source_refs}), "sourceRefs") {
                     validate_source_ref(&tx, &reference)?;
                 }
@@ -1359,17 +1404,10 @@ impl MemoryStore {
                     .optional()
                     .map_err(db)?;
                 if let Some(task) = updated.as_ref() {
-                    if action == "complete" || action == "cancel" {
-                        finish_linked_memory_tx(
-                            &tx,
-                            task,
-                            if action == "complete" {
-                                "completed"
-                            } else {
-                                "cancelled"
-                            },
-                            request,
-                        )?;
+                    if action == "complete" {
+                        finish_linked_memory_tx(&tx, task, "completed", request)?;
+                    } else if action == "cancel" {
+                        suppress_memory_reminders_tx(&tx, &value_array(task, "sourceRefs"), &operation_id)?;
                     }
                 }
                 updated
@@ -2178,6 +2216,7 @@ pub(crate) fn finish_working_closure_tx(
 
 pub(crate) fn clear_memory_closure_tx(tx: &Transaction<'_>) -> AppResult<()> {
     crate::scheduler::store::clear_content(tx, now_ms())?;
+    tx.execute("DELETE FROM proactive_reminder_suppressions", []).map_err(db)?;
     tx.execute("UPDATE proactive_tasks SET state=CASE WHEN state='active' THEN 'invalidated' ELSE state END,version=version+1,updated_at=?1,intent_json='{}',source_refs_json='[]',invalidation_epoch=invalidation_epoch+1",[now_ms()]).map_err(db)?;
     tx.execute("DELETE FROM proactive_evaluations", [])
         .map_err(db)?;
@@ -3258,6 +3297,40 @@ mod tests {
         let denied = claim("expression", "expression-overflow").expect("超限expression");
         assert_eq!(denied["claimed"], json!(false));
         assert_eq!(denied["reason"], json!("daily_limit"));
+    }
+
+    #[test]
+    fn declining_reminders_preserves_matter_and_blocks_rederivation_after_reopen() {
+        let fixture = Fixture::new();
+        let item_id = fixture.add_working_item();
+        let memory = json!({"kind":"memory","id":item_id,"version":1,"revision":1,"scope":"session","scopeId":"s1","fingerprint":format!("{item_id}:1"),"validUntil":null});
+        let draft = json!({"id":"reminder-a","scope":"session","scopeId":"s1","sourceRefs":[memory,Fixture::source_ref()],"intent":{"text":"练琴"},"nextCheckinAt":now_ms()+60_000,"validUntil":null,"timezone":"UTC","recurrence":null,"eventAt":null,"dueAt":null});
+        let created = fixture.1.proactive_change(&json!({"operationId":"reminder-create","baseRevision":0,"action":"create","owner":Fixture::owner(),"trustedUserEventId":"user-event","sourceRefs":[Fixture::source_ref()],"taskPatch":draft})).unwrap();
+        fixture.1.proactive_change(&json!({"operationId":"reminder-cancel","baseRevision":created["revision"],"action":"cancel","owner":Fixture::owner(),"trustedUserEventId":"user-event","sourceRefs":[Fixture::source_ref()],"taskId":"reminder-a","expectedVersion":1})).unwrap();
+        let item = fixture.1.query("练琴",Some("session"),Some("s1"),None,10).unwrap().remove(0);
+        assert_eq!(item["version"], json!(1));
+        assert_eq!(item["draft"]["workingState"], json!("open"));
+        let reopened = MemoryStore::open_at(&fixture.0.join("memory.sqlite3")).unwrap();
+        let scan = reopened.proactive_scan(&json!({"owner":Fixture::owner(),"now":now_ms()+40*DAY_MS,"localDate":"2026-12-01"}), &ProactiveLimits::medium()).unwrap();
+        assert!(scan["memoryTargets"].as_array().unwrap().is_empty());
+        let conn = connection(&reopened).unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        assert!(validate_source_ref(&tx, &memory).is_err());
+        assert!(insert_task(&tx, &draft, "rederived").is_err());
+    }
+
+    #[test]
+    fn decline_without_task_is_atomic_and_keeps_memory_open() {
+        let fixture = Fixture::new();
+        let item_id = fixture.add_working_item();
+        let memory = json!({"kind":"memory","id":item_id,"version":1,"revision":1,"scope":"session","scopeId":"s1","fingerprint":format!("{item_id}:1"),"validUntil":null});
+        let request = json!({"operationId":"decline-proposal","baseRevision":0,"action":"decline","owner":Fixture::owner(),"trustedUserEventId":"user-event","sourceRefs":[Fixture::source_ref(),memory]});
+        let result = fixture.1.schedule_change(&request).unwrap();
+        assert_eq!(result["task"], Value::Null);
+        assert_eq!(fixture.1.schedule_change(&request).unwrap(), result);
+        let item = fixture.1.query("练琴",Some("session"),Some("s1"),None,10).unwrap().remove(0);
+        assert_eq!(item["draft"]["workingState"], json!("open"));
+        assert_eq!(item["version"], json!(1));
     }
 
     #[test]

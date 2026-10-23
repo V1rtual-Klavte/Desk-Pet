@@ -23,6 +23,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { fauxAssistantMessage } from "@earendil-works/pi-ai"
 
 vi.mock("@/services/tool/execution-permit", () => ({
   acquireToolPermit: async () => ({ kind: "granted" }),
@@ -43,6 +44,8 @@ import { setUiEventPublisher } from "@/services/host"
 import { planCheckpointStore } from "@/services/engine"
 import { getOverride, planConfig, setOverride } from "@/services/config"
 import { initPaths } from "@/services/paths"
+import { resumePlan } from "@/services/engine/harness"
+import { getActiveSessionId } from "@/services/session/store"
 
 /** 工具名是线上契约（测试手写见证，不 import 实现常量）。 */
 const TOOL = "propose_plan"
@@ -114,6 +117,34 @@ const TWO_STEPS = [
 ]
 
 describe("提议计划", () => {
+  it("普通输入直接交主模型，不因关键词或命令相似前缀先规划 [plan-model-entry]", async () => {
+    for (const input of ["帮我分析和总结一下这段话", "你好呀", "--planet 是什么意思", "请解释 --plan 的作用"]) {
+      await standardSetup("deny", "deny")
+      setOverride("ai.plan.enabled", true)
+      const provider = installFakeProvider([fakeText("直接回答这个问题")])
+      const output = await runRuntimeTurn(input)
+      expect(provider.state.callCount).toBe(1)
+      expect(provider.payloads[0]?.tools?.map(tool => tool.name)).toContain(TOOL)
+      expect(planRecords()).toEqual([])
+      expect(output.reply).toContain("直接回答这个问题")
+    }
+  }, 60_000)
+
+  it("显式 --plan 仍先生成并确认计划 [plan-force-trigger]", async () => {
+    await standardSetup("deny", "auto")
+    setOverride("ai.plan.enabled", true)
+    const provider = installFakeProvider([
+      fakeText(JSON.stringify({ summary: "显式计划", steps: [{ id: 1, description: "收集信息", allowedTools: ["read"] }] })),
+      fakeText("信息已收集"),
+      fakeText("显式计划已完成"),
+    ])
+    const output = await runRuntimeTurn("--plan 帮我看看")
+    expect(provider.state.callCount).toBe(3)
+    expect(planRecords()).toEqual([expect.objectContaining({ confirmed: true, steps: 1 })])
+    expect(planEnds()).toEqual(["done"])
+    expect(output.reply).toContain("显式计划已完成")
+  }, 60_000)
+
   it("用户确认后逐步执行并按既有格式返回结果（子运行真实执行、工具面按 allowedTools 收窄） [plan-tool-confirm-accept]", async () => {
     await standardSetup("deny", "auto")
     const provider = installFakeProvider([
@@ -161,6 +192,82 @@ describe("提议计划", () => {
     expect(output.reply, "回合没有以模型正文收尾").toContain("计划都做完了")
   }, 60_000)
 
+  it("失败后选择继续，后续成功也保留工具、面板和持久计划的失败结果 [plan-tool-continue-failure]", async () => {
+    await standardSetup("deny", "auto")
+    setOverride("ai.memory.enabled", false)
+    setOverride("ai.plan.onStepFailure", "ask")
+    const callId = "plan-call-continue-failure"
+    const provider = installFakeProvider([
+      fakeToolCall(TOOL, { summary: "失败后继续", steps: TWO_STEPS }, callId),
+      () => fauxAssistantMessage([], { stopReason: "error", errorMessage: "invalid request: step rejected" }),
+      fakeText("第二步完成"),
+      fakeText("第一步失败，第二步完成"),
+    ])
+    const output = await runRuntimeTurn("执行两步，失败时让我选择是否继续")
+    expect(output.failure).toBeUndefined()
+    expect(provider.state.callCount).toBe(4)
+    expect(planInteractionRecords().filter(item => item.kind === "step_gate").map(item => item.decision)).toEqual(["continue"])
+    expect(toolResultTexts(provider.payloads[3] as Payload, TOOL)[0]).toContain("整体结果：部分失败或未完成")
+    expect(provider.payloads[3]?.messages).toContainEqual(expect.objectContaining({ role: "toolResult", toolName: TOOL, isError: true }))
+    expect(planEnds()).toEqual(["failed"])
+    const record = planCheckpointStore.snapshot(`plan-${callId}`)
+    expect(record?.plan.state).toBe("failed")
+    expect(record?.steps.map(step => step.state)).toEqual(["failed", "done"])
+  }, 60_000)
+
+  it("恢复入口拒绝重放未处置的效果步骤且不请求模型 [plan-recovery-effect-guard]", async () => {
+    await standardSetup("deny", "auto")
+    const provider = installFakeProvider([fakeText("开始恢复检查")])
+    await runRuntimeTurn("恢复检查")
+    const sessionId = getActiveSessionId(), now = Date.now(), planId = "plan-effect-guard"
+    await planCheckpointStore.create({ schemaVersion: 2, planId, sessionId, rootTurnId: planId,
+      state: "running", summary: "恢复检查", estimatedComplexity: 1, version: 1, createdAt: now, updatedAt: now }, [
+      { planId, stepId: "1", title: "已产生效果", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
+    ])
+    await planCheckpointStore.checkpointTool(planId, "1", "tool_start", "write", "effect-write", "external_side_effect")
+    await planCheckpointStore.checkpointTool(planId, "1", "tool_end", "write", "effect-write", "external_side_effect", true)
+    await planCheckpointStore.checkpointTool(planId, "1", "tool_end", "read", "later-read", "read_only", true)
+    planCheckpointStore.reset()
+    await planCheckpointStore.recover(sessionId)
+    expect(await resumePlan(sessionId, planId)).toBeUndefined()
+    expect(provider.state.callCount).toBe(1)
+    expect(planCheckpointStore.snapshot(planId)?.steps[0]).toMatchObject({ state: "unknown_side_effect", attempt: 1 })
+    expect(planEnds()).toEqual([])
+  }, 60_000)
+
+  it("同进程继续中断步骤先核对效果，明确重跑只增加一次尝试 [plan-resume-interrupted-step]", async () => {
+    for (const hasEffect of [false, true]) {
+      await standardSetup("deny", "auto")
+      setOverride("ai.memory.enabled", false)
+      const provider = installFakeProvider([fakeText("准备就绪"), fakeText("剩余步骤完成")])
+      await runRuntimeTurn("准备就绪")
+      const sessionId = getActiveSessionId(), now = Date.now(), planId = `plan-interrupted-${hasEffect}`
+      await planCheckpointStore.create({ schemaVersion: 2, planId, sessionId, rootTurnId: planId,
+        state: "running", summary: "继续中断步骤", estimatedComplexity: 1, version: 1, createdAt: now, updatedAt: now }, [
+        { planId, stepId: "1", title: "核对剩余工作", allowedTools: ["read"], state: "pending", attempt: 0, effectClass: "external_side_effect", updatedAt: now },
+      ])
+      await planCheckpointStore.transitionStep(planId, "1", "running")
+      if (hasEffect) await planCheckpointStore.checkpointTool(planId, "1", "tool_start", "write", "interrupted-write", "external_side_effect")
+      await planCheckpointStore.checkpointTool(planId, "1", "tool_end", "read", "interrupted-read", "read_only", true)
+      await planCheckpointStore.transitionStep(planId, "1", "interrupted")
+      await planCheckpointStore.transitionPlan(planId, "interrupted")
+      const firstResume = await resumePlan(sessionId, planId)
+      if (hasEffect) {
+        expect(firstResume).toBeUndefined()
+        expect(provider.state.callCount).toBe(1)
+        expect(planCheckpointStore.snapshot(planId)?.steps[0]).toMatchObject({ state: "unknown_side_effect", attempt: 1 })
+        await planCheckpointStore.resolveUnknownSideEffect(planId, "1", "retry")
+        expect(await resumePlan(sessionId, planId)).toBeDefined()
+      } else {
+        expect(firstResume).toBeDefined()
+      }
+      expect(provider.state.callCount).toBe(2)
+      expect(payloadText(provider.payloads[1] as Payload)).toContain("核对剩余工作")
+      expect(planCheckpointStore.snapshot(planId)?.plan.state).toBe("done")
+      expect(planCheckpointStore.snapshot(planId)?.steps[0]).toMatchObject({ state: "done", attempt: 2 })
+    }
+  }, 60_000)
+
   it("用户取消：一步都不执行、记录如实收尾、工具结果说明未执行任何步骤 [plan-tool-user-cancel]", async () => {
     await standardSetup("deny", "deny")
     const provider = installFakeProvider([
@@ -184,7 +291,7 @@ describe("提议计划", () => {
     expect(results[0], "取消结果没有如实说明未执行").toContain("未执行任何步骤")
     expect(results[0], "取消结果谎报了执行结果").not.toContain("[计划执行结果]")
 
-    // 记录落盘：步骤全部 skipped、计划 failed（与自动入口的用户拒绝同一归宿）。
+    // 记录落盘：步骤全部 skipped、计划 failed（与显式命令入口的用户拒绝同一归宿）。
     const record = planCheckpointStore.snapshot(`plan-${PLAN_CALL_ID_DENY}`)
     expect(record?.plan.state, "用户取消的计划没有落成 failed").toBe("failed")
     expect(record?.steps.map(step => step.state), "用户取消的步骤没有标 skipped").toEqual(["skipped", "skipped"])

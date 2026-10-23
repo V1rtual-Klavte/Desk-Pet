@@ -47,7 +47,7 @@ pub const PROACTIVE_COMMANDS: &[&str] = &[
     "proactive_auxiliary_budget_reserve",
     "proactive_auxiliary_budget_settle",
 ];
-pub const MEMORY_SCHEMA_VERSION: i64 = 5;
+pub const MEMORY_SCHEMA_VERSION: i64 = 6;
 pub const PROACTIVE_TICK_MS: i64 = 300000;
 pub const PROACTIVE_MAX_TASKS: i64 = 100;
 pub const PROACTIVE_MAX_RECURRING_TASKS: i64 = 10;

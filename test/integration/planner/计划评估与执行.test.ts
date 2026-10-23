@@ -4,21 +4,16 @@
 //
 // 归属按 import 判定，不按 entry 标签：原场景 import 了 `@/services/tool`
 // （工具 barrel 会带出执行许可，属 IPC 入口），因此进 L3（test/integration/）而不是 L2。
-//
-// 配置前提：L3 没有 L4 的 standard-setup 兜底，判据依赖的 `ai.plan.*` 必须在
-// `beforeEach` 里自己钉死 —— 本机 CONFIG-DEV.yaml 若把 `complexityEval` 设成 `llm`，
-// 「未命中关键词不发请求」的判据就会真的发起一次 LLM 判定，换台机器即红。
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
-import { setOverride, setOverrides } from "@/services/config"
+import { setOverrides } from "@/services/config"
 import type { PlanExecutionResult, PlanResult, StepToolNotice } from "@/services/engine/planner"
-import { evaluateComplexity, executePlan, formatStepResults, generatePlan } from "@/services/engine/planner"
+import { executePlan, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { listAll } from "@/services/tool"
 import { registerDefaultTools } from "@/services/tool/registry"
 
@@ -28,7 +23,7 @@ beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "deskpet-planner-"))
   setTestDataRoot(root)
   // 判据要求的取值由本文件自己钉：L3 没有 standard-setup 兜底，也不能指望本机 CONFIG
-  setOverrides({ "ai.plan.enabled": true, "ai.plan.complexityEval": "keyword" })
+  setOverrides({ "ai.plan.enabled": true })
   await registerDefaultTools()
 })
 
@@ -37,61 +32,35 @@ afterEach(() => {
 })
 
 describe("计划评估与执行", () => {
-  it("evaluateComplexity 的 --plan 强制触发 [plan-force-trigger]", async () => {
-    const result = await evaluateComplexity("--plan 帮我分析整个代码库")
-    expect(result.score).toBe(5)
-    expect(result.triggeredBy).toBe("force")
-
-    // 判定是 startsWith：前缀里有空格就不该命中，否则普通文本里提到 --plan 会误触发
-    const spaced = await evaluateComplexity("  --plan 帮我分析")
-    expect(spaced.triggeredBy).not.toBe("force")
-  })
-
-  it("evaluateComplexity 关键词匹配与默认不发请求 [plan-keyword-trigger]", async () => {
-    // 显式传关键词，避免断言依赖运行时配置里恰好有哪些词
-    const hit = await evaluateComplexity("帮我重构这个模块", ["重构"])
-    expect(hit.score).toBe(3)
-    expect(hit.triggeredBy).toBe("keyword")
-    expect(hit.reason).toContain("重构")
-
-    // 默认 complexityEval=keyword：未命中关键词直接低分，不再发一次独立请求。
-    // 判据用「没有任何响应」的 provider：真发了请求就只能是 llm 分支或超时 ——
-    // payloads 为空是「一次请求都没发出去」的直接证据，不只是文案里说了没发。
-    const provider = installFakeProvider([])
-    const miss = await evaluateComplexity("今天天气不错", ["重构"])
-    expect(provider.payloads).toHaveLength(0)
-    expect(miss.score).toBe(1)
-    expect(miss.triggeredBy).toBe("keyword")
-    expect(miss.reason).toContain("complexityEval=keyword")
-  })
-
-  it("evaluateComplexity 对简单消息给低分 [plan-simple-text]", async () => {
-    // 无关键词 → 需要显式 llm 判定方式才会落到 LLM 自判断（默认 keyword 下不发请求）
-    // 模型回答「2」而不是「1」：1 同时是解析兜底值与失败回退值，回答与兜底不可区分；
-    // 2 只能来自「真的采纳了模型给出的数字」，且仍在阈值 3 以下 —— 平凡问候不触发 Plan
-    installFakeProvider([fakeText("2")])
-    setOverride("ai.plan.complexityEval", "llm")
-
-    const result = await evaluateComplexity("你好呀", ["重构"])
-    expect(result.score).toBe(2)
-    expect(result.triggeredBy).toBe("llm")
-  })
-
-  it("evaluateComplexity 在 LLM 失败时回退 [plan-eval-fallback]", async () => {
-    // provider 以 error 结束流：调用方必须自己识别 stopReason，不能当成正常回复
-    installFakeProvider([fauxAssistantMessage(fauxText(""), { stopReason: "error", errorMessage: "boom" })])
-    setOverride("ai.plan.complexityEval", "llm")
-
-    const result = await evaluateComplexity("帮我分析一下", ["重构"])
-    expect(result.score).toBe(1)
-    expect(result.triggeredBy).toBe("llm")
-    expect(result.reason).toContain("boom")
-
-    // 评分超出 1-5 也要被夹回来，否则阈值比较会失真
-    installFakeProvider([fakeText("99")])
-    const clamped = await evaluateComplexity("帮我分析一下", ["重构"])
-    expect(clamped.score).toBeGreaterThanOrEqual(1)
-    expect(clamped.score).toBeLessThanOrEqual(5)
+  it("失败后继续执行不抹掉失败，异常步骤也须结算 [plan-continue-keeps-failure]", async () => {
+    for (const onStepFailure of ["continue", "ask"] as const) {
+      for (const rejectNotice of [false, true]) {
+        const provider = installFakeProvider([fakeText("第二步完成")])
+        const completed: Array<{ id: number; success: boolean }> = []
+        const asked: number[] = []
+        const result = await executePlan({
+          summary: "部分失败", estimatedComplexity: 2,
+          steps: [
+            { id: 1, description: "失败步骤", allowedTools: ["missing_plan_tool"] },
+            { id: 2, description: "继续执行", allowedTools: ["read"] },
+          ],
+        }, {
+          planId: "continue-failure", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
+          stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure,
+        }, {
+          onStepStart: () => {},
+          onStepDone: (step, output) => { completed.push({ id: step.id, success: output.success }) },
+          onStepFailed: async step => { asked.push(step.id); return "continue" },
+          onStepNotice: () => rejectNotice ? Promise.reject(new Error("通知失败")) : undefined,
+        })
+        expect(result.overallSuccess).toBe(false)
+        expect(result.stepResults.map(item => item.output.success)).toEqual([false, true])
+        expect(completed).toEqual([{ id: 1, success: false }, { id: 2, success: true }])
+        expect(asked).toEqual(onStepFailure === "ask" ? [1] : [])
+        expect(provider.payloads).toHaveLength(1)
+        expect(formatStepResults(result)).toContain("部分失败")
+      }
+    }
   })
 
   it("generatePlan 解析模型返回的步骤 [plan-generate]", async () => {

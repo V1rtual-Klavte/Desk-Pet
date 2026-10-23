@@ -1,3 +1,7 @@
+// 2026-10-23 提醒拒绝与计划恢复批次：mm-15 的恢复判据更新为步骤累计副作用证据、暂停计划内
+// 再次中断与同进程 prepareResume 只重分类 interrupted；mm-77 登记拒绝提醒不改事项版本、写抑制
+// 并阻止重新派生；schema v6 新增 proactive_reminder_suppressions（选择性记忆恢复不触碰当前
+// 安装的抑制记录，事项清除或整理删除后随闭包修剪）。sourceHash 按当前源码复算。
 // 2026-10-20 列项修正：弃答句由已校验列项替换（mm-74）；枚举证据按会话轮转覆盖完整回合（mm-72）；
 // 最终阅读策略优先结构性限制（工作/居住/预算等），不只列现有爱好。
 // 2026-10-18 统一调度与子运行：手工 analyze/generate 声明修订；测试已写未运行，sourceHash 留统一验收复算。
@@ -366,10 +370,9 @@ export const memoryContract: ModuleContract = {
     "src/services/engine/runtime/trace.ts",
     "src/services/engine/runtime/input-identity.ts",
     "src/services/error/failure-kind.ts",
-    // memory contract owns these domain-specific consumers: runtime performs request-bound
-    // recall gating, projection and custom-message injection (mm-17/mm-37/mm-38);
-    // HarnessSlots applies the memory compaction window and owns its lifecycle (mm-19/mm-40).
-    // Generic loop/gateway behavior remains anchored once by agent-runtime.
+    // mm-15 owns checkpoint effect evidence and runtime resume admission; generic loops belong to agent-runtime.
+    "src/services/engine/plan/checkpoint-store.ts",
+    // runtime also owns recall gating/projection (mm-17/mm-37/mm-38), HarnessSlots compaction (mm-19/mm-40).
     "src/services/engine/harness/runtime.ts",
     "src/services/engine/harness/harness-slot.ts",
     "src/services/engine/harness/delivery.ts",
@@ -391,7 +394,7 @@ export const memoryContract: ModuleContract = {
   // 2026-10-10：预算/结构化证据归 mm-54..61，阅读器网关、缓存与取消组合归 mm-62；
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
   // 2026-10-18 列项答案补全批次：新增 enumeration-answer.ts，runtime afterResponse 补全并与结算同源；reader 抽取器来源上限与最终证据对齐到 32、按 8 条分批合并、类别/问句片段具体性过滤、完整口味组合保留、最长项目吸收短片段、去空格变体去重；人物归属留在 LoCoMo 适配器（memory-bench mb-12），产品不解析 speaker 头；mm-73/mm-74/mm-75 覆盖，刷新。
-  sourceHash: "dd5a2f9951261daf7819e04c4dfb0cadf41a90cac928ac05d5e5b020b877e564",
+  sourceHash: "7dcc388b555e6d6953af3aec11e6aec35caab7a0b2a181b48f9a19ee66ebf6ec",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令；静态规程声明默认自然日期及显式机器格式/年份/相对量边界，接线断言核对system消费，表达质量另由固定证据与真模型专项观测，不以fake回复证明", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },
@@ -450,7 +453,7 @@ export const memoryContract: ModuleContract = {
     // mm-11 原把「归属身份 + 保留/trace」合成一点（跨层混搭）；按层拆开：保留与 trace 侧为 mm-34（L3），归属与身份侧留在 mm-11（L4）。
     { id: "mm-34", feature: "PromptSnapshot 的保留与 trace", description: "快照保留顺序、hash 与 usage 区分（原始 Prompt 与密钥不落快照：systemBlocks 与 agentMessages 只存 hash），以及真实回合的 trace 完整性（provider_payload / provider_response / provider_usage 与 transform_context + provider_payload 双快照）", why: "上下文审计不能泄露原始 prompt、覆盖用户原文或把估算 token 当成实际 usage", layer: "integration", depth: "deep", scenarios: ["memory-prompt-snapshot"] },
     { id: "mm-13", feature: "工具成对观测", description: "工具调用与结果按 id 配对保留在会话条目，并被 runtime history 观测", why: "后续压缩和恢复需要完整 tool pair 基线", layer: "e2e", depth: "deep", scenarios: ["memory-tool-pair-baseline"] },
-    { id: "mm-15", feature: "Plan checkpoint 恢复", description: "运行中 Plan 从会话条目 deskpet.plan_checkpoint 按事件级证据折迭恢复，产出可处置的 paused 计划（只读步骤回 pending；有 tool_start 无 tool_end 的效果工具进 unknown_side_effect，末事件是 tool_end 的取末事件回 pending）；plan 的唯一持久形态是 schemaVersion 2，旧格式条目（含存量 1）按不可恢复跳过、不做迁移；继续/丢弃由用户显式触发，未知副作用不自动重放，恢复动作可条目回读", why: "进程重启后不能重复执行没有完成凭证的外部操作", layer: "integration", depth: "deep", scenarios: ["memory-plan-resume"] },
+    { id: "mm-15", feature: "Plan checkpoint 恢复", description: "Plan 从会话条目 deskpet.plan_checkpoint 按 attempt 累计效果证据恢复：running/interrupted 步骤只要开始过非只读工具就进 unknown_side_effect，后续成功回执或只读事件不能抹掉证据；只读步骤回 pending。paused 计划里再次中断的步骤同样复核；同进程 resumePlan 先重新定档 interrupted 步骤，不跳过它们，也不重判已批准重跑的 running 步骤；明确 retry 才清除旧 attempt 的证据并只增一次 attempt，already_applied 则标 done。真实 resumePlan 遇未知效果直接拒绝、不发 Provider 请求；plan 的唯一持久形态是 schemaVersion 2，旧格式条目（含存量 1）按不可恢复跳过、不做迁移；继续/丢弃由用户显式触发，未知副作用不自动重放，恢复动作可条目回读", why: "进程重启后不能重复执行没有完成凭证的外部操作", layer: "integration", depth: "deep", scenarios: ["memory-plan-resume", "plan-recovery-effect-guard", "plan-resume-interrupted-step"] },
     { id: "mm-16", feature: "上下文内核（纯预算）", description: "buildPromptBlocks 只做预算：窗口预算闭合（硬输入上限 + 输出预留 + 协议开销）、按层排序与拼接；核心块（静态人格/V1RTUAL/工具协议/工具 schema/动态运行时/会话摘要）放不进硬上限时显式 ContextBudgetError、绝不截块内文字，可选块整块淘汰并记入 budgetDrops；分配账目按层给出实际 requested/used（transcript 行保留但没有名义份额或借用字段，没有淘汰的层不写 dropped: 0）；完整静态前缀不随变量变化、工具 schema 完整计入输入预算；含会话正文的完整请求视图由托管钩子按同一硬输入上限核查（mm-22 的溢出恢复依赖它）", why: "Provider 输入需要可预测且可审计地限制在上下文窗口内，且不能静默丢失指令或未压缩历史", layer: "unit", depth: "deep", scenarios: ["memory-context-budget"] },
     { id: "mm-17", feature: "记忆投影形态与召回端口", description: "记忆块以 custom 消息投递（不是 system 消息）、不进 transcript、eligibleForMemory=false，判定函数只认专用 customType；MemoryProvider 可注入、取消、限时、裁剪并恢复，默认空实现不执行长期召回", why: "画像与长期事实必须留在派生数据一侧：一旦以 system 身份注入，它就成了指令，而召回内容还可能在下一轮被当成用户新事实重新提取", layer: "unit", depth: "deep", scenarios: ["memory-profile-rewrite"] },
     { id: "mm-18", feature: "消息条目单次写入", description: "一次真实回合后同一句话只有一条 pi 会话条目；后续回合不重复追加历史消息", why: "双写或历史重放会让重载出现重复消息与翻倍轮数", layer: "e2e", depth: "deep", scenarios: ["memory-single-message-write"] },
@@ -487,6 +490,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-74", feature: "列项答案缺失项判定与补全后缀", description: "主答可能只写 `enumerationItems` 的一部分；纯函数只追加最终正文中尚未出现的项目，保留主答原文。匹配按 NFKC/lowercase 的词序列连续匹配，长短语允许去空格回退（icecream/ice cream），短词不把 cake 命中 cheesecake，中文按去标点短语匹配；补全后缀跟随问题/项目语言（Also:/补充：），重复项目按来源顺序去重，空项目不产生补全。主答整体是短弃答句（无信息/无法确认）时，用已校验列项替换弃答，不追加 Also/补充；解释性回答仍走最小后缀。", why: "列项完整性不能继续依赖提示词自觉；补全只能补宿主逐字校验过的项目，不能误判短词、重复已写项目或改写主答，也不能让「无信息 + Also」自相矛盾。", layer: "unit", depth: "deep", scenarios: ["memory-answer-enumeration-append", "memory-answer-enumeration-no-duplicate", "memory-answer-enumeration-short-word", "memory-answer-enumeration-cjk", "memory-answer-enumeration-dedupe", "memory-answer-enumeration-replace-refusal", "memory-answer-enumeration-replace-refusal-cjk"] },
     { id: "mm-75", feature: "列项答案提交前补全与结算同源", description: "宿主在 afterResponse 完成 RUNTIME_DATA 剥离与拟人变换之后、条目提交之前做确定性补全；补全结果同时写回提交消息与回合状态，结算回复直接采用与 JSONL 条目同源的正文，避免 generateReply 从原始正文重解析时丢掉补全项；多泡回复只把后缀追加到最后一个可见段；trace 只登记 itemCount/appendedCount，不写用户项目正文。抽取失败、无列项、沉默回复或主答已含全部项目时不产生补全。", why: "补全若只改提交消息而不改结算回复，界面仍会显示漏项；若只改回复而不改条目，JSONL 与界面会分叉。", layer: "integration", depth: "deep", scenarios: ["memory-answer-completion-runtime"] },
     { id: "mm-72", feature: "同线程邻接补全与方面候选词假设", description: "B2C 根因补全：把已选中的会话强命中按会话分组，取命中序号的并集 ±2 回合、每个会话一次 `conversation_context` 扩读，单会话跨度上限 10 轮、最多 3 个会话、2k token；只读后用 JSONL 逐字校验，按完整 user/reply 回合准入，保持 seed 在前、不重复计数；`before`、记录时间窗与 revision/遗忘代变化边界沿用既有展开；事件时间题不做记录时间邻接扩读；显式 overview 与已校验的缺口引用走原有整会话/定向展开，不重复补全。rewrite 提示允许模型提出最多 4 个方面候选词作为检索假设（活动/食物/书/地点/物品名），但必须经 `conversation_term_check` 确认语料存在，语料外词整条拒绝；候选词不得被断言为事实。读者口径允许相邻原文直接、明确写出的同类项目作为自身依据，仍禁止仅凭相邻关系补造未写出的项目。列项问题由 `enumeration` evidenceNeed 驱动：reader 未穷举时，宿主按问题词/类别种子词筛出匹配会话，按会话排名保留完整回合，并在 32 条上限内按会话轮转（每个匹配会话先取一个命中回合，再轮回补入其余回合），避免单个早会话吃满预算或弱 reader 只摘第一个会话；匹配会话的全部完整回合都会进入候选，远邻项目不因不含问句词而被丢弃。", why: "q0075 缺的甜点是命中话题的相邻回合，q0035 缺的活动词与题面没有词面重叠；纯词面候选池无法覆盖上下文依赖和词汇差异，必须在检索与改写端补全，而不是在答案端猜。邻接扩读若无窗口/预算/事件时间/整回合边界，会把无关旁支和事件时间题一起污染；方面候选词若无语料校验，会变成模型编造事实。列项穷举若只靠 reader 提示，弱模型仍会只摘第一个会话，最终证据与 answerSourceIds 必须由宿主按匹配会话确定性补齐；按会话轮转还能避免单个早会话把 32 条预算耗尽。", layer: "unit", depth: "deep", scenarios: ["conversation-neighbor-window", "conversation-neighbor-span", "conversation-neighbor-budget", "conversation-neighbor-revision-fence", "memory-recall-neighbor-completion", "memory-recall-neighbor-general-skip", "memory-recall-neighbor-overview-skip", "memory-query-rewrite-aspect-hypothesis", "memory-query-plan-enumeration", "memory-reading-enumeration-evidence", "memory-reading-enumeration-session-rotation"] },
+    { id: "mm-77", feature: "拒绝提醒不取消现实事项", description: "memory_change 的 cancel 与 correct→cancelled 在当前可信输入仅拒绝提醒时拒绝，不调用记忆写入；明确不去并取消事项时仍可提交", why: "提醒授权与现实事项状态不同，不能因模型选择取消动作就关闭 working 事项", layer: "integration", depth: "deep", scenarios: ["memory-reminder-refusal-not-cancellation"] },
   ],
   // W0–W7 把本契约的场景迁出 L4 后按 L4 侧当前值重标定：门槛=当前 rules 声明值，
   // 只缩不放（数字由 checker 报错提供）；跨层完整性由 checkLayerCoverage 负责。

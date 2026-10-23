@@ -109,7 +109,7 @@ export const 输入先落盘: SceneDef = {
     sessionId = getActiveSessionId()
     planned = await sendMessage(PLAN_REQUEST)
     // 计划回合之后就把计划入口关回去：场景自己的回合与后面的超限路径都不该再进计划段
-    //（开发配置把 complexityEval 设成 llm 时，计划段会多打一次评估请求、把脚本响应提前取走）。
+    //（显式命令入口只按 `--plan` 前缀触发，普通回合不会再静默进入计划段）。
     setOverride("ai.plan.enabled", false)
   },
   turns: [{

@@ -135,7 +135,8 @@ export class NativeExecutionEnv implements ExecutionEnv {
    * `sessionId`：发起会话（工具上下文给的稳定归属），只随 `bash_exec` 下传 ——
    * 前台超时转后台后，Rust 的完成事件按它把「完成通知」回投到正确会话。
    */
-  constructor(public cwd: string, private sessionId?: string) {}
+  constructor(public cwd: string, private sessionId?: string,
+    private executionPermit?: import("../execution-permit").ToolPermitLease) {}
 
   static async defaultCwd(): Promise<string> {
     return getExecutionPathKit().homeDir()
@@ -335,7 +336,10 @@ export class NativeExecutionEnv implements ExecutionEnv {
       throwIfAborted(context)
       const limits = options?.capture?.limits
       const spill = options?.capture?.spill === true
+      if (!this.executionPermit) throw new Error("Bash 缺少执行许可")
       const result = await getHostBridge().request("bash_exec", {
+        permitRequestId: this.executionPermit.requestId,
+        borrowerId: this.executionPermit.borrowerId,
         executionId,
         command,
         cwd: options?.cwd ?? this.cwd,

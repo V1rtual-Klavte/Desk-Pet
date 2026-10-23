@@ -15,6 +15,7 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { applyMemoryChange, memoryDetail, memoryStatus, parseMemoryItemRef, resolveCurrentTrustedMemorySource } from "@/services/agent/memory"
 import { DRAFT_SUMMARY_CHARS } from "@/services/agent/memory/draft"
+import { isReminderRefusal } from "@/services/user-tasks/proposals"
 import { queryMemoryVisibleToCurrentTurn } from "@/services/agent/memory/visible-query"
 import type { MemoryDraft, MemoryKind, MemoryScope, TemporalAnchor, WorkingState } from "@/services/agent/memory"
 
@@ -193,6 +194,10 @@ const memoryChangeTool: ToolDef = defineTool({
         return { success: false, content: "", error: "已结束事项不能重新打开；完成或取消 open 事项请使用对应 action" }
       }
       changeAction = state === "completed" ? "complete" : "cancel"
+    }
+    if (changeAction === "cancel" && isReminderRefusal(source.evidence ?? "")
+      && !/不去了|不做了|不参加了|取消(?:这件事|该事项|这项(?:安排|任务))/.test(source.evidence ?? "")) {
+      return { success: false, content: "", error: "拒绝提醒不等于取消现实事项；请用 schedule_change 停止提醒，保留 working 事项" }
     }
     const summary = supplied(params, "content") ? content.slice(0, DRAFT_SUMMARY_CHARS) : target?.draft.summary ?? content.slice(0, DRAFT_SUMMARY_CHARS)
     const sourceIds = [...new Set([...(target?.draft.sourceIds ?? []), source.sourceId])]

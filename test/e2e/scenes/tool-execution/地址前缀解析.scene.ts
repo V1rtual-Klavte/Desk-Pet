@@ -37,7 +37,8 @@ import { sessionEntries } from "../../../host/session-entries"
  * 真实会话里造不出，由 T2.04 的直接探针举证。
  */
 
-const REPLY = "三份探针结果都回来了。"
+// casual 拟人化会收掉气泡末尾句读：出口正文以提交后的实际文本为准。
+const REPLY = "三份探针结果都回来了"
 
 /** 探针工具名 / 调用 id / 各自独有的中部标记（正文很短，远低于任何窗口的 L0 阈值）。 */
 const PROBES = [

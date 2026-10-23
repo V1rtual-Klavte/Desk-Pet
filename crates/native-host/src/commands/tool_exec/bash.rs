@@ -4,6 +4,7 @@
 // ==========================================
 
 use crate::commands::bash_policy::enforce_bash_policy;
+use crate::commands::tool_permit::NativeToolPermit;
 use crate::error::{err, AppError, AppResult};
 use crate::host::{BackgroundCommandEnd, BackgroundCommandFinished, EventSink, HostEvent};
 use crate::{rust_debug, rust_info, rust_warn};
@@ -167,13 +168,11 @@ impl BashPool {
         let mut killed = 0usize;
         for slot in &drained {
             if let Some(child) = &slot.child {
-                kill_slot_child(child);
-                killed += 1;
+                killed += usize::from(kill_slot_child(child));
             }
         }
         for handle in &background {
-            kill_slot_child(&handle.child);
-            killed += 1;
+            killed += usize::from(kill_slot_child(&handle.child));
         }
         if killed > 0 {
             rust_info!("应用退出: 已回收 {} 个 Bash 子进程", killed);
@@ -190,18 +189,23 @@ impl BashPool {
 /// 终止池内一个已 spawn 的 bash 子进程，等待退出上限 2s（与 `McpPool` 的回收同口径）。
 ///
 /// 终止动作走 `kill_process_group`（取消 / 宿主退出 / 后台时限到点三处共用的唯一回收实现）。
-fn kill_slot_child(child: &Arc<Mutex<Child>>) {
-    // 执行线程持有同一把 child 锁轮询 try_wait；这里短暂持锁，毒锁同样恢复处理。
+fn kill_slot_child(child: &Arc<Mutex<Child>>) -> bool {
     let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = kill_process_group(&mut guard);
-
+    if let Err(error) = kill_process_group(&mut guard) {
+        rust_warn!("Bash 进程组终止失败: {error}");
+    }
     for _ in 0..20 {
         match guard.try_wait() {
-            Ok(Some(_)) | Err(_) => return,
+            Ok(Some(_)) => return true,
+            Err(error) => {
+                rust_warn!("Bash 退出状态无法确认: {error}");
+                return false;
+            }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
         }
     }
     rust_warn!("Bash 子进程未在 2s 内退出, 已放弃等待");
+    false
 }
 
 /// 终止一个 bash 子进程的**整个进程组** —— 取消、宿主退出与后台时限到点三处回收的唯一实现。
@@ -265,6 +269,33 @@ impl Drop for PoolGuard {
     }
 }
 
+struct ProcessGuard {
+    child: Option<Arc<Mutex<Child>>>,
+    permit: Option<NativeToolPermit>,
+}
+
+impl ProcessGuard {
+    fn stop(&mut self) -> bool {
+        if let Some(child) = &self.child {
+            let exited = matches!(child.lock().unwrap_or_else(|e| e.into_inner()).try_wait(), Ok(Some(_)));
+            if !exited && !kill_slot_child(child) {
+                if let Some(permit) = &mut self.permit {
+                    permit.retain();
+                }
+                return false;
+            }
+        }
+        self.child = None;
+        true
+    }
+}
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
 // ── Bash 命令执行 ──
 
 /// 执行 bash 命令（同步阻塞调用线程）。
@@ -279,6 +310,7 @@ impl Drop for PoolGuard {
 #[allow(clippy::too_many_arguments)]
 pub fn run_bash(
     pool: BashPool,
+    permit: Option<NativeToolPermit>,
     command: String,
     cwd: Option<String>,
     execution_id: Option<String>,
@@ -288,6 +320,7 @@ pub fn run_bash(
     spill: Option<bool>,
     session_id: Option<String>,
 ) -> AppResult<BashResult> {
+    let mut process = ProcessGuard { child: None, permit };
     enforce_bash_policy(&command)?;
     // 调用方未提供执行 ID 时按进程号生成一个临时 ID（仅用于进程表登记与临时文件名）。
     let execution_id = execution_id.unwrap_or_else(|| format!("adhoc-{}", std::process::id()));
@@ -370,6 +403,7 @@ pub fn run_bash(
         cmd.spawn()
             .map_err(|e| AppError::Io(format!("执行失败: {e}")))?,
     ));
+    process.child = Some(Arc::clone(&child));
     // 回填句柄并取回取消标记：spawn 前到达的取消在这里收口。
     let cancel_requested = {
         let mut slots = pool.slots.lock().map_err(|_| "Bash 状态锁损坏")?;
@@ -479,6 +513,7 @@ pub fn run_bash(
             // 输出文件归等待线程所有：解除守卫，不再随本函数作用域删除。
             temps.disarm();
             let task = BackgroundTask {
+                process,
                 child: Arc::clone(&child),
                 command,
                 execution_id: execution_id.clone(),
@@ -623,6 +658,7 @@ fn collect_captured_output(
 
 /// 前台超时后接管的任务描述（等待线程私有；池里只登记子进程句柄，见 `BackgroundHandle`）。
 struct BackgroundTask {
+    process: ProcessGuard,
     child: Arc<Mutex<Child>>,
     command: String,
     execution_id: String,
@@ -638,7 +674,7 @@ struct BackgroundTask {
 ///
 /// 每个后台任务一条线程（超时是低频事件），随任务结束自然回收。宿主退出由 `kill_all`
 /// 杀进程组；等待线程看到进程结束照常收尾（此时无活动桥，结束事件按「不重放」丢弃并留痕）。
-fn run_background_waiter(pool: BashPool, task: BackgroundTask) {
+fn run_background_waiter(pool: BashPool, mut task: BackgroundTask) {
     let mut last_output_at = task.started;
     let mut produced_bytes = 0usize;
     let mut last_probe = task.started;
@@ -652,9 +688,12 @@ fn run_background_waiter(pool: BashPool, task: BackgroundTask) {
             Ok(Some(status)) => break (BackgroundCommandEnd::Exited, status.code()),
             Ok(None) => {}
             Err(error) => {
-                // 观测通道坏了：继续轮询也拿不到结论，按已结束如实收尾（exitCode 未知）。
-                rust_warn!("后台 bash 等待失败（按已结束收尾）: {error}");
-                break (BackgroundCommandEnd::Exited, None);
+                rust_warn!("后台 bash 等待失败，将终止进程；不发送完成通知: {error}");
+                if task.process.stop() {
+                    cleanup_temp_outputs(&task.stdout_path, &task.stderr_path);
+                    pool.background.lock().unwrap_or_else(|e| e.into_inner()).remove(&task.execution_id);
+                }
+                return;
             }
         }
         let now = Instant::now();
@@ -668,8 +707,9 @@ fn run_background_waiter(pool: BashPool, task: BackgroundTask) {
             }
         }
         if task.started.elapsed() >= pool.background_max_lifetime {
-            let mut guard = task.child.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = kill_process_group(&mut guard);
+            if !kill_slot_child(&task.child) {
+                return;
+            }
             rust_warn!(
                 "后台 bash 到达时限（{:?}），已按进程组回收: {}",
                 pool.background_max_lifetime,
@@ -679,6 +719,7 @@ fn run_background_waiter(pool: BashPool, task: BackgroundTask) {
         }
         std::thread::sleep(pool.background_poll_interval);
     };
+    drop(task.process);
     let finished_at = Instant::now();
     let duration_ms = finished_at.duration_since(task.started).as_millis() as u64;
     let silent_ms = finished_at.duration_since(last_output_at).as_millis() as u64;

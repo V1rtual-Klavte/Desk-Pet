@@ -31,6 +31,12 @@ pub(crate) fn create_objects(conn: &Connection) -> AppResult<()> {
         CREATE INDEX IF NOT EXISTS proactive_tasks_due ON proactive_tasks(state,next_checkin_at,scope,scope_id);
         CREATE INDEX IF NOT EXISTS proactive_tasks_scope ON proactive_tasks(state,scope,scope_id,updated_at);
 
+        CREATE TABLE IF NOT EXISTS proactive_reminder_suppressions (
+          item_id TEXT PRIMARY KEY NOT NULL,
+          operation_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        ) STRICT;
+
         CREATE TABLE IF NOT EXISTS proactive_evaluations (
           fingerprint TEXT PRIMARY KEY NOT NULL,
           rule_id TEXT NOT NULL,
@@ -223,7 +229,7 @@ pub(crate) fn initialize_rows(conn: &Connection) -> AppResult<()> {
         let state_rows: i64 = conn
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM proactive_tasks)+(SELECT COUNT(*) FROM proactive_attempts)
-                   +(SELECT COUNT(*) FROM proactive_operations)+(SELECT COUNT(*) FROM proactive_evaluations)
+                   +(SELECT COUNT(*) FROM proactive_operations)+(SELECT COUNT(*) FROM proactive_reminder_suppressions)+(SELECT COUNT(*) FROM proactive_evaluations)
                    +(SELECT COUNT(*) FROM proactive_topics)+(SELECT COUNT(*) FROM proactive_source_registry)
                    +(SELECT COUNT(*) FROM proactive_attempt_occurrences)+(SELECT COUNT(*) FROM proactive_occurrences)
                    +(SELECT COUNT(*) FROM proactive_budgets)+(SELECT COUNT(*) FROM proactive_auxiliary_reservations)",
@@ -262,7 +268,7 @@ pub(crate) fn initialize_rows(conn: &Connection) -> AppResult<()> {
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM proactive_tasks)+(SELECT COUNT(*) FROM proactive_attempts)
                    +(SELECT COUNT(*) FROM proactive_topics)+(SELECT COUNT(*) FROM proactive_source_registry)
-                   +(SELECT COUNT(*) FROM proactive_evaluations)+(SELECT COUNT(*) FROM proactive_occurrences)
+                   +(SELECT COUNT(*) FROM proactive_evaluations)+(SELECT COUNT(*) FROM proactive_reminder_suppressions)+(SELECT COUNT(*) FROM proactive_occurrences)
                    +(SELECT COUNT(*) FROM proactive_operations)+(SELECT COUNT(*) FROM proactive_budgets)
                    +(SELECT COUNT(*) FROM proactive_auxiliary_reservations)",
                 [],

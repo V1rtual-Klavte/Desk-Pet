@@ -1,3 +1,6 @@
+// 2026-10-23 计划入口、执行许可与提醒治理批次：sourceFiles 中仅 host/dispatch.rs 变化
+// （bash_exec 分派把 borrowerId/permitRequestId 交给 tool_permit 认领原生许可）；窗口采集、
+// 画像、presence 与原生观察协议未改，bh-01..06 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-18 定向复核：本域行为未变；仅共享文件 src/services/agent/memory/sources.ts、crates/native-host/src/host/dispatch.rs 的增量（记忆来源查询与记忆命令分派参数）导致 sourceHash 变化。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中仅 host/dispatch.rs 变化 —— memory_job_checkpoint 分派臂新增可选 coveredSourceIds 参数（批内水位按每个覆盖会话推进，见 memory 契约同批记录）；窗口采集、画像、presence 与原生观察协议不受影响，bh-01..06 逐点复核未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-09 验收补充：顶栏 typing 所有权泄漏修复波及本契约 sourceFiles（runner/runtime/titlebar 的 defer 判据收口与旧代际清扫），逐点复核与本院行为面不相交，未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -78,7 +81,7 @@ export const behaviorContract: ModuleContract = {
     "test/e2e/scenes/behavior/原生观察边界.scene.ts",
   ],
   // 2026-10-18 列项答案补全批次：共享 runtime/harness-slot 增加可选列项补全；行为画像域无行为变化，定向复核后刷新。
-  sourceHash: "40f0729a21fdcf4165ccf60d193cd13d31a434234c2a5b762b9ef84a9eba5758",
+  sourceHash: "8bdd2982c5e434943a2079ea08438c3becb810035288f0f36e4681bff8e93c2b",
   coverage: [
     { id: "bh-01", feature: "窗口类别与画像指标", description: "应用类别仅由命中的appId身份规则以high置信度确认；title只可提供low置信media activity hint，不能把未知app分类成已知类别，原始title不落盘。日历窗口生成近30日画像与真实7日activity/focus，不以最近有数据的天数冒充自然周；focus只表示已分类work/development应用的active连续段代理值，不宣称心理专注；未知应用时长不伪装为已知类别", why: "画像和机会必须有来源可解释，分类错误会伪造习惯与工作结论", layer: "unit", depth: "shallow", scenarios: ["behavior-app-classification", "behavior-metrics-source"] },
     { id: "bh-02", feature: "覆盖率与活动时间证据", description: "active/idle/unknown/unobserved四类时间互斥；短间隔仅在两端idle低于5分钟、前点idle加跨度仍不超过5分钟时可全计active，长间隔按单调idle证据切分，计数重置或无法解释的部分归unknown，墙钟超出monotonic确认量与边界前未证实部分归unobserved；hourMs只累计active。无有效采集时间时质量unavailable，至少3个有效观察日且covered/(covered+unobserved)达到60%才可靠；measurementVersion=2，旧daily在持久待办写入后删除，不进入新画像；读取失败可重试、ack后重启不反复撤销，持久撤销待办在memory recall或derived registration前关闭旧derived行为来源，闭包成功后ack，失败保留待办", why: "事件间长空窗与idle重置不能伪装成连续活跃或专注；旧口径daily和旧结论不能混入v2画像", layer: "unit", depth: "deep", scenarios: ["behavior-quality-threshold", "behavior-legacy-measurement-quarantine", "behavior-history-retry-and-marker-ack"] },

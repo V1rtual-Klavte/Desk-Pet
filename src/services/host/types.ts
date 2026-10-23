@@ -933,6 +933,8 @@ export type HostCommandMap = {
   // ── Bash（crates/native-host/src/commands/tool_exec/bash.rs）──
   bash_exec: {
     args: {
+      permitRequestId: string
+      borrowerId: string
       command: string
       cwd?: string | null
       executionId?: string | null

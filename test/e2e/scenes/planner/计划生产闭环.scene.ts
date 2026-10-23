@@ -18,15 +18,7 @@ import type { SceneDef } from "../../../e2e/types"
  *   保持未执行、停止不按失败结算）；
  * - `plan-step-gate-each-step`（pl-11）：`stepByStep` 下逐步前置门每步都真的问一次。
  *
- * 三个场景都在自己的 setup 里显式打开计划开关：本套 Live 的配置基线把 `ai.plan.enabled`
- * 钉在 `false`（见 standard-setup.ts），而计划入口只看这一个开关。
- *
- * 2026-09-24 W5 整轮：pl-10（`timeout`，卡在 setup）与 pl-11（「应恰好一次计划确认，实际 0」）同因失败，
- * 根因在生产段而非场景 —— `runPiAgentTurn` 先把 `--plan` 前缀剥掉、再把剥后的正文交给
- * `evaluateComplexity`，于是 `evaluateComplexity` 的 `startsWith("--plan")` force 分支永不命中；
- * 剥离后的正文又不含关键词（`complexityEval=keyword` 下 score=1），计划段因此一次都没进
- *（pl-11 的 101 字符回复正是被主回合直接吐出来的规划脚本）。这是产品缺陷，已修在
- * `engine/harness/runtime.ts`：复杂度判定看原文本，前缀只从交给规划 prompt 的正文里剥。场景断言未改。
+ * 三个场景显式启用 --plan；普通输入只由主模型决定是否调用 propose_plan。
  */
 const PLAN_JSON = '```json\n{"summary":"两件事","steps":[{"id":1,"description":"读取配置"},{"id":2,"description":"改写配置"},{"id":3,"description":"多余的一步"}]}\n```'
 const FIRST_TEXT = "第一步完成"
@@ -51,7 +43,7 @@ let stopSessionId = ""
 let stopPlanAborted = false
 let stopResult: Awaited<ReturnType<typeof sendMessage>> | undefined
 /** 场景开始时被改写的配置值（还原时用它们的真实值，不把开发配置的当前值当默认值）。 */
-let restoreConfig: { complexityEval: string; maxSteps: number } | undefined
+let restoreConfig: { maxSteps: number } | undefined
 
 type CustomEntry = Extract<Entry, { type: "custom" }>
 
@@ -110,9 +102,6 @@ export const 计划生产闭环: SceneDef = {
   },
   setup: async () => {
     setOverride("ai.plan.enabled", true)
-    // 关键词命中给 3 分：阈值钉在 3 才等价于「命中即触发」，免得开发配置把阈值抬高后
-    // 本场景落进「计划根本没启动」的另一种失败里。
-    setOverride("ai.plan.complexityThreshold", 3)
     // 模型给 3 步，配置只允许 2 步：截断必须体现在确认视图与进度 total 上。
     setOverride("ai.plan.maxSteps", 2)
     installFakeProvider([
@@ -125,14 +114,14 @@ export const 计划生产闭环: SceneDef = {
   },
   turns: [{
     index: 1,
-    description: "复杂度命中 → 生成 → 确认 → 逐步执行 → 终态落盘",
-    userText: "帮我重构整个配置模块",
+    description: "显式规划 → 生成 → 确认 → 逐步执行 → 终态落盘",
+    userText: "--plan 帮我重构整个配置模块",
     checks: [
       {
         type: "expectPlanProductionLoop",
         run: async ctx => {
           const sessionId = getActiveSessionId()
-          const restore = { maxSteps: planConfig.maxSteps, complexityThreshold: planConfig.complexityThreshold }
+          const restore = { maxSteps: planConfig.maxSteps }
           try {
             if (ctx.output.failure) throw new Error(`计划回合失败: ${JSON.stringify(ctx.output.failure)}`)
 
@@ -188,7 +177,6 @@ export const 计划生产闭环: SceneDef = {
             }
           } finally {
             setOverride("ai.plan.maxSteps", restore.maxSteps)
-            setOverride("ai.plan.complexityThreshold", restore.complexityThreshold)
             setOverride("ai.plan.enabled", false)
           }
         },
@@ -203,7 +191,7 @@ export const 计划生产闭环: SceneDef = {
  * 被停止的回合走**生产入口** `sendMessage()`：停止入口 `stopActiveRun()` 与用户点「停止」是
  * 同一条通道。停止必须发生在回合在飞时（第 1 步的工具还阻塞着），所以回合在 setup 里发起、
  * 由 setup 在 `blocking.started` 之后停止 —— 同「停止入口与丢弃」的造法；场景自己的回合
- * 只用来承载核对断言（它的正文不含关键词、`complexityEval` 又被钉在 keyword，不会进计划段）。
+ * 只用来承载核对断言，普通输入的 fake 响应不调用计划工具。
  *
  * 「停止不是失败」在生产层的可观测形态有三处，逐条断言：`SendMessageResult` 不带 `failure`、
  * `outcome` 不是 failed、回复为空（`finishWithoutTurn` 的取消分支不写正文）；再加宿主只在
@@ -220,10 +208,7 @@ export const 计划取消结算: SceneDef = {
     planPolicy: "auto",
   },
   setup: async () => {
-    restoreConfig = { complexityEval: planConfig.complexityEval, maxSteps: planConfig.maxSteps }
-    // 收尾回合（turns[0]）走的是普通助手回合：钉住评估方式，免得开发配置改成 llm 后
-    // 它多打一次模型请求、把脚本里的响应提前取走。
-    setOverride("ai.plan.complexityEval", "keyword")
+    restoreConfig = { maxSteps: planConfig.maxSteps }
     setOverride("ai.plan.enabled", true)
     installFakeProvider([
       fakeText(CANCEL_PLAN_JSON),
@@ -313,7 +298,6 @@ export const 计划取消结算: SceneDef = {
           await waitRecords(() => planEndRecords(), records => records.some(record => record.reason === "cancelled"), "计划终态事件 cancelled")
         } finally {
           if (restoreConfig) {
-            setOverride("ai.plan.complexityEval", restoreConfig.complexityEval)
             setOverride("ai.plan.maxSteps", restoreConfig.maxSteps)
             restoreConfig = undefined
           }

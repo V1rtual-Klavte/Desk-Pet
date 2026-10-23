@@ -3,13 +3,13 @@
 //
 // 两条计划入口自 2026-10-06 起消费同一份实现（此前 `runtime.ts` 与 `proposal.ts` 各存
 // 一份同形复刻，为避免一次引爆多份契约与并行冲突而复制；历史债务已清）：
-//   1. 自动入口：`engine/harness/runtime.ts` 的 `runPlanPhase`（复杂度判定命中后发起）；
+//   1. 显式命令入口：`engine/harness/runtime.ts` 的 `runPlanPhase`（完整 `--plan` 命令且开关启用时发起）；
 //   2. 模型提议入口：`engine/plan/proposal.ts` 的 `runProposedPlan`（propose_plan 工具发起）。
 //
 // 共享的是机制，不是语义：两条入口的对外归宿（`PlanPhaseOutcome` / `ProposedPlanOutcome`）、
 // 通知时机与文案差异都由调用方在参数里显式表达 ——
 //   · `log`：日志通道由调用方注入（工厂绑定），PiRuntime / PlanProposal 各自的留痕点不变；
-//   · `traceContext`：只有自动入口传（`plan_settled` 轨迹事件），提议入口没有回合轨迹；
+//   · `traceContext`：只有显式命令入口传（`plan_settled` 轨迹事件），提议入口没有回合轨迹；
 //   · `reason`：取值域按各自归宿类型收窄（`PlanCancelReason` / `PlanSettleReason`），
 //     收尾文案的选择只认 deadline / declined 两支，其余原因静默（用户动作与正常完成
 //     由面板与主回复承担）。
@@ -92,7 +92,7 @@ export interface PlanSettlement {
 }
 
 /**
- * 绑定调用方日志通道的结算原语工厂：同一份机制在自动入口记 `PiRuntime`、
+ * 绑定调用方日志通道的结算原语工厂：同一份机制在显式命令入口记 `PiRuntime`、
  * 在提议入口记 `PlanProposal`，不去改动任一侧既有的日志前缀。
  */
 export function createPlanSettlement(log: Logger): PlanSettlement {

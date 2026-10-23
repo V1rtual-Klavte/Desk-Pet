@@ -105,6 +105,7 @@ export interface TaskToolAuthorization {
 
 /** 工具执行上下文 */
 export interface ToolContext {
+  executionPermit?: import("./execution-permit").ToolPermitLease
   /** 当前 Pi 工具调用 ID */
   toolCallId?: string
   /** 当前回合已提交的用户输入身份；记忆工具必须用它筛选可归属来源。 */

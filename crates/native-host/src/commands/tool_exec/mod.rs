@@ -698,6 +698,7 @@ mod tests {
         let control = dir.join("control.sentinel");
         let control_result = run_bash(
             pool.clone(),
+            None,
             delayed_probe(0, "control.sentinel"),
             Some(dir.to_string_lossy().to_string()),
             Some("control-probe".into()),
@@ -726,6 +727,7 @@ mod tests {
 
         let result = run_bash(
             pool.clone(),
+            None,
             delayed_probe(1, "sentinel"),
             Some(dir.to_string_lossy().to_string()),
             Some(id),
@@ -754,6 +756,7 @@ mod tests {
         let pool = BashPool::default();
         let result = run_bash(
             pool.clone(),
+            None,
             "rm -rf /".into(),
             None,
             Some("policy-reject".into()),
@@ -781,6 +784,7 @@ mod tests {
         let pool = BashPool::default();
         let result = run_bash(
             pool.clone(),
+            None,
             "echo probe".into(),
             Some(plain.to_string_lossy().into_owned()),
             Some("invalid-cwd".into()),
@@ -903,6 +907,7 @@ mod tests {
         let control = control_probe(&dir, 1, "control.sentinel");
         let result = run_bash(
             pool.clone(),
+            None,
             control,
             Some(dir.to_string_lossy().to_string()),
             Some("descendant-control".into()),
@@ -950,6 +955,7 @@ mod tests {
         };
         let result = run_bash(
             pool.clone(),
+            None,
             command,
             Some(dir.to_string_lossy().to_string()),
             Some("timeout-backgrounds".into()),
@@ -1008,6 +1014,7 @@ mod tests {
         };
         let result = run_bash(
             pool.clone(),
+            None,
             command,
             Some(dir.to_string_lossy().to_string()),
             Some("timeout-silence".into()),
@@ -1041,6 +1048,7 @@ mod tests {
         };
         let result = run_bash(
             pool.clone(),
+            None,
             command,
             Some(dir.to_string_lossy().to_string()),
             Some("bg-completion".into()),
@@ -1092,6 +1100,7 @@ mod tests {
         };
         let result = run_bash(
             pool.clone(),
+            None,
             command,
             Some(dir.to_string_lossy().to_string()),
             Some("bg-cap".into()),
@@ -1136,6 +1145,7 @@ mod tests {
             std::thread::spawn(move || {
                 let result = run_bash(
                     pool,
+                    None,
                     probe,
                     Some(dir_string),
                     Some(id_string),
@@ -1195,6 +1205,7 @@ mod tests {
             std::thread::spawn(move || {
                 let result = run_bash(
                     pool,
+                    None,
                     probe,
                     Some(dir_string),
                     Some(id_string),
@@ -1244,6 +1255,7 @@ mod tests {
         let pool = BashPool::default();
         let result = run_bash(
             pool.clone(),
+            None,
             "ps -o pgid= -p $$".into(),
             Some(dir.to_string_lossy().to_string()),
             Some("pgid-probe".into()),
@@ -1283,6 +1295,7 @@ mod tests {
         };
         let result = run_bash(
             pool.clone(),
+            None,
             command.into(),
             Some(dir.to_string_lossy().to_string()),
             Some("stdin-probe".into()),

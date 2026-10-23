@@ -1,3 +1,6 @@
+// 2026-10-23 计划入口批次：sourceFiles 中 config.ts 删除关键词列表、复杂度阈值与独立复杂度
+// 评估请求三个计划字段（观察、静默了解与钟点调度不读取）；ob-01..07 未修订覆盖点，仅按当前
+// 源码刷新 sourceHash。
 // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 POPUP_MODE 选项表与通用页 general.popup.mode 字段（跟随光标 / 固定位置），不触碰观察域字段、档位 help 文案与静默了解资格；ob-01..ob-07 逐点复核行为面未变，仅按当前源码刷新 sourceHash。
 // 2026-10-18 统一调度与子运行：手工 analyze/generate 声明修订；测试已写未运行，sourceHash 留统一验收复算。
 // 2026-10-18 定向复核：本域行为未变；仅共享文件 src/services/agent/memory/sources.ts、crates/native-host/src/host/dispatch.rs 的增量（记忆来源查询与记忆命令分派参数）导致 sourceHash 变化。
@@ -312,7 +315,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "c6170c01917713cc1162ff162dbbeb421b013abdbfafa794f105ffcd29e054e9",
+  sourceHash: "96d8e4bdba2da36bbb2758ffd2920a624d67ddfb1b3089075ebf5d61ca091897",
   coverage: [
     {
       id: "ob-01",

@@ -40,7 +40,7 @@ const log = createLogger("PiTools")
 export async function registerPiBaseTools(): Promise<void> {
   const cwd = await NativeExecutionEnv.defaultCwd()
   // 会话归属随环境实例下传：前台超时转后台后的完成通知按它回投正确会话（见 native-execution-env）。
-  const createEnv = (ctx: ToolContext) => new NativeExecutionEnv(cwd, ctx.sessionId)
+  const createEnv = (ctx: ToolContext) => new NativeExecutionEnv(cwd, ctx.sessionId, ctx.executionPermit)
   const read = createReadTool<{ env: ExecutionEnv }>({ imageProcessor: readImageProcessor, autoResizeImages: true })
   const write = createWriteTool<{ env: ExecutionEnv }>()
   const edit = createEditTool<{ env: ExecutionEnv }>()

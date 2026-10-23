@@ -23,7 +23,7 @@ export const 统一调度持久账本: SceneDef = {
     caseId: "scheduler-native-durable-ledger",
     module: "proactive",
     contractId: "pr-18",
-    description: "真实 Rust IPC 的用户任务隔离、周期样本不可改写、就绪产物与延后保版本、精确回执及晚到结果守卫",
+    description: "真实 Rust IPC 的用户任务隔离、周期样本不可改写、就绪产物与延后保版本、精确回执及晚到结果守卫；拒绝提醒保留现实事项并阻止重新派生",
     depth: "deep",
     suite: "safety",
     entry: "runtime",
@@ -53,12 +53,23 @@ export const 统一调度持久账本: SceneDef = {
       execution: { thinkingEffort: "low" },
       delivery: { sessionId: owner.sessionId, cardId: owner.cardId, cardHash: owner.cardHash, windowMinutes: 15, expression: "自然提醒" },
     }
+    const memoryStatus = await host.request("memory_status", {})
+    const matterText = `活动事项-${id}`
+    await host.request("memory_apply_change", { operationId: `matter-${id}`, baseRevision: memoryStatus.revision, action: "add",
+      actor: "internal",
+      draft: { content: matterText, summary: matterText, kind: "working", scope: "session", scopeId: owner.sessionId,
+        aliases: [], pinned: false, importance: 0.7, confidence: 1, workingState: "open", sourceIds: [sourceId] } })
+    const matter = (await host.request("memory_query", { query: matterText, scope: "session", scopeId: owner.sessionId, sessionId: owner.sessionId, limit: 10 })).find(item => item.draft.content === matterText)
+    if (!matter) throw new Error("真实 Rust 未创建待提醒事项")
+    const memoryRef: ProactiveSourceRef = { kind: "memory", id: matter.id, version: matter.version, revision: matter.version,
+      scope: "session", scopeId: owner.sessionId, fingerprint: `${matter.id}:${matter.version}`, validUntil: null }
+    const refs = [reference, memoryRef]
     definition.authorization = { trustedUserEventId: eventId, contentFingerprint: taskContentFingerprint(definition),
-      sourceVersions: [{ kind: reference.kind, id: reference.id, version: reference.version, revision: reference.revision, fingerprint: reference.fingerprint }], capabilityGrants: [] }
+      sourceVersions: refs.map(({ kind, id, version, revision, fingerprint }) => ({ kind, id, version, revision, fingerprint })), capabilityGrants: [] }
     const snapshot = await host.request("schedule_query", { request: { owner, limit: 1 } })
     const created = await host.request("schedule_change", { request: { operationId: `create-${id}`, baseRevision: snapshot.revision,
       action: "create", owner, trustedUserEventId: eventId, sourceRefs: [reference], taskPatch: {
-        id: taskId, scope: "session", scopeId: owner.sessionId, sourceRefs: [reference], intent: definition,
+        id: taskId, scope: "session", scopeId: owner.sessionId, sourceRefs: refs, intent: definition,
         eventAt: null, dueAt: null, nextCheckinAt: now + 60_000, validUntil: null, timezone: "UTC", recurrence: null } } })
     if (!created.task || created.task.version !== 1) throw new Error("真实 Rust 未持久创建用户任务")
     const times = [now + 60_000, now + 31 * 60_000]
@@ -104,6 +115,42 @@ export const 统一调度持久账本: SceneDef = {
           expectedRevision: 2, status: "ready_to_deliver", operationId: `late-${id}`, now: now + 4 }), "MEMORY_CONFLICT")
         const cancelled = await host.request("schedule_query", { request: { owner, taskId, statuses: ["cancelled"] } })
         if (cancelled.tasks.length !== 1 || cancelled.tasks[0]?.state !== "cancelled") throw new Error("取消状态未能从真实持久库分页查询")
+        const preservedMatter = await host.request("memory_detail", { id: matter.id })
+        if (preservedMatter?.version !== 1 || preservedMatter.draft.workingState !== "open") throw new Error("取消提醒改变了现实事项的版本或状态")
+        const scanMatter = async () => {
+          let targetCursor: string | undefined
+          do {
+            const scan = await host.request("proactive_scan", { request: { owner, now: Date.now(), localDate: new Date().toISOString().slice(0, 10), targetCursor, limit: 100 } })
+            if (scan.memoryTargets.some(item => item.id === matter.id)) return true
+            targetCursor = scan.nextTargetCursor ?? undefined
+          } while (targetCursor)
+          return false
+        }
+        if (await scanMatter()) throw new Error("拒绝提醒后事项仍进入自动派生候选")
+        const renewedEvent = `renew-event-${id}`, renewedSource = `renew-source-${id}`, renewedEntry = `renew-entry-${id}`
+        const renewedEvidence = "还是请你每天18:00提醒我起来走走"
+        const renewedHash = createHash("sha256").update(renewedEvidence).digest("hex")
+        await host.request("memory_register_sources", { sources: [{ sourceId: renewedSource, sessionId: owner.sessionId, entryId: renewedEntry,
+          eventId: renewedEvent, seq: 2, contentHash: renewedHash, evidence: renewedEvidence, cardId: owner.cardId,
+          observedAt: Date.now(), eligibleForMemory: true, origin: "user", taint: "trusted_user" }] })
+        const renewedRef: ProactiveSourceRef = { ...reference, id: renewedSource, revision: 2, fingerprint: `${owner.sessionId}:${renewedEntry}:${renewedHash}` }
+        const renew = async (stale: boolean) => {
+          const sourceRefs = [renewedRef, stale ? { ...memoryRef, version: 99, revision: 99, fingerprint: `${matter.id}:99` } : memoryRef]
+          const intent: UserTaskDefinition = { ...definition, authorization: { trustedUserEventId: renewedEvent,
+            contentFingerprint: taskContentFingerprint(definition), capabilityGrants: [],
+            sourceVersions: sourceRefs.map(({ kind, id, version, revision, fingerprint }) => ({ kind, id, version, revision, fingerprint })) } }
+          const current = await host.request("schedule_query", { request: { owner, limit: 1 } })
+          return host.request("schedule_change", { request: { operationId: `renew-${stale}-${id}`, baseRevision: current.revision,
+            action: "create", owner, trustedUserEventId: renewedEvent, sourceRefs: [renewedRef], taskPatch: {
+              id: `renewed-${stale}-${id}`, scope: "session", scopeId: owner.sessionId, sourceRefs, intent,
+              eventAt: null, dueAt: null, nextCheckinAt: Date.now() + 60_000, validUntil: null, timezone: "UTC", recurrence: null } } })
+        }
+        await expectNativeRejection(() => renew(true), "MEMORY_CONFLICT")
+        if (await scanMatter()) throw new Error("失败的新安排事务提前解除了提醒停用记录")
+        const renewed = await renew(false)
+        if (renewed.task?.state !== "active" || !await scanMatter()) throw new Error("用户重新明确安排后仍未解除提醒停用")
+        const finalMatter = await host.request("memory_detail", { id: matter.id })
+        if (finalMatter?.version !== 1 || finalMatter.draft.workingState !== "open") throw new Error("重新启用提醒改写了现实事项")
       } finally { provider?.restore() }
     }
   },

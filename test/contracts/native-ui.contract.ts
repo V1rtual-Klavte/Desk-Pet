@@ -1,3 +1,6 @@
+// 2026-10-23 执行许可批次：sourceFiles 中 host/types.ts 的 bash_exec 线形状新增
+// borrowerId/permitRequestId（工具执行 IPC，不新增原生 UI 命令或决策方法）；原生 UI 投影、
+// 推送与设置面未改，nui-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-18 定向复核：本域行为未变；仅共享文件 src/services/host/types.ts 的增量（记忆命令线形状）导致 sourceHash 变化。
 // 2026-10-15 Windows UI 验收 analyze -> generate：types.ts 删除无 Node 消费者的光标事件；Node 设置提交/投影入口未改。设置布局、换行、保存回执与字体线程修复由 Rust 内联用例和隔离实窗验证，不冒充本契约的 Node 覆盖。
 // 2026-10-10 整理水位推进修复（本批刷新）：sourceFiles 中 src/services/host/types.ts 变化 —— memory_job_checkpoint 命令形状新增可选 coveredSourceIds（批内水位按每个覆盖会话推进，见 memory 契约同批记录）；原生 UI 面不受影响，覆盖点与 caseId 语义不变，仅按当前源码刷新 sourceHash。
@@ -214,7 +217,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "51d085d6c0a4569cd924975f1b12679ce22c6f9ddca697d68ab06c873426b09b",
+  sourceHash: "b9c28a596ef633576c217eed77120c7831db70a0066925c4c12eb8ff1cbd22bf",
   coverage: [
     {
       id: "nui-34",

@@ -58,8 +58,11 @@ const BAD_SUMMARY = "这不是 JSON"
 // 提示词再审一遍 —— 那条路会**多发一次摘要请求**，并提交上游通用摘要。所以判据取两条直接信号：
 // 助手正文序列是否逐字未变、失败路径上的 provider 请求增量是否恰好等于内核摘要请求数。
 
-/** 正常回合的助手回复（setup 脚本顺序）：据此把「本回合正常回复」与外来摘要正文区分开。 */
-const NORMAL_REPLIES = ["第一轮回复完成。", "第二轮回复完成。", "第三轮回复完成。"]
+/**
+ * 正常回合的助手回复（setup 脚本顺序）：据此把「本回合正常回复」与外来摘要正文区分开。
+ * casual 拟人化会收掉气泡末尾句读：条目正文与出口回复都以提交后的实际文本为准。
+ */
+const NORMAL_REPLIES = ["第一轮回复完成", "第二轮回复完成", "第三轮回复完成"]
 
 const summaryRequests: string[] = []
 
@@ -154,7 +157,7 @@ export const 压缩降级: SceneDef = {
       ...NORMAL_REPLIES.map(reply => fakeText(reply)),
       badSummaryStep,
       badSummaryStep,
-      fakeText("压缩降级后的正常回复。"),
+      fakeText("压缩降级后的正常回复"),
     ], FAKE_MODEL)
     await initChat()
   },
@@ -342,7 +345,7 @@ export const 压缩降级: SceneDef = {
           const result = await sendMessage("再正常回一轮。")
           if (result.failure) throw new Error(`压缩降级后的正常回合失败：${result.failure.message}`)
           const texts = assistantTexts(await sessionMessages())
-          if (countTexts(texts, "压缩降级后的正常回复。") !== 1) {
+          if (countTexts(texts, "压缩降级后的正常回复") !== 1) {
             throw new Error(`正常回合的回复没有恰好落盘一次：${JSON.stringify(texts.slice(-3))}`)
           }
           // 原文仍在：失败两次的压缩没有动过第一轮正文。

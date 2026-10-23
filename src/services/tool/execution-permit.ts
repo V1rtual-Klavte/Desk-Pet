@@ -20,6 +20,7 @@ const log = createLogger("ToolPermit")
 
 export interface ToolPermitLease {
   readonly requestId: string
+  readonly borrowerId: string
   readonly kind: "shared" | "exclusive"
 }
 
@@ -95,7 +96,7 @@ export async function acquireToolPermit(tool: ToolDef, ctx: ToolContext): Promis
   } finally {
     signal?.removeEventListener("abort", cancelWait)
   }
-  return granted ? { kind: "granted", lease: { requestId: id, kind } } : { kind: "cancelled" }
+  return granted ? { kind: "granted", lease: { requestId: id, borrowerId, kind } } : { kind: "cancelled" }
 }
 
 /**

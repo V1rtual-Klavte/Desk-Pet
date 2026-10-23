@@ -641,9 +641,9 @@ const AI_PERSONALITY: &[Field] = &[
 const AI_COMPANION: &[Field] = &[
     Field {
         key: "ai.plan.enabled",
-        label: "启用任务计划",
+        label: "启用 --plan 命令",
         kind: FieldKind::Bool,
-        help: "",
+        help: "只控制显式命令；普通请求由主模型按需调用计划工具",
     },
     Field {
         key: "ai.humanizer.enabled",

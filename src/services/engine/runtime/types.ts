@@ -368,6 +368,8 @@ export interface PlanStepRecord {
   state: PlanStepState
   attempt: number
   effectClass: PlanEffectClass
+  /** 当前尝试一旦出现非只读工具就保持 true，只有用户明确重试才清除。 */
+  sideEffectStarted?: boolean
   lastEventId?: string
   lastEventKind?: "tool_start" | "tool_end"
   /** 与 `effectClass` 同域：工具侧三档非只读 effect 在计划域塌缩为 external_side_effect。 */

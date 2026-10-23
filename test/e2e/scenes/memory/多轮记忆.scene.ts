@@ -15,7 +15,8 @@ const FIRST_TEXT = "我叫小明，是个程序员。\n我平时主要写 TypeSc
 const RECALL_QUERY = "What did I say in 姓名确认单七一?"
 const RECALL_SEED = `请用这条线索回想刚才我报的名字：${RECALL_QUERY}`
 const LARGE_EVIDENCE = "终端会话索引证据九三一七"
-const LARGE_ASSISTANT_TEXT = "大段会话原文已保存。"
+// casual 拟人化会收掉气泡末尾句读：条目正文以提交后的实际文本为准。
+const LARGE_ASSISTANT_TEXT = "大段会话原文已保存"
 const EMPTY_READER_REPLY = JSON.stringify({
   notes: [],
   questionChecks: [{ kind: "detail", obligation: "required", condition: "The historical details requested", status: "missing", sourceIds: [] }],

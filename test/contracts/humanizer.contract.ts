@@ -1,3 +1,6 @@
+// 2026-10-23 计划入口批次：sourceFiles 中 runtime.ts 的显式 `--plan` 入口收敛与恢复判定接续，
+// 不改变分泡解析、沉默护栏、逐泡揭示或顶栏所有权释放；hz-01..04 未修订覆盖点，仅按当前源码
+// 刷新 sourceHash。
 // 2026-10-16 定向复核：runtime 仅传递 partial 记忆候选保留选项；
 // hz-01..04 的解析、沉默护栏、分泡揭示和顶栏释放链路未变，按现源码刷新 hash。
 // 2026-10-09 顶栏 typing 所有权泄漏修复（验收轮）：defer 判据与 runner 入队条件收口为同一个 defersTitlebarReleaseToReveal（工具轮/已停止回合不再只 defer 不入队），并新增新回合起始的旧代际自愈清扫（中断/遗弃回合的 finally 不执行时的兜底）。覆盖点与 caseId 语义不变，sourceHash 按当前源码在本轮刷新。
@@ -133,7 +136,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "f40cb37c2f8e00ed1afafc79714780c27876cb0ef8196821daa4ca0317a08641",
+  sourceHash: "e6327d5467e35f2908c5c7287b45ed8c7f86d3991312e7e83c2179082d44e3b2",
   coverage: [
     {
       id: "hz-01",

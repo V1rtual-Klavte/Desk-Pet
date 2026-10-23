@@ -1,13 +1,12 @@
 // ==========================================
 // Plan 模块 — 复杂任务编排器
-// 复杂度检测 → LLM 拆解 → 子代理逐步执行
+// 显式规划 / 模型提议 → 子代理逐步执行
 // ==========================================
 
 import { getToolByName, listAll, type ToolDef } from "@/services/tool"
 import type { PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/harness"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
-import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 // 用户等待的预算豁免（零依赖叶子）：计划时限（deadlineAt）扣除用户等待时长，见 executePlan。
@@ -32,12 +31,6 @@ export interface PlanResult {
   degradedReason?: "json_parse_failed"
 }
 
-export interface ComplexityResult {
-  score: number
-  reason: string
-  triggeredBy: "llm" | "keyword" | "force"
-}
-
 export interface PlanExecutionResult {
   stepResults: {
     step: PlanStep
@@ -50,57 +43,6 @@ export interface PlanExecutionResult {
   totalDurationMs: number
   /** 非完成归宿由各中止通道给出；`declined` 由逐步门产生。 */
   cancelled?: { reason: "user" | "deadline" | "declined" }
-}
-
-// ── 复杂度检测 ──
-
-export async function evaluateComplexity(
-  userText: string,
-  keywords?: string[],
-  /** 审计归属：有会话的调用传它，复杂度判定这次请求进快照体系。 */
-  audit?: PiTextCallAudit,
-): Promise<ComplexityResult> {
-  // 1. --plan 强制触发
-  if (userText.startsWith("--plan")) {
-    return { score: 5, reason: "用户强制触发 --plan", triggeredBy: "force" }
-  }
-
-  const kw = keywords || planConfig.keywords
-
-  // 2. 关键词兜底
-  const hitKeyword = kw.find(k => userText.includes(k))
-  if (hitKeyword) {
-    log.info("关键词触发:", hitKeyword)
-    return { score: 3, reason: `关键词匹配: "${hitKeyword}"`, triggeredBy: "keyword" }
-  }
-
-  // 3. 未命中关键词：默认（complexityEval=keyword）不再为它单独打一次模型 ——
-  //    每条助手消息一次评估请求的代价与收益不成比例；--plan 与关键词路径不受影响。
-  if (planConfig.complexityEval === "keyword") {
-    return { score: 1, reason: "未命中关键词（complexityEval=keyword，不发起 LLM 判定）", triggeredBy: "keyword" }
-  }
-
-  // 4. LLM 自判断（轻量 prompt）
-  try {
-    const { completePiText } = await import("@/services/engine/harness/model-gateway")
-    const resp = await completePiText({
-      purpose: "planner",
-      systemPrompt: "你是一个复杂度评估器。只回复1-5的数字，不要任何解释。",
-      userText: `评估以下用户请求的复杂度（1=简单问候/闲聊, 5=需要多步工具调用的复杂任务），只回复数字 1-5：
-
-"${userText}"
-
-复杂度评分 (1-5):`,
-      thinkingEffort: "low",
-      ...(audit ? { audit } : {}),
-    })
-    const num = parseInt(resp.text?.trim() || "1", 10)
-    const score = Math.max(1, Math.min(5, isNaN(num) ? 1 : num))
-    return { score, reason: `LLM 自判断: ${score}/5`, triggeredBy: "llm" }
-  } catch (e) {
-    log.error("LLM 复杂度检测失败，默认跳过 Plan:", formatError(e))
-    return { score: 1, reason: `检测失败，跳过 Plan: ${formatError(e)}`, triggeredBy: "llm" }
-  }
 }
 
 // ── 计划生成 ──
@@ -349,8 +291,8 @@ export async function executePlan(
   const steps = plan.steps.slice(0, config.maxSteps)
 
   for (const [index, step] of steps.entries()) {
-    // 外部终止（用户在 Plan 面板点「终止执行」）：每一步开始前检查。
-    // 不打断正在跑的那一步，但不会继续往下走 —— 没有这个检查的话终止按钮就是摆设。
+    // 外部终止（用户在 Plan 面板点「终止执行」）：循环在每一步开始前检查；
+    // 正在跑的那一步由同一 signal 经子运行 owner 取消，剩余步骤不会继续开工。
     if (config.signal?.aborted) {
       log.info("计划被外部终止，剩余步骤不再执行")
       overallSuccess = false
@@ -380,51 +322,34 @@ export async function executePlan(
     await callbacks.onStepStart(step)
     const stepStart = Date.now()
 
+    let output: PiSubAgentOutput
     try {
-      const output = await executeStep(step, config, callbacks)
-      const durationMs = Date.now() - stepStart
-      stepResults.push({ step, output, durationMs })
-      await callbacks.onStepDone(step, output)
-      // FIX-34 的第二处检查：这一步已记账完毕，再对一次时钟（等待期同样已扣除）
-      if (config.deadlineAt !== undefined && planClockNow() > config.deadlineAt) {
-        overallSuccess = false
-        cancelled = { reason: "deadline" }
-        log.error("计划超过时限，已停在当前步骤:", step.id)
-        break
-      }
-
-      if (!output.success && config.onStepFailure === "abort") {
-        overallSuccess = false
-        break
-      }
-      if (!output.success && config.onStepFailure === "ask") {
-        // 失败询问上用户选择中止：与逐步门同款归宿 —— 是用户在当下停住计划，不是计划自己失败
-        const decision = await callbacks.onStepFailed(step, output.error || "未知错误")
-        if (decision === "abort") { overallSuccess = false; cancelled = { reason: "declined" }; break }
-      }
+      output = await executeStep(step, config, callbacks)
     } catch (e) {
-      // §4.2：失败原因仍 `formatError` 后放进 `output.error`（随步骤结果条目落盘并交给
-      // `onStepFailed`/`formatStepResults`）；warn 补定位上下文，日志与证据链按同一
-      // planId/stepId 对齐（planId 由调用方给，缺省回落计划摘要）。保留 warn（不升 error）：
-      // 失败原因已格式化并写进步骤结果（随条目落盘）[保留已登记 §4.2]。
       const errMsg = formatError(e)
-      log.warn("步骤执行失败:", { planId: config.planId ?? plan.summary, stepId: step.id }, errMsg)
-      stepResults.push({
-        step, durationMs: Date.now() - stepStart,
-        output: {
-          status: "failed", success: false, reply: "", toolCallsMade: 0, error: errMsg,
-          evidence: { tools: [], incomplete: [], unconfirmedEffects: false },
-          audit: {
-            runId: config.planId ?? "plan", requestId: String(step.id), ownerKind: "plan",
-            stepId: String(step.id), ...(config.planId ? { planId: config.planId } : {}),
-          },
+      log.warn("步骤执行失败:", { planId: config.planId, stepId: step.id }, errMsg)
+      output = {
+        status: "failed", success: false, reply: "", toolCallsMade: 0, error: errMsg,
+        evidence: { tools: [], incomplete: [], unconfirmedEffects: false },
+        audit: {
+          runId: config.planId, requestId: String(step.id), ownerKind: "plan",
+          stepId: String(step.id), planId: config.planId,
         },
-      })
-      if (config.onStepFailure === "abort") { overallSuccess = false; break }
-      if (config.onStepFailure === "ask") {
-        const decision = await callbacks.onStepFailed(step, errMsg)
-        if (decision === "abort") { overallSuccess = false; cancelled = { reason: "declined" }; break }
       }
+    }
+    stepResults.push({ step, output, durationMs: Date.now() - stepStart })
+    if (!output.success) overallSuccess = false
+    await callbacks.onStepDone(step, output)
+    if (config.deadlineAt !== undefined && planClockNow() > config.deadlineAt) {
+      overallSuccess = false
+      cancelled = { reason: "deadline" }
+      log.error("计划超过时限，已停在当前步骤:", step.id)
+      break
+    }
+    if (!output.success && config.onStepFailure === "abort") break
+    if (!output.success && config.onStepFailure === "ask") {
+      const decision = await callbacks.onStepFailed(step, output.error || "未知错误")
+      if (decision === "abort") { cancelled = { reason: "declined" }; break }
     }
   }
 
@@ -500,7 +425,9 @@ async function executeStep(
 // ── 结果格式化 ──
 
 export function formatStepResults(result: PlanExecutionResult): string {
-  const lines = ["[计划执行结果]"]
+  const status = result.overallSuccess ? "全部完成"
+    : result.stepResults.some(item => item.output.success) ? "部分失败或未完成" : "失败或未完成"
+  const lines = ["[计划执行结果]", `整体结果：${status}`]
   for (const { step, output, durationMs, resultEntryId } of result.stepResults) {
     const icon = output.success ? "OK" : "FAIL"
     const time = (durationMs / 1000).toFixed(1) + "s"

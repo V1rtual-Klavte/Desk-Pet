@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../../e2e/types"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
-import { getHostBridge } from "@/services/host"
+import { getHostBridge, type HostCommandMap } from "@/services/host"
 import { errorCode, formatError } from "@/services/error"
 import { BaseDirs } from "@/services/paths"
 import { isWindows } from "@/services/env"
@@ -18,9 +18,7 @@ import { isWindows } from "@/services/env"
  * 本场景证明经真实 IPC 可见的部分：未命中的取消有明确结论；取消先发出、exec 后发出时
  * 这次运行被终止并很快收口（而不是跑到 120s 兜底超时）；被终止的运行不留副作用。
  *
- * 「额度回空闲」不在本场景的观测面内：本场景直接走 IPC、不经许可域，原 `permitSnapshot()`
- * 断言恒真（只会被其他场景的残留点亮），产品改坏它也不会红 —— 契约审计线索 D1，已复核，
- * 该断言已删。额度归还的覆盖面在许可场景与 Rust 单测，不在这里。
+ * IPC 探针也借用真实独占许可；进程退出后由 Rust 归还。后台许可覆盖在执行许可场景。
  */
 
 /** `bash_exec` 载荷里本场景用得到的字段。 */
@@ -49,6 +47,17 @@ function delayedProbe(seconds: number, sentinel: string): string {
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
+async function execWithPermit(args: Omit<HostCommandMap["bash_exec"]["args"], "borrowerId" | "permitRequestId">) {
+  const borrowerId = "cancel-race-probe", requestId = crypto.randomUUID()
+  const host = getHostBridge()
+  if (!await host.request("tool_permit_acquire", { borrowerId, requestId, kind: "exclusive", sessionId: "cancel-race-probe", runGeneration: 1, operationId: requestId })) throw new Error("取消探针未获得执行许可")
+  try {
+    return await host.request("bash_exec", { ...args, borrowerId, permitRequestId: requestId })
+  } finally {
+    await host.request("tool_permit_release", { borrowerId, requestId })
+  }
+}
+
 export const 取消竞态: SceneDef = {
   meta: {
     caseId: "tool-cancel-before-spawn", module: "tool-execution", contractId: "te-18",
@@ -76,7 +85,7 @@ export const 取消竞态: SceneDef = {
         // 可能只是命令没跑通（策略拒绝、路径不可写），而不是取消生效。
         const controlId = crypto.randomUUID()
         const control = `${BaseDirs.sessions()}/deskpet-cancel-control-${controlId}`
-        const controlResult = await getHostBridge().request("bash_exec", {
+        const controlResult = await execWithPermit({
           executionId: controlId,
           command: delayedProbe(0, control),
           timeoutMs: 60_000,
@@ -95,7 +104,7 @@ export const 取消竞态: SceneDef = {
         const sentinel = `${BaseDirs.sessions()}/deskpet-cancel-race-${id}`
         const cancelled = getHostBridge().request("bash_cancel", { executionId: id })
         let settled = false
-        const run = getHostBridge().request("bash_exec", {
+        const run = execWithPermit({
           executionId: id,
           command: delayedProbe(PROBE_SECONDS, sentinel),
           timeoutMs: 60_000,
@@ -137,8 +146,6 @@ export const 取消竞态: SceneDef = {
           throw new Error("取消后子进程仍留下探针：运行没有被终止")
         }
 
-        // 原 `permitSnapshot()` 三项全空闲断言已删：本场景直接走 IPC、不经许可域，该断言
-        // 恒真（只能被其他场景的残留点亮），产品改坏它也不会红 —— 契约审计线索 D1，已复核。
       },
     }],
   }],

@@ -71,7 +71,7 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
       // 不能因为等待超时就把仍在运行的写任务放开给下一次调用并发（§5.1）。
       settlement = (async () => {
         try {
-          return await handler(params, { ...ctx, signal: controller.signal })
+          return await handler(params, { ...ctx, executionPermit: lease, signal: controller.signal })
         } finally {
           if (lease) await releaseToolPermit(lease)
         }

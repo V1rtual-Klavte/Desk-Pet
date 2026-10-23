@@ -77,12 +77,18 @@ export const 凭据路径终判: SceneDef = {
 
         // ④ bash 层 1：凭据规则在调用方不可关闭（`bash_exec` 已无策略入参）。
         // 码只认 TOOL + 文案含「凭据路径」，超时（OTHER/超时文案）与 spawn 失败（IO）都不算通过。
-        const result = await rejection(() => getHostBridge().request("bash_exec", {
-          executionId: "credential-probe-bash",
-          command: "cat ~/.ssh/id_rsa",
-        }))
-        if (result.code !== "TOOL" || !result.message.includes("凭据路径")) {
-          throw new Error(`拒绝原因不是凭据路径: ${result.code ?? "无码"} ${result.message}`)
+        const borrowerId = "credential-probe", requestId = crypto.randomUUID()
+        if (!await getHostBridge().request("tool_permit_acquire", { borrowerId, requestId, kind: "exclusive", sessionId: "credential-probe", runGeneration: 1, operationId: requestId })) throw new Error("凭据探针未获得执行许可")
+        try {
+          const result = await rejection(() => getHostBridge().request("bash_exec", {
+            borrowerId, permitRequestId: requestId, executionId: "credential-probe-bash",
+            command: "cat ~/.ssh/id_rsa",
+          }))
+          if (result.code !== "TOOL" || !result.message.includes("凭据路径")) {
+            throw new Error(`拒绝原因不是凭据路径: ${result.code ?? "无码"} ${result.message}`)
+          }
+        } finally {
+          await getHostBridge().request("tool_permit_release", { borrowerId, requestId })
         }
       },
     }],

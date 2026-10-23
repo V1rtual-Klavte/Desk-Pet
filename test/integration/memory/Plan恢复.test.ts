@@ -34,7 +34,7 @@ async function checkpointPayloads(sessionId: string): Promise<PlanCheckpointPayl
   return payloads
 }
 
-/** 三个步骤的恢复档位：只读回 pending、非只读且末事件 tool_start 进 unknown_side_effect、末事件 tool_end 回 pending。 */
+// 已返回的效果也不能证明整步可重放。
 function stepStatesOf(planId: string): (string | undefined)[] {
   const current = planCheckpointStore.snapshot(planId)
   return ["read", "write", "end"].map(stepId => current?.steps.find(step => step.stepId === stepId)?.state)
@@ -72,12 +72,12 @@ describe("Plan恢复", () => {
       { planId: PLAN_ID, stepId: "write", title: "外部写入", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
       { planId: PLAN_ID, stepId: "end", title: "已收尾", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
     ])
-    // 只读工具的 tool_start 不落条目；非只读工具落条目且自带 effect；
-    // 第三步先 start 后 end，恢复必须取**末事件**（tool_end → pending）而不是任一 tool_start
+    // 后续只读事件不能掩盖此前已经完成的写入。
     await planCheckpointStore.checkpointTool(PLAN_ID, "read", "tool_start", "fs_read", "call-read", "read_only")
     await planCheckpointStore.checkpointTool(PLAN_ID, "write", "tool_start", "external_write", "call-write", "external_side_effect")
     await planCheckpointStore.checkpointTool(PLAN_ID, "end", "tool_start", "external_write", "call-end", "external_side_effect")
     await planCheckpointStore.checkpointTool(PLAN_ID, "end", "tool_end", "external_write", "call-end", "external_side_effect", true)
+    await planCheckpointStore.checkpointTool(PLAN_ID, "end", "tool_end", "read", "call-read-after-write", "read_only", true)
     // 模拟重启：清掉进程内恢复态，之后的恢复必须完全从落盘条目折迭
     planCheckpointStore.reset()
 
@@ -87,7 +87,7 @@ describe("Plan恢复", () => {
     expect(current?.plan.state, "Plan 未恢复为 paused").toBe("paused")
     const [read, write, end] = stepStatesOf(PLAN_ID)
     expect({ read, write, end }, `Plan step 恢复错误: read=${read}, write=${write}, end=${end}`)
-      .toEqual({ read: "pending", write: "unknown_side_effect", end: "pending" })
+      .toEqual({ read: "pending", write: "unknown_side_effect", end: "unknown_side_effect" })
 
     // ② 事件级证据：created 带全量基线；只读 tool_start 不落盘；非只读 tool_start 带 effect 且不带整份 steps
     const payloads = await checkpointPayloads(sessionId)
@@ -109,7 +109,7 @@ describe("Plan恢复", () => {
     expect(
       { read: relistedRead, write: relistedWrite, end: relistedEnd },
       `paused 计划重扫不应改写步骤状态: read=${relistedRead}, write=${relistedWrite}, end=${relistedEnd}`,
-    ).toEqual({ read: "pending", write: "unknown_side_effect", end: "pending" })
+    ).toEqual({ read: "pending", write: "unknown_side_effect", end: "unknown_side_effect" })
     const recoveryAfter = (await checkpointPayloads(sessionId)).filter(item => item.action === "recovery").length
     expect(recoveryAfter, `paused 计划重扫不应重复写 recovery 条目: ${recoveryBefore} → ${recoveryAfter}`).toBe(recoveryBefore)
     expect(planCheckpointStore.listRecovered(sessionId).some(item => item.plan.planId === PLAN_ID), "listRecovered 未列出恢复产出").toBe(true)
@@ -128,12 +128,35 @@ describe("Plan恢复", () => {
     ).toEqual({ kind: "tool_end", confirmed: true })
 
     // ⑤ 选择重跑：记为一次新执行尝试（running + attempt+1），不是无痕重放
-    const beforeRetry = planCheckpointStore.snapshot(PLAN_ID)?.steps.find(step => step.stepId === "write")
-    expect(beforeRetry, "内存中没有 write 步骤").toBeDefined()
-    await planCheckpointStore.resolveUnknownSideEffect(PLAN_ID, "write", "retry")
-    const afterRetry = planCheckpointStore.snapshot(PLAN_ID)?.steps.find(step => step.stepId === "write")
+    const beforeRetry = planCheckpointStore.snapshot(PLAN_ID)?.steps.find(step => step.stepId === "end")
+    expect(beforeRetry, "内存中没有 end 步骤").toBeDefined()
+    await planCheckpointStore.resolveUnknownSideEffect(PLAN_ID, "end", "retry")
+    const afterRetry = planCheckpointStore.snapshot(PLAN_ID)?.steps.find(step => step.stepId === "end")
     expect(afterRetry?.state, `retry 后应为 running: ${afterRetry?.state}`).toBe("running")
     expect(afterRetry?.attempt, `retry 应记为一次新执行尝试: ${beforeRetry?.attempt} → ${afterRetry?.attempt}`)
       .toBe((beforeRetry?.attempt ?? 0) + 1)
+    await planCheckpointStore.transitionStep(PLAN_ID, "end", "running")
+    expect(planCheckpointStore.snapshot(PLAN_ID)?.steps.find(step => step.stepId === "end")?.attempt).toBe(2)
+    await planCheckpointStore.checkpointTool(PLAN_ID, "end", "tool_start", "external_write", "retry-write", "external_side_effect")
+    await planCheckpointStore.transitionPlan(PLAN_ID, "running")
+    planCheckpointStore.reset()
+    await planCheckpointStore.recover(sessionId)
+    expect(stepStatesOf(PLAN_ID)).toEqual(["pending", "done", "unknown_side_effect"])
+    for (const state of ["interrupted", "paused"] as const) {
+      const planId = `plan-${state}`
+      await planCheckpointStore.create({ schemaVersion: 2, planId, sessionId, rootTurnId: planId,
+        state, summary: "中断恢复", estimatedComplexity: 1, version: 1, createdAt: now, updatedAt: now }, [
+        { planId, stepId: "effect", title: "写入", state: "interrupted", attempt: 1, effectClass: "external_side_effect", sideEffectStarted: true, updatedAt: now },
+        { planId, stepId: "read", title: "读取", state: "interrupted", attempt: 1, effectClass: "read_only", sideEffectStarted: false, updatedAt: now },
+      ])
+      planCheckpointStore.reset()
+      await planCheckpointStore.recover(sessionId)
+      expect(planCheckpointStore.snapshot(planId)?.steps.map(step => step.state)).toEqual(["unknown_side_effect", "pending"])
+      await planCheckpointStore.resolveUnknownSideEffect(planId, "effect", "retry")
+      await planCheckpointStore.checkpointTool(planId, "effect", "tool_start", "write", "retry-effect", "external_side_effect")
+      planCheckpointStore.reset()
+      await planCheckpointStore.recover(sessionId)
+      expect(planCheckpointStore.snapshot(planId)?.steps[0]).toMatchObject({ state: "unknown_side_effect", attempt: 2 })
+    }
   })
 })

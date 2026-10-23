@@ -14,7 +14,7 @@ import type { ScheduleProposal, UserTaskDefinition } from "@/services/user-tasks
 import { taskDefinitionInputSchema } from "@/services/user-tasks/schema"
 import { formatError } from "@/services/error"
 import { isTaskReadCapability, taskCapabilityFingerprint } from "@/services/user-tasks/capabilities"
-import { canonicalTaskContent } from "@/services/user-tasks/proposals"
+import { canonicalTaskContent, declineScheduleProposal, visibleScheduleProposals } from "@/services/user-tasks/proposals"
 import { proactiveConfig } from "@/services/config"
 import { proactiveFrequency, proactiveTierLimits } from "@/services/proactive/tiers"
 
@@ -78,9 +78,9 @@ const queryTool = defineTool({ id: "local-schedule-query", name: "schedule_query
 })
 
 const changeTool = defineTool({ id: "local-schedule-change", name: "schedule_change",
-  description: "按本轮可信用户指示提议、创建、更新、改期、延后、完成或取消用户任务。task 是 {text,kind:reminder|agent_job,schedule,execution:{thinkingEffort:low|medium|high},work?,delivery?}。schedule 须含 calendar(IANA 时区+once/daily/weekly/monthly/yearly)、trigger(at/window/confirmed_anchor/observed_event)、count、minGapMinutes、validity、missedPolicy。propose 可用不完整草案；推断的关键参数须先提出具体安排并经用户确认，完整明确指令直接 create。update 仅改 task 中提供的字段。reschedule 更新 schedule 及事项锚；snooze 仅改 nextCheckinAt。complete 只用于用户明确报告现实事项完成。执行型任务首期仅只读能力；不提供任何系统调度或全局开关。",
+  description: "按本轮可信用户指示提议、创建、更新、改期、延后、完成或取消用户任务。task 是 {text,kind:reminder|agent_job,schedule,execution:{thinkingEffort:low|medium|high},work?,delivery?}。schedule 须含 calendar(IANA 时区+once/daily/weekly/monthly/yearly)、trigger(at/window/confirmed_anchor/observed_event)、count、minGapMinutes、validity、missedPolicy。propose 可用不完整草案；推断的关键参数须先提出具体安排并经用户确认，完整明确指令直接 create。update 仅改 task 中提供的字段。reschedule 更新 schedule 及事项锚；snooze 仅改 nextCheckinAt。complete 只用于用户明确报告现实事项完成。cancel 只停止提醒，不取消现实事项；拒绝未创建的提醒用 decline + proposalId，多提议短回复须先澄清。执行型任务首期仅只读能力；不提供任何系统调度或全局开关。",
   parameters: { type: "object", additionalProperties: false, properties: {
-    action: { type: "string", enum: ["propose", "create", "update", "reschedule", "snooze", "complete", "cancel"] },
+    action: { type: "string", enum: ["propose", "create", "update", "reschedule", "snooze", "complete", "cancel", "decline"] },
     proposalId: { type: "string" }, taskId: { type: "string" }, expectedVersion: { type: "integer", minimum: 1 },
     task: taskDefinitionInputSchema,
     nextCheckinAt: { type: "number", description: "仅 snooze 使用的未来 UTC 毫秒；不改变事项时间和有效期" },
@@ -92,7 +92,8 @@ const changeTool = defineTool({ id: "local-schedule-change", name: "schedule_cha
 }, async (params, ctx) => {
   try {
     const frozen = owner(ctx), now = Date.now(), action = String(params.action)
-    if (!["propose", "create", "update", "reschedule", "snooze", "complete", "cancel"].includes(action)) throw new Error("不支持的用户任务 action")
+    if (!["propose", "create", "update", "reschedule", "snooze", "complete", "cancel", "decline"].includes(action)) throw new Error("不支持的用户任务 action")
+    if (action === "decline" && [params.task, params.taskId, params.expectedVersion, params.eventAt, params.dueAt, params.memoryItemId, params.expectedMemoryVersion, params.targetAction].some(value => value !== undefined)) throw new Error("拒绝提议只接受 proposalId，不允许模型另选事项或修改内容")
     if (params.nextCheckinAt !== undefined && action !== "snooze") throw new Error("nextCheckinAt 仅可用于 snooze，事项改期须更新 schedule")
     if (["complete", "cancel"].includes(action) && (params.task !== undefined || params.eventAt !== undefined || params.dueAt !== undefined)) throw new Error("完成或取消不能同时修改安排")
     if (action === "create" && (params.taskId !== undefined || params.expectedVersion !== undefined)) throw new Error("新建不能指定已有任务身份")
@@ -112,12 +113,36 @@ const changeTool = defineTool({ id: "local-schedule-change", name: "schedule_cha
       if (!memory) throw new Error("记忆关联须匹配本轮冻结的有效 ID 和版本")
       sourceRefs.push(memory)
     }
-    const state = await queryUserTasks({ owner: frozen, ...(typeof params.taskId === "string" ? { taskId: params.taskId } : {}), statuses: ["active", "completed", "cancelled", "invalidated"], limit: 10 })
+    const declined = action === "decline" ? declineScheduleProposal(ctx.proactiveTurnContext?.scheduleProposals ?? [],
+      typeof params.proposalId === "string" ? params.proposalId : undefined, frozen, evidence, now) : undefined
+    if (declined) {
+      const available = [...userRefs, ...(ctx.proactiveTurnContext?.memoryRefs ?? [])]
+      for (const expected of declined.sourceVersions) {
+        const matching = available.find(source => sameSource(source, expected) && (source.validUntil === null || source.validUntil > now))
+        if (!matching) throw new Error("提议来源版本已变化或失效，请重新查询")
+        if (matching.kind === "memory" && !sourceRefs.some(source => sameSource(source, expected))) sourceRefs.push(matching)
+      }
+    }
+    const targetId = declined?.target?.taskId ?? (typeof params.taskId === "string" ? params.taskId : undefined)
+    const state = await queryUserTasks({ owner: frozen, ...(targetId ? { taskId: targetId } : {}), statuses: ["active", "completed", "cancelled", "invalidated"], limit: 10 })
     const patch: Record<string, unknown> = {}
     let definition: UserTaskDefinition | undefined
     let first: ReturnType<typeof firstWindow> = null
     let limitations: string[] = []
-    const target = action !== "create" && (action !== "propose" || params.taskId !== undefined) ? targetTask(state.tasks, params) : undefined
+    const target = declined ? (declined.target ? targetTask(state.tasks, declined.target) : undefined)
+      : action !== "create" && (action !== "propose" || params.taskId !== undefined) ? targetTask(state.tasks, params) : undefined
+    if (action === "cancel") {
+      const proposals = visibleScheduleProposals(ctx.proactiveTurnContext?.scheduleProposals ?? [], frozen, now)
+      const candidates = await queryUserTasks({ owner: frozen, statuses: ["active"], limit: 10 })
+      const named = candidates.tasks.filter(task => {
+        const purpose = typeof task.intent.text === "string" ? task.intent.text.replace(/^(?:请|帮我|提醒我|提醒|记得|按时|安排)+/g, "").trim() : ""
+        return evidence.includes(task.id) || purpose.length >= 2 && evidence.includes(purpose)
+      })
+      if (!evidence.includes(target!.id) && (candidates.nextCursor ||
+        (proposals.length > 0 || candidates.tasks.length > 1) && (named.length !== 1 || named[0]!.id !== target!.id))) {
+        throw new Error("多个提醒或提议可能匹配，请先明确目标；拒绝提议须使用 decline")
+      }
+    }
     if (["create", "update", "reschedule", "propose"].includes(action)) {
       if (object(params.task) && params.task.authorization !== undefined) throw new Error("authorization 只能由运行时绑定")
       if (target && !parseUserTaskDefinition(target.intent)) throw new Error("该领域事项不能通过 rich task 更新；可延后、完成或取消")
@@ -168,7 +193,7 @@ const changeTool = defineTool({ id: "local-schedule-change", name: "schedule_cha
           validUntil: Math.min(now + 7 * 86_400_000, definition.schedule.validity.until ?? Infinity), ...(proposalTarget ? { target: proposalTarget } : {}) }
         return { success: true, content: JSON.stringify({
           status: "needs_confirmation", proposal, firstWindow: first, limitations: validation.limitations,
-          declineGuidance: "如果用户选择不提醒/取消，对 proposal.sourceVersions 里 kind=memory 的 working 条目调用 memory_change action=cancel；若已有 active 任务由这些记忆派生，用 schedule_change 取消它们，不要让被拒绝的提醒继续留在库或主动任务里。",
+          declineGuidance: "如果用户拒绝提醒，调用 schedule_change action=decline 并传入此 proposalId；保留现实事项，不要调用 memory_change cancel。存在多个提议且短回复未指明目标时先澄清。",
         }) }
       }
       const direct = directScheduleAuthorization(definition, evidence, now)
@@ -206,9 +231,10 @@ const changeTool = defineTool({ id: "local-schedule-change", name: "schedule_cha
     } else if (action === "complete" && (!/做完了|完成了|搞定了|已经.*(?:完|好)|标记.*完成|我.*(?:交了|结束了)/.test(evidence) || /(?:了吗|了么|了没|[?？])/.test(evidence))) throw new Error("完成须由用户明确报告现实事项完成，执行或送达不等于完成")
     if (!ctx.isCurrent?.() || ctx.signal?.aborted) throw new Error("运行已失效")
     cancelCurrent("task_governance_changed")
-    const result = await changeUserTask({ operationId: ctx.operationId ?? ctx.toolCallId!, baseRevision: state.revision, action: action as "create" | "update" | "reschedule" | "snooze" | "complete" | "cancel",
+    const result = await changeUserTask({ operationId: ctx.operationId ?? ctx.toolCallId!, baseRevision: state.revision,
+      action: declined && target ? "cancel" : action as "create" | "update" | "reschedule" | "snooze" | "complete" | "cancel" | "decline",
       owner: frozen, ...(target ? { taskId: target.id, expectedVersion: target.version } : {}), trustedUserEventId: ctx.trustedUserEventId, sourceRefs,
-      ...(action === "complete" || action === "cancel" ? {} : { taskPatch: patch }) })
+      ...(["complete", "cancel", "decline"].includes(action) ? {} : { taskPatch: patch }) })
     proactiveEvent(createRuntimeTraceContext(frozen.sessionId), "proactive_task", () => ({ operation: action, status: "committed", taskIds: result.task ? [result.task.id] : [], reason: "user_governance" }))
     return { success: true, content: JSON.stringify({ status: action === "create" && result.task ? "created" : "committed", ...result,
       ...(definition ? { arrangement: definition, firstWindow: first, limitations } : {}) }) }

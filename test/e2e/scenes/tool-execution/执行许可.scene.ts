@@ -3,9 +3,11 @@ import type { PermitReclaim, ToolDef, ToolPolicy } from "@/services/tool"
 import { defineTool, register, unregister, executeToolDefinition, permitSnapshot, TOOL_POLICY_VERSION } from "@/services/tool"
 import { loopConfig, MAX_PARALLEL_TOOLS, MIN_PARALLEL_TOOLS } from "@/services/config"
 import { getHostBridge } from "@/services/host"
+import { BaseDirs } from "@/services/paths"
+import { isWindows } from "@/services/env"
 
 /**
- * 执行许可：共享读可以有界并发，效果操作与其它执行互斥；借用者（页面实例）消失后，
+ * 执行许可：共享读可以有界并发，效果操作与其它执行互斥；借用者实例消失后，
  * 它的在飞额度与排队项被一次性回收，后续读不再被永久卡住。
  *
  * 断言不靠时序猜测：等待是否发生直接读 Rust 许可域的额度快照（queued），
@@ -44,13 +46,13 @@ const settle = (promise: Promise<unknown>): Promise<void> => promise.then(() => 
 export const 执行许可: SceneDef = {
   meta: {
     caseId: "tool-execution-permit", module: "tool-execution", contractId: "te-16",
-    description: "只读共享额度可并发，独占效果与其它执行互斥，执行结束才释放，借用者消失后额度被回收",
+    description: "只读共享额度可并发，独占效果与其它执行互斥，执行结束才释放；Bash 转后台由宿主接管许可，Node 释放或重连不提前归还，借用者消失只回收 Node 持有的额度",
     depth: "deep", suite: "safety", entry: "unit", tags: ["tool-execution", "safety", "boundary", "error"],
   },
   // repeat 在同一数据根上连跑、standard-setup 不重建 Rust 许可域：上一个 trial 若在断言
   // 中途失败，直接借用的探针额度会留下（释放补偿只覆盖登记过的 run）。开跑时按产品既有的
-  // 「新页面实例上线」语义清扫一次：Rust 回收同窗口其它页面实例的在飞额度与排队项，探针
-  // 全部用 permit-* 页面身份，回收数量不参与断言、只做清理。不清扫会让失败跨 trial 级联
+  // 「新借用者上线」语义清扫一次：Rust 回收同窗口其它借用者的在飞额度与排队项，探针
+  // 全部用 permit-* 借用者身份，回收数量不参与断言、只做清理。不清扫会让失败跨 trial 级联
   // （实测：第 3 trial 竞态失败留下的独占排队项，让第 4 trial 卡在永久排队上超时）。
   setup: async () => {
     await getHostBridge().request("tool_permit_attach", { borrowerId: `permit-setup-${crypto.randomUUID()}` })
@@ -146,11 +148,11 @@ export const 执行许可: SceneDef = {
 
         // ── 4. 排队公平与取消等待：队首独占被取消后必须重新 drain ──
         // 直接对许可所有者下指令，构造「读被排在独占之后」的确定顺序；借用者身份显式给出，
-        // 让探针额度与页面实例一一对应（回收判定的一半是它）。
+        // 让探针额度与借用者一一对应（回收判定的一半是它）。
         const borrowAs = (borrowerId: string, requestId: string, kind: "shared" | "exclusive" = "shared") =>
           getHostBridge().request("tool_permit_acquire", { requestId, kind, borrowerId, sessionId: "permit-probe", runGeneration: 1, operationId: requestId })
         const borrow = (requestId: string, kind: "shared" | "exclusive") => borrowAs("permit-probe-page", requestId, kind)
-        // 释放与取消都绑定借用者：窗口标签由 Rust 从调用来源填，前端只补页面实例 id。
+        // 释放与取消都绑定借用者：窗口标签由 Rust 从调用来源填，前端只补借用者 id。
         const releaseAs = (borrowerId: string, requestId: string) => getHostBridge().request("tool_permit_release", { requestId, borrowerId })
         const release = (requestId: string) => releaseAs("permit-probe-page", requestId)
         const cancelAs = (borrowerId: string, requestId: string) => getHostBridge().request("tool_permit_cancel", { requestId, borrowerId })
@@ -238,9 +240,9 @@ export const 执行许可: SceneDef = {
           throw new Error("越界下发改变了生效上限")
         }
 
-        // ── 7. 借用者生命周期兜底：页面实例消失后额度被回收，后续读不再被永久卡住 ──
-        // 复现热重载现场：旧页面实例借满额度、留下排队项后再也没人归还（它的 JS 上下文
-        // 已被新页面取代），能证明它已经消失的只有「同窗口的新实例上线」这条事实。
+        // ── 7. 借用者生命周期兜底：借用者实例消失后额度被回收，后续读不再被永久卡住 ──
+        // 复现热重载现场：旧借用者借满额度、留下排队项后再也没人归还（它的 JS 上下文
+        // 已被新借用者取代），能证明它已经消失的只有「同窗口的新实例上线」这条事实。
         const STALE_PAGE = "permit-stale-page"
         const FRESH_PAGE = "permit-fresh-page"
         const attach = (borrowerId: string) => getHostBridge().request("tool_permit_attach", { borrowerId })
@@ -251,22 +253,22 @@ export const 执行许可: SceneDef = {
         await setLimit(2)
         await attach(STALE_PAGE)
         if (!await borrowAs(STALE_PAGE, "stale-a") || !await borrowAs(STALE_PAGE, "stale-b")) {
-          throw new Error("旧页面实例没有借满共享额度")
+          throw new Error("旧借用者没有借满共享额度")
         }
         const staleQueued = borrowAs(STALE_PAGE, "stale-queued")
-        if (!await waitForQueued(1)) throw new Error("旧页面实例的读没有进入许可队列")
+        if (!await waitForQueued(1)) throw new Error("旧借用者的读没有进入许可队列")
         const leaked = await permitSnapshot()
         if (leaked.sharedActive !== 2 || leaked.queued !== 1) {
           throw new Error(`没有构造出泄漏现场: shared=${leaked.sharedActive} queued=${leaked.queued}`)
         }
 
-        // 新页面实例上线：旧实例的在飞额度与排队项必须一次性回收，数量精确。
+        // 新借用者上线：旧实例的在飞额度与排队项必须一次性回收，数量精确。
         const reclaimed = await attach(FRESH_PAGE)
         if (reclaimed.reclaimedActive !== 2) {
-          throw new Error(`新页面实例回收的在飞额度是 ${reclaimed.reclaimedActive}，应为 2（额度泄漏没有被兜底）`)
+          throw new Error(`新借用者回收的在飞额度是 ${reclaimed.reclaimedActive}，应为 2（额度泄漏没有被兜底）`)
         }
         if (reclaimed.reclaimedQueued !== 1) {
-          throw new Error(`新页面实例回收的排队项是 ${reclaimed.reclaimedQueued}，应为 1`)
+          throw new Error(`新借用者回收的排队项是 ${reclaimed.reclaimedQueued}，应为 1`)
         }
         if (await within(staleQueued) !== false) throw new Error("失效借用者的排队请求没有被取消")
         const recovered = await permitSnapshot()
@@ -276,11 +278,11 @@ export const 执行许可: SceneDef = {
 
         // 后续读不再被永久卡住：新实例立刻拿得到额度，而不是靠上限放宽或碰巧通过。
         if (await within(borrowAs(FRESH_PAGE, "fresh-read")) !== true) {
-          throw new Error("回收后新页面的读没有取得额度（额度仍被卡住）")
+          throw new Error("回收后新借用者的读没有取得额度（额度仍被卡住）")
         }
         await releaseAs(FRESH_PAGE, "fresh-read")
 
-        // 在飞的独占效果不能被回收：同一借用者重复上线（页面内模块再求值）必须是空操作。
+        // 在飞的独占效果不能被回收：同一借用者重复上线（同进程模块再求值）必须是空操作。
         if (!await borrowAs(FRESH_PAGE, "fresh-write", "exclusive")) throw new Error("独占效果没有取得额度")
         const noop = await attach(FRESH_PAGE)
         if (noop.reclaimedActive !== 0 || noop.reclaimedQueued !== 0) {
@@ -300,7 +302,7 @@ export const 执行许可: SceneDef = {
           throw new Error(`生命周期兜底后额度没有归还干净: shared=${clean.sharedActive} exclusive=${clean.exclusiveActive} queued=${clean.queued}`)
         }
 
-        // ── 8. 释放与取消绑定借用者：别的页面实例拿到 requestId 也不能动它人的额度 ──
+        // ── 8. 释放与取消绑定借用者：别的借用者拿到 requestId 也不能动它人的额度 ──
         // 借出记录里的借用者与调用方不符时，释放必须被拒绝且额度保持不动；
         // 取消只作用于调用方自己的排队项，不能替别人撤销等待。
         if (!await borrowAs(FRESH_PAGE, "guard-lease", "exclusive")) throw new Error("守卫探针没有取得独占额度")
@@ -321,6 +323,44 @@ export const 执行许可: SceneDef = {
         if (await within(foreignQueued) !== false) throw new Error("被取消的排队读仍取得了额度")
         await releaseAs(FRESH_PAGE, "guard-lease")
         if ((await permitSnapshot()).exclusiveActive !== false) throw new Error("借用者自己的释放没有归还额度")
+
+        const gatePath = `${BaseDirs.sessions()}/bash-permit-gate-${crypto.randomUUID()}`
+        const backgroundId = crypto.randomUUID(), backgroundLease = crypto.randomUUID()
+        const backgroundBorrower = "permit-background", nextBorrower = "permit-reconnected"
+        const command = isWindows
+          ? `for /L %i in (1,1,15) do @(if exist "${gatePath}" (exit /b 0) else (ping -n 2 127.0.0.1 > nul))`
+          : `for i in $(seq 1 150); do if [ -f "${gatePath}" ]; then exit 0; fi; sleep 0.1; done; exit 23`
+        if (!await borrowAs(backgroundBorrower, backgroundLease, "exclusive")) throw new Error("Bash 没有取得独占许可")
+        const waitingId = crypto.randomUUID()
+        let reader: Promise<boolean> | undefined
+        try {
+          const result = await getHostBridge().request("bash_exec", {
+            borrowerId: backgroundBorrower, permitRequestId: backgroundLease, executionId: backgroundId,
+            command, timeoutMs: 1, spill: false,
+          })
+          if (!result.backgrounded || !result.timedOut) throw new Error("Bash 没有进入后台，未覆盖许可转交")
+          await releaseAs(backgroundBorrower, backgroundLease)
+          const reattached = await attach(nextBorrower)
+          if (reattached.reclaimedActive !== 0 || !(await permitSnapshot()).exclusiveActive) throw new Error("Node 释放或重连提前归还了后台 Bash 许可")
+          let grantedBeforeExit = false
+          reader = borrowAs(nextBorrower, waitingId).then(granted => { grantedBeforeExit = granted; return granted })
+          if (!await waitForQueued(1) || grantedBeforeExit) throw new Error("后台 Bash 仍在等待时并发放行了读")
+          await getHostBridge().request("file_write", { path: gatePath, content: "exit" })
+          if (await within(reader) !== true) throw new Error("后台进程退出后未归还许可")
+          await releaseAs(nextBorrower, waitingId)
+          const afterExit = await permitSnapshot()
+          if (afterExit.exclusiveActive || afterExit.sharedActive !== 0 || afterExit.queued !== 0) throw new Error("后台 Bash 许可未收口")
+        } finally {
+          await getHostBridge().request("file_write", { path: gatePath, content: "exit" })
+          await cancelAs(nextBorrower, waitingId)
+          if (reader) await within(reader)
+          await releaseAs(nextBorrower, waitingId)
+          await releaseAs(backgroundBorrower, backgroundLease)
+          const deadline = Date.now() + WAIT_BUDGET_MS
+          while ((await permitSnapshot()).exclusiveActive && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25))
+          if ((await permitSnapshot()).exclusiveActive) throw new Error(`后台进程退出未确认，保留退出信号文件 ${gatePath}`)
+          await getHostBridge().request("file_remove", { path: gatePath, force: true, recursive: false })
+        }
 
         // 收尾：把上限还给运行期配置值，不把本场景的探针值留给后续场景。
         await setLimit(loopConfig.maxParallelTools)

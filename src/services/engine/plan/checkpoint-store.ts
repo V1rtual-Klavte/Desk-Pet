@@ -1,12 +1,4 @@
-// Plan checkpoint 的持久化与恢复：经会话仓库以 `deskpet.plan_checkpoint` 自定义条目读写。
-//
-// 写入口径（PLAN-14）：全量步骤快照只在 `created` 与终态（`terminal`）落；其余条目只带增量
-// —— `step_state` 带被变更的单步记录、工具事件带 `lastEvent*` 证据；只读工具的 `tool_start`
-// 不落条目（没有外部副作用可证明，重跑无害）。
-// 恢复语义（PLAN-06 + FIX-31）：读侧按 planId 折迭条目，对处于恢复态（admitting/running/
-// interrupted）的计划按「末事件 + 效果类 + 步骤状态」逐步骤定档 —— 只读步骤回 pending、
-// 未知外部副作用进 unknown_side_effect（不自动重放，等待用户处置），计划整体转 paused。
-// 上次恢复产出的 paused 计划在重启后直接列出（不再改写步骤状态），供继续/丢弃出口消费。
+// 未完成步骤按本次尝试的累计效果恢复；工具返回或后续只读事件不能证明整步可安全重放。
 
 import type { Entry, JsonValue } from "@earendil-works/pi-agent-core"
 import type { PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/runtime"
@@ -70,16 +62,9 @@ function entryPayload(entry: Entry): PlanCheckpointPayload | undefined {
   return payload as PlanCheckpointPayload
 }
 
-/**
- * 恢复判据（FIX-31）：只对 `state === "running"` 的步骤定档，其余步骤不动。
- * 末事件 `tool_end` → pending（步骤级结果本无完成凭证，重跑由用户/上层决定）；
- * 末事件只读 `tool_start` → pending；非只读 `tool_start` → unknown_side_effect；
- * 无事件时按步骤声明的效果类保守定档（只读回 pending，其余按未知副作用处理）。
- */
 function classifyRecoveredStepState(step: PlanStepRecord): PlanStepState {
-  if (step.lastEventKind === "tool_end") return "pending"
-  if (step.lastEventKind === "tool_start") return step.lastEventEffect === "read_only" ? "pending" : "unknown_side_effect"
-  return step.effectClass === "read_only" ? "pending" : "unknown_side_effect"
+  const hasEffects = step.sideEffectStarted ?? step.effectClass !== "read_only"
+  return hasEffects ? "unknown_side_effect" : "pending"
 }
 
 export class PlanCheckpointStore {
@@ -104,10 +89,11 @@ export class PlanCheckpointStore {
       log.warn("计划步骤不存在，忽略状态变更:", planId, stepId)
       return
     }
+    const newAttempt = state === "running" && previous.state !== "running"
     await this.patchStep(planId, stepId, {
       state,
-      // running 表示一次新执行尝试（FIX-30⑤ 的「重跑此步」也走这里）
-      attempt: state === "running" ? previous.attempt + 1 : previous.attempt,
+      attempt: newAttempt ? previous.attempt + 1 : previous.attempt,
+      ...(newAttempt ? { sideEffectStarted: false, lastEventId: undefined, lastEventKind: undefined, lastEventEffect: undefined } : {}),
     })
   }
 
@@ -118,16 +104,12 @@ export class PlanCheckpointStore {
     const now = Date.now()
     current.plan = { ...current.plan, version: current.plan.version + 1, updatedAt: now }
     current.steps = current.steps.map(step => step.stepId === stepId
-      ? { ...step, lastEventId: `${action}:${toolCallId}`, lastEventKind: action, lastEventEffect: effect, updatedAt: now }
+      ? { ...step, sideEffectStarted: step.sideEffectStarted || effect !== "read_only", lastEventId: `${action}:${toolCallId}`, lastEventKind: action, lastEventEffect: effect, updatedAt: now }
       : step)
     await this.write(planId, action, { stepId, toolName, toolCallId, success, effect })
   }
 
-  /**
-   * 折迭恢复：按 planId 把条目折成计划的最新状态，再对恢复态计划定档转 paused。
-   * `created`/`terminal` 提供全量步骤基线；`step_state` 替换单步；工具事件只 patch `lastEvent*`。
-   * `paused` 是上次恢复的产物：直接列出，不重复写 `recovery` 条目、不改写步骤状态。
-   */
+  // paused 中再次中断的尝试也须重新定档；没有未结算步骤时才复用恢复结果。
   async recover(sessionId: string): Promise<RecoveredPlan[]> {
     const folded = new Map<string, RecoveredPlan>()
     const entries = await readPiSessionEntriesOnce(sessionId, { customType: PLAN_CHECKPOINT_ENTRY, order: "asc" })
@@ -155,6 +137,7 @@ export class PlanCheckpointStore {
         current.steps = current.steps.map(step => step.stepId === payload.stepId
           ? {
               ...step,
+              sideEffectStarted: step.sideEffectStarted || payload.effect !== "read_only",
               lastEventId: `${payload.action}:${payload.toolCallId ?? ""}`,
               lastEventKind: payload.action as "tool_start" | "tool_end",
               lastEventEffect: payload.effect ?? "external_side_effect",
@@ -170,11 +153,12 @@ export class PlanCheckpointStore {
       const planId = foldedPlan.plan.planId
       const current: RecoveredPlan = { plan: { ...foldedPlan.plan }, steps: foldedPlan.steps.map(step => ({ ...step })) }
       this.plans.set(planId, current)
-      if (current.plan.state === "paused") {
+      const unfinished = current.steps.filter(item => item.state === "running" || item.state === "interrupted")
+      if (current.plan.state === "paused" && unfinished.length === 0) {
         recovered.push(this.view(planId))
         continue
       }
-      for (const step of current.steps.filter(item => item.state === "running")) {
+      for (const step of unfinished) {
         await this.transitionStep(planId, step.stepId, classifyRecoveredStepState(step))
       }
       await this.transitionPlan(planId, "paused")
@@ -182,6 +166,15 @@ export class PlanCheckpointStore {
       recovered.push(this.view(planId))
     }
     return recovered
+  }
+
+  async prepareResume(planId: string): Promise<RecoveredPlan> {
+    for (const step of this.view(planId).steps) {
+      if (step.state === "interrupted") {
+        await this.transitionStep(planId, step.stepId, classifyRecoveredStepState(step))
+      }
+    }
+    return this.view(planId)
   }
 
   /** 内存中的恢复产出视图（`recover()` 之后）；带 sessionId 时只看该会话的计划。 */
@@ -196,6 +189,8 @@ export class PlanCheckpointStore {
    * `retry` = 记为一次新执行尝试 → `running`（`attempt + 1`）。
    */
   async resolveUnknownSideEffect(planId: string, stepId: string, resolution: "already_applied" | "retry"): Promise<void> {
+    const step = this.require(planId).steps.find(item => item.stepId === stepId)
+    if (step?.state !== "unknown_side_effect") throw new Error("只有未知副作用步骤需要用户处置")
     if (resolution === "already_applied") {
       await this.patchStep(planId, stepId, {
         state: "done",

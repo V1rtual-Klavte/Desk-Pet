@@ -275,15 +275,12 @@ interface Config {
     }
     plan: {
       enabled: boolean
-      complexityThreshold: number
-      complexityEval: string
       maxSteps: number
       stepTimeoutMs: number
       stepMaxRounds: number
       thinkingEffort: string
       stepThinkingEffort: string
       onStepFailure: string
-      keywords: string[]
     }
     humanizer: { enabled: boolean }
     /** 主动消息：总闸 + 频率 + 静默时间段（静默时段仅约束主动消息） */
@@ -859,9 +856,6 @@ export const memoryConfig = {
 
 export const planConfig = {
   get enabled() { return overrideOr("ai.plan.enabled", cfg.ai?.plan?.enabled ?? true); },
-  get complexityThreshold() { return overrideOr("ai.plan.complexityThreshold", cfg.ai?.plan?.complexityThreshold ?? 3); },
-  /** 复杂度评估方式：keyword 只用关键词（未命中直接低分，不发请求）；llm 未命中时再发一次独立请求。 */
-  get complexityEval() { return overrideOr("ai.plan.complexityEval", cfg.ai?.plan?.complexityEval || "keyword") as "keyword" | "llm" },
   get maxSteps() { return overrideOr("ai.plan.maxSteps", cfg.ai?.plan?.maxSteps ?? 8); },
   /** 单个计划步骤的墙钟（`ai.plan.stepTimeoutMs`）。计划由用户在场批准，步骤里可能出现长命令：
    *  90s 会在 bash 档位（5 分钟）之下形成隐形截断，2026-10-06 按 bash 档位对齐到 300s。 */
@@ -870,7 +864,6 @@ export const planConfig = {
   get thinkingEffort() { return overrideOr("ai.plan.thinkingEffort", cfg.ai?.plan?.thinkingEffort || "medium") as import("@/services/agent/types").ThinkingEffort; },
   get stepThinkingEffort() { return overrideOr("ai.plan.stepThinkingEffort", cfg.ai?.plan?.stepThinkingEffort || "low") as import("@/services/agent/types").ThinkingEffort; },
   get onStepFailure() { return overrideOr("ai.plan.onStepFailure", cfg.ai?.plan?.onStepFailure || "continue") as "continue" | "abort" | "ask"; },
-  get keywords() { return overrideOr("ai.plan.keywords", cfg.ai?.plan?.keywords || ["分析", "整理", "重构", "修复", "审查", "合并", "总结", "生成", "创建项目"]) as string[]; },
 };
 
 /**

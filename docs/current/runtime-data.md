@@ -95,13 +95,13 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 另有从不提供控件、也不在本表撤下语义内的技术参数：`ai.loop.turnTimeoutMs`（主回合/恢复墙钟，默认 600s）与 `ai.plan.stepTimeoutMs`（计划步骤墙钟，默认 300s）——用途、与 bash 档位的约束关系（回合墙钟必须 ≥ 工具档位 + 一次模型往返）与修改入口见[工具系统](tool-system.md#文件命令与取消)的档位说明，不重复默认值。
 
-### 复杂度评估字段的语义与生效时机
+### 显式计划开关的语义与生效时机
 
 | 字段 | 取值 | 语义 | 生效 |
 |---|---|---|---|
-| `ai.plan.complexityEval` | keyword / llm，默认 keyword | 未命中关键词时是否再发一次独立模型请求自判复杂度 | 保存后下一次 `sendMessage` 即生效；`--plan` 强制触发不受它影响 |
+| `ai.plan.enabled` | boolean，默认 true | 只控制显式 `--plan` 命令；普通请求由主模型按需调用 `propose_plan` | 保存后下一回合生效 |
 
-本字段不提供设置窗控件（设置 schema 无该字段）：值只在 CONFIG／getter，运行期只经 [config.ts](../../src/services/config.ts) 的 `planConfig.complexityEval` 读取。`keyword` 下未命中关键词直接返回低分（不发起请求，复杂度判定只由关键词与 `--plan` 驱动）；`llm` 下未命中关键词再发一次独立请求自判，失败按跳过 Plan 处理并把原因写进判定结果。
+原生设置窗「启用 --plan 命令」经 `settings_commit` 写入同一 CONFIG 键，运行期由 [config.ts](../../src/services/config.ts) 的 `planConfig.enabled` 读取。前缀必须是完整 `--plan`（后接空白或文本结束），`--planet` 不触发；命令开关关闭不隐藏计划工具。关键词列表、复杂度阈值和独立复杂度评估请求已删除；无工具回合两条计划入口都不运行。
 
 ### Bash 白名单字段的语义与生效时机
 

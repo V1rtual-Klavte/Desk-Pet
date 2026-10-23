@@ -25,7 +25,7 @@ import { getToolByName, registerDefaultTools } from "@/services/tool"
 import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 const HOISTED = vi.hoisted(() => ({
-  bashCalls: [] as Array<{ command: string; timeoutMs: number | null; sessionId: string | null }>,
+  bashCalls: [] as Array<{ command: string; timeoutMs: number | null; sessionId: string | null; permitRequestId: string; borrowerId: string }>,
   /** 下一次 bash_exec 的回执覆盖（后台化用例注入 backgrounded 结果用）。 */
   nextResult: null as Record<string, unknown> | null,
 }))
@@ -46,8 +46,8 @@ vi.mock("@/services/host", async importOriginal => {
           options?: { signal?: AbortSignal; scope?: import("@/services/host").RunScope },
         ) => {
           if (method === "bash_exec") {
-            const call = args as { command: string; timeoutMs?: number | null; sessionId?: string | null }
-            HOISTED.bashCalls.push({ command: call.command, timeoutMs: call.timeoutMs ?? null, sessionId: call.sessionId ?? null })
+            const call = args as import("@/services/host").HostCommandMap["bash_exec"]["args"]
+            HOISTED.bashCalls.push({ command: call.command, timeoutMs: call.timeoutMs ?? null, sessionId: call.sessionId ?? null, permitRequestId: call.permitRequestId, borrowerId: call.borrowerId })
             if (HOISTED.nextResult) {
               const injected = HOISTED.nextResult
               HOISTED.nextResult = null
@@ -70,6 +70,7 @@ vi.mock("@/services/host", async importOriginal => {
 })
 
 let root = ""
+const permit = { requestId: "bash-permit", borrowerId: "bash-borrower", kind: "exclusive" as const }
 
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), "deskpet-bash-timeout-tier-"))
@@ -112,7 +113,7 @@ describe("Bash 超时档位", () => {
   it("生效超时与会话归属以毫秒下传到 Rust 的 bash_exec [tool-bash-timeout-downlink]", async () => {
     const bash = getToolByName("bash")!
     // 带会话归属的实例：完成通知回投正确会话的链路起点（bash_exec.sessionId）。
-    const env = new NativeExecutionEnv(root, "session-downlink")
+    const env = new NativeExecutionEnv(root, "session-downlink", permit)
     HOISTED.bashCalls.length = 0
 
     // 主路径：模型不传值 → 夹取后的 300 秒 → bash_exec 收到 300000ms
@@ -123,6 +124,8 @@ describe("Bash 超时档位", () => {
     expect(HOISTED.bashCalls, "bash_exec 未被调用").toHaveLength(1)
     expect(HOISTED.bashCalls[0]!.timeoutMs, "生效超时没有以毫秒下传").toBe(300_000)
     expect(HOISTED.bashCalls[0]!.sessionId, "会话归属没有随 bash_exec 下传").toBe("session-downlink")
+    expect(HOISTED.bashCalls[0]!.permitRequestId).toBe(permit.requestId)
+    expect(HOISTED.bashCalls[0]!.borrowerId).toBe(permit.borrowerId)
 
     // 模型下调的值同样按秒 → 毫秒换算下传。
     const lowered = bash.prepareArguments!({ command: "sleep 1", timeout: 45 })
@@ -133,13 +136,18 @@ describe("Bash 超时档位", () => {
     await env.exec("sleep 1", { cwd: root }, BACKGROUND_CONTEXT)
     expect(HOISTED.bashCalls[2]!.timeoutMs).toBe(null)
     // 无会话归属的实例：sessionId 为 null（完成通知没有展示位，宿主侧如实跳过）。
-    const anonymous = new NativeExecutionEnv(root)
+    const anonymous = new NativeExecutionEnv(root, undefined, permit)
     await anonymous.exec("sleep 1", { cwd: root }, BACKGROUND_CONTEXT)
     expect(HOISTED.bashCalls[3]!.sessionId).toBe(null)
+
+    const unpermitted = await new NativeExecutionEnv(root).exec("sleep 1", { cwd: root }, BACKGROUND_CONTEXT)
+    expect(unpermitted.ok).toBe(false)
+    if (!unpermitted.ok) expect(unpermitted.error.message).toBe("Bash 缺少执行许可")
+    expect(HOISTED.bashCalls).toHaveLength(4)
   })
 
   it("超时转后台回执：按 timeout 如实结算，模型文本带背景说明与输出尾部 [tool-bash-timeout-backgrounded]", async () => {
-    const env = new NativeExecutionEnv(root, "session-bg")
+    const env = new NativeExecutionEnv(root, "session-bg", permit)
     HOISTED.bashCalls.length = 0
     HOISTED.nextResult = {
       output: "step 1 ok\nstep 2 ok", exitCode: -1, totalBytes: 18, totalLines: 2, outputBytes: 18,

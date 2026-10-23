@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const mocks = vi.hoisted(() => ({
   queryMemory: vi.fn(),
   resolveCurrentTrustedMemorySource: vi.fn(),
+  applyMemoryChange: vi.fn(), memoryDetail: vi.fn(), memoryStatus: vi.fn(),
 }))
 
 vi.mock("@/services/agent/memory/ipc", () => ({ queryMemory: mocks.queryMemory }))
 vi.mock("@/services/agent/memory/sources", () => ({ resolveCurrentTrustedMemorySource: mocks.resolveCurrentTrustedMemorySource }))
-vi.mock("@/services/agent/memory", () => ({
-  applyMemoryChange: vi.fn(), memoryDetail: vi.fn(), memoryStatus: vi.fn(),
+vi.mock("@/services/agent/memory", async () => ({
+  applyMemoryChange: mocks.applyMemoryChange, memoryDetail: mocks.memoryDetail, memoryStatus: mocks.memoryStatus,
+  parseMemoryItemRef: (await import("@/services/agent/memory/ref")).parseMemoryItemRef,
   resolveCurrentTrustedMemorySource: mocks.resolveCurrentTrustedMemorySource,
 }))
 
@@ -45,6 +47,27 @@ describe("模型记忆查询的可见范围", () => {
     ])
     expect(rows.map(row => row.id)).toEqual(["user:global", "session:session-a", "card:current-card"])
     expect(rows.some(row => row.id.includes("other-card"))).toBe(false)
+  })
+
+  it("仅拒绝提醒不能借取消或纠正状态关闭事项 [memory-reminder-refusal-not-cancellation]", async () => {
+    registerMemoryTools()
+    mocks.memoryStatus.mockResolvedValue({ revision: 1 })
+    mocks.memoryDetail.mockResolvedValue({ id: "matter-a", version: 1, status: "active", draft: {
+      kind: "working", scope: "session", scopeId: "session-a", content: "明天去体检", summary: "体检", workingState: "open", sourceIds: [],
+    } })
+    mocks.applyMemoryChange.mockReset().mockResolvedValue(2)
+    mocks.resolveCurrentTrustedMemorySource.mockResolvedValue({ sourceId: "source-a", cardId: "current-card", evidence: "不用提醒，我自己记得" })
+    const handler = getToolHandler(getToolByName("memory_change")!)!
+    for (const params of [{ action: "cancel" }, { action: "correct", workingState: "cancelled" }]) {
+      const result = await handler({ ...params, itemId: "matter-a@1" }, { sessionId: "session-a", trustedUserEventId: "event-a" })
+      expect(result.success).toBe(false)
+      expect(result.error).toContain("提醒")
+    }
+    expect(mocks.applyMemoryChange).not.toHaveBeenCalled()
+    mocks.resolveCurrentTrustedMemorySource.mockResolvedValue({ sourceId: "source-a", cardId: "current-card", evidence: "体检不去了，取消这件事" })
+    const cancelled = await handler({ action: "cancel", itemId: "matter-a@1" }, { sessionId: "session-a", trustedUserEventId: "event-a" })
+    expect(cancelled.success).toBe(true)
+    expect(mocks.applyMemoryChange).toHaveBeenCalledWith(expect.objectContaining({ action: "cancel", draft: expect.objectContaining({ workingState: "cancelled" }) }))
   })
 
   it("没有可信输入Card时不发起任意Card查询", async () => {

@@ -93,6 +93,6 @@ export interface ScheduleQueryResponse {
   recentResults?: SchedulerRunRecord[]
 }
 export interface ScheduleChangeRequest extends Omit<ProactiveChangeRequest, "action" | "controlPatch"> {
-  action: "create" | "update" | "reschedule" | "snooze" | "complete" | "cancel"
+  action: "create" | "update" | "reschedule" | "snooze" | "complete" | "cancel" | "decline"
 }
 export type ScheduleChangeResponse = ProactiveChangeResponse

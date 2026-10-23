@@ -30,7 +30,8 @@ const SERVER = "probe"
 const TOOL_NAME = `mcp_${SERVER}_echo_probe`
 const CALL_ID = "mcp-real-ipc-call"
 const ENABLE_CALL_ID = "enable-mcp-real-ipc"
-const REPLY = "真 IPC 探针已经返回。"
+// casual 拟人化会收掉气泡末尾句读：出口正文以提交后的实际文本为准。
+const REPLY = "真 IPC 探针已经返回"
 const PAYLOAD_HEAD = "MCP-REAL-IPC-PROBE:"
 const PAYLOAD_TAIL = ":PROBE-END"
 const PROBE_CHUNK = "探针数据"

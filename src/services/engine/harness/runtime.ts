@@ -21,7 +21,7 @@ import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { buildPrompt, composeDynamicPrompt, currentTimeNote, currentTimeDate, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
-import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
+import { executePlan, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanResult } from "@/services/engine/planner"
 import { recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
@@ -185,7 +185,7 @@ export function pausedInputsText(messages: AgentMessage[]): string {
 interface PiAgentTurnBase {
   sessionId: string
   /**
-   * 按文本工作的环节（复杂度判定、记忆召回）用它。技能准入传用户敲下的原文：
+   * 按文本工作的环节（显式计划、记忆召回）用它。技能准入传用户敲下的原文：
    * 正文由 Harness 从技能文件构造，宿主这里没有别的东西可以代表「这次输入是什么」。
    */
   userText: string
@@ -2061,60 +2061,40 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     await input.onInputAdmitted?.()
     let planStepContext = ""
     let planUserText = userText
-    if (planConfig.enabled && !toolsDisabled) {
-      // 计划判定与生成都发生在 Harness 驱动之前（此时还没有 turn_start 的「思考中」），
-      // 这段等待必须有提示，否则界面在复杂度判定 + 规划调用期间一片空白。
+    if (planConfig.enabled && !toolsDisabled && /^--plan(?:\s|$)/.test(userText)) {
       emitStageHint(turnSessionId, "planning", generation)
-      const forcePlan = userText.startsWith("--plan")
-      if (forcePlan) planUserText = userText.replace(/^--plan\s*/, "")
-      // 复杂度判定看**原文本**：`--plan` 的强制触发是 `evaluateComplexity` 的 startsWith 分支，
-      // 前缀只从交给规划 prompt 的正文（planUserText）里剥掉。剥早了 force 分支不命中，
-      // 计划在 `complexityEval=keyword` 下就永远不会被强制触发（2026-09-24 W5 整轮实测）。
-      const complexity = await evaluateComplexity(userText, planConfig.keywords, {
-        sessionId: turnSessionId, requestId, derivedFrom: [requestId], traceContext,
+      planUserText = userText.replace(/^--plan\s*/, "")
+      const planAbort = new AbortController()
+      const outcome = await runPlanPhase({
+        sessionId: turnSessionId,
+        planId: `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`,
+        rootTurnId: input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`,
+        requestId,
+        ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
+          ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
+        traceContext,
+        confirmSignal: planAbort.signal,
+        parentSlot: slot,
+        planAbort,
+        runIsCurrent,
+        planInput: {
+          userText: planUserText,
+          cardId: card?.id ?? "neutral",
+          cardRole: card?.sections.roleSetting ?? "",
+        },
       })
-      assertCurrent()
-      if (complexity.score >= planConfig.complexityThreshold) {
-        // 中断通道先于确认建立：确认等待期与会话切换都要能把它断掉
-        const planAbort = new AbortController()
-        const outcome = await runPlanPhase({
+      if (outcome.kind !== "completed") {
+        // 未驱动主回合也必须结算准入操作，否则 lane 会永久占忙。
+        await slot.abort("user").catch(error => log.warn("计划未进主回合，结算已接受操作失败:", formatError(error)))
+        if (outcome.kind === "cancelled") publishRuntimeTrace(traceContext, "input_cancelled", () => ({ requestId, reason: outcome.reason }), { requestId })
+        const output = await finishWithoutTurn({
           sessionId: turnSessionId,
-          planId: `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`,
-          rootTurnId: input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`,
-          requestId,
-          ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
-            ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
-          traceContext,
-          confirmSignal: planAbort.signal,
-          parentSlot: slot,
-          planAbort,
-          runIsCurrent,
-          // 规划 prompt 用回合开始时的 Card 快照，与冻结的变量/配置同代
-          planInput: {
-            userText: planUserText,
-            cardId: card?.id ?? "neutral",
-            cardRole: card?.sections.roleSetting ?? "",
-          },
+          slot,
+          reply: outcome.kind === "declined" ? outcome.reply : "",
         })
-        // 三种归宿都在这里结算（PLAN-15）：completed 进主回合；cancelled / declined 经
-        // finishWithoutTurn 收尾 —— 取消不写兜底失败回复、不标 failure，也不再有绕过结算出口的第二条落盘路径。
-        if (outcome.kind !== "completed") {
-          // 计划不进主回合时，准入时接受的那条操作必须在这里结算：不驱动就 return 会留下
-          // 永不结算的 lane 操作，后续准入恒判忙、收尾的 waitForIdle 也会挂死。
-          await slot.abort("user").catch(error => log.warn("计划未进主回合，结算已接受操作失败:", formatError(error)))
-          if (outcome.kind === "cancelled") publishRuntimeTrace(traceContext, "input_cancelled", () => ({ requestId, reason: outcome.reason }), { requestId })
-          const output = await finishWithoutTurn({
-            sessionId: turnSessionId,
-            slot,
-            reply: outcome.kind === "declined" ? outcome.reply : "",
-          })
-          // declined 是用户看得到的正常收尾（有助手正文），不当成停止 ——
-          // 标 abortedByStop 会让宿主用「已停止本次回复」顶替这条正文，界面与持久正文就分裂了。
-          return outcome.kind === "declined" ? { ...output, abortedByStop: false } : output
-        }
-        // 空计划（模型没给出可执行步骤）与原路径一致：不进 ephemeral 上下文，直接走正常回合
-        if (outcome.result.stepResults.length > 0) planStepContext = formatStepResults(outcome.result)
+        return outcome.kind === "declined" ? { ...output, abortedByStop: false } : output
       }
+      if (outcome.result.stepResults.length > 0) planStepContext = formatStepResults(outcome.result)
     }
 
     // 记忆召回延迟到 transform_context：只有那里知道投影后的正文、理解块与工具结果实际占用，
@@ -2716,6 +2696,7 @@ async function runPlanPhase(args: {
   // 放在取消归宿之后是刻意的 —— 取消本身必须把计划如实落 `interrupted`，守卫拦在这里
   // 会让记录永远停在 `running`，回合还会被 runner 当成 LLM 失败。
   assertCurrent()
+  if (planCheckpointStore.snapshot(planId)?.steps.some(step => step.state !== "done")) result.overallSuccess = false
   await planSettlement.finishPlan({
     sessionId,
     planId,
@@ -2728,7 +2709,7 @@ async function runPlanPhase(args: {
 }
 
 /**
- * 取消归宿的自动入口适配：机制在 `plan/settlement.ts`（与提议入口共享同一实现），
+ * 取消归宿的显式命令入口适配：机制在 `plan/settlement.ts`（与提议入口共享同一实现），
  * 这里只把归宿补成 `PlanPhaseOutcome` 的取消分支 —— `context` 是审计与恢复入口的说明，
  * 不是给用户看的文案（用户可见文案由共享收尾按 reason 统一发）。
  */
@@ -2821,11 +2802,6 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
     pushSystemMessage("没有找到这个待恢复的计划", sessionId)
     return undefined
   }
-  // 未知副作用步骤必须先由用户处置（标记为已完成 / 重跑此步）：既不许自动重放，也不许静默跳过
-  if (recovered.steps.some(step => step.state === "unknown_side_effect")) {
-    pushSystemMessage("有未处置的未知副作用步骤，请先标记或重跑", sessionId)
-    return undefined
-  }
   const requestId = `plan-resume-${crypto.randomUUID()}`
   const traceContext = createRuntimeTraceContext(sessionId, requestId)
   const generation = harnessSlots.begin(sessionId, { requestId })
@@ -2838,9 +2814,14 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
   harnessSlots.bindRun(sessionId, generation, { requestId })
   const planAbort = new AbortController()
   // 恢复没有主回合，但同样是一次真实的运行：界面按运行态通知显示停止入口，
-  // 停止经 `bindRunningPlan` 的中断通道（runPlanPhase 内登记）真正停在步骤边界。
+  // 停止经 `bindRunningPlan` 的中断通道（runPlanPhase 内登记）取消当前步骤子运行，剩余步骤不再开工。
   void emitUiEvent(HOST_EVENT_RUN_STATE, { sessionId, running: true })
   try {
+    const ready = await planCheckpointStore.prepareResume(planId)
+    if (ready.steps.some(step => step.state === "unknown_side_effect")) {
+      pushSystemMessage("有未处置的未知副作用步骤，请先标记或重跑", sessionId)
+      return undefined
+    }
     // 步骤子代理可能用内置工具与 MCP：按主回合同款准备能力，收尾再释放
     const { prepareConversationCapabilities } = await import("@/services/init")
     await prepareConversationCapabilities(requestId)
@@ -2856,8 +2837,9 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
       runIsCurrent: () => harnessSlots.isCurrent(sessionId, generation),
     })
     if (outcome.kind === "completed") {
-      pushSystemMessage("计划剩余步骤已执行完成", sessionId)
-      const output = await finishWithoutTurn({ sessionId, slot, reply: getFallbackReply("planCompleted") })
+      const success = outcome.result.overallSuccess
+      pushSystemMessage(success ? "计划剩余步骤已执行完成" : "计划执行结束，仍有失败或未完成的步骤", sessionId)
+      const output = await finishWithoutTurn({ sessionId, slot, reply: success ? getFallbackReply("planCompleted") : "" })
       return { ...output, abortedByStop: false }
     }
     // `declined`（逐步门/失败询问上中止）带自己的可见回复；`cancelled` 不写正文

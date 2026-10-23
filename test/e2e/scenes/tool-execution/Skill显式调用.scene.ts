@@ -31,8 +31,9 @@ const BODY = `${BODY_MARKER}\n${"这一段是技能正文，模型必须逐字�
 const EXTRA = "先执行第一步，再汇报结论。"
 /** 未知名那轮专用：与 EXTRA 不同串，才能用「正文里不该出现它」当判据。 */
 const EXTRA_MISSING = "第二轮的附加说明不该成为会话正文。"
-const SKILL_REPLY = "技能正文已按指示执行完毕。"
-const LAST_REPLY = "结论已核对。"
+// casual 拟人化会收掉气泡末尾句读：出口正文以提交后的实际文本为准。
+const SKILL_REPLY = "技能正文已按指示执行完毕"
+const LAST_REPLY = "结论已核对"
 
 /** 技能原文：只声明 Pi 认的字段（name / description），可另加我们自有的 frontmatter 行。 */
 function source(name: string, description: string, body: string, extraFrontmatter = ""): string {

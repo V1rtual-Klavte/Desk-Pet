@@ -185,7 +185,10 @@ const proposePlanTool: ToolDef = defineTool({
     if (outcome.kind === "completed") {
       // 既有格式原样返回；只是安全模式跳过确认面板时，先如实说明「没有弹过面板」。
       const head = outcome.confirmation === "auto_policy" ? "[当前安全模式为 just_do_it：计划未经面板确认直接执行]\n" : ""
-      return { success: true, content: head + formatStepResults(outcome.result) }
+      const content = head + formatStepResults(outcome.result)
+      return outcome.result.overallSuccess
+        ? { success: true, content }
+        : { success: false, content, error: content, errorCode: "failed" }
     }
     if (outcome.kind === "declined") {
       // 用户取消确认：一步都没跑，如实说明。

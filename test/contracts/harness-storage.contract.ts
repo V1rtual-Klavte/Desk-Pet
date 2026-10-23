@@ -1,3 +1,6 @@
+// 2026-10-23 执行许可批次：sourceFiles 中 native-execution-env.ts 的 bash 请求新增
+// borrowerId/permitRequestId 并拒绝无许可执行；会话 JSONL、折叠、事务与保留语义未改，
+// hs-01..hs-11 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-16 hs-11 夹具复核：Windows 保留默认产品文件系统；非 Windows 仅注入外来 cwd 的 Windows 解析，避免本机将盘符/UNC 误作相对路径。两端均真实 JSONL create/list/reopen，前缀规范化仍只由产品完成；源码与 hs-01..hs-10 未改。
 // 2026-10-15 Windows 路径验收 analyze -> generate：新增 hs-11 / harness-session-windows-cwd：盘符及 UNC 命名空间前缀在会话 cwd 单点规范化，create/list/reopen 实际 JSONL 往返；hs-01..hs-10 的文件格式、事务、折叠与保留语义未改。
 // 2026-10-09 最终静态复核：会话文件锁新增检索与删除消费者，JSONL帧和折叠语义保留；验收已执行（L2/L3 与 Rust 单测全绿），sourceHash 按当前源码在验收轮刷新。
@@ -75,7 +78,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/engine/harness/harness-slot.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加内存字段，JSONL 条目 schema 未变；定向复核后刷新。
-  sourceHash: "323bf1f1ca6b48ba67608e91cd8e4de61460674ce07face08d7a5c77e156eedb",
+  sourceHash: "a2c5c7b715643b0a7a25faa931322970b5f7dc0a1af8f7730b3a3b0035daa63b",
   coverage: [
     {
       id: "hs-11",

@@ -1,3 +1,8 @@
+// 2026-10-23 计划入口与恢复批次：runtime.ts 的显式入口只认完整 `--plan` 前缀并单独受
+// `ai.plan.enabled` 把守，普通请求由主模型按需调用 `propose_plan`（ar-12 描述同步）；
+// checkpoint-store 的恢复判定改为按步骤累计的副作用证据分类，同进程恢复只重分类
+// interrupted（恢复语义的完整覆盖归 memory mm-15，ar-16/17 的分工未变）。回合准入、取消域、
+// usage 与提交顺序未改，其余覆盖点未修订；sourceHash 按当前源码复算。
 // 2026-10-18 统一调度与子运行：手工 analyze/generate 声明修订；测试已写未运行，sourceHash 留统一验收复算。
 // 2026-10-18 B2C 记忆邻接补全：共享 trace.ts 的 memory_recall_end 白名单新增可选 neighborEntries；
 // trace 校验、保留、性能与回合调度行为面不变，仅按当前源码刷新 sourceHash。
@@ -266,7 +271,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "8e88342283b1ea5c2bb220068fd52f72ae570f744a9962625a84ba87df1567e5",
+  sourceHash: "0d50491fb1e66524d3062a65cc0522b48143f15bf07385985cfbe871574a5dab",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -408,7 +413,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-12",
       feature: "空闲输入的持久身份与来源标记",
-      description: "空闲路径的用户输入同样带 `deskpetEventId` 身份并进入投递证据链；输入在计划与预检之前提交为会话条目（用户条目 `seq` 早于其 `deskpet.plan_checkpoint`），预检失败时输入条目保留、已接受操作按取消结算。规划回合经生产入口的 `--plan` 强制触发进入 —— 该路径同时验证前缀剥离不得先于复杂度判定（2026-09-24 W5 修正 `runPiAgentTurn` 的剥离时机）；计划段由 `planConfig.enabled` 单独把守（模式已删除、该开关出厂为 true），Live 基线把它钉在 false，要走计划段的场景在 setup 里显式打开",
+      description: "空闲路径的用户输入同样带 `deskpetEventId` 身份并进入投递证据链；输入在计划与预检之前提交为会话条目（用户条目 `seq` 早于其 `deskpet.plan_checkpoint`），预检失败时输入条目保留、已接受操作按取消结算。规划回合经生产入口的完整 `--plan` 前缀触发进入 —— 该路径同时验证前缀剥离不得先于计划入口判定；计划段由 `planConfig.enabled` 单独把守（该开关出厂为 true，普通请求不再触发计划），Live 基线把它钉在 false，要走计划段的场景在 setup 里显式打开",
       why: "P6 的 memory_source 追溯要求用户输入条目自带身份与 eligibleForMemory/taint 标记；裸字符串输入让证据链对空闲发送永远返回 undefined",
       layer: "e2e",
       depth: "deep",

@@ -488,6 +488,10 @@ impl NativeDispatcher {
             "bash_exec" => {
                 let result = tool_exec::run_bash(
                     (*self.bash).clone(),
+                    Some(tool_permit::claim_native_permit(
+                        Arc::clone(&self.permits), &self.paths, self.caller,
+                        arg_str(args, "borrowerId")?, arg_str(args, "permitRequestId")?,
+                    )?),
                     arg_str(args, "command")?,
                     arg_opt_str(args, "cwd")?,
                     arg_opt_str(args, "executionId")?,

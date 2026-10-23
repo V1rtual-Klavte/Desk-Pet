@@ -3384,6 +3384,30 @@ fn schema_repair_does_not_mistake_fts_words_in_an_ordinary_table_for_a_virtual_c
 }
 
 #[test]
+fn reminder_suppression_migrates_from_v5_but_missing_current_ledger_fails_closed() {
+    let fixture = RepairFixture::new();
+    {
+        let conn = fixture.store.lock().unwrap();
+        conn.execute_batch("DROP TABLE proactive_reminder_suppressions; UPDATE memory_meta SET value='5' WHERE key='schema_version';").unwrap();
+    }
+    fixture.ensure().expect("v5 had no suppression ledger");
+    {
+        let conn = fixture.store.lock().unwrap();
+        let version: i64 = conn.query_row("SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 6);
+        conn.execute("INSERT INTO proactive_reminder_suppressions VALUES ('item-a','decline-a',1)", []).unwrap();
+    }
+    fixture.ensure().unwrap();
+    {
+        let conn = fixture.store.lock().unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM proactive_reminder_suppressions", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        conn.execute("DROP TABLE proactive_reminder_suppressions", []).unwrap();
+    }
+    let error = fixture.ensure().expect_err("lost refusal state cannot be reconstructed");
+    assert!(matches!(error, AppError::Memory(message) if message.contains("proactive_reminder_suppressions")));
+}
+
+#[test]
 fn schema_repair_does_not_silently_resume_when_the_only_proactive_control_row_was_lost() {
     let fixture = RepairFixture::new();
     {

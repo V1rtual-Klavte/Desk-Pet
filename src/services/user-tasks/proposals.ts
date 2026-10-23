@@ -15,6 +15,27 @@ export function taskContentFingerprint(definition: UserTaskDefinition): string {
 export function isScheduleAcceptance(evidence: string): boolean {
   return /^(?:好|好的|可以|行|没问题|同意|照这个|按这个|就这样)(?:\s*[，,、]?\s*(?:就这样|按这个(?:安排|时间)?|按刚才的|照这个(?:安排)?|安排吧))?[。！!\s]*$/.test(evidence.trim())
 }
+export function isReminderRefusal(evidence: string): boolean {
+  return /(?:不用|不必|不要|别|停止|取消).{0,8}(?:提醒|叫我)|不提醒|^(?:不用了?|不必了?|不要了?|不了)[。！!\s]*$/.test(evidence.trim())
+}
+export function visibleScheduleProposals(proposals: readonly ScheduleProposal[], owner: ProactiveOwner, now: number): ScheduleProposal[] {
+  return proposals.filter(row => row.assistantEntryId && row.validUntil > now && row.owner.sessionId === owner.sessionId
+    && row.owner.cardId === owner.cardId && row.owner.cardHash === owner.cardHash)
+}
+export function declineScheduleProposal(proposals: readonly ScheduleProposal[], proposalId: string | undefined,
+  owner: ProactiveOwner, evidence: string, now: number): ScheduleProposal {
+  const visible = visibleScheduleProposals(proposals, owner, now)
+  const proposal = visible.find(row => row.proposalId === proposalId)
+  if (!proposal || !isReminderRefusal(evidence)) throw new Error("拒绝提醒须绑定本轮明确指示和有效提议")
+  if (visible.length > 1) {
+    const named = visible.filter(row => {
+      const purpose = row.definition.text.replace(/^(?:请|帮我|提醒我|提醒|记得|按时|安排)+/g, "").trim()
+      return purpose.length >= 2 && evidence.includes(purpose)
+    })
+    if (named.length !== 1 || named[0]!.proposalId !== proposalId) throw new Error("存在多个有效安排提议，请先让用户明确拒绝哪一项")
+  }
+  return proposal
+}
 export function acceptScheduleProposal(proposals: readonly ScheduleProposal[], proposalId: string | undefined,
   owner: ProactiveOwner, definition: UserTaskDefinition, evidence: string, now: number, target?: ScheduleProposal["target"]): ScheduleProposal {
   const proposal = proposals.find(row => row.proposalId === proposalId)
@@ -22,6 +43,7 @@ export function acceptScheduleProposal(proposals: readonly ScheduleProposal[], p
     || proposal.owner.sessionId !== owner.sessionId || proposal.owner.cardId !== owner.cardId || proposal.owner.cardHash !== owner.cardHash)
     throw new Error("本轮没有匹配且仍有效的明确安排提议")
   if (proposal.validUntil <= now) throw new Error("安排提议已过期")
+  if (visibleScheduleProposals(proposals, owner, now).length !== 1) throw new Error("存在多个有效安排提议，请先让用户明确目标，不能凭 proposalId 猜选")
   if (canonicalTaskContent(proposal.target) !== canonicalTaskContent(target)) throw new Error("提议目标或版本不一致")
   const fingerprint = taskContentFingerprint(definition)
   if (proposal.contentFingerprint !== fingerprint || proposal.contentFingerprint !== taskContentFingerprint(proposal.definition)) throw new Error("接受内容与提议不一致，关键参数变化须重新确认")

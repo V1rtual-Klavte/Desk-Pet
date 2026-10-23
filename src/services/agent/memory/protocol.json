@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Desk-Pet memory IPC protocol",
-  "version": 5,
+  "version": 6,
   "constants": {
     "conversation": {"batchChunks": 512, "maxSearchResults": 50, "maxScanResults": 500},
     "query": {"englishStopWords": ["a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "can", "could", "did", "do", "does", "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his", "how", "i", "if", "in", "is", "it", "its", "me", "my", "of", "on", "or", "our", "ours", "she", "should", "so", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those", "to", "us", "was", "we", "were", "what", "when", "where", "which", "who", "why", "will", "with", "would", "you", "your", "yours", "answer", "using", "according", "based", "previously", "remember", "please", "about", "likely"]}

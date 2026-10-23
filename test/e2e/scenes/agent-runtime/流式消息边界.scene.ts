@@ -18,6 +18,7 @@ import type { StreamFn } from "@earendil-works/pi-agent-core"
 import { fauxProvider } from "@earendil-works/pi-ai"
 import type { AssistantMessageEventStream, Context, FauxResponseStep, Model, SimpleStreamOptions } from "@earendil-works/pi-ai"
 import { publishedUiEvents } from "../../../host/ui-event-tap"
+import { setOverride } from "@/services/config"
 import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { formatError } from "@/services/error"
@@ -30,8 +31,11 @@ const STREAM_EVENT = "deskpet-assistant-stream"
 const USER_TEXT = "跑一次带工具轮的回合。"
 /** 消息 1 的正文以协议块开头：整条消息没有任何可见增量。 */
 const HIDDEN_TEXT = "第一段不应该被展示"
-/** 消息 2 的正文：修复前过滤器停在 stopped，这段一个字都进不了流式通道。 */
-const VISIBLE_TEXT = "第二段正文必须可见。"
+/**
+ * 消息 2 的正文：修复前过滤器停在 stopped，这段一个字都进不了流式通道。
+ * casual 拟人化会收掉气泡末尾句读：提交后的出口正文不含句号，流式增量仍以同一前缀断言。
+ */
+const VISIBLE_TEXT = "第二段正文必须可见"
 const SETTLE_REPLY = "核对上一回合的流式证据。"
 /**
  * 生成节奏（token/秒）：约 0.3–1 秒一块增量。够慢让消费侧逐块处理（上游按块偏移去重，
@@ -95,6 +99,8 @@ export const 流式消息边界: SceneDef = {
     tags: ["production-entry", "stream", "tool"],
   },
   setup: async () => {
+    // 本场景考逐 token 的流式通道；拟人模式会整体抑制 casual 流，抑制本身另有覆盖。
+    setOverride("ai.humanizer.enabled", false)
     streamDeltas = []
     deltasText = ""
     outputReply = ""

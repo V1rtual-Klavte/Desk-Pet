@@ -1,12 +1,12 @@
 import type { Context, FauxResponseStep, Model } from "@earendil-works/pi-ai"
 import { createAssistantMessageEventStream, fauxText } from "@earendil-works/pi-ai"
 import { initChat } from "@/services/agent/runner"
-import { evaluateComplexity, generatePlan } from "@/services/engine/planner"
+import { generatePlan } from "@/services/engine/planner"
 import { getPiRuntimeProviderOverride, installPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { debug, usageGrandTotal } from "@/services/debug"
 import type { PurposeUsage } from "@/services/debug"
 import { listAll } from "@/services/tool"
-import { planConfig, setOverride } from "@/services/config"
+import { formatError } from "@/services/error"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
 import type { SceneDef } from "../../../e2e/types"
 
@@ -137,13 +137,10 @@ export const 用量分列: SceneDef = {
         // 失败的一次性调用同样产生调用次数；Provider 未回报时不能把全 0 当准确用量
         installUnreportedErrorProvider()
         const beforeError = { ...debug.usage.planner }
-        // 复杂度评估在 LLM 失败时自己回退（generatePlan 不吞 Provider 错误，不适合做失败路径）。
-        // 默认 complexityEval=keyword 时未命中关键词不会发请求，这里显式切成 llm 才是这条一次性调用路径。
-        const previousEval = planConfig.complexityEval
-        setOverride("ai.plan.complexityEval", "llm")
-        const fallback = await evaluateComplexity("帮我分析一下", ["重构"])
-          .finally(() => setOverride("ai.plan.complexityEval", previousEval))
-        if (fallback.score !== 1 || fallback.triggeredBy !== "llm") throw new Error("一次性调用失败时没有走回退路径")
+        const failure = await generatePlan(PLAN_USER_TEXT, planInput()).then(
+          () => "", error => formatError(error),
+        )
+        if (!failure.includes("boom")) throw new Error(`一次性调用没有如实报告 Provider 失败: ${failure}`)
         const afterError = debug.usage.planner
         if (afterError.calls !== beforeError.calls + 1) throw new Error("失败的一次性调用没有计数")
         if (afterError.reported !== beforeError.reported) throw new Error("Provider 未回报的失败调用被当成准确 usage")
