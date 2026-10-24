@@ -72,6 +72,9 @@ const dialogCalls: Array<{ method: string; args: Record<string, unknown> }> = []
 function cardsDir(): string { return join(root, "personality", "cards") }
 function cardFile(name: string): string { return join(cardsDir(), name) }
 
+/** readdir 的枚举顺序随文件系统而异，集合断言统一按文件名排序。 */
+function cardFileNames(): string[] { return readdirSync(cardsDir()).sort() }
+
 interface CardList { cards: Array<{ id: string; name: string }> }
 
 /** 断言当前卡列表（回执里的 list）只投影 id/name 两字段。 */
@@ -145,7 +148,7 @@ describe("card_manage（管理往返）", () => {
     expect(deleted.message).toBe("已删除「改名伙伴」")
     expect(listIds(deleted.list)).toEqual(["doomed", "existing"])
     expect(existsSync(cardFile("新伙伴.md"))).toBe(false)
-    expect(readdirSync(cardsDir())).toEqual(["_template.md", "doomed.md", "existing.md"])
+    expect(cardFileNames()).toEqual(["_template.md", "doomed.md", "existing.md"])
   })
 
   it("导出 → 导入：按对话框返回的路径读写，取消不是失败 [native-ui-card-manage-transfer]", async () => {
@@ -182,7 +185,7 @@ describe("card_manage（管理往返）", () => {
     expect(imported.list.cards.find(row => row.id === "imported")?.name).toBe("导入卡")
 
     // 取消（对话框返回 null）是正常结果：不写文件、列表不变。
-    const filesBefore = readdirSync(cardsDir())
+    const filesBefore = cardFileNames()
     dialogOpen = null
     dialogSave = null
     const cancelledImport = (await dispatchHostRequest("card_manage", { op: "import" })) as { message: string }
@@ -191,7 +194,7 @@ describe("card_manage（管理往返）", () => {
       message: string
     }
     expect(cancelledExport.message).toBe("已取消导出")
-    expect(readdirSync(cardsDir())).toEqual(filesBefore)
+    expect(cardFileNames()).toEqual(filesBefore)
   })
 
   it("未知 op / 缺字段 / 未知卡导出如实拒绝，且不产生落盘或对话框副作用 [native-ui-card-manage-errors]", async () => {
@@ -208,7 +211,7 @@ describe("card_manage（管理往返）", () => {
       dispatchHostRequest("card_manage", { op: "export", cardId: "ghost" }),
     ).rejects.toMatchObject({ code: "PATH_NOT_FOUND" })
     expect(dialogCalls).toHaveLength(0)
-    expect(readdirSync(cardsDir())).toEqual(["_template.md", "doomed.md", "existing.md"])
+    expect(cardFileNames()).toEqual(["_template.md", "doomed.md", "existing.md"])
 
     // 导入内容不合准入条件：整份拒绝，磁盘与列表逐项不变。
     const invalidSource = join(root, "imports", "invalid.md")
@@ -216,7 +219,7 @@ describe("card_manage（管理往返）", () => {
     writeFileSync(invalidSource, "# 没有 frontmatter")
     dialogOpen = invalidSource
     await expect(dispatchHostRequest("card_manage", { op: "import" })).rejects.toThrow("有效的 Card")
-    expect(readdirSync(cardsDir())).toEqual(["_template.md", "doomed.md", "existing.md"])
+    expect(cardFileNames()).toEqual(["_template.md", "doomed.md", "existing.md"])
   })
 })
 
