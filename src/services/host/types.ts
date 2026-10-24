@@ -1908,6 +1908,8 @@ export type HostEventMap = {
   [HOST_EVENT_PLAN_START]: {
     sessionId: string
     planId: string
+    /** 计划目标摘要（面板在步骤表之前显示；缺省不会出现在生产载荷里）。 */
+    summary: string
     steps: PlanStep[]
     complexity: number
     forceStepByStep: boolean

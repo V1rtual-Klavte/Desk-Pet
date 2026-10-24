@@ -40,7 +40,10 @@ export interface PlanStepResult {
   stepId: string
   /** 步骤标题（与 `PlanStepRecord.title` 同源），前序交接直接使用。 */
   title: string
-  /** 业务验收档位：当前步骤子运行没有输出契约，成功只代表返回了非空文本。 */
+  /**
+   * 验收档位：verified 只表示证据闭环（成功且没有未确认效果或证据缺口），
+   * 不证明业务正确 —— 计划步骤没有业务输出契约。
+   */
   acceptance: "verified" | "unverified"
   index: number
   success: boolean
@@ -51,7 +54,7 @@ export interface PlanStepResult {
   summaryHash: string
   /**
    * 读取时补上的会话条目 id（写入形态不包含它）。
-   * 前序交接的「原文见 plan_step_result 条目 <id>」用它，不另读一遍条目。
+   * `formatStepResults` 用它标注主回合可回读地址，不另读一遍条目。
    */
   resultEntryId?: string
 }

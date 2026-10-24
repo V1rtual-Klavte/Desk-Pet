@@ -1,3 +1,7 @@
+// 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 host/types.ts 的 plan-start 载荷
+// 新增计划 summary（原生面板渲染目标与步骤权限面；Rust 侧渲染单测在 ui/chat model.rs，
+// 该行为归 planner pl-09/pl-12）；原生 UI 命令、推送、决策与设置面未改，nui-* 未修订
+// 覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-24 记忆时间语义批次：management-intents.ts 的 memory_item_detail 分开显示记录时间、
 // 有效期间、发生时间、提醒时间、过期时间与事项状态，缺失值用「未记录/未限定/至今/未设置/不适用」
 // 如实标注；新增 nui-35（1 个 L2 caseId）。sourceHash 按当前源码复算。
@@ -220,7 +224,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "83528c09947ce204a185d044f1778a6707c8b61e517f401dcccd3cdbf487f9af",
+  sourceHash: "c45389831c0db83d60b596eb6413c250d880e2245fb7551998ef15c02338be8d",
   coverage: [
     {
       id: "nui-34",

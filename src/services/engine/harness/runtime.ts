@@ -22,7 +22,7 @@ import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { buildPrompt, composeDynamicPrompt, currentTimeNote, currentTimeDate, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
-import { executePlan, formatPlanDeliverySummary, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
+import { executePlan, formatPlanDeliverySummary, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planStepAcceptance, planToRecords, recordsToPlan } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanPriorResult, PlanResult } from "@/services/engine/planner"
 import { recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
@@ -371,7 +371,7 @@ export interface PiSubAgentInput {
 export interface PiSubAgentEvidence {
   tools: Array<{ toolName: string; toolCallId?: string; status: string; reason?: string; sourceUrls?: string[]; sources?: Array<{ url: string; publishedAt?: string }>; completedAt?: number }>
   incomplete: string[]
-  /** A failed/cancelled call may have changed an external system before its receipt. */
+  /** A failed/cancelled non-read call may have left effects before its receipt (local mutation / process / external). */
   unconfirmedEffects: boolean
 }
 
@@ -2037,10 +2037,15 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     assertCurrent()
     // 工具运行面与投递正文在准入前装配一次：它们既是准入的入参，也是本回合 spec 的组成部分，
     // 不因「准入提前」写第二份定义。
+    // 可信用户原文同时是显式计划的目标：`--plan` 只是宿主命令前缀，不进入目标文本。
+    // 主动消息与技能准入没有可信用户事件，也不注入原文（模型参数不能伪造用户事实）。
+    const trustedUserText = planConfig.enabled && /^--plan(?:\s|$)/.test(userText)
+      ? userText.replace(/^--plan\s*/, "")
+      : userText
     const toolRun: HarnessToolRun = {
       sessionId: turnSessionId, runGeneration: generation,
       ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
-        ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
+        ? { trustedUserEventId: inputEventId(input.ingress.requestId), trustedUserText } : {}),
       ...(input.turnContext ? { proactiveTurnContext: input.turnContext } : {}),
       isCurrent: () => runIsCurrent(),
       history: toolCallHistory,
@@ -2098,10 +2103,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     let planStepContext = ""
     // 最终回复失败时的中性交付兜底；与 planStepContext 同作用域，只有计划确实执行过步骤才非空。
     let planDeliverySummary = ""
-    let planUserText = userText
+    let planUserText = trustedUserText
     if (planConfig.enabled && !toolsDisabled && /^--plan(?:\s|$)/.test(userText)) {
       emitStageHint(turnSessionId, "planning", generation)
-      planUserText = userText.replace(/^--plan\s*/, "")
       const planAbort = new AbortController()
       const outcome = await runPlanPhase({
         sessionId: turnSessionId,
@@ -2558,7 +2562,6 @@ async function runPlanPhase(args: {
         acceptance: item.acceptance,
         reply: item.reply,
         ...(item.error ? { error: item.error } : {}),
-        ...(item.resultEntryId ? { resultEntryId: item.resultEntryId } : {}),
       }))
       .filter(item => Number.isFinite(item.stepId))
     // 恢复即已确认：不再问一次「全部执行/逐步确认」，也不重新生成
@@ -2569,7 +2572,9 @@ async function runPlanPhase(args: {
     const generated = await generatePlan(args.planInput.userText, {
       cardId: args.planInput.cardId,
       cardRole: args.planInput.cardRole,
-      availableTools: listAll(),
+      // 权限面即步骤子代理的真实可达面：派生型工具（isolation=delegate）到不了子运行，
+      // 列进规划器的可用工具只会诱出必然失败的步骤。
+      availableTools: listAll().filter(tool => tool.policy.execution.isolation !== "delegate"),
       thinkingEffort: planConfig.thinkingEffort,
       maxSteps: planConfig.maxSteps,
       // 规划是一次性请求：快照按会话归属落盘（证据链可查「这次规划问了什么」）。
@@ -2587,13 +2592,14 @@ async function runPlanPhase(args: {
     planIntent = args.planInput.userText
     if (normalized.dropped > 0) {
       log.warn(`计划步骤被丢弃/截断 ${normalized.dropped} 步: ${generated.steps.length} → ${plan.steps.length}（${planId}）`)
-      // PLAN-13：截断必须可见，不能只留在日志里
-      pushSystemMessage(`计划被截断：仅执行前 ${plan.steps.length} 步（模型给了 ${generated.steps.length} 步）`, sessionId)
+      // PLAN-13：丢弃必须可见，不能只留在日志里。丢弃原因不止截断（依赖不可满足也会丢步骤），
+      // 文案不再声称「仅执行前 N 步」—— 那会把中间缺步的计划说成完整前缀。
+      pushSystemMessage(`计划有 ${normalized.dropped} 步被丢弃（依赖不可满足或超出上限），实际执行 ${plan.steps.length}/${generated.steps.length} 步`, sessionId)
     }
     if (plan.steps.length === 0) {
       // 模型没给出可执行步骤：不落记录、不确认，与原路径一致地直接走主回合
       log.warn("计划没有可执行步骤，跳过确认与执行:", planId)
-      return { kind: "completed", result: { stepResults: [], overallSuccess: true, totalSteps: 0, totalDurationMs: 0 } }
+      return { kind: "completed", result: { stepResults: [], skippedSteps: [], overallSuccess: true, totalSteps: 0, totalDurationMs: 0 } }
     }
     const { record, steps } = planToRecords(plan, {
       planId,
@@ -2694,7 +2700,7 @@ async function runPlanPhase(args: {
         planId,
         stepId: String(step.id),
         title: step.description,
-        acceptance: "unverified",
+        acceptance: planStepAcceptance(output),
         index: plan.steps.findIndex(item => item.id === step.id),
         success: output.success,
         durationMs: Date.now() - stepStartedAt,
@@ -2706,8 +2712,17 @@ async function runPlanPhase(args: {
       if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_step_end", () => ({
         planId, stepId: String(step.id), status: output.success ? "done" : "failed",
       }), { entryId })
-      // 返回回读地址：`executePlan` 把它写进本步结果，供后续步骤交接引用；写盘失败仍返回 undefined。
+      // 返回回读地址：`executePlan` 把它写进本步结果，供 `formatStepResults` 标注；写盘失败仍返回 undefined。
       return entryId
+    },
+    // 依赖未满足（失败或被跳过）：本步不开工、不占 attempt，落 skipped。
+    // 跳过原因必须同时进进度事件与聊天文案，否则用户只看到计划停了一半却不知道为什么。
+    async onStepSkipped(step, reason) {
+      assertCurrent()
+      await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
+      void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: `${step.description}（${reason}）`, status: "warning" })
+      const index = plan.steps.findIndex(item => item.id === step.id) + 1
+      pushSystemMessage(`计划第 ${index} 步已跳过：${reason}`, sessionId)
     },
     // 工具解析报告（FIX-51，2026-10-06 收窄）：工具名解析不到是异常，写进度事件与系统消息；
     // 未限定工具是例行情形（多数步骤本就不写 allowedTools），只留进度事件与日志 —— 逐步敲
@@ -3471,6 +3486,10 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     if (!current()) return output = { ...output, status: "cancelled", error: "子运行 owner 已失效或取消" }
     if (deadlineAt <= Date.now()) return output = { ...output, status: "timed_out", error: "子运行能力准备超过 deadline" }
 
+    // 失败回执可能已经在执行端留下效果：不只外部系统，写盘与进程同样有副作用。
+    // 只读工具失败没有可确认的效果，不算缺口；工具解析不到时按最保守处理。
+    const failureMayHaveEffects = (toolName: string) =>
+      tools.find(tool => tool.name === toolName)?.policy.execution.effect !== "read"
     const toolRun: HarnessToolRun = {
       sessionId: owner.sessionId, runGeneration: generation, isCurrent: current, history,
       ...((owner.kind === "conversation" || owner.kind === "plan") && owner.trustedUserEventId ? { trustedUserEventId: owner.trustedUserEventId } : {}),
@@ -3483,7 +3502,7 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
       onToolDone: async (toolName, toolCallId, success) => {
         const row = evidence.tools.find(item => item.toolCallId === toolCallId)
         if (row) row.status = success ? "done" : "error"
-        if (!success && tools.find(tool => tool.name === toolName)?.policy.execution.effect === "external_side_effect") evidence.unconfirmedEffects = true
+        if (!success && failureMayHaveEffects(toolName)) evidence.unconfirmedEffects = true
         await input.onToolDone?.(toolName, toolCallId, success)
       },
     }
@@ -3517,6 +3536,8 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
         if (!evidence.tools.includes(row)) evidence.tools.push(row)
         row.status = isError ? "error" : "done"
         row.completedAt = Date.now()
+        // 与 onToolDone 同一判据：结果侧也记一次，避免某个执行适配路径漏掉失败回执。
+        if (isError && failureMayHaveEffects(toolName)) evidence.unconfirmedEffects = true
         if (!isError) {
           row.sourceUrls = childResultSourceUrls(contentText(content))
           row.sources = childResultSources(content)

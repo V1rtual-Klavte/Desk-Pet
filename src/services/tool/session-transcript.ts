@@ -1,6 +1,7 @@
 // read_session_event 的唯一实现（H-4）。
 //
-// 真相源是 Harness 会话条目（sessions/ 下的 JSONL）：请求投影里的引用地址就是工具结果条目的 id。
+// 真相源是 Harness 会话条目（sessions/ 下的 JSONL）：请求投影里的引用地址就是工具结果条目的 id；
+// 计划步骤产出（deskpet.plan_step_result）共用同一套地址与分页读取。
 // 分页语义：同名同参、offset/总长。
 //
 // `createTranscriptTool` 是本仓唯一实现；生产调用方在 engine/harness/runtime.ts，用
@@ -37,7 +38,7 @@ export function formatTranscriptPage(text: string, offset: number, pageTokens: n
 }
 
 /**
- * 读取一条工具结果的判别联合：三种形态各自明确，歧义**绝不任选**（A-3）。
+ * 读取一条可回读条目（工具结果或计划步骤产出）的判别联合：三种形态各自明确，歧义**绝不任选**（A-3）。
  * `ref` 可以是完整条目 id（永远有效）或它在当前会话里的唯一前缀。
  */
 export type ToolResultLookup =
@@ -64,7 +65,7 @@ export function createTranscriptTool(readEntry: ToolResultEntryReader, options: 
   const pageTokens = transcriptPageTokens(options.windowTokens)
   return defineTool({
     id: "local-session-event", name: SESSION_TRANSCRIPT_TOOL,
-    description: "按 eventId（完整条目 id 或其唯一前缀）分页读取当前会话中保留的完整工具结果；被上下文缩短的结果可由此恢复。前缀不唯一时会返回歧义错误，请用更长的前缀重试。",
+    description: "按 eventId（完整条目 id 或其唯一前缀）分页读取当前会话中保留的完整工具结果与计划步骤产出；被上下文缩短的结果可由此恢复。前缀不唯一时会返回歧义错误，请用更长的前缀重试。",
     source: "local", sourceId: "", actionCategory: "fs.read", safetyLevel: "SAFE",
     parameters: { type: "object", properties: { eventId: { type: "string" }, offset: { type: "integer", minimum: 0 } }, required: ["eventId"] },
     policy: {
@@ -79,7 +80,7 @@ export function createTranscriptTool(readEntry: ToolResultEntryReader, options: 
     if (ctx.signal?.aborted || (ctx.isCurrent && !ctx.isCurrent())) return { success: false, content: "", error: "回合已取消", errorCode: "cancelled" }
     const ref = typeof params.eventId === "string" ? params.eventId : ""
     const lookup = await readEntry(ref)
-    if (lookup.kind === "not_found") return { success: false, content: "", error: "当前会话没有此工具结果", errorCode: "not_found" }
+    if (lookup.kind === "not_found") return { success: false, content: "", error: "当前会话没有此条目", errorCode: "not_found" }
     if (lookup.kind === "ambiguous") return { success: false, content: "", error: ambiguousRefError(lookup.matches), errorCode: "ambiguous" }
     return { success: true, content: formatTranscriptPage(lookup.text, typeof params.offset === "number" ? params.offset : 0, pageTokens) }
   })

@@ -1,3 +1,6 @@
+// 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 host/types.ts 的 plan-start 载荷
+// 新增 summary，与更新命令的名字、参数和 Node 请求面隔离无关；up-01 未修订覆盖点，仅按当前
+// 源码刷新 sourceHash。
 // 2026-10-23 执行许可批次：sourceFiles 中 host/types.ts 的 bash_exec 线形状新增
 // borrowerId/permitRequestId，与更新命令的名字、参数和 Node 请求面隔离无关；up-01 未修订
 // 覆盖点，仅按当前源码刷新 sourceHash。
@@ -90,7 +93,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "96af6c07c94297c42972ff414de91e1ed01629514ffa34b1ffa231b07df848c0",
+  sourceHash: "e5b1c15bd2ab531ccafe375ec778dac385c98a1a27c56dc03f4503dc6eaa0ad7",
   coverage: [
     {
       id: "up-01",

@@ -224,6 +224,8 @@ pub struct StatusSnapshot {
 pub struct PlanStepView {
     pub id: i64,
     pub description: String,
+    /// 该步允许的工具名（空 = 未限定；面板显示权限面）。
+    pub allowed_tools: Vec<String>,
     pub status: Option<super::events::PlanStepStatus>,
 }
 
@@ -261,6 +263,8 @@ pub struct ChoiceView {
 pub struct PlanView {
     pub plan_id: String,
     pub session_id: String,
+    /// 计划目标摘要（`deskpet-plan-start.summary`）。
+    pub summary: String,
     pub steps: Vec<PlanStepView>,
     pub complexity: u32,
     pub force_step_by_step: bool,
@@ -938,6 +942,7 @@ impl ChatModel {
         &mut self,
         session_id: String,
         plan_id: String,
+        summary: String,
         steps: Vec<super::events::PlanStepWire>,
         complexity: u32,
         force_step_by_step: bool,
@@ -950,6 +955,7 @@ impl ChatModel {
             .map(|step| PlanStepView {
                 id: step.id,
                 description: step.description,
+                allowed_tools: step.allowed_tools.unwrap_or_default(),
                 status: None,
             })
             .collect();
@@ -957,6 +963,7 @@ impl ChatModel {
         self.plan = Some(PlanView {
             plan_id,
             session_id,
+            summary,
             steps,
             complexity,
             force_step_by_step,
@@ -1710,6 +1717,10 @@ impl ChatModel {
         use super::panels::{PanelAction, PanelKind, PanelLineStyle, PanelView};
         let Some(plan) = &self.plan else { return };
         let mut view = PanelView::new(PanelKind::Plan);
+        // 目标摘要是用户确认的对象（步骤只是拆解）；空串不占一行。
+        if !plan.summary.trim().is_empty() {
+            view = view.line(PanelLineStyle::Dim, format!("目标：{}", plan.summary));
+        }
         if plan.executing {
             let total = plan.total.max(plan.steps.len() as u32);
             view = view.line(
@@ -1731,7 +1742,16 @@ impl ChatModel {
                 Some(super::events::PlanStepStatus::Done) => PanelLineStyle::Dim,
                 _ => PanelLineStyle::Normal,
             };
-            view = view.line(style, format!("[{}] {}", step.marker(), step.description));
+            // 权限面与步骤同排：用户确认的是「这一步能做什么」，不只是描述。
+            let tools = if step.allowed_tools.is_empty() {
+                String::new()
+            } else {
+                format!("（工具：{}）", step.allowed_tools.join("、"))
+            };
+            view = view.line(
+                style,
+                format!("[{}] {}{tools}", step.marker(), step.description),
+            );
         }
         if let Some(gate) = &plan.gate {
             use super::events::PlanGateKind;
@@ -3351,11 +3371,13 @@ mod tests {
         assert!(model.plan_start(
             "s1".into(),
             "p1".into(),
+            "完成两件事".into(),
             vec![plan_step(1, "第一步"), plan_step(2, "第二步")],
             3,
             false,
         ));
         let plan = model.plan().expect("计划面板已装填");
+        assert_eq!(plan.summary, "完成两件事");
         assert!(!plan.executing);
         assert_eq!(plan.total, 2);
         // 没有本地期限（2026-10-06 用户裁决：选择类弹窗不留超时）。
@@ -3403,10 +3425,11 @@ mod tests {
     fn 非当前会话与不匹配计划的事件被丢弃() {
         let mut model = ChatModel::new();
         model.apply_projection(projection("s1", vec![]));
-        assert!(!model.plan_start("s2".into(), "p".into(), vec![], 1, false));
+        assert!(!model.plan_start("s2".into(), "p".into(), "目标".into(), vec![], 1, false));
         assert!(model.plan_start(
             "s1".into(),
             "p1".into(),
+            "目标".into(),
             vec![plan_step(1, "一")],
             1,
             false,
@@ -3430,7 +3453,7 @@ mod tests {
         // 本地期限）后面板仍在 —— 重新引入本地期限这条立即红。
         let mut model = ChatModel::new();
         model.apply_projection(projection("s1", vec![]));
-        model.plan_start("s1".into(), "p1".into(), vec![plan_step(1, "一")], 1, false);
+        model.plan_start("s1".into(), "p1".into(), "目标".into(), vec![plan_step(1, "一")], 1, false);
         assert!(!model.expire_deadlines(10 * 60 * 1000));
         assert!(model.plan().is_some(), "计划确认面板被本地期限收起了");
         assert_eq!(model.next_deadline_ms(), None, "计划确认不该再有本地期限");
@@ -3563,6 +3586,7 @@ mod tests {
         model.plan_start(
             "s1".into(),
             "p1".into(),
+            "目标".into(),
             vec![plan_step(1, "一")],
             1,
             false,
@@ -3603,6 +3627,7 @@ mod tests {
         model.plan_start(
             "s1".into(),
             "p1".into(),
+            "目标".into(),
             vec![plan_step(1, "一")],
             1,
             false,
@@ -3755,12 +3780,50 @@ mod tests {
     }
 
     #[test]
+    fn 计划面板显示目标与步骤权限面() {
+        let mut model = ChatModel::new();
+        model.apply_projection(projection("s1", vec![]));
+        let mut step = plan_step(1, "查资料");
+        step.allowed_tools = Some(vec!["read".into(), "bash".into()]);
+        model.plan_start(
+            "s1".into(),
+            "p1".into(),
+            "整理资料".into(),
+            vec![step],
+            2,
+            false,
+        );
+        let views = model.panel_views();
+        let plan = views
+            .iter()
+            .find(|view| view.kind == super::super::panels::PanelKind::Plan)
+            .expect("计划面板存在");
+        let lines: Vec<&str> = plan
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                super::super::panels::PanelBlock::Line { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines.contains(&"目标：整理资料"),
+            "面板没有显示计划目标：{lines:?}"
+        );
+        assert!(
+            lines.contains(&"[--] 查资料（工具：read、bash）"),
+            "面板没有显示步骤权限面：{lines:?}"
+        );
+    }
+
+    #[test]
     fn 面板渲染块按阶段给出按钮() {
         let mut model = ChatModel::new();
         model.apply_projection(projection("s1", vec![]));
         model.plan_start(
             "s1".into(),
             "p1".into(),
+            "目标".into(),
             vec![plan_step(1, "一")],
             3,
             false,
@@ -3778,7 +3841,7 @@ mod tests {
 
         // 强制逐步：没有「全部执行」。
         model.plan_dismiss();
-        model.plan_start("s1".into(), "p2".into(), vec![], 1, true);
+        model.plan_start("s1".into(), "p2".into(), "目标".into(), vec![], 1, true);
         let views = model.panel_views();
         let plan = views
             .iter()

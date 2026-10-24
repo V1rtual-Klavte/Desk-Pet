@@ -1,3 +1,15 @@
+// 2026-10-24 计划抗漂移批次（定向复核）：ar-41 的步骤子运行证据面补记「失败的非只读工具
+// 回执（afterTool 与 onChildToolResult 两路）标记 unconfirmedEffects」—— 写盘/进程/外部效果
+// 的失败都可能已产生效果，通用 outputContract 可据此拒绝非空正文；该行为的计划侧断言归
+// planner pl-06 的 plan-step-effect-receipt，本点不重复登记。sourceFiles 变化 —— runtime.ts
+// （可信用户原文注入 HarnessToolRun、显式计划 intent 取原文、规划器可用工具排除派生型、
+// onStepSkipped 与验收档、交付兜底）、harness-slot.ts（可回读命名空间扩为工具结果 + 计划
+// 步骤产出；读取面归 tool-execution te-13/te-45）、plan-confirmation.ts（待确认视图片段与
+// plan-start 载荷新增 summary；通道归 planner pl-12）、checkpoint-store.ts（验收档注释与
+// dependsOn 记录形态；持久语义归 memory mm-15）、runtime/types.ts（PlanStepRecord.dependsOn）、
+// harness-tool-adapter.ts（HarnessToolRun.trustedUserText）、context/tool-output.ts（未命中
+// 文案注释）。回合准入、取消域、usage、提交与流式调度未改；ar-* 其余点逐点核对实现点仍在、
+// 覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
 // 2026-10-24 记忆引用溯源批次（定向复核）：runtime.ts 在回合提交后把本次实际渲染的记忆
 // itemId 写成 deskpet.memory_citations 自定义条目，runtime/types.ts 与 runtime/index.ts
 // 导出该常量；写入失败只留痕。索引侧引用表与读取排除由 memory mm-79 自持，ar-* 不复制
@@ -282,7 +294,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "6f55e6bca585b3b01621b4758666808456935a6bfd61c71e8446a3e9de2d21de",
+  sourceHash: "fd179266f000f665284c02d75dfab17c0932689075f7cfca5b5db096a280da05",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -290,7 +302,7 @@ export const agentRuntimeContract: ModuleContract = {
   coverage: [
     {
       id: "ar-41", feature: "统一子运行 owner、产物验收与工具证据",
-      description: "runPiSubAgent 是 fork/team、Plan、主动规划和定时工作的唯一内核。host 必须给定 conversation/plan/proactive/scheduled owner；预取消和过期 deadline 在 Provider 前返回 cancelled/timed_out。maxToolCalls 只表示工具调用次数，保留各业务默认上限。运行状态 completed 与业务 success 分离：空正文、非法 JSON 或治理中止没有成功兜底。必需能力缺失不开工，定时任务明确要求的思考档位不受模型支持时拒绝；resolved 记录模型/provider/期望档位与映射适配、deadline 和冻结工具名。定时任务持久授权不足：有确认面板时通过 interactive 权限模式弹窗，用户批准后继续执行；无面板时以 needs_input 收口，不打开用户确认；父取消中止正在执行的工具。工具证据来自真实 after_tool 回执，只提取有界安全 URL、获取时间及同一 JSON 对象中的 URL/发布日期配对；助手自报来源不进证据。audit.runId 与 host owner 一致；team 使用 2–3 个分析角度（缺省取默认角度前两个，自定义角度按顺序标为「角度 N」并在派发前校验非空且不重复），成员按角度并行、runId 带序号，lead 必须按角度逐项汇总且不得补写未完成角度；team 保留全部成员状态，单个角度失败不拖垮整体，success = lead.success && 至少一个可用角度，全部角度失败或 lead 空结果都不能包装成功。MCP 按本 run 借用并在所有收尾路径释放（真实连接生命周期仍由 tool-execution 的相关 L4 契约验证）。",
+      description: "runPiSubAgent 是 fork/team、Plan、主动规划和定时工作的唯一内核。host 必须给定 conversation/plan/proactive/scheduled owner；预取消和过期 deadline 在 Provider 前返回 cancelled/timed_out。maxToolCalls 只表示工具调用次数，保留各业务默认上限。运行状态 completed 与业务 success 分离：空正文、非法 JSON 或治理中止没有成功兜底。必需能力缺失不开工，定时任务明确要求的思考档位不受模型支持时拒绝；resolved 记录模型/provider/期望档位与映射适配、deadline 和冻结工具名。定时任务持久授权不足：有确认面板时通过 interactive 权限模式弹窗，用户批准后继续执行；无面板时以 needs_input 收口，不打开用户确认；父取消中止正在执行的工具。工具证据来自真实 after_tool 回执，只提取有界安全 URL、获取时间及同一 JSON 对象中的 URL/发布日期配对；助手自报来源不进证据。失败的非只读工具回执（afterTool 与 onChildToolResult 两路）标记 unconfirmedEffects —— 写盘 / 进程 / 外部效果在失败回执前都可能已经生效，通用 outputContract 可据此拒绝非空正文（计划侧的验收与展示归 planner pl-06/pl-07）。audit.runId 与 host owner 一致；team 使用 2–3 个分析角度（缺省取默认角度前两个，自定义角度按顺序标为「角度 N」并在派发前校验非空且不重复），成员按角度并行、runId 带序号，lead 必须按角度逐项汇总且不得补写未完成角度；team 保留全部成员状态，单个角度失败不拖垮整体，success = lead.success && 至少一个可用角度，全部角度失败或 lead 空结果都不能包装成功。MCP 按本 run 借用并在所有收尾路径释放（真实连接生命周期仍由 tool-execution 的相关 L4 契约验证）。",
       why: "临时 owner、空正文成功、team 字符串包装成功会把未完成工作伪装成已交付；背景任务等待交互或把模型来源自报当真证据同样不可接受。",
       layer: "integration", depth: "deep",
       scenarios: ["subrun-output-acceptance", "subrun-owner-preflight", "subrun-required-capabilities", "subrun-tool-source-evidence", "subrun-background-authorization", "subrun-scheduled-permission-prompt", "subrun-inflight-cancel", "subrun-team-lead-failure", "subrun-team-custom-angles", "subrun-team-partial", "subrun-team-angle-validation"],

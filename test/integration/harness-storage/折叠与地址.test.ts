@@ -47,7 +47,7 @@ import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 type JsonlSession = Session<JsonlSessionMetadata>
 
 /**
- * 取 id 全集用的查询：与 `harness-slot.ts` 的 `toolResultEntryIds()` 同一形状（只看 message 条目），
+ * 取 id 全集用的查询：与 `harness-slot.ts` 的 `readableEntryIds()` 里工具结果那一半同一形状（只看 message 条目），
  * 外加显式 `order: "asc"` —— 折叠前后要用同一个查询取两次，「有序」是断言的一部分。
  */
 const MESSAGE_QUERY: EntryQuery = { type: "message", order: "asc" }

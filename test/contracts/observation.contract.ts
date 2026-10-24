@@ -1,3 +1,6 @@
+// 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 runtime/types.ts 仅计划步骤记录
+// 新增可选 dependsOn；观察、静默了解与钟点调度不读取计划记录，ob-01..07 未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
 // 2026-10-24 记忆引用溯源批次（定向复核）：sourceFiles 中 runtime/types.ts 仅新增
 // MEMORY_CITATIONS_ENTRY 常量，观察、静默了解与钟点调度不读取该条目；ob-01..07 未修订
 // 覆盖点，仅按当前源码刷新 sourceHash。
@@ -321,7 +324,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "d7cc10a166e2982bf3905dfed035d87ab88b35997019ce3d1867b628be9d08fe",
+  sourceHash: "b3d716217f3a1cd3c4670f66bc26a4e8825b8fa69f482a28ce8ec791cc7d0510",
   coverage: [
     {
       id: "ob-01",

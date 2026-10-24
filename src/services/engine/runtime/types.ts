@@ -400,6 +400,8 @@ export interface PlanStepRecord {
   title: string
   role?: string
   allowedTools?: string[]
+  /** 依赖的更早步骤 id（规范化后的数值域）；缺省表示无依赖。 */
+  dependsOn?: number[]
   state: PlanStepState
   attempt: number
   effectClass: PlanEffectClass

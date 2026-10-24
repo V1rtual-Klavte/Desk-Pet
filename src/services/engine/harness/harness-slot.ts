@@ -43,6 +43,8 @@ import {
 } from "@/services/context"
 import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, hasRuntimeTraceSubscribers, laneMessageText, messageRequestId, publishRuntimeTrace, runtimeTraceContextForRequest, userInputMessage } from "@/services/engine/runtime"
 import type { CompactionAuditSink, InputSourceMark, RuntimeTraceContext } from "@/services/engine/runtime"
+import { PLAN_STEP_RESULT_ENTRY } from "@/services/engine/plan/checkpoint-store"
+import { formatPlanStepResultReadback } from "@/services/engine/planner"
 import { conversationConfig, loopConfig } from "@/services/config"
 import { getSkillCatalogFingerprint, listEnabledSkills, syncSkillCatalog } from "@/services/skill"
 import { PI_LANE } from "@/services/session/repo"
@@ -1349,32 +1351,41 @@ export class HarnessSlot {
   // ── 会话数据读取（供 deskpet 工具与恢复核对） ──
 
   /**
-   * 当前会话可解析的工具结果条目 id 全集（内存扫描，无 I/O）。
+   * 当前会话可回读条目 id 全集：工具结果（message/toolResult）与计划步骤产出
+   * （custom/PLAN_STEP_RESULT_ENTRY）。两类共用一条读取命名空间 —— 前缀唯一性必须跨类判定，
+   * 否则「唯一前缀」可能在另一类条目上撞名。`toolIds` 只给地址目录用（L0 投影只覆盖工具结果）。
    * 槽上唯一的扫描入口：不建倒排索引、不落盘（性能方针），量级与 session/repo.ts 的读模型同阶。
    */
-  private async toolResultEntryIds(): Promise<string[]> {
+  private async readableEntryIds(): Promise<{ toolIds: string[]; allIds: string[] }> {
     await this.open()
     const session = this.session
-    if (!session) return []
-    const entries = await session.findEntries({ type: "message" }, BACKGROUND_CONTEXT)
-    const ids: string[] = []
-    for (const entry of entries) {
-      if (entry.type === "message" && entry.message.role === "toolResult") ids.push(entry.id)
+    if (!session) return { toolIds: [], allIds: [] }
+    const [messages, planResults] = await Promise.all([
+      session.findEntries({ type: "message" }, BACKGROUND_CONTEXT),
+      session.findEntries({ customType: PLAN_STEP_RESULT_ENTRY }, BACKGROUND_CONTEXT),
+    ])
+    const toolIds: string[] = []
+    for (const entry of messages) {
+      if (entry.type === "message" && entry.message.role === "toolResult") toolIds.push(entry.id)
     }
-    return ids
+    const planIds = planResults
+      .filter(entry => entry.type === "custom" && entry.customType === PLAN_STEP_RESULT_ENTRY)
+      .map(entry => entry.id)
+    return { toolIds, allIds: [...toolIds, ...planIds] }
   }
 
   /**
    * 地址目录：id → 展示用前缀。已发出的形态优先复用（D-W2-8），只在「仍是最短唯一」被打破时重算
    * —— 模型手里的地址跨请求稳定，主请求与摘要素材才对同一条结果给出逐字相同的投影。
+   * 唯一性按可回读全集判定（含计划步骤产出）：地址一旦发出，就必须仍能唯一命中。
    */
   async addressRefs(): Promise<ReadonlyMap<string, string>> {
-    const ids = await this.toolResultEntryIds()
-    const fresh = shortenAddresses(ids)
+    const { toolIds, allIds } = await this.readableEntryIds()
+    const fresh = shortenAddresses(allIds)
     const refs = new Map<string, string>()
-    for (const id of ids) {
+    for (const id of toolIds) {
       const cached = this.addressRefCache.get(id)
-      const ref = cached !== undefined && isUniqueAddressRef(cached, id, ids) ? cached : fresh.get(id)
+      const ref = cached !== undefined && isUniqueAddressRef(cached, id, allIds) ? cached : fresh.get(id)
       if (ref !== undefined) refs.set(id, ref)
     }
     // 缓存收敛到当次 id 全集：已不在全集里的条目不继续占位。
@@ -1382,35 +1393,36 @@ export class HarnessSlot {
     return refs
   }
 
-  /** 读取一条工具结果：ref 可以是完整条目 id（永远有效）或其唯一前缀。 */
+  /** 读取一条可回读条目（工具结果或计划步骤产出）：ref 可以是完整条目 id（永远有效）或其唯一前缀。 */
   async readToolResult(ref: string): Promise<ToolResultLookup> {
     await this.open()
     const session = this.session
     if (!session) return { kind: "not_found" }
     let ids: string[] | undefined
     try {
-      ids = await this.toolResultEntryIds()
+      ids = (await this.readableEntryIds()).allIds
     } catch (error) {
       // 没有 id 全集就无从判定前缀唯一性：降级为「只认完整 id」并如实留痕，
       // 不能让「扫描失败」静默变成「前缀未命中」。留痕点就是下面这条 error。
-      log.error("工具结果 id 全集扫描失败，回读降级为只认完整条目 id:", { sessionId: this.sessionId }, formatError(error))
+      log.error("可回读条目 id 全集扫描失败，回读降级为只认完整条目 id:", { sessionId: this.sessionId }, formatError(error))
     }
     if (!ids) {
-      const text = await this.readToolResultText(session, ref)
+      const text = await this.readEntryText(session, ref)
       return text === undefined ? { kind: "not_found" } : { kind: "found", entryId: ref, text }
     }
     const resolution = resolveAddressRef(ref, ids)
     if (resolution.kind === "ambiguous") return { kind: "ambiguous", matches: resolution.matches }
     if (resolution.kind === "none") return { kind: "not_found" }
-    const text = await this.readToolResultText(session, resolution.id)
+    const text = await this.readEntryText(session, resolution.id)
     return text === undefined ? { kind: "not_found" } : { kind: "found", entryId: resolution.id, text }
   }
 
-  /** 按条目 id 取工具结果正文；条目不存在、不是工具结果或没有正文时返回 undefined。 */
-  private async readToolResultText(session: Session, entryId: string): Promise<string | undefined> {
+  /** 按条目 id 取正文：工具结果按内容块，计划步骤产出按落盘载荷投影。其余条目不可读。 */
+  private async readEntryText(session: Session, entryId: string): Promise<string | undefined> {
     const entry = await session.getEntry(entryId, BACKGROUND_CONTEXT)
-    if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined
-    return contentText(entry.message.content)
+    if (entry?.type === "message" && entry.message.role === "toolResult") return contentText(entry.message.content)
+    if (entry?.type === "custom" && entry.customType === PLAN_STEP_RESULT_ENTRY) return formatPlanStepResultReadback(entry.data)
+    return undefined
   }
 
   /**

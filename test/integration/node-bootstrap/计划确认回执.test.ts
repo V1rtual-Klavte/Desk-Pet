@@ -54,7 +54,7 @@ function receiveReceipt(event: string, payload: unknown): void {
   handler?.(payload)
 }
 
-const PLAN: PlanResult = { steps: [{ id: 1, description: "第一步" }], summary: "探针计划", estimatedComplexity: 3 }
+const PLAN: PlanResult = { steps: [{ id: 1, description: "第一步", allowedTools: ["read"] }], summary: "探针计划", estimatedComplexity: 3 }
 const STEP: PlanStep = { id: 1, description: "第一步" }
 
 beforeAll(() => {
@@ -67,6 +67,13 @@ describe("计划确认回执", () => {
     installRecordingPublisher()
     const pending = requestPlanConfirm(PLAN, { sessionId: "s-receipt", planId: "p-receipt" })
     expect(published.map(entry => entry.event)).toContain("deskpet-plan-start")
+    // 面板的目标摘要与每步权限面随冻结载荷一起发出：原生侧按 summary/allowedTools 渲染，
+    // 丢了字段面板只能显示「无目标」与不限定的工具面。
+    const start = published.find(entry => entry.event === "deskpet-plan-start")
+    expect(start?.payload).toMatchObject({
+      summary: "探针计划",
+      steps: [{ id: 1, description: "第一步", allowedTools: ["read"] }],
+    })
 
     receiveReceipt("deskpet-plan-confirm-resolved", { planId: "p-receipt", result: { confirmed: true, mode: "stepByStep" } })
     await expect(pending).resolves.toEqual({ confirmed: true, mode: "stepByStep" })

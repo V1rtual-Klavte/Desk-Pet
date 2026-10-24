@@ -1,3 +1,6 @@
+// 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 tool/types.ts 的 ToolContext 新增
+// 可选 trustedUserText（宿主只在可信用户回合注入，模型参数不能伪造）；主动回合不注入该字段，
+// 主动机会、约定、回执与 presence 的线形状未改，pr-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-24 记忆引用溯源批次（定向复核）：sourceFiles 中 memory/protocol.ts 由 protocol.json
 // 重新生成，仅新增 conversation 的 maxCitationRefs 与条目 memoryRefs；主动机会、约定、回执与
 // presence 的线形状未改，pr-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -287,7 +290,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "99cf6998e1b10020b93cbb280a39ad49b51d0e75fd262f00adae3545e2efe166",
+  module:"proactive",sourceHash: "51d8b5d2a7955a88e4ffa3a9d147d2fd52dbf44c2635c22ca5f03a38dbde90ba",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

@@ -4,7 +4,7 @@
 // ==========================================
 
 import { getToolByName, listAll, type ToolDef } from "@/services/tool"
-import type { PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/harness"
+import type { PiSubAgentInput, PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/harness"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
@@ -21,6 +21,7 @@ const PLAN_INTENT_BUDGET = 2000
 const PLAN_PRIOR_TOTAL_BUDGET = 4000
 const PLAN_PRIOR_STEP_BUDGET = 600
 const PLAN_PRIOR_DIRECT_BUDGET = 1500
+const PLAN_OUTLINE_STEP_BUDGET = 160
 const PLAN_TRUNCATED_MARK = "…（已截断）"
 
 // ── 类型 ──
@@ -30,6 +31,18 @@ export interface PlanStep {
   description: string
   role?: string
   allowedTools?: string[]
+  /** 更早步骤的 id（规范化后必为 1..id-1）；依赖未完成时本步跳过，不照常执行。 */
+  dependsOn?: number[]
+}
+
+/**
+ * 因依赖未完成而未执行的步骤。它不是失败（没有开工），但计划因此不完整；
+ * 原因必须进入模型可见结果与用户可见交付，不能静默略过。
+ */
+export interface PlanSkippedStep {
+  step: PlanStep
+  reason: string
+  dependencyStepIds: number[]
 }
 
 export interface PlanResult {
@@ -48,10 +61,10 @@ export interface PlanPriorResult {
   stepId: number
   title: string
   success: boolean
+  /** verified 只表示证据闭环（见 `planStepAcceptance`），不代表业务验收。 */
   acceptance: "verified" | "unverified"
   reply: string
   error?: string
-  resultEntryId?: string
 }
 
 export interface PlanExecutionResult {
@@ -62,6 +75,8 @@ export interface PlanExecutionResult {
     /** 步骤结果条目的 id（可回读地址）；写盘失败时为 undefined。 */
     resultEntryId?: string
   }[]
+  /** 依赖未满足而未执行的步骤（按执行顺序）。 */
+  skippedSteps: PlanSkippedStep[]
   overallSuccess: boolean
   /** 计划步骤总数（截断前）；完成度文案与交付兜底用它给出 x/y。 */
   totalSteps: number
@@ -109,7 +124,8 @@ ${toolList}
       "id": 1,
       "description": "步骤描述",
       "role": "子代理角色名（如 文件分析员、代码搜索员）",
-      "allowedTools": ["read", "bash"]
+      "allowedTools": ["read", "bash"],
+      "dependsOn": [1]
     }
   ],
   "summary": "一句话概述计划",
@@ -121,7 +137,10 @@ ${toolList}
 - 复杂任务最多 ${maxSteps} 步
 - 步骤按执行顺序排列
 - 每个步骤的 description 要写清本步需要什么输入、产出什么
-- allowedTools 为空表示可用所有工具
+- 每个步骤都必须给出非空 allowedTools，名字只能来自上面的「可用工具」
+- 只读步骤只列只读工具；需要写盘或执行命令的步骤显式列出对应工具
+- 依赖前一步的产出时给出 dependsOn（只能引用更早步骤的 id）；依赖步骤未完成时本步会被跳过
+- 没有依赖就不要写 dependsOn
 - 只输出 JSON，不要其他内容`
 
   const { completePiText } = await import("@/services/engine/harness/model-gateway")
@@ -162,12 +181,53 @@ ${toolList}
 /**
  * 规范化模型给出的计划：丢空描述步骤、按数组顺序重排 `id = 1..N`、截断到 `maxSteps`。
  * 返回的 `plan` 是唯一进入确认、执行与落盘的形态。
+ *
+ * `dependsOn` 只允许指向更早步骤的原始 id；目标被过滤/截断、指向自身或更后步骤都视为
+ * 模型错误 —— 连带丢弃该步骤（一条依赖不可满足的步骤照跑等于跳过用户看到的确认面）。
  */
 export function normalizePlan(plan: PlanResult, maxSteps: number): { plan: PlanResult; dropped: number } {
-  const steps = plan.steps
+  const candidates = plan.steps
     .filter(step => (step.description ?? "").trim() !== "")
     .slice(0, maxSteps)
-    .map((step, index) => ({ ...step, id: index + 1 }))
+  const positions = new Map<number, number>()
+  for (const [index, step] of candidates.entries()) {
+    if (typeof step.id === "number" && Number.isFinite(step.id) && !positions.has(step.id)) {
+      positions.set(step.id, index)
+    }
+  }
+  const blocked = new Set<number>()
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [index, step] of candidates.entries()) {
+      if (blocked.has(index)) continue
+      const invalid = (step.dependsOn ?? []).some(dep => {
+        const depIndex = positions.get(dep)
+        return depIndex === undefined || depIndex >= index || blocked.has(depIndex)
+      })
+      if (!invalid) continue
+      blocked.add(index)
+      changed = true
+      log.warn("计划步骤的依赖不可满足，步骤已丢弃:", { stepId: step.id, dependsOn: step.dependsOn })
+    }
+  }
+  const kept = candidates.filter((_, index) => !blocked.has(index))
+  const remap = new Map<number, number>()
+  kept.forEach((step, index) => {
+    if (typeof step.id === "number" && Number.isFinite(step.id) && !remap.has(step.id)) {
+      remap.set(step.id, index + 1)
+    }
+  })
+  const steps: PlanStep[] = kept.map((step, index) => {
+    const id = index + 1
+    const dependsOn = [...new Set((step.dependsOn ?? [])
+      .map(dep => remap.get(dep))
+      .filter((dep): dep is number => dep !== undefined && dep < id))]
+    const normalized: PlanStep = { ...step, id }
+    if (dependsOn.length > 0) normalized.dependsOn = dependsOn
+    else delete normalized.dependsOn
+    return normalized
+  })
   return { plan: { ...plan, steps }, dropped: plan.steps.length - steps.length }
 }
 
@@ -204,6 +264,7 @@ export function planToRecords(plan: PlanResult, ctx: PlanRecordContext): { recor
       title: step.description,
       ...(step.role ? { role: step.role } : {}),
       ...(step.allowedTools ? { allowedTools: step.allowedTools } : {}),
+      ...(step.dependsOn ? { dependsOn: step.dependsOn } : {}),
       state: "pending",
       attempt: 0,
       effectClass: ctx.effectOf(step.allowedTools),
@@ -227,6 +288,7 @@ export function recordsToPlan(plan: PlanRecord, steps: PlanStepRecord[]): PlanRe
       description: step.title,
       ...(step.role ? { role: step.role } : {}),
       ...(step.allowedTools ? { allowedTools: step.allowedTools } : {}),
+      ...(step.dependsOn ? { dependsOn: step.dependsOn } : {}),
     })
   }
   return { steps: result, summary: plan.summary, estimatedComplexity: plan.estimatedComplexity }
@@ -259,10 +321,15 @@ export type StepToolNotice =
 export interface ExecutePlanCallbacks {
   onStepStart(step: PlanStep): Promise<void> | void
   /**
-   * `resultEntryId` 是宿主落盘的步骤结果条目 id（可回读地址）；本步的后继步骤交接直接用它，
+   * `resultEntryId` 是宿主落盘的步骤结果条目 id（主回合可回读地址）；
    * 写盘失败或没有落盘时返回 undefined。
    */
   onStepDone(step: PlanStep, result: PiSubAgentOutput): Promise<string | void> | string | void
+  /**
+   * 依赖未满足、本步未开工：宿主据此落 `skipped` 状态并发用户可见说明。
+   * `dependencyStepIds` 是未完成的依赖（失败、被跳过或不在本次执行范围内）。
+   */
+  onStepSkipped?(step: PlanStep, reason: string, dependencyStepIds: number[]): Promise<void> | void
   onStepFailed(step: PlanStep, error: string): Promise<"continue" | "abort">
   /**
    * 步骤开工前的工具解析报告：工具名解析不到（含解析到但到不了子代理的派生型工具）、
@@ -323,6 +390,7 @@ export async function executePlan(
     ? Date.now()
     : Date.now() - (userWaitTotalMs(config.sessionId) - waitBaseline)
   const stepResults: PlanExecutionResult["stepResults"] = []
+  const skippedSteps: PlanExecutionResult["skippedSteps"] = []
   const priorBase = config.priorResults ?? []
   let overallSuccess = true
   let cancelled: PlanExecutionResult["cancelled"]
@@ -348,6 +416,36 @@ export async function executePlan(
       log.error("计划超过时限，已停在当前步骤:", step.id)
       break
     }
+    // 前序 = 恢复读回的结果 + 本次已完成的步骤；只保留当前步之前的步骤，
+    // 同一步的旧尝试（重跑）不作为前序，避免模型把上一次失败当成新的输入。
+    // 按 stepId 去重时本次结果后写覆盖盘上旧结果（与 `readStepResults` 的「同一步保留最后一次」同口径）。
+    const priorByStep = new Map<number, PlanPriorResult>()
+    for (const item of [
+      ...priorBase,
+      ...stepResults.map((item): PlanPriorResult => ({
+        stepId: item.step.id,
+        title: item.step.description,
+        success: item.output.success,
+        acceptance: planStepAcceptance(item.output),
+        reply: item.output.rawReply ?? item.output.reply,
+        ...(item.output.error ? { error: item.output.error } : {}),
+      })),
+    ]) {
+      if (item.stepId < step.id) priorByStep.set(item.stepId, item)
+    }
+    const prior = [...priorByStep.values()]
+    // 依赖只认「已成功完成的更早步骤」：失败、被跳过、或不在本次执行范围内的依赖
+    // 都按未满足处理 —— 没跑就跳过，不拿半成品往下游传（normalizePlan 已保证依赖 id 更早）。
+    const unmetDependencies = (step.dependsOn ?? []).filter(dep => priorByStep.get(dep)?.success !== true)
+    if (unmetDependencies.length > 0) {
+      const reason = `依赖步骤 ${unmetDependencies.join("、")} 未完成`
+      log.info("计划步骤依赖未满足，跳过:", { planId: config.planId, stepId: step.id, dependsOn: unmetDependencies })
+      skippedSteps.push({ step, reason, dependencyStepIds: unmetDependencies })
+      // 跳过不是完成：计划整体不完整，结算不得报成功。
+      overallSuccess = false
+      await callbacks.onStepSkipped?.(step, reason, unmetDependencies)
+      continue
+    }
     // 逐步门：每步开工前等用户决定。此时步骤还是 pending（不标 failed），
     // 所以不能与 `onStepFailed` 的失败询问共用标记路径；用户拒绝与信号中止同款停下，
     // 归宿是 `declined`（不是用户按了停止按钮）。
@@ -362,30 +460,11 @@ export async function executePlan(
     }
     await callbacks.onStepStart(step)
     const stepStart = Date.now()
-    // 前序 = 恢复读回的结果 + 本次已完成的步骤；只保留当前步之前的步骤，
-    // 同一步的旧尝试（重跑）不作为前序，避免模型把上一次失败当成新的输入。
-    // 按 stepId 去重时本次结果后写覆盖盘上旧结果（与 `readStepResults` 的「同一步保留最后一次」同口径）。
-    const priorByStep = new Map<number, PlanPriorResult>()
-    for (const item of [
-      ...priorBase,
-      ...stepResults.map((item): PlanPriorResult => ({
-        stepId: item.step.id,
-        title: item.step.description,
-        success: item.output.success,
-        // 步骤子运行没有输出契约：success 只代表返回了非空文本，交接一律标未验收。
-        acceptance: "unverified",
-        reply: item.output.rawReply ?? item.output.reply,
-        ...(item.output.error ? { error: item.output.error } : {}),
-        ...(item.resultEntryId ? { resultEntryId: item.resultEntryId } : {}),
-      })),
-    ]) {
-      if (item.stepId < step.id) priorByStep.set(item.stepId, item)
-    }
-    const prior = [...priorByStep.values()]
+    const outline = formatPlanOutline(steps, step, priorByStep, skippedSteps)
 
     let output: PiSubAgentOutput
     try {
-      output = await executeStep(step, config, callbacks, prior)
+      output = await executeStep(step, config, callbacks, prior, outline)
     } catch (e) {
       const errMsg = formatError(e)
       log.warn("步骤执行失败:", { planId: config.planId, stepId: step.id }, errMsg)
@@ -419,23 +498,40 @@ export async function executePlan(
     }
   }
 
-  return { stepResults, overallSuccess, totalSteps: plan.steps.length, totalDurationMs: Date.now() - startTime, ...(cancelled ? { cancelled } : {}) }
+  return { stepResults, skippedSteps, overallSuccess, totalSteps: plan.steps.length, totalDurationMs: Date.now() - startTime, ...(cancelled ? { cancelled } : {}) }
 }
 
 function truncateWithMarker(text: string, budget: number): string {
   return text.length <= budget ? text : `${text.slice(0, budget)}${PLAN_TRUNCATED_MARK}`
 }
 
-/** 一条前序结果行：成功只给摘要与回读地址，失败只给 error（不给 reply，避免把半截产出当成结论）。 */
+/**
+ * 自包含截断：保留开头与结尾，中间标注截断。步骤产出常把结论放在尾部，只留开头
+ * 会让后一步拿到没有结论的半成品；子运行读不到父会话条目，交接不能依赖回读地址。
+ */
+function truncateHeadTail(text: string, budget: number): string {
+  if (text.length <= budget) return text
+  const content = Math.max(budget - PLAN_TRUNCATED_MARK.length, 0)
+  const headLength = Math.ceil(content * 0.7)
+  const tailLength = content - headLength
+  return tailLength > 0
+    ? `${text.slice(0, headLength)}${PLAN_TRUNCATED_MARK}${text.slice(-tailLength)}`
+    : `${text.slice(0, headLength)}${PLAN_TRUNCATED_MARK}`
+}
+
+/**
+ * 一条前序结果行：成功给标题、验收档与自包含摘要；失败只给 error（不给 reply，
+ * 避免把半截产出当成结论）。正文保留头尾 —— 尾部常是结论。
+ */
 function formatPriorLine(item: PlanPriorResult, summaryBudget: number): string {
   const title = truncateWithMarker(item.title, PLAN_PRIOR_STEP_BUDGET)
   if (!item.success) {
     const error = item.error?.trim() || "未提供错误信息"
-    return `${item.stepId}. [failed] ${title} — 失败：${truncateWithMarker(error, summaryBudget)}`
+    return `${item.stepId}. [failed] ${title} — 失败：${truncateHeadTail(error, summaryBudget)}`
   }
   const reply = item.reply.trim() || "（无结果正文）"
-  const address = item.resultEntryId ? `（原文见 plan_step_result 条目 ${item.resultEntryId}）` : ""
-  return `${item.stepId}. [done|unverified] ${title} — ${truncateWithMarker(reply, summaryBudget)}${address}`
+  const label = item.acceptance === "verified" ? "done|verified" : "done|unverified"
+  return `${item.stepId}. [${label}] ${title} — ${truncateHeadTail(reply, summaryBudget)}`
 }
 
 /**
@@ -467,11 +563,56 @@ function formatPriorSteps(prior: readonly PlanPriorResult[]): string[] {
   })
 }
 
+/**
+ * 计划全貌：步骤子代理只拿到自己的任务，容易把局部产出当成最终目标。
+ * 给出整份计划的步骤与已定档状态（含依赖关系），并明确其他步骤不要执行。
+ * 只看得到已发生的执行事实：跳过状态随 `skippedSteps` 落定，未来步骤一律「待执行」。
+ */
+function formatPlanOutline(
+  steps: readonly PlanStep[],
+  current: PlanStep,
+  priorByStep: ReadonlyMap<number, PlanPriorResult>,
+  skippedSteps: readonly PlanSkippedStep[],
+): string[] {
+  const skipped = new Set(skippedSteps.map(item => item.step.id))
+  const lines = steps.map(step => {
+    const title = truncateWithMarker(step.description, PLAN_OUTLINE_STEP_BUDGET)
+    const deps = step.dependsOn?.length ? `（依赖 ${step.dependsOn.join("、")}）` : ""
+    if (step.id === current.id) return `${step.id}. [当前] ${title}${deps}`
+    const prior = priorByStep.get(step.id)
+    if (prior) return `${step.id}. [${prior.success ? "完成" : "失败"}] ${title}${deps}`
+    if (skipped.has(step.id)) return `${step.id}. [已跳过] ${title}${deps}`
+    return `${step.id}. [待执行] ${title}${deps}`
+  })
+  return ["## 计划全貌", "以下为计划步骤；只执行当前步骤，其他步骤不要执行。", ...lines]
+}
+
+/**
+ * 步骤子运行的通用输出契约：只证明证据闭环，不证明业务正确。
+ * 失败的非只读工具可能已留下效果，模型随后返回非空正文不能把这一步洗成完成。
+ */
+const PLAN_STEP_OUTPUT_CONTRACT: NonNullable<PiSubAgentInput["outputContract"]> = {
+  kind: "text",
+  validate: ({ reply, evidence }) => {
+    if (!reply.trim()) return "步骤没有返回结果"
+    if (evidence.unconfirmedEffects) return "工具执行失败，执行效果未确认，步骤未完成"
+    return true
+  },
+}
+
+/** 验收档：verified 只表示证据闭环（没有未确认效果或证据缺口），不代表业务验收。 */
+export function planStepAcceptance(output: PiSubAgentOutput): "verified" | "unverified" {
+  return output.success && !output.evidence.unconfirmedEffects && output.evidence.incomplete.length === 0
+    ? "verified"
+    : "unverified"
+}
+
 async function executeStep(
   step: PlanStep,
   config: ExecutePlanConfig,
   callbacks: ExecutePlanCallbacks,
   prior: readonly PlanPriorResult[],
+  outline: readonly string[],
 ): Promise<PiSubAgentOutput> {
   const intent = config.intent.trim()
   const intentBlock = intent === "" ? [] : ["## 原始目标", truncateWithMarker(intent, PLAN_INTENT_BUDGET)]
@@ -485,6 +626,7 @@ async function executeStep(
     `你是虚拟桌宠的子代理，角色: ${step.role || "执行员"}。`,
     `正在执行计划第 ${step.id} 步: ${step.description}`,
     ...(intentBlock.length > 0 ? [intentBlock.join("\n")] : []),
+    ...(outline.length > 0 ? [outline.join("\n")] : []),
     ...(priorBlock.length > 0 ? [priorBlock.join("\n")] : []),
     "可用工具由系统注入。",
     "请完成此步骤并返回结果。",
@@ -530,6 +672,7 @@ async function executeStep(
     task: step.description,
     tools,
     systemPrompt: stepPrompt,
+    outputContract: PLAN_STEP_OUTPUT_CONTRACT,
     maxToolCalls: config.stepMaxRounds,
     timeoutMs: config.stepTimeoutMs,
     thinkingEffort: config.stepThinkingEffort,
@@ -546,28 +689,65 @@ async function executeStep(
 
 // ── 结果格式化 ──
 
+/** 验收档的展示文案（唯一一处）：失败优先，成功再分证据是否闭环。 */
+function planAcceptanceLabel(success: boolean, acceptance: "verified" | "unverified"): string {
+  if (!success) return "失败"
+  return acceptance === "verified" ? "完成（证据已核对）" : "完成（未验收）"
+}
+
+/** 步骤结果的展示档位（与验收档同源，不另造第二套判定）。 */
+function stepAcceptanceLabel(output: PiSubAgentOutput): string {
+  return planAcceptanceLabel(output.success, planStepAcceptance(output))
+}
+
+/**
+ * 主回合回读一条 `deskpet.plan_step_result` 的正文。
+ * 子运行的槽读不到父会话条目，所以这条投影只服务主回合；形状不合按不可读处理。
+ */
+export function formatPlanStepResultReadback(data: unknown): string | undefined {
+  if (typeof data !== "object" || data === null) return undefined
+  const result = data as Record<string, unknown>
+  const { stepId, title, acceptance, success, reply, error } = result
+  if (typeof stepId !== "string" || typeof title !== "string" || typeof success !== "boolean"
+    || typeof reply !== "string"
+    || (acceptance !== "verified" && acceptance !== "unverified")
+    || (error !== undefined && typeof error !== "string")) return undefined
+  const lines = [`[计划步骤结果] 步骤 ${stepId}「${title}」：${planAcceptanceLabel(success, acceptance)}`, reply]
+  if (typeof error === "string" && error.trim() !== "") lines.push(`错误：${error}`)
+  return lines.join("\n")
+}
+
 export function formatStepResults(result: PlanExecutionResult): string {
   const completed = result.stepResults.filter(item => item.output.success).length
   const status = result.overallSuccess ? "全部完成"
     : completed > 0 ? `部分完成（${completed}/${result.totalSteps} 步）` : "失败或未完成"
   const lines = ["[计划执行结果]", `整体结果：${status}`]
+  // 执行结果与跳过按步骤顺序合并：跳过的步骤也得让模型看见（它解释计划为什么没跑完）。
+  const stepLines = new Map<number, string[]>()
   for (const { step, output, durationMs, resultEntryId } of result.stepResults) {
     const icon = output.success ? "OK" : "FAIL"
     const time = (durationMs / 1000).toFixed(1) + "s"
-    lines.push(`${icon} 步骤 ${step.id} "${step.description}" - ${output.success ? "完成（未验收）" : "失败"} (${time})`)
+    const block = [`${icon} 步骤 ${step.id} "${step.description}" - ${stepAcceptanceLabel(output)} (${time})`]
     if (output.reply) {
       // 正文按 ephemeral 预算截到 100 字符，但标注回读地址（PLAN-09③）；
       // 没有地址就是没落盘，如实说明，不假称正文可回读。
       const preview = output.reply.substring(0, 100) + (output.reply.length > 100 ? "..." : "")
       if (resultEntryId) {
-        lines.push(`   结果: ${preview}（原文见 plan_step_result 条目 ${resultEntryId}）`)
+        block.push(`   结果: ${preview}（原文见 plan_step_result 条目 ${resultEntryId}）`)
       } else {
         log.warn("步骤结果未落盘，正文只保留截断前缀:", step.id)
-        lines.push(`   结果: ${preview}（原文未落盘）`)
+        block.push(`   结果: ${preview}（原文未落盘）`)
       }
     }
     // 错误不截断：全文只在这里与 plan_step_result 条目里出现，不在会话正文里。
-    if (output.error) lines.push(`   错误: ${output.error}`)
+    if (output.error) block.push(`   错误: ${output.error}`)
+    stepLines.set(step.id, block)
+  }
+  for (const { step, reason } of result.skippedSteps) {
+    stepLines.set(step.id, [`SKIP 步骤 ${step.id} "${step.description}" - 跳过（${reason}）`])
+  }
+  for (const stepId of [...stepLines.keys()].sort((a, b) => a - b)) {
+    lines.push(...stepLines.get(stepId)!)
   }
   lines.push("\n请基于以上结果生成最终回复。")
   return lines.join("\n")
@@ -580,10 +760,14 @@ export function formatStepResults(result: PlanExecutionResult): string {
 export function formatPlanDeliverySummary(result: PlanExecutionResult): string {
   const completed = result.stepResults.filter(item => item.output.success).length
   const lines = [`计划步骤已执行结束：${completed}/${result.totalSteps} 步完成。`]
-  for (const { step, output } of result.stepResults) {
-    lines.push(output.success
-      ? `- 步骤 ${step.id}「${step.description}」：完成`
-      : `- 步骤 ${step.id}「${step.description}」：失败${output.error ? ` - ${output.error}` : ""}`)
-  }
+  const entries = [
+    ...result.stepResults.map(({ step, output }) => {
+      const suffix = !output.success && output.error ? ` - ${output.error}` : ""
+      return { id: step.id, line: `- 步骤 ${step.id}「${step.description}」：${stepAcceptanceLabel(output)}${suffix}` }
+    }),
+    ...result.skippedSteps.map(({ step, reason }) =>
+      ({ id: step.id, line: `- 步骤 ${step.id}「${step.description}」：跳过（${reason}）` })),
+  ].sort((a, b) => a.id - b.id)
+  lines.push(...entries.map(entry => entry.line))
   return lines.join("\n")
 }

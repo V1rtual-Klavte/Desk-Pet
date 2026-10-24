@@ -110,6 +110,8 @@ export interface ToolContext {
   toolCallId?: string
   /** 当前回合已提交的用户输入身份；记忆工具必须用它筛选可归属来源。 */
   trustedUserEventId?: string
+  /** 当前回合的可信用户原文；只由宿主在可信用户回合注入，模型参数不能伪造。 */
+  trustedUserText?: string
   taskAuthorization?: TaskToolAuthorization
   /** Background work must return needs-input instead of opening an interactive waiter. */
   permissionMode?: "interactive" | "background"

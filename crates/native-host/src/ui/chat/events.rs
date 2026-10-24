@@ -124,8 +124,9 @@ struct SendOutcomePayload {
 // 计划（`deskpet-plan-*`；`PlanStep` 镜像 `planner.ts`）
 // ==========================================
 
-/// `PlanStep`（`src/services/engine/planner.ts`）的镜像。`role`/`allowedTools`
-/// 面板不展示，但按冻结形状一并解析，避免同一结构出现两份子集定义。
+/// `PlanStep`（`src/services/engine/planner.ts`）的镜像。`role` 面板不展示，
+/// 但按冻结形状一并解析，避免同一结构出现两份子集定义；`allowedTools` 是步骤的权限面，
+/// 面板作为提示与步骤描述同排展示。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStepWire {
@@ -187,6 +188,8 @@ pub enum PlanEndReason {
 struct PlanStartPayload {
     session_id: String,
     plan_id: String,
+    /// 计划目标摘要（`PlanResult.summary`）。
+    summary: String,
     steps: Vec<PlanStepWire>,
     complexity: u32,
     #[serde(default)]
@@ -320,10 +323,11 @@ pub enum ChatEvent {
         tool_name: String,
         success: bool,
     },
-    /// `deskpet-plan-start`：待确认计划（含全部步骤）。
+    /// `deskpet-plan-start`：待确认计划（目标摘要 + 全部步骤）。
     PlanStart {
         session_id: String,
         plan_id: String,
+        summary: String,
         steps: Vec<PlanStepWire>,
         complexity: u32,
         force_step_by_step: bool,
@@ -433,6 +437,7 @@ impl ChatEvent {
                 ChatEvent::PlanStart {
                     session_id: payload.session_id,
                     plan_id: payload.plan_id,
+                    summary: payload.summary,
                     steps: payload.steps,
                     complexity: payload.complexity,
                     force_step_by_step: payload.force_step_by_step,
@@ -648,7 +653,7 @@ mod tests {
     fn 计划事件按冻结载荷解析() {
         let event = ChatEvent::from_wire(
             "deskpet-plan-start",
-            r#"{"sessionId":"s1","planId":"p1","steps":[{"id":1,"description":"查资料"}],"complexity":2,"forceStepByStep":false}"#,
+            r#"{"sessionId":"s1","planId":"p1","summary":"查清资料","steps":[{"id":1,"description":"查资料","allowedTools":["read"]}],"complexity":2,"forceStepByStep":false}"#,
         )
         .unwrap()
         .unwrap();
@@ -657,11 +662,12 @@ mod tests {
             ChatEvent::PlanStart {
                 session_id: "s1".into(),
                 plan_id: "p1".into(),
+                summary: "查清资料".into(),
                 steps: vec![PlanStepWire {
                     id: 1,
                     description: "查资料".into(),
                     role: None,
-                    allowed_tools: None,
+                    allowed_tools: Some(vec!["read".into()]),
                 }],
                 complexity: 2,
                 force_step_by_step: false,

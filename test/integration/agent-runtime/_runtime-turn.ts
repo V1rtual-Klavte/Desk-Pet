@@ -11,12 +11,21 @@
 
 import type { PiAgentTurnOutput } from "@/services/engine/harness"
 import { runPiAgentTurn } from "@/services/engine/harness"
+import type { IngressEnvelope } from "@/services/engine/runtime"
 import { userInputMessage } from "@/services/engine/runtime"
 import { initSessions } from "@/services/session"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { getActiveSessionId } from "@/services/session/store"
 
-export async function runRuntimeTurn(userText: string): Promise<PiAgentTurnOutput> {
+export interface RuntimeTurnOptions {
+  /**
+   * 宿主入口信封。默认不给：这条入口绕过 sendMessage，没有宿主 requestId，
+   * 投递正文用同一个构造点但不带身份。需要可信用户事实（如计划目标）的用例显式提供。
+   */
+  ingress?: Omit<IngressEnvelope, "sessionId">
+}
+
+export async function runRuntimeTurn(userText: string, options: RuntimeTurnOptions = {}): Promise<PiAgentTurnOutput> {
   // Runtime tests use the same durable session creation as the desktop entry（L4 runner 原注）。
   if (!getActiveSessionId()) await initSessions()
   const sessionId = getActiveSessionId()
@@ -24,8 +33,9 @@ export async function runRuntimeTurn(userText: string): Promise<PiAgentTurnOutpu
   const output = await runPiAgentTurn({
     sessionId,
     userText,
-    // 这条入口绕过 sendMessage，没有宿主 requestId：投递正文用同一个构造点但不带身份。
+    // 这条入口绕过 sendMessage：没有 ingress 时投递正文用同一个构造点但不带身份。
     userPrompt: userInputMessage(userText, ""),
+    ...(options.ingress ? { ingress: { ...options.ingress, sessionId } } : {}),
     unansweredCount: 0,
     isActiveMessage: false,
   })

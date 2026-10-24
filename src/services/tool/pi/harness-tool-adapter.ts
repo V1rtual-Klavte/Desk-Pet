@@ -17,6 +17,8 @@ export interface HarnessToolRun {
   sessionId?: string
   runGeneration?: number
   trustedUserEventId?: string
+  /** 本次可信用户输入的正文（宿主提供；主动消息与子运行不注入）。 */
+  trustedUserText?: string
   taskAuthorization?: TaskToolAuthorization
   permissionMode?: "interactive" | "background"
   proactiveTurnContext?: import("@/services/proactive").ProactiveTurnContext
@@ -52,6 +54,7 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
           sessionId: run.sessionId,
           runGeneration: run.runGeneration,
           ...(run.trustedUserEventId ? { trustedUserEventId: run.trustedUserEventId } : {}),
+          ...(run.trustedUserText ? { trustedUserText: run.trustedUserText } : {}),
           ...(run.taskAuthorization ? { taskAuthorization: run.taskAuthorization } : {}),
           ...(run.permissionMode ? { permissionMode: run.permissionMode } : {}),
           ...(run.proactiveTurnContext ? { proactiveTurnContext: run.proactiveTurnContext } : {}),

@@ -1,3 +1,7 @@
+// 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 harness-slot.ts 的可回读条目扫描
+// 从「message/toolResult」扩为「工具结果 + plan_step_result 自定义条目」，地址集合与读取
+// 语义随之扩大；会话 JSONL 帧、折叠、事务、保留与文件夹具未改，hs-01..hs-11 未修订覆盖点，
+// 仅按当前源码刷新 sourceHash（读取面的行为覆盖归 tool-execution te-13/te-45）。
 // 2026-10-23 执行许可批次：sourceFiles 中 native-execution-env.ts 的 bash 请求新增
 // borrowerId/permitRequestId 并拒绝无许可执行；会话 JSONL、折叠、事务与保留语义未改，
 // hs-01..hs-11 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -78,7 +82,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/engine/harness/harness-slot.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加内存字段，JSONL 条目 schema 未变；定向复核后刷新。
-  sourceHash: "a2c5c7b715643b0a7a25faa931322970b5f7dc0a1af8f7730b3a3b0035daa63b",
+  sourceHash: "a9c14373ac28454c3e1dcedfa0de85aeeabc881e385f3c74f52bc1ccc432b5d0",
   coverage: [
     {
       id: "hs-11",

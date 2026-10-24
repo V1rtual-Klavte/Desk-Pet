@@ -1,3 +1,11 @@
+// 2026-10-24 计划抗漂移批次（定向复核）：checkpoint 的记录形态新增可选 dependsOn（随步骤记录
+// 持久化，缺省不写），mm-15 的恢复语义补一句「依赖已完成步骤视为满足、缺失/跳过/失败的前序
+// 步骤让后继按未满足跳过」；跳过判定与结果格式归 planner pl-06/pl-07。harness-slot.ts 的
+// 可回读命名空间扩为「工具结果 + 计划步骤产出」（跨类前缀唯一性、未命中文案改「当前会话没有
+// 此条目」），该读取面归 tool-execution te-13/te-45，mm-15 只持有恢复侧的 readStepResults；
+// host/types.ts 的 plan-start 载荷新增 summary 归 planner pl-12；runtime.ts 的可信用户原文与
+// 规划器权限面归 planner pl-01/pl-13。mm-* 其余点逐点核对实现点仍在、覆盖描述与当前实现
+// 一致（描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
 // 2026-10-24 时间语义与引用溯源批次：事实投影、证据包与管理详情保留 observedAt/validFrom/
 // validTo/eventAt/expiresAt，按日锚输出本地日期、分钟锚输出带时区偏移时刻；纠正与合并让旧
 // validTo 与新 validFrom 同刻衔接，合并保留最早已知起点。mm-78 登记 2 个 L2 caseId。助手回复
@@ -411,7 +419,7 @@ export const memoryContract: ModuleContract = {
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
   // 2026-10-18 列项答案补全批次：新增 enumeration-answer.ts，runtime afterResponse 补全并与结算同源；reader 抽取器来源上限与最终证据对齐到 32、按 8 条分批合并、类别/问句片段具体性过滤、完整口味组合保留、最长项目吸收短片段、去空格变体去重；人物归属留在 LoCoMo 适配器（memory-bench mb-12），产品不解析 speaker 头；mm-73/mm-74/mm-75 覆盖，刷新。
   // 2026-10-24 引用溯源：会话原文引用同落 chunk 0，按 (sessionId, entryId) 去重后写入 quoteRefs；mm-79/mm-80/mm-81 覆盖，刷新。
-  sourceHash: "3dcf81607eaeee0b236ce7d9ecfe73a398741d7de74f6eaa0f87fbf1d82c706b",
+  sourceHash: "1a6ffa45635710aef6a47ef841ee534aba410fbc0a99dd33cc283823e3c450db",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令；静态规程声明默认自然日期及显式机器格式/年份/相对量边界，接线断言核对system消费，表达质量另由固定证据与真模型专项观测，不以fake回复证明", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },
@@ -470,7 +478,7 @@ export const memoryContract: ModuleContract = {
     // mm-11 原把「归属身份 + 保留/trace」合成一点（跨层混搭）；按层拆开：保留与 trace 侧为 mm-34（L3），归属与身份侧留在 mm-11（L4）。
     { id: "mm-34", feature: "PromptSnapshot 的保留与 trace", description: "快照保留顺序、hash 与 usage 区分（原始 Prompt 与密钥不落快照：systemBlocks 与 agentMessages 只存 hash），以及真实回合的 trace 完整性（provider_payload / provider_response / provider_usage 与 transform_context + provider_payload 双快照）", why: "上下文审计不能泄露原始 prompt、覆盖用户原文或把估算 token 当成实际 usage", layer: "integration", depth: "deep", scenarios: ["memory-prompt-snapshot"] },
     { id: "mm-13", feature: "工具成对观测", description: "工具调用与结果按 id 配对保留在会话条目，并被 runtime history 观测", why: "后续压缩和恢复需要完整 tool pair 基线", layer: "e2e", depth: "deep", scenarios: ["memory-tool-pair-baseline"] },
-    { id: "mm-15", feature: "Plan checkpoint 恢复", description: "Plan 从会话条目 deskpet.plan_checkpoint 按 attempt 累计效果证据恢复：running/interrupted 步骤只要开始过非只读工具就进 unknown_side_effect，后续成功回执或只读事件不能抹掉证据；只读步骤回 pending。paused 计划里再次中断的步骤同样复核；同进程 resumePlan 先重新定档 interrupted 步骤，不跳过它们，也不重判已批准重跑的 running 步骤；明确 retry 才清除旧 attempt 的证据并只增一次 attempt，already_applied 则标 done。真实 resumePlan 遇未知效果直接拒绝、不发 Provider 请求；plan 的唯一持久形态是 schemaVersion 3（新增冻结 intent 与终态 completion），旧格式条目（含存量 1/2）按不可恢复跳过、不做迁移；completion 按盘上 done 步数在终态写 complete / partial / none，运行中不写。恢复执行经 readStepResults 从 deskpet.plan_step_result 条目回读前序结果（同 stepId 后写覆盖先写；形状不合条目跳过并留痕；读取 I/O 失败降级为无前序、不阻断恢复），与落盘 intent 一起注入后续步骤，且只有 stepId 小于当前步的结果进入交接。继续/丢弃由用户显式触发，未知副作用不自动重放，恢复动作可条目回读", why: "进程重启后不能重复执行没有完成凭证的外部操作；前序交接若在恢复时丢失，后续步骤会像第一次执行一样缺少已完成的上下文", layer: "integration", depth: "deep", scenarios: ["memory-plan-resume", "plan-recovery-effect-guard", "plan-resume-interrupted-step", "plan-resume-prior-from-disk"] },
+    { id: "mm-15", feature: "Plan checkpoint 恢复", description: "Plan 从会话条目 deskpet.plan_checkpoint 按 attempt 累计效果证据恢复：running/interrupted 步骤只要开始过非只读工具就进 unknown_side_effect，后续成功回执或只读事件不能抹掉证据；只读步骤回 pending。paused 计划里再次中断的步骤同样复核；同进程 resumePlan 先重新定档 interrupted 步骤，不跳过它们，也不重判已批准重跑的 running 步骤；明确 retry 才清除旧 attempt 的证据并只增一次 attempt，already_applied 则标 done。真实 resumePlan 遇未知效果直接拒绝、不发 Provider 请求；plan 的唯一持久形态是 schemaVersion 3（新增冻结 intent 与终态 completion，步骤记录可带 dependsOn 并随记录持久化、缺省不写），旧格式条目（含存量 1/2）按不可恢复跳过、不做迁移；completion 按盘上 done 步数在终态写 complete / partial / none，运行中不写。恢复执行经 readStepResults 从 deskpet.plan_step_result 条目回读前序结果（同 stepId 后写覆盖先写；形状不合条目跳过并留痕；读取 I/O 失败降级为无前序、不阻断恢复），与落盘 intent 一起注入后续步骤，且只有 stepId 小于当前步的结果进入交接；恢复后 dependsOn 指向已完成步骤的依赖视为满足，盘上没有成功结果的前序步骤（失败、被跳过或不在本次执行集合）让依赖后继按未满足跳过（判定与 skipped 归宿归 planner pl-06，本点只核对恢复读回的前序事实）。继续/丢弃由用户显式触发，未知副作用不自动重放，恢复动作可条目回读", why: "进程重启后不能重复执行没有完成凭证的外部操作；前序交接若在恢复时丢失，后续步骤会像第一次执行一样缺少已完成的上下文", layer: "integration", depth: "deep", scenarios: ["memory-plan-resume", "plan-recovery-effect-guard", "plan-resume-interrupted-step", "plan-resume-prior-from-disk"] },
     { id: "mm-16", feature: "上下文内核（纯预算）", description: "buildPromptBlocks 只做预算：窗口预算闭合（硬输入上限 + 输出预留 + 协议开销）、按层排序与拼接；核心块（静态人格/V1RTUAL/工具协议/工具 schema/动态运行时/会话摘要）放不进硬上限时显式 ContextBudgetError、绝不截块内文字，可选块整块淘汰并记入 budgetDrops；分配账目按层给出实际 requested/used（transcript 行保留但没有名义份额或借用字段，没有淘汰的层不写 dropped: 0）；完整静态前缀不随变量变化、工具 schema 完整计入输入预算；含会话正文的完整请求视图由托管钩子按同一硬输入上限核查（mm-22 的溢出恢复依赖它）", why: "Provider 输入需要可预测且可审计地限制在上下文窗口内，且不能静默丢失指令或未压缩历史", layer: "unit", depth: "deep", scenarios: ["memory-context-budget"] },
     { id: "mm-17", feature: "记忆投影形态与召回端口", description: "记忆块以 custom 消息投递（不是 system 消息）、不进 transcript、eligibleForMemory=false，判定函数只认专用 customType；MemoryProvider 可注入、取消、限时、裁剪并恢复，默认空实现不执行长期召回", why: "画像与长期事实必须留在派生数据一侧：一旦以 system 身份注入，它就成了指令，而召回内容还可能在下一轮被当成用户新事实重新提取", layer: "unit", depth: "deep", scenarios: ["memory-profile-rewrite"] },
     { id: "mm-18", feature: "消息条目单次写入", description: "一次真实回合后同一句话只有一条 pi 会话条目；后续回合不重复追加历史消息", why: "双写或历史重放会让重载出现重复消息与翻倍轮数", layer: "e2e", depth: "deep", scenarios: ["memory-single-message-write"] },

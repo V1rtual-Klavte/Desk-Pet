@@ -22,7 +22,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
 
 vi.mock("@/services/tool/execution-permit", () => ({
@@ -46,6 +46,7 @@ import { getOverride, planConfig, setOverride } from "@/services/config"
 import { initPaths } from "@/services/paths"
 import { resumePlan } from "@/services/engine/harness"
 import { chatHistory, getActiveSessionId } from "@/services/session/store"
+import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 
 /** 工具名是线上契约（测试手写见证，不 import 实现常量）。 */
 const TOOL = "propose_plan"
@@ -55,6 +56,7 @@ const PLAN_CALL_ID_STEP = "plan-call-step"
 const PLAN_CALL_ID_AUTO = "plan-call-auto"
 
 let root = ""
+const registered: string[] = []
 /** 本用例内发布的 Node→UI 事件（plan-confirm-channel 只记录确认交互，进度事件由这里记录）。 */
 let events: Array<{ event: string; payload: Record<string, unknown> }> = []
 
@@ -68,6 +70,10 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
+afterEach(() => {
+  for (const id of registered.splice(0)) unregister(id)
+})
+
 beforeEach(() => {
   events = []
   // 测试宿主默认的 UI 发布口如实抛错（Node 没有事件总线）；这里换成记录器，
@@ -78,7 +84,7 @@ beforeEach(() => {
 type Payload = { model: string; systemPrompt?: string; messages: readonly unknown[]; tools?: Array<{ name: string }> }
 
 /** 某笔请求里指定工具的结果正文（toolResult 消息的 text 块）。 */
-function toolResultTexts(payload: Payload | undefined, toolName: string): string[] {
+function toolResultTexts(payload: { messages: readonly unknown[] } | undefined, toolName: string): string[] {
   const texts: string[] = []
   for (const raw of payload?.messages ?? []) {
     const message = raw as { role?: string; toolName?: string; content?: unknown }
@@ -140,6 +146,12 @@ describe("提议计划", () => {
     ])
     const output = await runRuntimeTurn("--plan 帮我看看")
     expect(provider.state.callCount).toBe(3)
+    // 规划器的权限面与步骤子代理一致：派生型工具（到不了子运行）不进入可用工具清单。
+    const plannerPrompt = provider.payloads[0]?.systemPrompt ?? ""
+    expect(plannerPrompt, "规划器提示没有要求每步显式声明工具").toContain("每个步骤都必须给出非空 allowedTools")
+    expect(plannerPrompt, "派生型工具不应进入规划器可用工具清单").not.toContain("- propose_plan:")
+    expect(plannerPrompt, "派生型工具不应进入规划器可用工具清单").not.toContain("- agent_spawn:")
+    expect(plannerPrompt, "可用工具清单缺少普通工具").toContain("- read:")
     expect(planRecords()).toEqual([expect.objectContaining({ confirmed: true, steps: 1 })])
     expect(planEnds()).toEqual(["done"])
     expect(output.reply).toContain("显式计划已完成")
@@ -187,6 +199,9 @@ describe("提议计划", () => {
     expect(planEnds(), "计划收尾事件不对").toEqual(["done"])
     // 计划记录落盘为完成态（崩溃恢复/面板读同一份记录）。
     expect(planCheckpointStore.snapshot(`plan-${PLAN_CALL_ID_ACCEPT}`)?.plan.state, "计划记录没有落成完成态").toBe("done")
+    // 验收档落盘按证据闭环：两步都没有未确认效果与证据缺口 → verified（不证明业务正确）。
+    const persisted = await planCheckpointStore.readStepResults(getActiveSessionId(), `plan-${PLAN_CALL_ID_ACCEPT}`)
+    expect(persisted.map(item => item.acceptance).sort(), "步骤结果的验收档没有按证据闭环落盘").toEqual(["verified", "verified"])
 
     // 成功收尾取走交付暂存但不写系统消息：兜底摘要只在最终回复失败时出现。
     expect(
@@ -195,6 +210,82 @@ describe("提议计划", () => {
     ).toBe(false)
     expect(output.failure, `回合以失败结算：${output.failure?.message ?? "(无失败)"}`).toBeUndefined()
     expect(output.reply, "回合没有以模型正文收尾").toContain("计划都做完了")
+  }, 60_000)
+
+  it("计划目标绑定本轮可信用户原文，模型转述不能替换 [plan-intent-binding]", async () => {
+    await standardSetup("deny", "auto")
+    const callId = "plan-call-intent"
+    const userText = "把资料收齐后给我结论"
+    const provider = installFakeProvider([
+      // 模型多给的 intent 不在工具参数里，也不能覆盖用户事实。
+      fakeToolCall(TOOL, {
+        summary: "模型摘要",
+        intent: "模型改写的目标",
+        steps: [{ description: "收集资料", allowedTools: ["read"] }],
+      }, callId),
+      fakeText("资料已收齐"),
+      fakeText("结论如下"),
+    ])
+
+    const output = await runRuntimeTurn(userText, {
+      // 可信用户事实只从宿主入口来：这条 L3 入口默认没有身份，这里补一份与生产同形的用户信封。
+      ingress: {
+        schemaVersion: 1,
+        requestId: "req-plan-intent",
+        origin: "user",
+        querySource: "chat",
+        rawText: userText,
+        normalizedText: userText,
+        receivedAt: Date.now(),
+        priority: "now",
+        taint: "trusted_user",
+      },
+    })
+
+    const record = planCheckpointStore.snapshot(`plan-${callId}`)?.plan
+    expect(record?.intent, "计划记录的目标不是本轮用户原文").toBe(userText)
+    expect(record?.intent, "模型转述覆盖了用户目标").not.toContain("模型改写")
+    const stepPayload = provider.payloads[1] as Payload | undefined
+    // 计划目标随步骤系统提示下发（task 正文只是步骤描述）。
+    const stepPrompt = stepPayload?.systemPrompt ?? ""
+    expect(stepPrompt, "步骤子运行没有拿到用户原文").toContain(userText)
+    expect(stepPrompt, "步骤子运行拿到了模型改写的目标").not.toContain("模型改写的目标")
+    expect(stepPrompt, "步骤子运行把模型摘要当成了目标").not.toContain("模型摘要")
+    expect(output.reply).toContain("结论如下")
+  }, 60_000)
+
+  it("主回合可按步骤结果地址读回完整产出 [plan-tool-result-readback]", async () => {
+    await standardSetup("deny", "auto")
+    setOverride("ai.memory.enabled", false)
+    const callId = "plan-call-readback"
+    const tail = `尾部标记-${crypto.randomUUID()}`
+    const longReply = `开头-${"长".repeat(200)}-${tail}`
+    const provider = installFakeProvider([
+      fakeToolCall(TOOL, { summary: "可回读计划", steps: [{ description: "产出长文", allowedTools: ["read"] }] }, callId),
+      fakeText(longReply),
+      context => {
+        const planResult = toolResultTexts({ messages: context.messages }, TOOL)[0] ?? ""
+        const match = planResult.match(/plan_step_result 条目 ([^\s）]+)/)
+        expect(match, `提议计划的结果里没有步骤结果地址: ${planResult}`).not.toBeNull()
+        // 用少一位的前缀而不是完整 id：计划步骤产出必须进同一个地址命名空间才可能解析到。
+        // 不能拍脑袋截固定长度 —— UUIDv7 同毫秒条目的前 12 位可能完全相同，那会变成歧义而非前缀测试。
+        return fakeToolCall("read_session_event", { eventId: match![1]!.slice(0, -1) }, "read-plan-result")
+      },
+      fakeText("步骤原文已取回"),
+    ])
+
+    const output = await runRuntimeTurn("跑一个可以回读的计划")
+
+    expect(provider.state.callCount).toBe(4)
+    // 步骤结果只带截断预览：完整正文要靠回读地址取回。
+    const preview = toolResultTexts(provider.payloads[2] as Payload, TOOL)[0] ?? ""
+    expect(preview).toContain("原文见 plan_step_result 条目")
+    expect(preview).not.toContain(tail)
+    const readback = toolResultTexts(provider.payloads[3] as Payload, "read_session_event")[0] ?? ""
+    expect(readback, "读回结果没有说明这是计划步骤产出").toContain("[计划步骤结果]")
+    expect(readback, "读回结果没有带步骤标题").toContain("产出长文")
+    expect(readback, "读回结果没有恢复被截断的尾部").toContain(tail)
+    expect(output.reply).toContain("步骤原文已取回")
   }, 60_000)
 
   it("计划步骤跑完但最终回复失败：结果以系统消息交付 [plan-tool-delivery-fallback]", async () => {
@@ -215,10 +306,48 @@ describe("提议计划", () => {
     const delivery = systemTexts.find(text => text.includes("计划步骤已执行结束"))
     expect(delivery, "最终回复失败时计划结果没有作为系统消息交付").toBeDefined()
     expect(delivery).toContain("2/2 步完成")
-    expect(delivery).toContain("步骤 1「收集：列出当前目录」：完成")
-    expect(delivery).toContain("步骤 2「汇总结果」：完成")
+    expect(delivery).toContain("步骤 1「收集：列出当前目录」：完成（证据已核对）")
+    expect(delivery).toContain("步骤 2「汇总结果」：完成（证据已核对）")
     expect(delivery).not.toContain("第一步完成：目录已列出")
     expect(delivery).not.toContain("plan_step_result")
+  }, 60_000)
+
+  it("非只读工具失败时计划判失败、步骤不冒充完成 [plan-tool-effect-receipt]", async () => {
+    await standardSetup("deny", "auto")
+    setOverride("ai.memory.enabled", false)
+    const tool = defineTool({
+      id: "plan-tool-effect-probe", name: "plan_effect_write", description: "计划效果回执探针",
+      parameters: { type: "object", properties: {} }, safetyLevel: "SAFE",
+      source: "local", sourceId: "", actionCategory: "_default",
+      policy: {
+        version: TOOL_POLICY_VERSION,
+        permission: { defaultDecision: "passthrough" },
+        execution: { effect: "local_mutation", isolation: "exclusive_effect", replay: "never" },
+        context: { resultProjection: "preserve", historyCompaction: "summarize" },
+      },
+    }, async () => ({ success: false, content: "", error: "写入中断" }))
+    register(tool)
+    registered.push(tool.id)
+    const callId = "plan-call-effect"
+    const provider = installFakeProvider([
+      fakeToolCall(TOOL, { summary: "写配置", steps: [{ description: "写入配置", allowedTools: [tool.name] }] }, callId),
+      fakeToolCall(tool.name, {}, "effect-write-call"),
+      fakeText("配置已经写好了"),
+      fakeText("计划没有完成"),
+    ])
+
+    const output = await runRuntimeTurn("帮我写入配置")
+
+    expect(output.failure, `回合失败：${output.failure?.message ?? "(无失败)"}`).toBeUndefined()
+    expect(output.reply).toContain("计划没有完成")
+    const record = planCheckpointStore.snapshot(`plan-${callId}`)
+    expect(record?.plan.state, "未确认效果的失败步骤把计划洗成了成功").toBe("failed")
+    expect(record?.steps.map(step => step.state)).toEqual(["failed"])
+    const persisted = await planCheckpointStore.readStepResults(getActiveSessionId(), `plan-${callId}`)
+    expect(persisted[0]?.acceptance, "失败步骤的验收档不应是 verified").toBe("unverified")
+    const result = toolResultTexts(provider.payloads[3] as Payload, TOOL)[0]
+    expect(result, "工具结果没有如实报告失败").toContain("整体结果：失败或未完成")
+    expect(result, "工具结果没有说明效果未确认").toContain("未确认")
   }, 60_000)
 
   it("失败后选择继续，后续成功也保留工具、面板和持久计划的失败结果 [plan-tool-continue-failure]", async () => {
@@ -323,7 +452,10 @@ describe("提议计划", () => {
     expect((provider.payloads[1] as Payload | undefined)?.messages).toBeDefined()
     const stepPrompt = (provider.payloads[1] as Payload | undefined)?.systemPrompt ?? ""
     expect(stepPrompt).toContain(token)
-    expect(stepPrompt).toContain(entryId!)
+    // 验收档随盘上结果一起交接；地址不交接 —— 子运行读不到父会话条目。
+    expect(stepPrompt).toContain("[done|unverified] 产出令牌")
+    expect(stepPrompt).not.toContain(entryId!)
+    expect(stepPrompt).not.toContain("plan_step_result")
 
     const record = planCheckpointStore.snapshot(planId)
     expect(record?.plan.state).toBe("done")
@@ -389,23 +521,30 @@ describe("提议计划", () => {
       fakeToolCall(TOOL, { steps: [{ description: "查点东西", allowedTools: ["definitely_missing_tool"] }] }, "plan-bad-2"),
       fakeToolCall(TOOL, { steps: [{ description: "让子代理再提议", allowedTools: ["agent_spawn"] }] }, "plan-bad-3"),
       fakeToolCall(TOOL, { steps: overLimit }, "plan-bad-4"),
-      fakeText("都收到错误了"),
+      fakeText("前四个都收到错误了"),
+      // 连续失败 5 次会触发工具循环硬终止：依赖准入的坏调用放在下一回合，避免被治理截断。
+      fakeToolCall(TOOL, { steps: [{ description: "前置" }, { description: "依赖未来步骤", dependsOn: [2] }] }, "plan-bad-5"),
+      fakeToolCall(TOOL, { steps: [{ description: "前置" }, { description: "空依赖", dependsOn: [] }] }, "plan-bad-6"),
+      fakeText("依赖错误也收到了"),
     ])
 
-    const output = await runRuntimeTurn("给我一连串坏计划")
+    await runRuntimeTurn("给我一连串坏计划")
+    const output = await runRuntimeTurn("再来两个依赖有问题的计划")
 
     const last = provider.payloads[provider.payloads.length - 1] as Payload | undefined
     const results = toolResultTexts(last, TOOL)
-    expect(results.length, "四次坏调用都应有工具结果").toBe(4)
+    expect(results.length, "六次坏调用都应有工具结果").toBe(6)
     expect(results[0], "缺 description 的步骤没有被拒绝").toContain("缺少 description")
     expect(results[1], "不存在的工具名没有被拒绝").toContain("指定的工具不存在")
     expect(results[2], "派生型工具没有被拒绝（子代理不派生）").toContain("不可用于子代理")
     expect(results[3], "超过 maxSteps 的步骤没有被拒绝").toContain("步骤过多")
+    expect(results[4], "前向依赖没有被拒绝").toContain("只能引用更早的步骤 id")
+    expect(results[5], "空 dependsOn 没有被拒绝").toContain("dependsOn 必须是非空步骤 id 数组")
     // 关键否定：被拒绝的提议不得开面板、不得落计划、不得执行。
     expect(planRecords(), "被拒绝的提议仍然开了确认面板").toEqual([])
     expect(planProgress(), "被拒绝的提议仍产出了进度事件").toEqual([])
     expect(planEnds()).toEqual([])
-    expect(output.reply).toContain("都收到错误了")
+    expect(output.reply).toContain("依赖错误也收到了")
   }, 60_000)
 
   it("Schema 层拒绝（steps 为空）同样不开面板 [plan-tool-schema-reject]", async () => {

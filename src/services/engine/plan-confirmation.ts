@@ -39,6 +39,8 @@ export type PlanConfirmResult =
 export interface PendingPlanConfirm {
   planId: string
   sessionId: string
+  /** 计划目标摘要（用户可见的「要做什么」；面板与事件共用同一份）。 */
+  summary: string
   steps: PlanStep[]
   complexity: number
   forceStepByStep: boolean
@@ -206,6 +208,7 @@ export function requestPlanConfirm(plan: PlanResult, opts: {
     const view: PendingPlanConfirm = {
       planId,
       sessionId,
+      summary: plan.summary,
       steps: plan.steps,
       complexity: plan.estimatedComplexity,
       forceStepByStep: opts.forceStepByStep === true,
@@ -232,6 +235,7 @@ export function requestPlanConfirm(plan: PlanResult, opts: {
     void emitUiEvent(HOST_EVENT_PLAN_START, {
       sessionId,
       planId,
+      summary: view.summary,
       steps: view.steps,
       complexity: view.complexity,
       forceStepByStep: view.forceStepByStep,

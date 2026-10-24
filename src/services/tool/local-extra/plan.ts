@@ -40,15 +40,16 @@ type PlanAdmission =
  * 参数准入（Schema 校验之后的语义校验）。拒绝理由必须点名到步，模型据此改参再试：
  *   · steps 非空、不超过 `ai.plan.maxSteps`（超出不静默截断 —— 截断会让模型以为全部步骤都会跑）；
  *   · 每步至少给出 description 或 title（标题与说明同供时组合为「标题：说明」）；
- *   · allowedTools 给了就必须全部解析得到、且不是派生型工具（解析不到等于这一步的权限面不可信）。
+ *   · allowedTools 给了就必须全部解析得到、且不是派生型工具（解析不到等于这一步的权限面不可信）；
+ *   · dependsOn 只能引用更早的步骤 id（依赖步骤失败时本步会被跳过，不能引用未来或自身）。
+ *
+ * 计划目标不在模型参数里：`intent` 只取本轮可信用户原文（`ctx.trustedUserText`），
+ * 模型转述不能替换用户事实；没有用户原文时退回计划摘要。
  */
-function admitPlan(params: Record<string, unknown>): PlanAdmission {
+function admitPlan(params: Record<string, unknown>, trustedUserText: string | undefined): PlanAdmission {
   const raw = params.steps
   if (!Array.isArray(raw) || raw.length === 0) {
     return { ok: false, reason: "步骤列表不能为空：steps 至少要有 1 步" }
-  }
-  if (params.intent !== undefined && typeof params.intent !== "string") {
-    return { ok: false, reason: "intent 必须是字符串（用户原始请求或等价目标）" }
   }
   const maxSteps = planConfig.maxSteps
   if (raw.length > maxSteps) {
@@ -89,6 +90,19 @@ function admitPlan(params: Record<string, unknown>): PlanAdmission {
       }
       allowedTools = names
     }
+    let dependsOn: number[] | undefined
+    if (row.dependsOn !== undefined) {
+      if (!Array.isArray(row.dependsOn) || row.dependsOn.length === 0
+        || row.dependsOn.some(dep => typeof dep !== "number" || !Number.isInteger(dep))) {
+        return { ok: false, reason: `第 ${at} 步的 dependsOn 必须是非空步骤 id 数组（不依赖请省略它）` }
+      }
+      const deps = [...new Set(row.dependsOn as number[])]
+      const invalid = deps.filter(dep => dep < 1 || dep >= at)
+      if (invalid.length > 0) {
+        return { ok: false, reason: `第 ${at} 步的依赖只能引用更早的步骤 id（收到 ${invalid.join("、")}）` }
+      }
+      dependsOn = deps
+    }
     const role = typeof row.role === "string" ? row.role.trim() : ""
     steps.push({
       id: at,
@@ -96,20 +110,20 @@ function admitPlan(params: Record<string, unknown>): PlanAdmission {
       description: title !== "" && description !== "" && title !== description ? `${title}：${description}` : (description || title),
       ...(role !== "" ? { role } : {}),
       ...(allowedTools ? { allowedTools } : {}),
+      ...(dependsOn ? { dependsOn } : {}),
     })
   }
   const summary = typeof params.summary === "string" && params.summary.trim() !== "" ? params.summary.trim() : "执行计划"
-  // 原目标优先取模型显式给出的 intent；没给（或只有空白）时退回计划摘要 —— 摘要通常就是目标的浓缩，
-  // 至少让步骤子代理看到「为什么做这些步骤」，而不是只有一串互不相干的标题。
-  const intent = typeof params.intent === "string" ? params.intent.trim() : ""
-  return { ok: true, steps, summary, intent: intent !== "" ? intent : summary }
+  // 原始目标只认用户原文：模型摘要只是没有用户原文时的降级（提议入口仍在可信回合内）。
+  const intent = trustedUserText?.trim() ? trustedUserText.trim() : summary
+  return { ok: true, steps, summary, intent }
 }
 
 const proposePlanTool: ToolDef = defineTool({
   id: "local-propose-plan",
   name: PROPOSE_PLAN_TOOL,
   description:
-    "向用户提议一个多步骤执行计划并请求确认：用户在你的计划面板点「开始」后，系统逐步执行（每步由子代理完成）并按步骤返回执行结果；用户取消或计划面板不可用时不执行任何步骤，结果会如实说明。需要用户确认的多步操作必须用本工具请求确认，不要用 osascript / display dialog 等 GUI 弹窗命令等待用户输入（弹窗会因工具超时而变成孤儿窗口，确认也到不了用户面前）。",
+    "向用户提议一个多步骤执行计划并请求确认：用户在你的计划面板点「开始」后，系统逐步执行（每步由子代理完成）并按步骤返回执行结果；步骤可用 dependsOn 声明对更早步骤的依赖（依赖未完成时该步跳过并说明原因）；用户取消或计划面板不可用时不执行任何步骤，结果会如实说明。需要用户确认的多步操作必须用本工具请求确认，不要用 osascript / display dialog 等 GUI 弹窗命令等待用户输入（弹窗会因工具超时而变成孤儿窗口，确认也到不了用户面前）。",
   parameters: {
     type: "object",
     properties: {
@@ -124,11 +138,11 @@ const proposePlanTool: ToolDef = defineTool({
             title: { type: "string", description: "短标题（可选）：与 description 同时给出时组合为「标题：说明」" },
             role: { type: "string", description: "该步子代理的角色名（可选，如 文件分析员）" },
             allowedTools: { type: "array", items: { type: "string" }, description: "该步允许使用的工具名（可选；缺省为除派生型工具外的全部已注册工具）" },
+            dependsOn: { type: "array", items: { type: "integer" }, description: "该步依赖的更早步骤 id（可选；依赖步骤未完成时本步会被跳过）" },
           },
         },
       },
       summary: { type: "string", description: "一句话概述计划（可选）" },
-      intent: { type: "string", description: "用户的原始请求或等价目标（可选；用于把目标传给每个步骤子代理，缺省用 summary）" },
     },
     required: ["steps"],
   },
@@ -159,7 +173,7 @@ const proposePlanTool: ToolDef = defineTool({
   if ((ctx.isCurrent && !ctx.isCurrent()) || ctx.signal?.aborted) {
     return { success: false, content: "", error: "回合已取消", errorCode: "cancelled" }
   }
-  const admission = admitPlan(params)
+  const admission = admitPlan(params, ctx.trustedUserText)
   if (!admission.ok) {
     log.warn("提议计划参数被拒绝:", admission.reason)
     return { success: false, content: "", error: admission.reason, errorCode: "failed" }

@@ -45,7 +45,7 @@ import {
   requestPlanConfirm, requestPlanStepDecision,
 } from "../plan-confirmation"
 import {
-  executePlan, formatPlanDeliverySummary, normalizePlan, planEffectClassFor, planToRecords,
+  executePlan, formatPlanDeliverySummary, normalizePlan, planEffectClassFor, planStepAcceptance, planToRecords,
 } from "../planner"
 import type { PlanExecutionResult, PlanResult, PlanStep } from "../planner"
 import { planCheckpointStore } from "./checkpoint-store"
@@ -197,7 +197,7 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
     await planSettlement.withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
     bindRunningPlan(sessionId, planId, planAbort)
     // 步骤产出证据（PLAN-09②）与显式命令入口同一条写盘链：entry id 在 `onStepDone` 里与
-    // checkpoint 同一收口落盘并就地返回，`executePlan` 直接写进本步结果供后续步骤交接引用。
+    // checkpoint 同一收口落盘并就地返回，`executePlan` 直接写进本步结果供 `formatStepResults` 标注。
     let stepStartedAt = 0
     const result = await executePlan(plan, {
       intent: input.intent,
@@ -229,7 +229,7 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
           planId,
           stepId: String(step.id),
           title: step.description,
-          acceptance: "unverified",
+          acceptance: planStepAcceptance(output),
           index: plan.steps.findIndex(item => item.id === step.id),
           success: output.success,
           durationMs: Date.now() - stepStartedAt,
@@ -238,8 +238,17 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
           ...(output.error ? { error: output.error } : {}),
           summaryHash: await sha256Text(replyText),
         }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
-        // 返回回读地址供后续步骤交接引用；写盘失败仍返回 undefined。
+        // 返回回读地址供 `formatStepResults` 标注；写盘失败仍返回 undefined。
         return entryId
+      },
+      // 依赖未满足（失败或被跳过）：本步不开工、不占 attempt，落 skipped；
+      // 与显式命令入口同款写进度事件与聊天说明，跳过原因不能只留在结果文本里。
+      async onStepSkipped(step, reason) {
+        assertCurrent()
+        await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
+        void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: `${step.description}（${reason}）`, status: "warning" })
+        const index = plan.steps.findIndex(item => item.id === step.id) + 1
+        pushSystemMessage(`计划第 ${index} 步已跳过：${reason}`, sessionId)
       },
       // 工具解析报告（FIX-51，2026-10-06 收窄）：与显式命令入口 `runtime.ts::runPlanPhase`
       // 同一口径 —— 工具名不存在（真异常）发系统消息；未限定工具属例行情形，只留进度事件，

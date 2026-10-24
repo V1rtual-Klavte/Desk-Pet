@@ -1,3 +1,6 @@
+// 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 runtime.ts 仅计划相关分支变化
+// （可信用户原文注入、规划器权限面、跳过回调与验收档），分泡解析、沉默护栏、逐泡揭示与
+// 顶栏所有权释放链路未改；hz-01..04 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-24 记忆引用溯源批次（定向复核）：sourceFiles 中 runtime.ts 只在回合提交后追加
 // deskpet.memory_citations 自定义条目；拟人分泡解析、沉默护栏、逐泡揭示与顶栏所有权释放
 // 链路未改，hz-01..04 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -142,7 +145,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "3fb5abe41b21ea780f1ffb6a364c23e019d56f929b5e6f25e7cf6d29c7a65031",
+  sourceHash: "ed9123a9435d955f5a2470fd3eceaa14c5b805d94ded98a02f111abecde49c4f",
   coverage: [
     {
       id: "hz-01",

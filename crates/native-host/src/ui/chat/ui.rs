@@ -511,12 +511,20 @@ impl ChatUi {
                 ChatEvent::PlanStart {
                     session_id,
                     plan_id,
+                    summary,
                     steps,
                     complexity,
                     force_step_by_step,
                 } => {
                     // 没有本地期限：面板一直等用户拍板（2026-10-06 用户裁决）。
-                    model.plan_start(session_id, plan_id, steps, complexity, force_step_by_step);
+                    model.plan_start(
+                        session_id,
+                        plan_id,
+                        summary,
+                        steps,
+                        complexity,
+                        force_step_by_step,
+                    );
                 }
                 ChatEvent::PlanProgress {
                     session_id,
@@ -1843,6 +1851,7 @@ mod tests {
         ui.apply_event(ChatEvent::PlanStart {
             session_id: "s1".into(),
             plan_id: "p1".into(),
+            summary: "完成第一步".into(),
             steps: vec![crate::ui::chat::events::PlanStepWire {
                 id: 1,
                 description: "第一步".into(),
@@ -1875,6 +1884,7 @@ mod tests {
         ui.apply_event(ChatEvent::PlanStart {
             session_id: "s1".into(),
             plan_id: "p1".into(),
+            summary: "目标".into(),
             steps: vec![],
             complexity: 1,
             force_step_by_step: false,
@@ -2035,6 +2045,7 @@ mod tests {
         ui.apply_event(ChatEvent::PlanStart {
             session_id: "s1".into(),
             plan_id: "p1".into(),
+            summary: "目标".into(),
             steps: vec![],
             complexity: 1,
             force_step_by_step: false,
@@ -2075,6 +2086,7 @@ mod tests {
         ui.apply_event(ChatEvent::PlanStart {
             session_id: "s1".into(),
             plan_id: "p1".into(),
+            summary: "目标".into(),
             steps: vec![],
             complexity: 1,
             force_step_by_step: false,
