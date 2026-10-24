@@ -1,3 +1,16 @@
+// 2026-10-24 编辑器保存写盘批次：新增 nui-37（2 个 L3 caseId）—— 编辑器保存此前只有
+// L2 记录型假桥覆盖，真实落盘与「主窗舞台 / 编辑器预览同构」没有证据；现以隔离数据根
+// 走真实 Profile/CONFIG 文件 I/O（只拦 apply_stage_profile 以记录舞台载荷），并补入
+// profile/loader.ts 的缓存收敛定义点。原生窗口的预览绘制与 promote 仍不在此契约冒充。
+// 2026-10-24 契约覆盖复核批次（analyze 定向）：nui-11 的「设置页与抽屉是同一份配置的两个面」
+// 已随「设置页瘦身」失效 —— `ai.thinking.effort` 撤下设置页控件（值保留在 CONFIG/YAML），
+// 只剩抽屉；defaultDelivery / safety.mode 仍是两面共用。抽屉三键的重推行为未变，仅订正
+// 描述；nui-35 的分钟精度时区渲染与实现不符（formatTime 未使用 anchor.timezone）已登记到
+// 《未完成工作与已知缺口》§5，不在此改行为。sourceHash 按当前源码复算。
+// 2026-10-24 Card 管理请求面批次：新增 nui-36（6 个 L2 caseId），补齐 2026-10-05 登记为
+// 已知缺口的四条请求臂（card_manage / card_markdown_read / card_markdown_write /
+// card_template）的管理往返、文件对话框、错误码与运行时模板读取；同批修正测试宿主桥
+// optionalArg 对 Rust Option<T> 的 null 语义（只在测试替身内）。sourceHash 按当前源码复算。
 // 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 host/types.ts 的 plan-start 载荷
 // 新增计划 summary（原生面板渲染目标与步骤权限面；Rust 侧渲染单测在 ui/chat model.rs，
 // 该行为归 planner pl-09/pl-12）；原生 UI 命令、推送、决策与设置面未改，nui-* 未修订
@@ -223,8 +236,12 @@ export const nativeUiContract: ModuleContract = {
     // 2026-10-06 验收 analyze→generate 补入（nui-32）：历史列表（sessionHistory）在同一次刷新里
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
+    // 2026-10-24 编辑器保存写盘批次（nui-37）：保存后把激活 Profile 的 loader 缓存收敛到
+    // 刚落盘的 profile.yaml —— refreshProfileAssets 的失效/重读在这里；改坏它会让主窗下一次
+    // 推送仍带旧层，而 L3 的「舞台快照与回读同构」用例会红，hash 不算上它就漏判。
+    "src/services/profile/loader.ts",
   ],
-  sourceHash: "c45389831c0db83d60b596eb6413c250d880e2245fb7551998ef15c02338be8d",
+  sourceHash: "70e05ea3e474865418e880de2efa26a33012fb9fc6ab1b6cf10b963fe558f408",
   coverage: [
     {
       id: "nui-34",
@@ -366,7 +383,7 @@ export const nativeUiContract: ModuleContract = {
       id: "nui-11",
       feature: "settings_commit 的运行期重应用（观察总闸 / 静默了解 / 主动刷新 / 日志级别 / 拟人揭示 / 抽屉三键重推投影）",
       description:
-        "提交 ai.silentAccess.* 时重应用观察总闸（set_monitor_enabled 走既有开关入口，且发生在写盘之后）、静默了解调度起停并 refreshProactive；与 silentAccess 无关的提交不触碰观察总闸（按变更键裁定，不做无关副作用）；提交 general.logging.level 时下发 set_log_config（记为数值级别）；提交拟人开关时 revealAll()；提交抽屉三键（ai.conversation.defaultDelivery / ai.thinking.effort / ai.safety.mode）任一键时经 pushSessionProjection 重推一帧会话投影、且发生在写盘之后——抽屉三个下拉的选中态来自投影（宿主不读 CONFIG），设置页与抽屉是同一份配置的两个面、改完要让抽屉即时跟上；无关键不推（同一按变更键裁定，不放大副作用）；重应用失败只留痕——不回滚已保存的配置、不把保存判成失败",
+        "提交 ai.silentAccess.* 时重应用观察总闸（set_monitor_enabled 走既有开关入口，且发生在写盘之后）、静默了解调度起停并 refreshProactive；与 silentAccess 无关的提交不触碰观察总闸（按变更键裁定，不做无关副作用）；提交 general.logging.level 时下发 set_log_config（记为数值级别）；提交拟人开关时 revealAll()；提交抽屉三键（ai.conversation.defaultDelivery / ai.thinking.effort / ai.safety.mode）任一键时经 pushSessionProjection 重推一帧会话投影、且发生在写盘之后——抽屉三个下拉的选中态来自投影（宿主不读 CONFIG）；其中 defaultDelivery 与 safety.mode 同时有设置页控件，思考强度自「设置页瘦身」起只在抽屉（值保留在 CONFIG/YAML），两个面的写入都要让抽屉即时跟上；无关键不推（同一按变更键裁定，不放大副作用）；重应用失败只留痕——不回滚已保存的配置、不把保存判成失败",
       why: "不重应用则「改开关要重启才生效」；失败回滚会把已落盘的配置判成未保存，失败抛出则把保存整件事判成失败",
       layer: "unit",
       depth: "deep",
@@ -636,6 +653,38 @@ export const nativeUiContract: ModuleContract = {
       layer: "unit",
       depth: "shallow",
       scenarios: ["native-ui-memory-temporal-detail"],
+    },
+    // 2026-10-24 Card 管理请求面批次（analyze→generate）：新增 nui-36（L2）。
+    {
+      id: "nui-36",
+      feature: "Card 管理的请求往返与文件对话框",
+      description:
+        "四条请求臂在真实临时数据根与 Node 宿主桥上往返：card_manage 的 list 返回 {cards:[{id,name}]}；create 落模板骨架并按撞名追加后缀、rename 只改 frontmatter 的 name（文件名与 id 不动）、delete 同删卡文件与 stages 并从列表移除；export/import 经 pick_file_save / pick_file_open（suggestedName、filterLabel、extension 与 extensions/label 逐项）完成与磁盘一致的读写，取消对话框返回「已取消导入/导出」且零写入；未知 op、缺 name/cardId、缺正文以 CONFIG 拒绝，导出未知卡以 PATH_NOT_FOUND 拒绝且不弹对话框，导入无效内容拒绝且目录不变；card_markdown_read 逐字返回磁盘原文、card_markdown_write 落盘后回读一致，改 id 与缺 frontmatter 拒绝且文件不动，无激活 Card 时读写以 PATH_NOT_FOUND /「没有激活的 Card」收口；card_template 读运行时模板（随运行时改动变化），缺失时如实抛「恢复默认资源」",
+      why: "四条请求臂此前只有领域侧单测：请求名、参数与回执形状错位不会被领域测试发现。对话框是宿主唯一入口，取消与错误码必须在这里钉住——把取消当失败、把未知卡导出成空文件或把无效导入静默落盘，都会让设置页显示与磁盘分叉",
+      layer: "unit",
+      depth: "deep",
+      scenarios: [
+        "native-ui-card-manage-roundtrip",
+        "native-ui-card-manage-transfer",
+        "native-ui-card-manage-errors",
+        "native-ui-card-markdown-roundtrip",
+        "native-ui-card-markdown-reject",
+        "native-ui-card-template",
+      ],
+    },
+    // 2026-10-24 编辑器保存写盘批次（generate）：新增 nui-37（L3，隔离数据根 + 真实文件 I/O）。
+    {
+      id: "nui-37",
+      feature: "编辑器保存的真实落盘与舞台/预览同构",
+      description:
+        "在隔离数据根上经真实 Profile/CONFIG 文件 I/O 保存：editor_save 读-改-写 profile.yaml（保留编辑器无关的段）、image 去 profileId 前缀写回、空素材层写空串；强度变化写回 CONFIG，effectEnabled 只随载荷回报不写回总开关；顺序为 profile.yaml 落盘 → CONFIG 强度写回 → 才推舞台；舞台快照取刚写盘的草稿（空素材层不推），开关与基准宽取 getter 现值；编辑器未改值时主窗舞台快照（loader 投影）与 editor_load 回读逐层同构，保存后回读与舞台快照同构且 loader 缓存收敛到磁盘",
+      why: "L2 的记录型假桥只看命令参数，证明不了真的写盘、也证明不了主窗舞台与编辑器预览来自同一份真相；两处投影各自读不同来源时，用户会看到「预览已改、主窗没变」或反向分叉",
+      layer: "integration",
+      depth: "deep",
+      scenarios: [
+        "native-ui-editor-untouched-consistency",
+        "native-ui-editor-save-persist",
+      ],
     },
   ],
   // 本契约全部覆盖点在 L2 / L3：原生 UI 桥的推送与请求面是纯适配层，不需要真 Rust 边界

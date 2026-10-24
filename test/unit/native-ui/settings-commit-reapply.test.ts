@@ -149,7 +149,7 @@ describe("settings_commit 的运行期重应用", () => {
     expect(typeof logConfig[0].args.level).toBe("number")
   })
 
-  it("提交抽屉三条键时重推会话投影（设置页与抽屉两个面同刻一致）[native-ui-settings-reapply-drawer]", async () => {
+  it("提交抽屉三条键时重推会话投影（投影重推后抽屉选中态即时跟上）[native-ui-settings-reapply-drawer]", async () => {
     const { bridge, calls } = fakeBridge()
     setHostBridge(bridge)
     await initConfig()
