@@ -1,3 +1,7 @@
+// 2026-10-24 故障槽恢复与共享图片批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口
+// 新增故障槽显式恢复，harness-slot.ts 新增 isFaulted/recoverFaulted，manager.ts 的删会话图片
+// 清理新增跨会话引用过滤；权限判定、确认/放行通道与策略冻结未改，sf-* 未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
 // 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 tool/types.ts 的 ToolContext 新增
 // 可选 trustedUserText（宿主只在可信用户回合注入，模型参数不能伪造）；权限判定、确认/放行
 // 通道与策略冻结未改，sf-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -146,7 +150,7 @@ import type { ModuleContract } from "../host/types"
 export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/engine/user-wait.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/paths/security.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
-  sourceHash: "49634a7fc46c64a758541877d7e39ff9524ccdf9dadf7b8fc1f0cf6a5044b376",
+  sourceHash: "436e64c23f7a1d5b39f267fae3a6970a261828fd24ea2424206a3f88a1ae8392",
   coverage: [
     { id: "sf-25", feature: "持久任务授权与后台非交互权限",
       description: "PermissionKernel 接收 host 绑定的 TaskToolAuthorization，NOWAY 与工具 deny 仍先裁决，不能被任务授权覆盖；其余每件工具（含 SAFE）都校验精确工具/参数范围及 inputHash/policyHash，并在授权 await 后复查任务生命周期。有效持久授权可满足已授权任务的 ask；范围外返回 ask，需要额外输入。permissionMode=background 的 ask 立即返回，不创建交互确认等待；没有 taskAuthorization 的主回合保持原确认与会话授权语义。",

@@ -1,3 +1,7 @@
+// 2026-10-24 故障槽恢复与共享图片批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口
+// 新增故障槽显式恢复，harness-slot.ts 新增 isFaulted/recoverFaulted，manager.ts 的删会话图片
+// 清理新增跨会话引用过滤；观察、静默了解与钟点调度不经过这两条路径，ob-* 未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
 // 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 runtime/types.ts 仅计划步骤记录
 // 新增可选 dependsOn；观察、静默了解与钟点调度不读取计划记录，ob-01..07 未修订覆盖点，
 // 仅按当前源码刷新 sourceHash。
@@ -324,7 +328,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "b3d716217f3a1cd3c4670f66bc26a4e8825b8fa69f482a28ce8ec791cc7d0510",
+  sourceHash: "3c9f0e3ed589ae99aeda1e20f363feab7a13100ec0a0b5d165ad80f27417f858",
   coverage: [
     {
       id: "ob-01",

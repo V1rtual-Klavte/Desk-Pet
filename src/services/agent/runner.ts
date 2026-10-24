@@ -487,6 +487,9 @@ async function dispatchMessageInner(
     pushSystemMessage(notice, originSessionId)
     return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "admission", message: notice } }
   }
+  // 内核 fault 会密封整条 Harness，槽不再接受任何运行；用户发来新消息就是显式恢复入口：
+  // 放掉故障槽，后面的 begin 新建槽并从盘上重开会话。不做静默重试，也不把故障当忙永久拒绝。
+  await harnessSlots.recoverFaulted(originSessionId)
   await cancelActiveRunForUserInput(originSessionId)
   // 输入身份与来源在入口只生成一次：忙碌投递与空闲回合共用同一个 requestId 与 envelope，
   // 投递证据链（describeInputDelivery）才能对两种路径给出同一套证据（STATE-01 / ar-12）。

@@ -8,9 +8,10 @@
 //   · 恢复路径：失败只影响这一条文案 —— 下一代运行（新 generation）的写入照常落盘，
 //     失败的那条不被重放、不顶掉新状态（旧代际不覆盖新状态）。
 //     注意恢复的第 0 步：会话写入失败会把整条 Harness 打成故障态（Pi 的 lane 提交失败 =
-//     harness fault，密封整个 harness），按设计「fault 后该会话停止驱动，需宿主显式处理，
-//     不静默重建」（harness-slot.ts §8.7.4）。因此用例先钉住故障前提、由宿主显式放掉故障槽，
-//     下一次运行再从盘上重新打开会话 —— 恢复不是同一槽的无处理续跑。
+//     harness fault，密封整个 harness），按设计「fault 后该会话停止驱动，不静默重建」
+//     （harness-slot.ts §8.7.4）。恢复入口是**下一条用户消息**：回合入口在准入前显式放掉
+//     密封槽，再由 begin 新建槽从盘上重新打开会话 —— 恢复不是同一槽的无处理续跑，也不要求
+//     用户先删会话（本用例不手工 dispose，恢复必须由 sendMessage 自己完成）。
 //
 // 故障注入点（测试内定义，生产代码一行不动）：`NativeExecutionEnv.prototype.appendFile`。
 // 会话 JSONL 的每次提交都是「appendFile 一行事务」（jsonl/storage 的 applyCommit），它就是
@@ -181,13 +182,20 @@ describe("回合文案落盘故障（persistFailed 消费链）", () => {
       harnessSlots.snapshot(sessionId)?.state,
       "注入没有把 Harness 打成故障态：恢复前提不成立",
     ).toBe("faulted")
-    // 宿主显式处理故障（§8.7.4）：放掉故障槽（密封的 harness 只能整条重开，不能原地续跑）。
-    await harnessSlots.dispose(sessionId)
-    expect(harnessSlots.snapshot(sessionId), "故障槽没有被放掉，下一次运行无从重开会话").toBeUndefined()
+    const faultedSlot = harnessSlots.peek(sessionId)
+    expect(faultedSlot, "故障态没有对应的槽对象：恢复前提不成立").toBeDefined()
 
-    // 下一代运行：同一会话、新槽（从盘上重开），故障仍武装（内容判据只命中兜底文案，
-    // 正常回复不受影响）——「盘上没有的东西不因重开而复活、新写入照常持久」正是恢复面要证的事。
+    // 下一代运行由**用户消息入口**自行完成故障恢复：显式放掉密封槽 → begin 新建槽 → 从盘上重开。
+    // 生产代码不静默重建故障槽，但用户发新消息就是显式处理（否则会话只能靠删会话复活）。
     const second = await sendMessage(TURN2_TEXT)
+    expect(
+      harnessSlots.peek(sessionId),
+      "故障槽没有被用户新回合放掉重建（同一密封槽仍在表里）",
+    ).not.toBe(faultedSlot)
+    expect(
+      harnessSlots.snapshot(sessionId)?.state,
+      "恢复后的会话槽仍处于故障态",
+    ).not.toBe("faulted")
     expect(second.failure, `恢复回合失败: ${second.failure?.message ?? "(无失败)"}`).toBeUndefined()
     expect(second.outcome, "恢复回合没有成功").toBe("succeeded")
     expect(second.persistFailed, "恢复回合被误报为落盘失败").toBeUndefined()

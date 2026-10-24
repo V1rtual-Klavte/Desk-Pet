@@ -1,3 +1,7 @@
+// 2026-10-24 故障槽恢复批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口新增故障槽
+// 显式恢复（recoverFaulted → dispose），harness-slot.ts 新增 isFaulted/recoverFaulted，open()
+// 仍不静默重建故障槽。会话 JSONL 帧、折叠、事务、保留与文件夹具未改，hs-* 未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
 // 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 harness-slot.ts 的可回读条目扫描
 // 从「message/toolResult」扩为「工具结果 + plan_step_result 自定义条目」，地址集合与读取
 // 语义随之扩大；会话 JSONL 帧、折叠、事务、保留与文件夹具未改，hs-01..hs-11 未修订覆盖点，
@@ -82,7 +86,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/engine/harness/harness-slot.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加内存字段，JSONL 条目 schema 未变；定向复核后刷新。
-  sourceHash: "a9c14373ac28454c3e1dcedfa0de85aeeabc881e385f3c74f52bc1ccc432b5d0",
+  sourceHash: "5ba6548264e904dfdcb7bca195ac1c6f7db37283f9051f84d3a15f7c4a4b6bc6",
   coverage: [
     {
       id: "hs-11",

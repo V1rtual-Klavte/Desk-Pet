@@ -1,3 +1,7 @@
+// 2026-10-24 托管图片跨会话引用批次：manager.ts 的删会话清理先扫描其余会话仍引用的
+// 图片路径，只把「无人引用」的路径交给宿主命令；全部仍被引用时不再调用宿主，扫描失败
+// 按失败安全跳过本次清理（残留可后续回收，误删不可逆）。ci-07 描述与场景同步新增
+// session-delete-images-shared-ref / -all-shared；ci-01..06 未修订。sourceHash 按当前源码复算。
 // 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 runtime.ts 仅计划相关分支变化
 // （可信用户原文注入、规划器权限面、跳过回调与验收档），Rust model.rs/ui.rs 仅计划面板
 // 渲染目标摘要与步骤权限面；图片准入、截图、预览、托管删除与请求投影未改，ci-01..06
@@ -191,7 +195,7 @@ export const chatImagesContract: ModuleContract = {
     "crates/native-host/src/ui/chat/ui.rs",
   ],
   // 2026-10-18 列项答案补全批次：补全在截图并入前完成，图片条目行为不变；定向复核后刷新。
-  sourceHash: "7614040d1d0cd3b983eb74b9d5c549057e25593cc2d7ee98a79ada346503f7c3",
+  sourceHash: "9c6efcdbd847dc2c59c450ac36cba5ea0d2f50ba593a6c422f3a01ebb6258f9c",
   coverage: [{ id: "ci-01", feature: "用户图片原路径整链", description: "原生常规图片准入最多4张/15MiB，图片-only输入提交后持久JSONL只存路径；模型请求临时读取真实图像，原文件删除后展示投影仍保留路径、请求明确缺失而无图像副本", why: "文本和UI缩略图不能证明模型收到了图像，也不能证明编码未进入JSONL", layer: "e2e", depth: "deep", scenarios: ["chat-image-path-production"] },
     { id: "ci-02", feature: "视觉预算与审计投影", description: "真实用户图像参与主请求与辅助请求的统一保守预算；base64长短不冒充语言token，完整图像内容仍进入仅hash审计投影", why: "图片预算为零会使上下文与主动持久额度准入失真，图像变化也不能得到相同审计内容", layer: "unit", depth: "deep", scenarios: ["chat-image-budget-content-hash"] },
     { id: "ci-03", feature: "截图展示给用户与隐私总闸", description: "screenshot 工具只在 ai.silentAccess.frequency 非 off（低/中/高档）时可用：Rust capture_screenshot 复检同一档位（off 即 Cancelled），前端命中时返回中性说明且不触达采集/落盘；show_to_user=true 时截图先经 save_screenshot 原子落盘（数据根 screenshots/；2026-10-06 取消 200 张保留上限，落盘文件不再被淘汰，回收只有删会话连带清理与用户手动删除）再挂到本回合提交的助手条目 deskpetImagePaths，读模型重载带回、原文件删除后仍保留路径（界面按不可用呈现）；show_to_user 缺省/false 时不落盘（不调用 save_screenshot、数据根不产生文件），工具结果 details 只有 showToUser、不带 screenshotPath，不挂条目、结算不回传；工具结果对模型始终携带 PNG image 块（私有截图模型照常看得见内嵌图片）", why: "「她给你看她看到的画面」要求条目与文件同源（先文件后条目、取消不产生半条消息），且隐私档位为 off 时不能截；私有截图不该在数据根留下用户没要展示的文件", layer: "integration", depth: "deep", scenarios: ["screenshot-show-to-user-attach", "screenshot-default-private", "screenshot-gate-neutral"] },
@@ -214,6 +218,6 @@ export const chatImagesContract: ModuleContract = {
     // 切会话、退出回滚）与「发送只清列表不删文件」的区分由 `PendingDraftRelease::{Send,Discard}`
     // 在类型上承载，行为由 placeholders.rs / model.rs / ui.rs 的 Rust 单测背书（managed 项才删、
     // 用户自有文件一律不删；无 caseId，故不登记覆盖点，文件已纳入 sourceFiles）。
-    { id: "ci-07", feature: "删会话清理托管聊天图片", description: "删会话成功后，从该会话全部 message 条目收集图片路径（跨条目重复引用去重成一个集合）交给宿主命令 chat_delete_session_images：恰好一次调用，载荷同时含托管图片（screenshots/、pasted/）与条目里只存路径的用户原图 —— 两类都如实交出，删不删由 Rust 按托管根包含判定（Node 侧不删任何文件，含已删除会话的托管图片文件仍原样存在）；条目里没有任何图片路径时不调用宿主（不产生空请求）；宿主清理失败只留痕，deleteSession 照常返回 true（2026-10-06 取消 200 张保留上限后残留不再自动淘汰，留在目录中由用户手动删除）", why: "删会话是用户可见的破坏动作：漏清托管图片会让数据根累积无人引用的截图/粘贴图（没有别的回收点），而越界删除（用户原图）或把失败伪装成成功是不可逆的数据损失；去重收集、空集不调用与失败不改返回三条边界各自有独立用例实测，包含判定则必须由 Rust 侧负向断言（根外不删）背书", layer: "integration", depth: "deep", scenarios: ["session-delete-images-call", "session-delete-images-empty", "session-delete-images-failure"] }],
+    { id: "ci-07", feature: "删会话清理托管聊天图片", description: "删会话成功后，从该会话全部 message 条目收集图片路径（跨条目重复引用去重成一个集合），再扫描其余会话条目剔除仍被引用的路径，只把剩余死路径交给宿主命令 chat_delete_session_images：恰好一次调用，载荷同时含托管图片（screenshots/、pasted/）与条目里只存路径的用户原图 —— 两类都如实交出，删不删由 Rust 按托管根包含判定（Node 侧不删任何文件，含已删除会话的托管图片文件仍原样存在）；其他会话仍引用同一张图时该路径不交出（fork 共享引用不能误删），最后一个引用会话删除后才清理，过滤后为空则不调用宿主；条目里没有任何图片路径时不调用宿主（不产生空请求）；扫描其他会话引用失败时按失败安全跳过本次清理（无法证明无人引用就不删）；宿主清理失败只留痕，deleteSession 照常返回 true（2026-10-06 取消 200 张保留上限后残留不再自动淘汰，留在目录中由用户手动删除）", why: "删会话是用户可见的破坏动作：漏清托管图片会让数据根累积无人引用的截图/粘贴图（没有别的回收点），而越界删除（用户原图）或把失败伪装成成功是不可逆的数据损失；共享图片被其他会话引用时误删会直接破坏那个会话的聊天记录，因此清理口径必须是「最后一个引用者删除时才清理」；去重收集、跨会话过滤、空集不调用与失败不改返回各自有独立用例实测，包含判定则必须由 Rust 侧负向断言（根外不删）背书", layer: "integration", depth: "deep", scenarios: ["session-delete-images-call", "session-delete-images-shared-ref", "session-delete-images-all-shared", "session-delete-images-empty", "session-delete-images-failure"] }],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: true },
 }

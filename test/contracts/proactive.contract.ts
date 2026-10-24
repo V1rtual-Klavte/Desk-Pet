@@ -1,3 +1,7 @@
+// 2026-10-24 故障槽恢复与共享图片批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口
+// 新增故障槽显式恢复，harness-slot.ts 新增 isFaulted/recoverFaulted，manager.ts 的删会话图片
+// 清理新增跨会话引用过滤；主动回合不调用恢复入口（故障不被主动流程静默洗掉），主动机会、
+// 约定、回执与 presence 的线形状未改，pr-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 tool/types.ts 的 ToolContext 新增
 // 可选 trustedUserText（宿主只在可信用户回合注入，模型参数不能伪造）；主动回合不注入该字段，
 // 主动机会、约定、回执与 presence 的线形状未改，pr-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -290,7 +294,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "51d8b5d2a7955a88e4ffa3a9d147d2fd52dbf44c2635c22ca5f03a38dbde90ba",
+  module:"proactive",sourceHash: "14f4bb146bdd528aa78032b485f837dfc4311f15d75c3c0cbf4aa7269888683e",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

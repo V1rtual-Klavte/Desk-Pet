@@ -1,3 +1,9 @@
+// 2026-10-24 故障槽恢复批次：runner.ts 的用户消息入口在准入前显式恢复已密封的故障槽
+// （`harnessSlots.recoverFaulted` → dispose，随后 begin 新建槽从盘上重开会话），不再把
+// 「内核 fault」当永久忙碌拒绝到删会话；harness-slot.ts 新增 isFaulted/recoverFaulted，
+// open() 仍不静默重建故障槽，主动回合/结构操作不代为恢复。ar-41 的恢复面描述同步改为
+// 「下一条用户消息自动重开」，`runtime-reply-persist-failure-recovery` 用例从手工 dispose
+// 改为由 sendMessage 自行完成恢复；其余 ar-* 覆盖点未修订。sourceHash 按当前源码复算。
 // 2026-10-24 计划抗漂移批次（定向复核）：ar-41 的步骤子运行证据面补记「失败的非只读工具
 // 回执（afterTool 与 onChildToolResult 两路）标记 unconfirmedEffects」—— 写盘/进程/外部效果
 // 的失败都可能已产生效果，通用 outputContract 可据此拒绝非空正文；该行为的计划侧断言归
@@ -294,7 +300,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "fd179266f000f665284c02d75dfab17c0932689075f7cfca5b5db096a280da05",
+  sourceHash: "7a2e25db747d7af1b2c6d3b3e586e0c1f3f5e5c3996de22ecd1bdcc5408e1363",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -667,7 +673,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-36",
       feature: "回合失败文案的持久写入失败与恢复（persistFailed 消费链）",
-      description: "结算兜底文案的持久写入失败被如实处置，不吞、不重放、可观测：settleMainTurn 的失败兜底回复经会话唯一物理持久边界（appendFile → JSONL 一行事务）写入失败时，回合仍按失败分类正常结算（不抛错吞回合），返回的可见回复仍是兜底文案（界面不会看不到回复），同时置位 SendMessageResult.persistFailed；盘上没有那条文案（原始 JSONL 无该内容、读模型不把它记成助手条目，用户的输入在故障前已落盘）；runner 补一条统一系统消息（「这条回复没能写进会话文件…」）并把事实透传为 persistFailed（宿主据此提示用户）。恢复面：第 0 步是宿主显式放掉已密封的故障槽（`harnessSlots.dispose`；上游 fault 后该会话停止被驱动，产品侧目前只有删会话会释放——「下一条用户消息自动重开」尚未接线，属已知缺口并登记在未完成总表）；其后故障只影响那一条文案 —— 下一代运行照常落盘、失败写入不被重试重放也不顶掉新状态（放掉会话句柄后从盘上重放，两轮用户输入与恢复回合的助手条目各自恰好一次）；系统的故障提示在下一个运行收口 flush 时落盘，重开后仍可回读。故障注入点在 NativeExecutionEnv.appendFile 这一条物理边界上（内容命中兜底文案才失败），不 mock 业务方法 —— 那会伪造助手结果、错位「界面看到了、会话文件里没有」这条要证的事实",
+      description: "结算兜底文案的持久写入失败被如实处置，不吞、不重放、可观测：settleMainTurn 的失败兜底回复经会话唯一物理持久边界（appendFile → JSONL 一行事务）写入失败时，回合仍按失败分类正常结算（不抛错吞回合），返回的可见回复仍是兜底文案（界面不会看不到回复），同时置位 SendMessageResult.persistFailed；盘上没有那条文案（原始 JSONL 无该内容、读模型不把它记成助手条目，用户的输入在故障前已落盘）；runner 补一条统一系统消息（「这条回复没能写进会话文件…」）并把事实透传为 persistFailed（宿主据此提示用户）。恢复面：故障后的下一条用户消息由回合入口显式放掉已密封的故障槽（`harnessSlots.recoverFaulted` → `dispose`，随后 `begin` 新建槽并从盘上重开会话；`open()` 自身不静默重建，主动回合、结构操作与子运行不代为恢复）；其后故障只影响那一条文案 —— 下一代运行照常落盘、失败写入不被重试重放也不顶掉新状态（放掉会话句柄后从盘上重放，两轮用户输入与恢复回合的助手条目各自恰好一次）；系统的故障提示在下一个运行收口 flush 时落盘，重开后仍可回读。故障注入点在 NativeExecutionEnv.appendFile 这一条物理边界上（内容命中兜底文案才失败），不 mock 业务方法 —— 那会伪造助手结果、错位「界面看到了、会话文件里没有」这条要证的事实",
       why: "「界面显示了、盘上没有」的静默不一致必须可观测：不置位 persistFailed 会让宿主把「没写进去」当成功、用户重开应用后发现自己没收到过回复却查无此事；把失败向上抛或允许重试重放会二次污染会话；没有系统消息则故障只留在日志里",
       layer: "integration",
       depth: "deep",

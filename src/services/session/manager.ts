@@ -18,7 +18,7 @@ import {
 } from "./persistence"
 import {
   createPiSession, deletePiSession, isPiSessionOpen, listPiSessionMetadata, readPiSessionSummary,
-  readPiSessionEntries, releasePiSession, persistPiSessionName,
+  readPiSessionEntries, readPiSessionEntriesOnce, releasePiSession, persistPiSessionName,
 } from "./repo"
 import type { PiSessionSummary } from "./repo"
 import { prependSessionHistory, rememberSessionSummary, removeSessionHistory, renameSessionHistory, sessionHistoryError } from "./history"
@@ -380,10 +380,9 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
  * 常规文件 —— 条目里的**用户原图只存路径**（桌面/图片目录里的文件），一律 skipped、
  * 永不删除；TS 侧不复制第二份目录清单。
  *
- * 已知边界（开放 fork 前必须先补）：会话 fork 会复制条目、从而**共享**图片引用；
- * 当前无生产调用者（`engine/harness/session-repo.ts:126` 的 `fork` 只是包装，全仓
- * 没有 `.fork(` 消费点），所以这里直接按「本会话条目」收集；将来开放 fork 前，这里
- * 必须先加跨会话引用检查（另一个会话可能仍引用同一张托管图片）。
+ * 跨会话引用（fork 会复制条目、从而**共享**图片路径）：只把「其他会话都不再引用」的路径
+ * 交给宿主。最后一个引用会话删除时，同一张图才会真正进入清理；扫描失败按失败安全处理
+ * （本次跳过清理，留下残留），因为「无法证明没人引用」不能等同于「可以删」。
  *
  * 失败只留痕：这是删会话的附带清理，不改变 `deleteSession` 的既有返回语义；
  * 托管图片没有目录级兜底淘汰（保留上限已按用户定夺取消），残留只由本清理路径与
@@ -397,11 +396,37 @@ async function deleteSessionChatImages(sessionId: string, sourceEntries: Entry[]
   }
   // 空集不调用宿主命令（不产生空请求）。
   if (paths.size === 0) return
+  let stillReferenced: Set<string>
   try {
-    await getHostBridge().request("chat_delete_session_images", { paths: [...paths] })
+    stillReferenced = await collectOtherSessionImagePaths(sessionId)
+  } catch (error) {
+    log.warn("Session: 读取其他会话的图片引用失败，跳过本次托管图片清理:", sessionId, formatError(error))
+    return
+  }
+  const unreferenced = [...paths].filter(path => !stillReferenced.has(path))
+  if (unreferenced.length === 0) return
+  try {
+    await getHostBridge().request("chat_delete_session_images", { paths: unreferenced })
   } catch (error) {
     log.warn("Session: 会话托管图片清理失败（不改变删除结果）:", sessionId, formatError(error))
   }
+}
+
+/**
+ * 其他会话仍在引用的图片路径。删会话时按盘上全量条目重扫（删除是低频动作，不值得维护
+ * 第二份引用索引）；`readPiSessionEntriesOnce` 扫描不把历史会话句柄留在缓存里。
+ */
+async function collectOtherSessionImagePaths(excludeSessionId: string): Promise<Set<string>> {
+  const referenced = new Set<string>()
+  const others = (await listPiSessionMetadata()).filter(item => item.id !== excludeSessionId)
+  for (const meta of others) {
+    const entries = await readPiSessionEntriesOnce(meta.id)
+    for (const entry of entries) {
+      if (entry.type !== "message") continue
+      for (const path of getMessageImagePaths(entry.message)) referenced.add(path)
+    }
+  }
+  return referenced
 }
 
 /** 更新会话名（首条用户消息时）；展示名持久化到会话文件。 */

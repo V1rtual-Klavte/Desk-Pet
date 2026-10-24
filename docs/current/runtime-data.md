@@ -165,7 +165,7 @@ data_root/
 
 开发构建的**运行时 CONFIG 不在数据根内**（见上表的五维区分），其余目录布局与生产一致。
 
-`screenshots/` 与 `pasted/` 是**托管聊天图片根**（枚举点 `commands/screenshot_cmd.rs` 的 `managed_chat_image_dirs`）：删除会话时，该会话条目引用到的根内文件由宿主命令 `chat_delete_session_images` 一并删除——**包含判定在 Rust**，根外的任何路径（用户自己磁盘上的原图）一律不删。两个目录都**不再有数量/时间上限**（2026-10-06 取消 200 上限，只保留「删会话自动删」）；托管文件的其余回收点：粘贴草稿未发送即丢弃（撤选/切会话/退出，见 `ui/chat/model.rs` 的 `PendingDraftRelease`）与用户手动删除；崩溃/强杀不回收（接受残量）。`screenshots/` 由截图工具落盘（只有展示型，`show_to_user=false` 不写文件），`pasted/` 由聊天输入框的粘贴入口落盘，两者共用同一套原子写 + 预览授权实现。
+`screenshots/` 与 `pasted/` 是**托管聊天图片根**（枚举点 `commands/screenshot_cmd.rs` 的 `managed_chat_image_dirs`）：删除会话时，先扫描其余会话条目剔除仍被引用的图片（fork 会复制条目、共享路径），只把无人引用的路径交给宿主命令 `chat_delete_session_images`——最后一个引用会话删除后才真正清理；扫描失败按失败安全跳过本次清理。**包含判定在 Rust**，根外的任何路径（用户自己磁盘上的原图）一律不删。两个目录都**不再有数量/时间上限**（2026-10-06 取消 200 上限，只保留「删会话自动删」）；托管文件的其余回收点：粘贴草稿未发送即丢弃（撤选/切会话/退出，见 `ui/chat/model.rs` 的 `PendingDraftRelease`）与用户手动删除；崩溃/强杀不回收（接受残量）。`screenshots/` 由截图工具落盘（只有展示型，`show_to_user=false` 不写文件），`pasted/` 由聊天输入框的粘贴入口落盘，两者共用同一套原子写 + 预览授权实现。
 
 Node 先执行 `initPaths()`（取 `get_runtime_paths`）；`BaseDirs` 只给真正被外部读取的目录，需要完整路径时用 `runtimePath(scope, ...segments)` 交给宿主拼接和校验。业务文件名由所属模块管理。
 

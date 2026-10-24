@@ -2284,6 +2284,24 @@ export class HarnessSlots {
     return true
   }
 
+  /** 槽是否已因内核故障密封（上游 fault 后不能原地续跑，只能整条重开）。 */
+  isFaulted(sessionId: string): boolean {
+    return this.peek(sessionId)?.snapshot().state === "faulted"
+  }
+
+  /**
+   * 用户新回合入口的故障恢复：显式放掉密封槽，让紧接着的 `begin` 新建槽并从盘上重开会话。
+   *
+   * 只由面向用户的新消息入口调用 —— 主动回合、结构操作与子运行不自行恢复，故障不能被
+   * 它们静默洗掉。`open()` 自身仍不静默重建（§8.7.4），恢复必须经过这次显式释放。
+   */
+  async recoverFaulted(sessionId: string): Promise<boolean> {
+    if (!this.isFaulted(sessionId)) return false
+    log.warn("会话槽已故障，按用户新消息放掉并重开:", sessionId)
+    await this.dispose(sessionId)
+    return true
+  }
+
   /** 释放会话槽；返回是否在空闲状态下释放（false 表示带着未结束的运行继续，已 warn）。 */
   async dispose(sessionId: string): Promise<boolean> {
     const slot = this.peek(sessionId)

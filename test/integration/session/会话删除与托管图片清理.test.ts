@@ -186,6 +186,39 @@ describe("deleteSession 与托管聊天图片清理", () => {
     expect(existsSync(userOriginal)).toBe(true)
   })
 
+  it("其他会话仍引用的托管图片不交给宿主：只清理最后一个引用会话删除后的死图 [session-delete-images-shared-ref]", async () => {
+    // fork 会复制条目、从而共享图片路径；删除一侧不能把另一侧仍在用的文件删掉。
+    const shared = join(root, "screenshots", "1700000000010.png")
+    const onlyA = join(root, "pasted", "1700000000011.png")
+    writeFixture(shared, "png")
+    writeFixture(onlyA, "png")
+    const sessionA = await seedSession("删除的会话", [[shared, onlyA]])
+    const sessionB = await seedSession("保留的会话", [[shared]])
+
+    await expect(deleteSession(sessionA)).resolves.toBe(true)
+
+    expect(HOISTED.calls, "共享图片仍被其他会话引用，却交给宿主清理").toHaveLength(1)
+    expect(HOISTED.calls[0]!.paths, "交给宿主的路径没有排除其他会话仍在引用的图片").toEqual([onlyA])
+
+    // 最后一个引用会话删除后，同一张图才成为无人引用的死图。
+    HOISTED.calls = []
+    await expect(deleteSession(sessionB)).resolves.toBe(true)
+
+    expect(HOISTED.calls, "最后一个引用会话删除后仍未清理共享图片").toHaveLength(1)
+    expect(HOISTED.calls[0]!.paths).toEqual([shared])
+  })
+
+  it("图片全部仍被其他会话引用时不调用宿主命令（过滤后不产生空请求） [session-delete-images-all-shared]", async () => {
+    const shared = join(root, "screenshots", "1700000000012.png")
+    writeFixture(shared, "png")
+    const sessionA = await seedSession("删除的会话", [[shared]])
+    await seedSession("保留的会话", [[shared]])
+
+    await expect(deleteSession(sessionA)).resolves.toBe(true)
+
+    expect(HOISTED.calls, "没有可清理的死图时仍调用了宿主命令").toHaveLength(0)
+  })
+
   it("条目里没有任何图片路径时不调用宿主命令（不产生空请求） [session-delete-images-empty]", async () => {
     const sessionId = await seedSession("纯文本会话", [[], []])
 
