@@ -1,9 +1,10 @@
 // 未完成步骤按本次尝试的累计效果恢复；工具返回或后续只读事件不能证明整步可安全重放。
 
 import type { Entry, JsonValue } from "@earendil-works/pi-agent-core"
-import type { PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/runtime"
+import type { PlanCompletion, PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/runtime"
 import { appendPiSessionCustomEntry, readPiSessionEntriesOnce } from "@/services/session"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("PlanCheckpoint")
 
@@ -37,6 +38,10 @@ export interface RecoveredPlan { plan: PlanRecord; steps: PlanStepRecord[] }
 export interface PlanStepResult {
   planId: string
   stepId: string
+  /** 步骤标题（与 `PlanStepRecord.title` 同源），前序交接直接使用。 */
+  title: string
+  /** 业务验收档位：当前步骤子运行没有输出契约，成功只代表返回了非空文本。 */
+  acceptance: "verified" | "unverified"
   index: number
   success: boolean
   durationMs: number
@@ -44,6 +49,11 @@ export interface PlanStepResult {
   reply: string
   error?: string
   summaryHash: string
+  /**
+   * 读取时补上的会话条目 id（写入形态不包含它）。
+   * 前序交接的「原文见 plan_step_result 条目 <id>」用它，不另读一遍条目。
+   */
+  resultEntryId?: string
 }
 
 /** 可被恢复扫描收集的计划态：恢复态 + 上次恢复的产物（paused）。 */
@@ -57,7 +67,7 @@ function entryPayload(entry: Entry): PlanCheckpointPayload | undefined {
   if (entry.type !== "custom" || entry.customType !== PLAN_CHECKPOINT_ENTRY) return undefined
   const payload = entry.data as unknown as Partial<PlanCheckpointPayload> | undefined
   const plan = payload?.plan as Partial<PlanRecord> | undefined
-  if (!payload || !plan || plan.schemaVersion !== 2 || typeof payload.action !== "string") return undefined
+  if (!payload || !plan || plan.schemaVersion !== 3 || typeof payload.action !== "string") return undefined
   if ((payload.action === "created" || payload.action === "terminal") && !Array.isArray(payload.steps)) return undefined
   return payload as PlanCheckpointPayload
 }
@@ -75,11 +85,21 @@ export class PlanCheckpointStore {
     await this.write(plan.planId, "created")
   }
 
-  async transitionPlan(planId: string, state: PlanState): Promise<void> {
+  /**
+   * 计划状态迁移。终态可带目标完成度：`completion` 只在终态写进 `PlanRecord`，
+   * `created`（以及所有非终态）不写；运行中的计划即使误传也忽略。
+   */
+  async transitionPlan(planId: string, state: PlanState, completion?: PlanCompletion): Promise<void> {
     const current = this.require(planId)
-    current.plan = { ...current.plan, state, version: current.plan.version + 1, updatedAt: Date.now() }
     // 终态是第二个（也是最后一个）全量快照落点
     const terminal = state === "done" || state === "failed" || state === "interrupted"
+    current.plan = {
+      ...current.plan,
+      state,
+      version: current.plan.version + 1,
+      updatedAt: Date.now(),
+      ...(terminal && completion ? { completion } : {}),
+    }
     await this.write(planId, terminal ? "terminal" : "plan_state")
   }
 
@@ -206,6 +226,39 @@ export class PlanCheckpointStore {
   /** 写入步骤产出证据；返回条目 id 供 `formatStepResults` 标注可回读地址。 */
   async writeStepResult(sessionId: string, result: PlanStepResult): Promise<string> {
     return await appendPiSessionCustomEntry(sessionId, PLAN_STEP_RESULT_ENTRY, result as unknown as JsonValue)
+  }
+
+  /**
+   * 回读一个计划已落盘的步骤结果（恢复执行的前序交接）。
+   *
+   * 同一 `stepId` 的多次尝试按条目顺序后写覆盖先写，只保留最后一次；`resultEntryId`
+   * 是条目 id（写入形态不包含它）。I/O 失败只降级为「无前序」并留 warn：交接是参考资料，
+   * 不能反过来阻塞计划恢复。
+   */
+  async readStepResults(sessionId: string, planId: string): Promise<PlanStepResult[]> {
+    try {
+      const entries = await readPiSessionEntriesOnce(sessionId, { customType: PLAN_STEP_RESULT_ENTRY, order: "asc" })
+      const byStep = new Map<string, PlanStepResult>()
+      for (const entry of entries) {
+        // 查询已按 customType 收窄；`Entry` 是联合类型，这里按自定义条目的载荷读取。
+        const data = (entry as { data?: unknown }).data as Partial<PlanStepResult> | undefined
+        if (!data || data.planId !== planId) continue
+        if (typeof data.stepId !== "string" || typeof data.title !== "string"
+          || (data.acceptance !== "verified" && data.acceptance !== "unverified")
+          || typeof data.index !== "number" || typeof data.success !== "boolean"
+          || typeof data.durationMs !== "number" || typeof data.toolCallsMade !== "number"
+          || typeof data.reply !== "string" || typeof data.summaryHash !== "string"
+          || (data.error !== undefined && typeof data.error !== "string")) {
+          log.warn("忽略形状不合的步骤结果条目:", { sessionId, planId, entryId: entry.id })
+          continue
+        }
+        byStep.set(data.stepId, { ...data as PlanStepResult, resultEntryId: entry.id })
+      }
+      return [...byStep.values()]
+    } catch (error) {
+      log.warn("读取计划步骤结果失败，前序交接按空处理:", { sessionId, planId }, formatError(error))
+      return []
+    }
   }
 
   /** 写入启动恢复失败证据（单个会话失败不阻断其余恢复）。 */

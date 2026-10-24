@@ -13,7 +13,7 @@ import { setTestDataRoot } from "../../host/node-ipc"
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { setOverrides } from "@/services/config"
 import type { PlanExecutionResult, PlanResult, StepToolNotice } from "@/services/engine/planner"
-import { executePlan, formatStepResults, generatePlan } from "@/services/engine/planner"
+import { executePlan, formatPlanDeliverySummary, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { listAll } from "@/services/tool"
 import { registerDefaultTools } from "@/services/tool/registry"
 
@@ -45,7 +45,8 @@ describe("计划评估与执行", () => {
             { id: 2, description: "继续执行", allowedTools: ["read"] },
           ],
         }, {
-          planId: "continue-failure", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
+          planId: "continue-failure", intent: "验证失败后继续执行",
+          scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
           stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure,
         }, {
           onStepStart: () => {},
@@ -58,7 +59,7 @@ describe("计划评估与执行", () => {
         expect(completed).toEqual([{ id: 1, success: false }, { id: 2, success: true }])
         expect(asked).toEqual(onStepFailure === "ask" ? [1] : [])
         expect(provider.payloads).toHaveLength(1)
-        expect(formatStepResults(result)).toContain("部分失败")
+        expect(formatStepResults(result)).toContain("部分完成（1/2 步）")
       }
     }
   })
@@ -124,13 +125,14 @@ describe("计划评估与执行", () => {
         },
       ],
       overallSuccess: false,
+      totalSteps: 2,
       totalDurationMs: 1734,
     }
 
     const text = formatStepResults(result)
 
     // 成功与失败两条渲染分支都要被看见：只判失败侧等于没覆盖「完成态怎么渲染」
-    expect(text).toContain('OK 步骤 1 "读取配置" - 完成')
+    expect(text).toContain('OK 步骤 1 "读取配置" - 完成（未验收）')
     expect(text).toContain('FAIL 步骤 2 "改写配置" - 失败')
     // 正文是截断预览，回读地址是模型与用户回到原文的唯一通道：有地址要标明、没有地址要如实说
     expect(text).toContain("配置已读取")
@@ -140,6 +142,109 @@ describe("计划评估与执行", () => {
     // 错误正文不截断，原样进结果
     expect(text).toContain("错误: 权限不足")
     expect(text).toContain("请基于以上结果生成最终回复")
+
+    // 最终回复失败时的兜底：中性陈述 + 每步结果，不回读地址、不夹带步骤正文、不要求再次生成。
+    const delivery = formatPlanDeliverySummary(result)
+    expect(delivery).toBe([
+      "计划步骤已执行结束：1/2 步完成。",
+      "- 步骤 1「读取配置」：完成",
+      "- 步骤 2「改写配置」：失败 - 权限不足",
+    ].join("\n"))
+    expect(delivery).not.toContain("entry-plan-step-1")
+    expect(delivery).not.toContain("配置已读取")
+    expect(delivery).not.toContain("请基于以上结果生成最终回复")
+  })
+
+  it("步骤交接：后一步拿到前一步的结果与回读地址 [plan-handoff]", async () => {
+    const token = `token-${crypto.randomUUID()}`
+    const provider = installFakeProvider([fakeText(`第一步产出 ${token}`), fakeText("第二步完成")])
+    const execution = await executePlan({
+      summary: "交接计划", estimatedComplexity: 2,
+      steps: [
+        { id: 1, description: "产出令牌" },
+        { id: 2, description: "消费令牌" },
+      ],
+    }, {
+      planId: "handoff", intent: "验证步骤之间能交接结果",
+      scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
+      stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "continue",
+    }, {
+      onStepStart: () => {},
+      onStepDone: step => `entry-step-${step.id}`,
+      onStepFailed: async () => "continue" as const,
+      onStepNotice: () => {},
+    })
+
+    expect(provider.payloads).toHaveLength(2)
+    const first = provider.payloads[0]?.systemPrompt ?? ""
+    const second = provider.payloads[1]?.systemPrompt ?? ""
+    // 原始目标对每一步可见
+    expect(first).toContain("## 原始目标")
+    expect(second).toContain("验证步骤之间能交接结果")
+    // 前序块带正文与回读地址；没有地址就无法回到原文
+    expect(second).toContain("## 前序步骤")
+    expect(second).toContain(token)
+    expect(second).toContain("entry-step-1")
+    expect(second).toContain("plan_step_result")
+    // 第一步没有前序块，不能凭空出现
+    expect(first).not.toContain("## 前序步骤")
+    // 执行结果里也带着回读地址（`formatStepResults` 与面板据此回读）
+    expect(execution.stepResults[0]?.resultEntryId).toBe("entry-step-1")
+  })
+
+  it("步骤交接：失败步骤只给错误，不伪造产出 [plan-handoff-failure]", async () => {
+    const provider = installFakeProvider([fakeText("第二步完成")])
+    const execution = await executePlan({
+      summary: "失败交接", estimatedComplexity: 2,
+      steps: [
+        { id: 1, description: "缺工具步骤", allowedTools: ["missing_handoff_tool"] },
+        { id: 2, description: "继续下一步" },
+      ],
+    }, {
+      planId: "handoff-failure", intent: "验证失败步骤只交接错误",
+      scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
+      stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "continue",
+    }, {
+      onStepStart: () => {},
+      onStepDone: () => "entry-failed",
+      onStepFailed: async () => "continue" as const,
+      onStepNotice: () => {},
+    })
+
+    expect(execution.stepResults.map(item => item.output.success)).toEqual([false, true])
+    expect(provider.payloads).toHaveLength(1)
+    const second = provider.payloads[0]?.systemPrompt ?? ""
+    expect(second).toContain("[failed] 缺工具步骤 — 失败：")
+    expect(second).toContain("missing_handoff_tool")
+    // 失败步骤没有成功标记，也不给半截正文或地址（避免下游把失败产出当结论）
+    expect(second).not.toContain("[done|unverified] 缺工具步骤")
+    expect(second).not.toContain("entry-failed")
+  })
+
+  it("步骤交接：超长前序正文截断并标注 [plan-handoff-truncate]", async () => {
+    const longReply = `开头-${"长".repeat(1600)}-结尾`
+    const provider = installFakeProvider([fakeText(longReply), fakeText("第二步完成")])
+    await executePlan({
+      summary: "截断交接", estimatedComplexity: 2,
+      steps: [
+        { id: 1, description: "产出长文" },
+        { id: 2, description: "消费长文" },
+      ],
+    }, {
+      planId: "handoff-truncate", intent: "验证超长前序会截断",
+      scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
+      stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "continue",
+    }, {
+      onStepStart: () => {},
+      onStepDone: () => "entry-long",
+      onStepFailed: async () => "continue" as const,
+      onStepNotice: () => {},
+    })
+
+    const second = provider.payloads[1]?.systemPrompt ?? ""
+    expect(second).toContain("…（已截断）")
+    expect(second).not.toContain(longReply)
+    expect(second).not.toContain("-结尾")
   })
 
   it("executePlan 逐步执行并回调 [plan-execute-loop]", async () => {
@@ -161,7 +266,7 @@ describe("计划评估与执行", () => {
     const notices: StepToolNotice[] = []
     const execution = await executePlan(
       plan,
-      { planId: "integration-plan", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
       {
         onStepStart: step => { started.push(step.id) },
         onStepDone: step => { done.push(step.id) },
@@ -212,7 +317,7 @@ describe("计划评估与执行", () => {
     const missingDone: number[] = []
     const blocked = await executePlan(
       { steps: [{ id: 1, description: "用不存在的工具干活", allowedTools: ["live_missing_tool_probe"] }], summary: "缺工具", estimatedComplexity: 1 },
-      { planId: "integration-plan", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
       {
         onStepStart: step => { missingStarted.push(step.id) },
         onStepDone: step => { missingDone.push(step.id) },
@@ -246,7 +351,7 @@ describe("计划评估与执行", () => {
     const derivedDone: number[] = []
     const derivedBlocked = await executePlan(
       { steps: [{ id: 1, description: "派个子代理去干活", allowedTools: ["agent_spawn"] }], summary: "派生工具", estimatedComplexity: 1 },
-      { planId: "integration-plan", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
       {
         onStepStart: step => { derivedStarted.push(step.id) },
         onStepDone: step => { derivedDone.push(step.id) },

@@ -94,7 +94,7 @@ async function seedPlan(planId: string): Promise<void> {
     estimatedComplexity: 3,
     steps: [{ id: 1, description: "第一步" }, { id: 2, description: "第二步" }],
   }
-  const { record, steps } = planToRecords(plan, { planId, sessionId, rootTurnId: "turn-settlement-test", effectOf: planEffectClassFor })
+  const { record, steps } = planToRecords(plan, { planId, sessionId, rootTurnId: "turn-settlement-test", intent: "验证结算原语", effectOf: planEffectClassFor })
   await planCheckpointStore.create(record, steps)
 }
 
@@ -178,6 +178,35 @@ describe("计划结算原语", () => {
     // 守卫分支：deadline 文案一次都没写（若未被拦下，它会先于对照消息落进本会话条目，切回后可见）。
     const persisted = persistedSystemTexts(await readPiSessionEntriesOnce(sessionId, { customType: DESKPET_SYSTEM_MESSAGE_ENTRY }))
     expect(persisted, "非活跃会话的收尾文案被写进了计划所属会话").not.toContain("计划超时，已停在当前步骤，剩余步骤未执行")
+  }, 30_000)
+
+  it("目标完成度：终态按盘上 done 步骤数写 complete / partial / none [plan-settlement-completion]", async () => {
+    await seedPlan("plan-completion-complete")
+    await planCheckpointStore.transitionStep("plan-completion-complete", "1", "done")
+    await planCheckpointStore.transitionStep("plan-completion-complete", "2", "done")
+    await planSettlementFinish("plan-completion-complete", { state: "done", reason: "completed", notify: "done" })
+    expect(planCheckpointStore.snapshot("plan-completion-complete")?.plan.completion,
+      "全部步骤 done 的计划没有写 complete").toBe("complete")
+
+    await seedPlan("plan-completion-partial")
+    await planCheckpointStore.transitionStep("plan-completion-partial", "1", "done")
+    await planCheckpointStore.transitionStep("plan-completion-partial", "2", "failed")
+    await planSettlementFinish("plan-completion-partial", { state: "failed", reason: "failed", notify: "failed" })
+    expect(planCheckpointStore.snapshot("plan-completion-partial")?.plan.completion,
+      "只完成一部分步骤的计划没有写 partial").toBe("partial")
+
+    await seedPlan("plan-completion-none")
+    await planCheckpointStore.transitionStep("plan-completion-none", "1", "failed")
+    await planSettlementFinish("plan-completion-none", { state: "failed", reason: "failed", notify: "failed" })
+    expect(planCheckpointStore.snapshot("plan-completion-none")?.plan.completion,
+      "没有步骤完成的计划没有写 none").toBe("none")
+
+    // 生命周期与完成度正交：非终态不写 completion（运行中由 state 表达）
+    await seedPlan("plan-completion-running")
+    await planCheckpointStore.transitionStep("plan-completion-running", "1", "done")
+    await planCheckpointStore.transitionPlan("plan-completion-running", "running")
+    expect(planCheckpointStore.snapshot("plan-completion-running")?.plan.completion,
+      "非终态写入了 completion").toBeUndefined()
   }, 30_000)
 
   it("用户拒绝确认：步骤全部 skipped、计划落 failed、面板收起 [plan-settlement-user-decline]", async () => {

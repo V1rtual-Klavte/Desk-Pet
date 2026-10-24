@@ -59,6 +59,18 @@ function probe(name: string, handler: ToolHandler, safetyLevel: ToolDef["safetyL
   registered.push(tool.id)
   return tool
 }
+/** 请求消息里的文本正文（成员按角度拿到的任务在这里核对）。 */
+function requestText(messages: readonly unknown[]): string {
+  return messages.map(raw => {
+    const content = (raw as { content?: unknown }).content
+    if (typeof content === "string") return content
+    if (!Array.isArray(content)) return ""
+    return content.map(part => {
+      const block = part as { type?: string; text?: string }
+      return block.type === "text" ? String(block.text ?? "") : ""
+    }).join("")
+  }).join("\n")
+}
 
 describe("统一子运行结果与 owner", () => {
   it("空正文和不合法产物都不能成为业务成功 [subrun-output-acceptance]", async () => {
@@ -189,5 +201,51 @@ describe("统一子运行结果与 owner", () => {
     expect(result.success).toBe(false)
     expect(result.reply).toBe("")
     expect(result.error).toBe("子运行没有返回结果")
+  })
+
+  it("自定义 angles 按顺序分派给不同成员 [subrun-team-custom-angles]", async () => {
+    const provider = installFakeProvider([fakeText("角度一完成"), fakeText("角度二完成"), fakeText("汇总完成")])
+    const angles = ["检查许可边界", "追踪数据流"]
+    const result = await runTeamAgent({ task: "审查改造", angles, owner: conversation() })
+
+    expect(result.success, `团队没有成功: ${result.error ?? "<无原因>"}`).toBe(true)
+    expect(result.members?.map(member => member.role)).toEqual(["角度 1", "角度 2"])
+    expect(result.members?.map(member => member.output.success)).toEqual([true, true])
+
+    // 每个成员请求只拿到自己的角度 prompt，并都带上原始任务。
+    const memberPayloads = provider.payloads.filter(payload => /角色: 角度 [12]/.test(payload.systemPrompt ?? ""))
+    expect(memberPayloads, "没有捕获到两个成员的请求").toHaveLength(2)
+    for (const [index, angle] of angles.entries()) {
+      const payload = memberPayloads.find(item => (item.systemPrompt ?? "").includes(`角色: 角度 ${index + 1}`))
+      expect(payload, `缺少角度 ${index + 1} 的成员请求`).toBeDefined()
+      const text = requestText(payload!.messages)
+      expect(text, `角度 ${index + 1} 没有拿到自己的 prompt`).toContain(angle)
+      expect(text, `角度 ${index + 1} 没有带上原始任务`).toContain("任务: 审查改造")
+      expect(text, `角度 ${index + 1} 串到了其他角度的 prompt`).not.toContain(angles[1 - index]!)
+    }
+  })
+
+  it("单个角度失败时 lead 成功即整体成功，并记录未完成角度 [subrun-team-partial]", async () => {
+    const respond = (context: { systemPrompt?: string }) => fakeText(
+      context.systemPrompt?.includes("团队负责人")
+        ? "已按角度汇总"
+        : context.systemPrompt?.includes("约束与风险") ? "" : "事实角度完成",
+    )
+    installFakeProvider([respond, respond, respond])
+    const result = await runTeamAgent({ task: "多角度整理", owner: conversation() })
+
+    expect(result.success, `部分角度失败不应拖垮整体: ${result.error ?? "<无原因>"}`).toBe(true)
+    expect(result.error).toBeUndefined()
+    expect(result.reply).toBe("已按角度汇总")
+    expect(result.members?.map(member => member.output.success)).toEqual([false, true])
+    expect(result.evidence.incomplete).toEqual(["约束与风险"])
+  })
+
+  it("团队角度必须是 2–3 个非空且不重复的描述 [subrun-team-angle-validation]", async () => {
+    const owner = conversation()
+    for (const angles of [["只有一个"], ["一", "二", "三", "四"], ["同一", "同一"], ["一", "  "]]) {
+      await expect(runTeamAgent({ task: "多角度整理", angles, owner }))
+        .rejects.toThrow("团队角度需要 2–3 个非空且不重复的描述")
+    }
   })
 })

@@ -1,3 +1,6 @@
+// 2026-10-24 计划闭环批次（定向复核）：sourceFiles 中 runtime.ts 仅计划相关分支变化
+// （恢复交接、交付摘要取走、计划步骤结果字段），分泡解析、沉默护栏、逐泡揭示与顶栏所有权
+// 释放链路未改；hz-01..04 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-23 计划入口批次：sourceFiles 中 runtime.ts 的显式 `--plan` 入口收敛与恢复判定接续，
 // 不改变分泡解析、沉默护栏、逐泡揭示或顶栏所有权释放；hz-01..04 未修订覆盖点，仅按当前源码
 // 刷新 sourceHash。
@@ -136,7 +139,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "e6327d5467e35f2908c5c7287b45ed8c7f86d3991312e7e83c2179082d44e3b2",
+  sourceHash: "3861dc89dcec7a4807c0ca59bb6179628d7c4e6379facbcabe128282c8590a28",
   coverage: [
     {
       id: "hz-01",

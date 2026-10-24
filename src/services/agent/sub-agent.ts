@@ -1,5 +1,5 @@
 // ==========================================
-// 子代理 —— Fork（单代理）/ Team（多角色并行）
+// 子代理 —— Fork（单代理）/ Team（多角度并行）
 //
 // 注意：runPiSubAgent 的 `maxToolCalls` 是工具轮上限（工具调用次数），映射到
 // createTurnSpec 的 maxToolCalls；它不是重试次数，取值为 loopConfig.subAgentRounds。
@@ -38,8 +38,8 @@ export interface ForkAgentInput {
 
 /**
  * 创建并运行一个 Fork 子代理。
- * 子代理的工具面在此收窄为文件读取、系统信息与 Bash（SUB_AGENT_TOOL_IDS），
- * 独立上下文，不干扰主 Agent 状态。
+ * 子代理的工具面在此收窄为 read、系统信息与 bash（SUB_AGENT_TOOL_IDS；
+ * bash 可执行命令，受权限策略约束），独立上下文，不干扰主 Agent 状态。
  */
 export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOutput> {
   const { task, role, owner } = input
@@ -47,7 +47,7 @@ export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOut
   const tools = getSafeTools()
   const systemPrompt = role
     ? `你是虚拟桌宠的子代理，角色: ${role}。用简短中文回复，可以调用工具获取信息。`
-    : "你是虚拟桌宠的子代理。用简短中文回复，可以调用工具获取信息。工具面限于文件读取、系统信息与 Bash，以只读查询为主。"
+    : "你是虚拟桌宠的子代理。用简短中文回复，可以调用工具获取信息。工具面限于 read、系统信息与 bash（bash 可执行命令，受权限策略约束）。"
 
   log.info("Fork 启动:", role || "通用", "| task:", task.substring(0, 80))
 
@@ -62,43 +62,58 @@ export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOut
 }
 
 // ═══════════════════════════════════════════════════════════════
-// TeamAgent —— 多角色并行子代理
+// TeamAgent —— 多角度并行子代理
 // ═══════════════════════════════════════════════════════════════
 
 export interface TeamAgentInput {
   task: string
-  /** 并行子代理数量，默认 2 */
-  memberCount?: number
+  /** 2–3 个并行分析角度；未提供时取默认角度的前 2 个。 */
+  angles?: string[]
   /** 父回合的取消域；成员段与 lead 段共用（任一段被父取消即整体停止）。 */
   owner: Extract<PiSubAgentOwner, { kind: "conversation" }>
 }
 
-/** 团队角色定义 */
-const TEAM_ROLES = [
-  { key: "analyzer",  label: "分析员", prompt: "你从宏观角度分析问题，梳理关键点和约束条件。" },
-  { key: "researcher", label: "研究员", prompt: "你负责收集具体信息，用工具查找文件和系统状态。" },
-  { key: "reviewer",   label: "审查员", prompt: "你检查方案的完整性和潜在风险，提出改进建议。" },
+/** 默认团队角度（未提供 angles 时按顺序取前 2 个）。 */
+const TEAM_ANGLES = [
+  { label: "约束与风险", prompt: "列出关键约束、假设与潜在风险，并指出哪些需要用户确认。" },
+  { label: "事实与证据", prompt: "用工具核实事实，给出可核查的证据；没有证据的结论要标明。" },
+  { label: "完整性与反例", prompt: "检查方案的遗漏、边界和反例，指出最可能出错的地方。" },
 ]
+
+const TEAM_ANGLE_ERROR = "团队角度需要 2–3 个非空且不重复的描述"
+
+interface TeamAngle {
+  label: string
+  prompt: string
+}
+
+/** 团队角度校验与规范化：默认角度取 label，自定义角度按顺序标为「角度 N」。 */
+function resolveTeamAngles(angles?: string[]): TeamAngle[] {
+  if (angles === undefined) return TEAM_ANGLES.slice(0, 2)
+  if (!Array.isArray(angles) || angles.length < 2 || angles.length > 3) throw new Error(TEAM_ANGLE_ERROR)
+  const prompts = angles.map(angle => typeof angle === "string" ? angle.trim() : "")
+  if (prompts.some(prompt => !prompt) || new Set(prompts).size !== prompts.length) throw new Error(TEAM_ANGLE_ERROR)
+  return prompts.map((prompt, index) => ({ label: `角度 ${index + 1}`, prompt }))
+}
 
 /**
  * 创建并运行 Team 子代理。
- * 多角色并行执行各自的分析，最后由 lead 代理汇总。
+ * 各角度并行执行，最后由 lead 按角度逐项汇总；部分角度失败时保留可用结论。
  */
 export async function runTeamAgent(input: TeamAgentInput): Promise<PiSubAgentOutput> {
   const { task, owner } = input
-  const memberCount = Number.isSafeInteger(input.memberCount) && input.memberCount! > 0 ? Math.min(input.memberCount!, TEAM_ROLES.length) : 2
-  const roles = TEAM_ROLES.slice(0, memberCount)
-  const results = await Promise.allSettled(roles.map(role => runForkAgent({
-    task: `${role.prompt}\n\n任务: ${task}`, role: role.label,
-    owner: { ...owner, runId: `${owner.runId}-${role.key}` },
+  const angles = resolveTeamAngles(input.angles)
+  const results = await Promise.allSettled(angles.map((angle, index) => runForkAgent({
+    task: `${angle.prompt}\n\n任务: ${task}`, role: angle.label,
+    owner: { ...owner, runId: `${owner.runId}-angle-${index + 1}` },
   })))
   const members = results.map((result, index) => ({
-    role: roles[index]!.label,
+    role: angles[index]!.label,
     output: result.status === "fulfilled" ? result.value : {
       status: "failed" as const, success: false, reply: "", toolCallsMade: 0,
       error: formatError(result.reason),
-      evidence: { tools: [], incomplete: [roles[index]!.label], unconfirmedEffects: false },
-      audit: { runId: `${owner.runId}-${roles[index]!.key}`, requestId: `sub-agent-${owner.runId}-${roles[index]!.key}`, ownerKind: owner.kind, sessionId: owner.sessionId },
+      evidence: { tools: [], incomplete: [angles[index]!.label], unconfirmedEffects: false },
+      audit: { runId: `${owner.runId}-angle-${index + 1}`, requestId: `sub-agent-${owner.runId}-angle-${index + 1}`, ownerKind: owner.kind, sessionId: owner.sessionId },
     },
   }))
   const incomplete = members.filter(member => !member.output.success).map(member => member.role)
@@ -114,8 +129,10 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<PiSubAgentOut
     }
   }
   const lead = await runForkAgent({
-    task: ["你是团队负责人，基于成员的真实状态给出综合结论；未完成部分必须明确说明。", `原始任务: ${task}`,
-      ...members.map(member => `[${member.role}: ${member.output.status}, success=${member.output.success}]\n${member.output.reply || member.output.error || "无结果"}`),
+    task: [
+      "你是团队负责人，按角度逐项汇总成员的真实结果：每个角度列出 label、status、success 与结果（reply 或 error）；未完成的角度必须明确说明，不得补写未完成角度的内容。",
+      `原始任务: ${task}`,
+      ...members.map(member => `[角度: ${member.role} | status: ${member.output.status} | success=${member.output.success}]\n${member.output.reply || member.output.error || "无结果"}`),
     ].join("\n\n"),
     role: "团队负责人", owner: { ...owner, runId: `${owner.runId}-lead` },
   })
@@ -124,12 +141,14 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<PiSubAgentOut
     outputTokens: sum.outputTokens + (result.usage?.outputTokens ?? 0),
     cacheRead: sum.cacheRead + (result.usage?.cacheRead ?? 0), cacheWrite: sum.cacheWrite + (result.usage?.cacheWrite ?? 0),
   }), { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 })
-  const success = lead.success && incomplete.length === 0
-  log.info("Team 完成:", { members: members.length, success, incomplete })
+  const success = lead.success && usable.length > 0
+  log.info("Team 完成:", { angles: angles.length, success, incomplete })
   return {
     ...lead, success, members, usage,
     toolCallsMade: lead.toolCallsMade + members.reduce((sum, member) => sum + member.output.toolCallsMade, 0),
-    ...(success ? {} : { error: lead.error ?? `团队部分完成，未完成成员: ${incomplete.join("、")}` }),
+    // lead 失败给出它自己的错误；lead 成功但没有任何可用角度时，如实说「没有可用结果」，
+    // 不把成员全失败说成「汇总失败」。
+    ...(success ? {} : { error: lead.error ?? "团队没有可用的角度结果" }),
     evidence: {
       tools: [...members.flatMap(member => member.output.evidence.tools), ...lead.evidence.tools],
       incomplete: [...incomplete, ...lead.evidence.incomplete],
@@ -139,10 +158,10 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<PiSubAgentOut
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 工具集 —— 子代理可用工具（只读安全集）
+// 工具集 —— 子代理可用工具（read + system info + bash）
 // ═══════════════════════════════════════════════════════════════
 
-/** 子代理可用工具 ID 白名单（只读 + 安全） */
+/** 子代理可用工具 ID 白名单：read + system info + bash（bash 可执行命令，受权限策略约束） */
 const SUB_AGENT_TOOL_IDS = new Set([
   "pi-read",
   "local-system-info",

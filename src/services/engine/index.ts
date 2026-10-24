@@ -27,11 +27,11 @@ export type { CompactionSummaryInput, CompactionSummaryOutcome, CompactionShardP
 
 // ── Planner ──
 export {
-  generatePlan, executePlan, formatStepResults,
+  generatePlan, executePlan, formatStepResults, formatPlanDeliverySummary,
   normalizePlan, planToRecords, recordsToPlan, planEffectClassFor,
 } from "./planner"
 export type {
-  PlanStep, PlanResult, PlanExecutionResult,
+  PlanStep, PlanResult, PlanExecutionResult, PlanPriorResult,
   GeneratePlanContext, PlanRecordContext,
 } from "./planner"
 
@@ -72,6 +72,7 @@ export type {
   MessageOrigin,
   MessagePriority,
   MessageTaint,
+  PlanCompletion,
   PlanEffectClass,
   PlanRecord,
   PlanState,

@@ -13,6 +13,7 @@ export type {
   MessagePriority,
   MessageTaint,
   PlanEffectClass,
+  PlanCompletion,
   PlanRecord,
   PlanState,
   PlanStepRecord,

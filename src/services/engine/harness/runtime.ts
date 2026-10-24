@@ -14,15 +14,16 @@ import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQuer
 import type { EnumerationAnswerContext, FocusedMemoryEvidence, MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
 import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
-import { createPlanSettlement } from "@/services/engine/plan/settlement"
+import { clearPlanDelivery, takePlanDelivery } from "@/services/engine/plan/delivery"
+import { createPlanSettlement, planCompletionOf } from "@/services/engine/plan/settlement"
 import type { PlanCancelReason, PlanConfirmDeclineReason } from "@/services/engine/plan/settlement"
 import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { buildPrompt, composeDynamicPrompt, currentTimeNote, currentTimeDate, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
-import { executePlan, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
-import type { PlanExecutionResult, PlanResult } from "@/services/engine/planner"
+import { executePlan, formatPlanDeliverySummary, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
+import type { PlanExecutionResult, PlanPriorResult, PlanResult } from "@/services/engine/planner"
 import { recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
@@ -1926,6 +1927,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
 
   const turnSessionId = input.sessionId
+  // 上一回合异常退出时可能留下未消费的计划交付摘要，新回合不继承。
+  clearPlanDelivery(turnSessionId)
   const requestId = input.ingress?.requestId ?? `runtime-${crypto.randomUUID()}`
   const traceContext = createRuntimeTraceContext(turnSessionId, requestId, input.turnId)
   const model = resolvePiTurnModel()
@@ -2060,6 +2063,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 记账晚于落盘（STATE-04 的共同改动）：用户气泡与未回复计数在条目已进会话文件之后才更新。
     await input.onInputAdmitted?.()
     let planStepContext = ""
+    // 最终回复失败时的中性交付兜底；与 planStepContext 同作用域，只有计划确实执行过步骤才非空。
+    let planDeliverySummary = ""
     let planUserText = userText
     if (planConfig.enabled && !toolsDisabled && /^--plan(?:\s|$)/.test(userText)) {
       emitStageHint(turnSessionId, "planning", generation)
@@ -2094,7 +2099,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         })
         return outcome.kind === "declined" ? { ...output, abortedByStop: false } : output
       }
-      if (outcome.result.stepResults.length > 0) planStepContext = formatStepResults(outcome.result)
+      if (outcome.result.stepResults.length > 0) {
+        planStepContext = formatStepResults(outcome.result)
+        planDeliverySummary = formatPlanDeliverySummary(outcome.result)
+      }
     }
 
     // 记忆召回延迟到 transform_context：只有那里知道投影后的正文、理解块与工具结果实际占用，
@@ -2364,7 +2372,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 快照任务在 execute 的 finally flush 之后才完成：这里补一次唯一 flush 入口，
     // 保证本轮证据（transform_context / provider_payload / provider_usage）在结算前已入队并落盘。
     await slot.flushAudit()
-    const output = await settleMainTurn({ input, kernel, result, toolCallHistory })
+    const output = await settleMainTurn({
+      input, kernel, result, toolCallHistory,
+      ...(planDeliverySummary ? { planDelivery: planDeliverySummary } : {}),
+    })
     if (kernel.state.usage) output.usage = { ...kernel.state.usage }
     if (input.activeRequest) {
       const record = result.record
@@ -2471,6 +2482,10 @@ async function runPlanPhase(args: {
   let planId: string
   let plan: PlanResult
   let stepMode: "auto" | "stepByStep"
+  // 用户原始目标：新建时取本轮输入，恢复时取落盘记录（不再从步骤标题反推）。
+  let planIntent: string
+  // 恢复执行的前序步骤结果来自会话条目；新建计划没有前序。
+  let priorResults: PlanPriorResult[] | undefined
 
   if ("existingPlanId" in args) {
     planId = args.existingPlanId
@@ -2482,6 +2497,20 @@ async function runPlanPhase(args: {
     // 恢复扫描已保证崩溃残留的 `running` 步骤都被定档，这里出现的 `running` 只来自用户的显式选择。
     // 已 `done`/`skipped` 的步骤保留在 checkpoint 里，不进本次执行与结果段。
     plan = recordsToPlan(recovered.plan, recovered.steps.filter(step => step.state === "pending" || step.state === "running"))
+    planIntent = recovered.plan.intent
+    // 前序结果从盘上回读（执行期交接用的内存结果已随进程消失）；读取失败按空处理，不阻断恢复。
+    // `PlanStepResult` 的 stepId 是落盘字符串，交接投影用数值（与执行列表的 step.id 同域）。
+    priorResults = (await planCheckpointStore.readStepResults(sessionId, planId))
+      .map((item): PlanPriorResult => ({
+        stepId: Number(item.stepId),
+        title: item.title,
+        success: item.success,
+        acceptance: item.acceptance,
+        reply: item.reply,
+        ...(item.error ? { error: item.error } : {}),
+        ...(item.resultEntryId ? { resultEntryId: item.resultEntryId } : {}),
+      }))
+      .filter(item => Number.isFinite(item.stepId))
     // 恢复即已确认：不再问一次「全部执行/逐步确认」，也不重新生成
     stepMode = "auto"
     if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_confirmed", () => ({ planId, decision: "user_approved_resume" }))
@@ -2505,6 +2534,7 @@ async function runPlanPhase(args: {
     // 规范化后的 plan 是唯一进入确认、执行、进度事件与落盘的形态
     const normalized = normalizePlan(generated, planConfig.maxSteps)
     plan = normalized.plan
+    planIntent = args.planInput.userText
     if (normalized.dropped > 0) {
       log.warn(`计划步骤被丢弃/截断 ${normalized.dropped} 步: ${generated.steps.length} → ${plan.steps.length}（${planId}）`)
       // PLAN-13：截断必须可见，不能只留在日志里
@@ -2513,12 +2543,13 @@ async function runPlanPhase(args: {
     if (plan.steps.length === 0) {
       // 模型没给出可执行步骤：不落记录、不确认，与原路径一致地直接走主回合
       log.warn("计划没有可执行步骤，跳过确认与执行:", planId)
-      return { kind: "completed", result: { stepResults: [], overallSuccess: true, totalDurationMs: 0 } }
+      return { kind: "completed", result: { stepResults: [], overallSuccess: true, totalSteps: 0, totalDurationMs: 0 } }
     }
     const { record, steps } = planToRecords(plan, {
       planId,
       sessionId,
       rootTurnId: args.rootTurnId,
+      intent: planIntent,
       effectOf: planEffectClassFor,
     })
     // create 失败直接上抛：计划还没跑、没有任何副作用，此时「降级继续」会让没有记录的计划真的执行起来
@@ -2562,13 +2593,14 @@ async function runPlanPhase(args: {
   // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤（按会话键控：只停本会话的计划）；
   // `finally` 保证任何退出路径都会清空登记，不给下一次计划留悬空引用
   bindRunningPlan(sessionId, planId, planAbort)
-  // 步骤产出证据（PLAN-09②）：条目 id 在 `onStepDone` 里随 checkpoint 同一收口落盘，
-  // 按 stepId 收在这里，`executePlan` 返回后回填到 `stepResults[].resultEntryId`。
-  const stepResultEntryIds = new Map<string, string>()
+  // 步骤产出证据（PLAN-09②）：条目 id 在 `onStepDone` 里随 checkpoint 同一收口落盘并就地返回，
+  // `executePlan` 收到后直接写进本步结果，后续步骤的交接上下文因此能立刻引用它。
   // 步骤耗时由相位侧计时（执行是串行的，一个变量够）：条目里的 `durationMs` 要覆盖
   // `onStepStart` 到 `onStepDone` 这一段，而不是子代理内部的一段。
   let stepStartedAt = 0
   const result = await executePlan(plan, {
+    intent: planIntent,
+    ...(priorResults ? { priorResults } : {}),
     stepTimeoutMs: planConfig.stepTimeoutMs,
     stepMaxRounds: planConfig.stepMaxRounds,
     stepThinkingEffort: planConfig.stepThinkingEffort,
@@ -2611,6 +2643,8 @@ async function runPlanPhase(args: {
       const entryId = await planCheckpointStore.writeStepResult(sessionId, {
         planId,
         stepId: String(step.id),
+        title: step.description,
+        acceptance: "unverified",
         index: plan.steps.findIndex(item => item.id === step.id),
         success: output.success,
         durationMs: Date.now() - stepStartedAt,
@@ -2619,10 +2653,11 @@ async function runPlanPhase(args: {
         ...(output.error ? { error: output.error } : {}),
         summaryHash: await sha256Text(replyText),
       }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
-      if (entryId) stepResultEntryIds.set(String(step.id), entryId)
       if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_step_end", () => ({
         planId, stepId: String(step.id), status: output.success ? "done" : "failed",
       }), { entryId })
+      // 返回回读地址：`executePlan` 把它写进本步结果，供后续步骤交接引用；写盘失败仍返回 undefined。
+      return entryId
     },
     // 工具解析报告（FIX-51，2026-10-06 收窄）：工具名解析不到是异常，写进度事件与系统消息；
     // 未限定工具是例行情形（多数步骤本就不写 allowedTools），只留进度事件与日志 —— 逐步敲
@@ -2671,13 +2706,6 @@ async function runPlanPhase(args: {
       return planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success)
     },
   }).finally(() => clearRunningPlan(sessionId, planId))
-
-  // 回填回读地址：`onStepDone` 里落盘时只有 stepId，这里按它对齐到执行结果，
-  // `formatStepResults` 与面板据此拿到「这一步的原文在哪」。
-  for (const stepResult of result.stepResults) {
-    const entryId = stepResultEntryIds.get(String(stepResult.step.id))
-    if (entryId !== undefined) stepResult.resultEntryId = entryId
-  }
 
   if (result.cancelled) {
     // `declined` 由逐步门（含失败询问上的中止）给出：与终止执行/超时走同一条取消通道 ——
@@ -2838,7 +2866,12 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
     })
     if (outcome.kind === "completed") {
       const success = outcome.result.overallSuccess
-      pushSystemMessage(success ? "计划剩余步骤已执行完成" : "计划执行结束，仍有失败或未完成的步骤", sessionId)
+      // 完成度按盘上步骤状态数，不按本次执行段的结果数：恢复时前序完成步骤不在本次结果里。
+      const steps = planCheckpointStore.snapshot(planId)?.steps ?? []
+      const done = steps.filter(step => step.state === "done").length
+      pushSystemMessage(steps.length > 0 && done === steps.length
+        ? "计划步骤已全部完成"
+        : `计划执行结束：${done}/${steps.length} 步完成，其余失败或未完成`, sessionId)
       const output = await finishWithoutTurn({ sessionId, slot, reply: success ? getFallbackReply("planCompleted") : "" })
       return { ...output, abortedByStop: false }
     }
@@ -2870,7 +2903,9 @@ export async function discardPlan(sessionId: string, planId: string): Promise<bo
   for (const step of recovered.steps) {
     if (step.state === "pending") await planCheckpointStore.transitionStep(planId, step.stepId, "skipped")
   }
-  await planCheckpointStore.transitionPlan(planId, "failed")
+  // 丢弃也是终态：完成度照样按已 done 的步骤数落盘，别让消费者只看到 failed 而不知道做到哪。
+  const steps = planCheckpointStore.snapshot(planId)?.steps ?? recovered.steps
+  await planCheckpointStore.transitionPlan(planId, "failed", planCompletionOf(steps))
   notifyPlanEnd(sessionId, "cancelled")
   pushSystemMessage("计划已丢弃", sessionId)
   return true
@@ -2882,9 +2917,14 @@ async function settleMainTurn(args: {
   kernel: TurnKernel
   result: HarnessRunResult
   toolCallHistory: PiAgentTurnOutput["toolCallHistory"]
+  /** 计划步骤已执行但最终回复失败时的中性交付摘要（只写系统消息，不追加第二条助手消息）。 */
+  planDelivery?: string
 }): Promise<PiAgentTurnOutput> {
   const { kernel, result, toolCallHistory } = args
   const turnSessionId = args.input.sessionId
+  // 工具入口（propose_plan）在回合中途执行完的计划；`--plan` 入口由参数直接给出。
+  // 结算每次都会取走暂存（成功回合也清），不把结果留给下一回合。
+  const planDelivery = args.planDelivery ?? takePlanDelivery(turnSessionId)
   const state = kernel.state
   // 读路径：收尾只需要既有槽（谁创建谁释放），不得因为读一次状态把槽建出来。
   const slot = harnessSlots.peek(turnSessionId)
@@ -2918,6 +2958,9 @@ async function settleMainTurn(args: {
       log.error("兜底回复落盘失败:", formatError(error))
       reportError("PiRuntime", error, { kind: "回合文案落盘失败", overlay: false })
     })
+    // 步骤已经真的跑过：最终回复失败不应让用户看不到执行结果。摘要走系统消息，
+    // 不冒充第二条助手正文；用户主动停止走上面的 aborted 早退，不会触发这里。
+    if (planDelivery) pushSystemMessage(planDelivery, turnSessionId)
     return {
       reply,
       toolCallHistory,

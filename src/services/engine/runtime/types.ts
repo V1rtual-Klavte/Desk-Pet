@@ -329,6 +329,13 @@ export interface PromptSnapshot {
 
 export type PlanState = "admitting" | "running" | "paused" | "done" | "failed" | "interrupted"
 
+/**
+ * 计划的目标完成度：仅终态写，与 `PlanState` 正交 ——
+ * `state` 管生命周期（done/failed/interrupted），`completion` 管目标完成度
+ * （complete = 全部步骤 done；partial = 至少一步 done；none = 没有步骤完成）。
+ */
+export type PlanCompletion = "complete" | "partial" | "none"
+
 export type PlanStepState =
   | "pending"
   | "running"
@@ -341,19 +348,24 @@ export type PlanStepState =
 export type PlanEffectClass = "read_only" | "external_side_effect"
 
 /**
- * 计划的唯一持久形态（`schemaVersion: 2`）。
+ * 计划的唯一持久形态（`schemaVersion: 3`）。
  *
- * `summary`/`estimatedComplexity` 随记录落盘，恢复时不需要第二份 `PlanResult`。
- * `schemaVersion: 2` 的形态变更不做数据迁移，存量旧格式计划按不可恢复处理（旧数据可弃）。
+ * `summary`/`estimatedComplexity` 随记录落盘，恢复时不需要第二份 `PlanResult`；
+ * `intent` 是用户原始请求或等价目标，恢复与步骤交接都读它，不再从步骤标题反推。
+ * `schemaVersion: 3` 的形态变更不做数据迁移，存量旧格式计划按不可恢复处理（旧数据可弃）。
  */
 export interface PlanRecord {
-  schemaVersion: 2
+  schemaVersion: 3
   planId: string
   sessionId: string
   rootTurnId: string
   state: PlanState
+  /** 用户原始请求（或等价目标）；步骤子代理的「原始目标」块与恢复执行都读它。 */
+  intent: string
   summary: string
   estimatedComplexity: number
+  /** 目标完成度；仅终态写，运行中为 undefined（生命周期由 `state` 表达）。 */
+  completion?: PlanCompletion
   version: number
   createdAt: number
   updatedAt: number

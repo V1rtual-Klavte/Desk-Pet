@@ -1,7 +1,7 @@
 // ==========================================
 // 本地工具：子代理 (DANGER)
 // Fork: 单个子代理独立执行任务
-// Team: 多角色并行工作 + lead 汇总
+// Team: 多角度并行分析 + lead 汇总
 // ==========================================
 
 import type { ToolDef } from "../types"
@@ -14,19 +14,37 @@ import { formatError } from "@/services/error"
 
 const log = createLogger("ToolAgent")
 
+const TEAM_ANGLE_ERROR = "团队角度需要 2–3 个非空且不重复的描述"
+
+/** 工具层参数校验：未提供返回空对象；非法形态返回错误（与 team 子运行的领域校验同口径）。 */
+function parseTeamAngles(raw: unknown): { angles?: string[]; error?: string } {
+  if (raw === undefined) return {}
+  if (!Array.isArray(raw) || raw.length < 2 || raw.length > 3) return { error: TEAM_ANGLE_ERROR }
+  const angles = raw.map(angle => typeof angle === "string" ? angle.trim() : "")
+  if (angles.some(angle => !angle) || new Set(angles).size !== angles.length) return { error: TEAM_ANGLE_ERROR }
+  return { angles }
+}
+
 const agentSpawnTool: ToolDef = defineTool({
   id: "local-agent-spawn",
   name: "agent_spawn",
   description:
-    "创建子代理执行独立任务。mode=fork 时创建一个子代理独立工作；mode=team 时创建多个角色并行分析后汇总。子代理只拿到受限工具集（文件读取、系统信息与 Bash），不继承父代理的其余工具。",
+    "创建子代理执行独立任务。mode=fork 时创建一个子代理独立工作；mode=team 时并行 2–3 个角度分析后汇总，可用 angles 指定角度。子代理可使用 read、系统信息与 bash（bash 可执行命令，受权限策略约束），不继承父代理的其余工具。部分角度失败时仍返回可用结论并标注。",
   parameters: {
     type: "object",
     properties: {
       task: { type: "string", description: "子代理的任务描述，越具体越好" },
       mode: {
         type: "string",
-        description: "子代理模式：fork=单个代理独立工作, team=多角色并行分析后汇总",
+        description: "子代理模式：fork=单个代理独立工作, team=多角度并行分析后汇总",
         enum: ["fork", "team"],
+      },
+      angles: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 2,
+        maxItems: 3,
+        description: "仅 team 模式可用：2–3 个并行分析角度；未提供时使用默认角度的前两个",
       },
     },
     required: ["task"],
@@ -53,6 +71,16 @@ const agentSpawnTool: ToolDef = defineTool({
     if (!task.trim()) {
       return { success: false, content: "", error: "子代理任务不能为空" }
     }
+    if (mode !== "fork" && mode !== "team") {
+      return { success: false, content: "", error: `不支持的子代理模式: ${mode}（仅 fork/team）` }
+    }
+    if (mode === "fork" && params.angles !== undefined) {
+      return { success: false, content: "", error: "angles 仅 team 模式可用" }
+    }
+    const parsedAngles: { angles?: string[]; error?: string } = mode === "team" ? parseTeamAngles(params.angles) : {}
+    if (parsedAngles.error) {
+      return { success: false, content: "", error: parsedAngles.error }
+    }
 
     try {
       const { runForkAgent, runTeamAgent } = await import("@/services/agent/sub-agent")
@@ -66,10 +94,15 @@ const agentSpawnTool: ToolDef = defineTool({
         ...(ctx.signal ? { signal: ctx.signal } : {}),
       }
       const result = mode === "team"
-        ? await runTeamAgent({ task, memberCount: 2, owner })
+        ? await runTeamAgent({ task, ...(parsedAngles.angles ? { angles: parsedAngles.angles } : {}), owner })
         : await runForkAgent({ task, owner })
+      // 未完成角度从成员结果取（`evidence.incomplete` 还混有 MCP 连接失败等非角度条目）。
+      const failedAngles = result.members?.filter(member => !member.output.success).map(member => member.role) ?? []
+      const content = mode === "team" && result.success && failedAngles.length > 0
+        ? `【部分完成：未完成角度 ${failedAngles.join("、")}】\n\n${result.reply}`
+        : result.reply
       return {
-        success: result.success, content: result.reply,
+        success: result.success, content,
         ...(result.success ? {} : { error: result.error ?? "子代理执行失败" }),
         details: result,
       }

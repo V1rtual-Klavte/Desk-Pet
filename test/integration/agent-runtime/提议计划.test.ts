@@ -45,7 +45,7 @@ import { planCheckpointStore } from "@/services/engine"
 import { getOverride, planConfig, setOverride } from "@/services/config"
 import { initPaths } from "@/services/paths"
 import { resumePlan } from "@/services/engine/harness"
-import { getActiveSessionId } from "@/services/session/store"
+import { chatHistory, getActiveSessionId } from "@/services/session/store"
 
 /** 工具名是线上契约（测试手写见证，不 import 实现常量）。 */
 const TOOL = "propose_plan"
@@ -75,7 +75,7 @@ beforeEach(() => {
   setUiEventPublisher({ publish: async (event, payload) => { events.push({ event, payload: payload as Record<string, unknown> }) } })
 })
 
-type Payload = { model: string; messages: readonly unknown[]; tools?: Array<{ name: string }> }
+type Payload = { model: string; systemPrompt?: string; messages: readonly unknown[]; tools?: Array<{ name: string }> }
 
 /** 某笔请求里指定工具的结果正文（toolResult 消息的 text 块）。 */
 function toolResultTexts(payload: Payload | undefined, toolName: string): string[] {
@@ -188,8 +188,37 @@ describe("提议计划", () => {
     // 计划记录落盘为完成态（崩溃恢复/面板读同一份记录）。
     expect(planCheckpointStore.snapshot(`plan-${PLAN_CALL_ID_ACCEPT}`)?.plan.state, "计划记录没有落成完成态").toBe("done")
 
+    // 成功收尾取走交付暂存但不写系统消息：兜底摘要只在最终回复失败时出现。
+    expect(
+      chatHistory.some(message => message.role === "system" && message.text.includes("计划步骤已执行结束")),
+      "成功回合不应留下交付兜底系统消息",
+    ).toBe(false)
     expect(output.failure, `回合以失败结算：${output.failure?.message ?? "(无失败)"}`).toBeUndefined()
     expect(output.reply, "回合没有以模型正文收尾").toContain("计划都做完了")
+  }, 60_000)
+
+  it("计划步骤跑完但最终回复失败：结果以系统消息交付 [plan-tool-delivery-fallback]", async () => {
+    await standardSetup("deny", "auto")
+    setOverride("ai.memory.enabled", false)
+    installFakeProvider([
+      fakeToolCall(TOOL, { summary: "两步计划", steps: TWO_STEPS }, "plan-call-delivery"),
+      fakeText("第一步完成：目录已列出"),
+      fakeText("第二步完成：结果已汇总"),
+      () => fauxAssistantMessage([], { stopReason: "error", errorMessage: "final reply failed" }),
+    ])
+
+    const output = await runRuntimeTurn("执行计划后最终回复失败")
+    expect(output.failure, "用例没有走到最终回复失败").toBeDefined()
+
+    // 结果不随最终回复一起消失：中性摘要作为系统消息落进会话，步骤正文与回读地址不进。
+    const systemTexts = chatHistory.filter(message => message.role === "system").map(message => message.text)
+    const delivery = systemTexts.find(text => text.includes("计划步骤已执行结束"))
+    expect(delivery, "最终回复失败时计划结果没有作为系统消息交付").toBeDefined()
+    expect(delivery).toContain("2/2 步完成")
+    expect(delivery).toContain("步骤 1「收集：列出当前目录」：完成")
+    expect(delivery).toContain("步骤 2「汇总结果」：完成")
+    expect(delivery).not.toContain("第一步完成：目录已列出")
+    expect(delivery).not.toContain("plan_step_result")
   }, 60_000)
 
   it("失败后选择继续，后续成功也保留工具、面板和持久计划的失败结果 [plan-tool-continue-failure]", async () => {
@@ -207,7 +236,7 @@ describe("提议计划", () => {
     expect(output.failure).toBeUndefined()
     expect(provider.state.callCount).toBe(4)
     expect(planInteractionRecords().filter(item => item.kind === "step_gate").map(item => item.decision)).toEqual(["continue"])
-    expect(toolResultTexts(provider.payloads[3] as Payload, TOOL)[0]).toContain("整体结果：部分失败或未完成")
+    expect(toolResultTexts(provider.payloads[3] as Payload, TOOL)[0]).toContain("整体结果：部分完成（1/2 步）")
     expect(provider.payloads[3]?.messages).toContainEqual(expect.objectContaining({ role: "toolResult", toolName: TOOL, isError: true }))
     expect(planEnds()).toEqual(["failed"])
     const record = planCheckpointStore.snapshot(`plan-${callId}`)
@@ -220,7 +249,7 @@ describe("提议计划", () => {
     const provider = installFakeProvider([fakeText("开始恢复检查")])
     await runRuntimeTurn("恢复检查")
     const sessionId = getActiveSessionId(), now = Date.now(), planId = "plan-effect-guard"
-    await planCheckpointStore.create({ schemaVersion: 2, planId, sessionId, rootTurnId: planId,
+    await planCheckpointStore.create({ schemaVersion: 3, planId, sessionId, rootTurnId: planId, intent: "恢复检查",
       state: "running", summary: "恢复检查", estimatedComplexity: 1, version: 1, createdAt: now, updatedAt: now }, [
       { planId, stepId: "1", title: "已产生效果", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
     ])
@@ -242,7 +271,7 @@ describe("提议计划", () => {
       const provider = installFakeProvider([fakeText("准备就绪"), fakeText("剩余步骤完成")])
       await runRuntimeTurn("准备就绪")
       const sessionId = getActiveSessionId(), now = Date.now(), planId = `plan-interrupted-${hasEffect}`
-      await planCheckpointStore.create({ schemaVersion: 2, planId, sessionId, rootTurnId: planId,
+      await planCheckpointStore.create({ schemaVersion: 3, planId, sessionId, rootTurnId: planId, intent: "继续中断步骤",
         state: "running", summary: "继续中断步骤", estimatedComplexity: 1, version: 1, createdAt: now, updatedAt: now }, [
         { planId, stepId: "1", title: "核对剩余工作", allowedTools: ["read"], state: "pending", attempt: 0, effectClass: "external_side_effect", updatedAt: now },
       ])
@@ -266,6 +295,40 @@ describe("提议计划", () => {
       expect(planCheckpointStore.snapshot(planId)?.plan.state).toBe("done")
       expect(planCheckpointStore.snapshot(planId)?.steps[0]).toMatchObject({ state: "done", attempt: 2 })
     }
+  }, 60_000)
+
+  it("恢复执行从会话条目回读前序结果并交给后续步骤 [plan-resume-prior-from-disk]", async () => {
+    await standardSetup("deny", "auto")
+    setOverride("ai.memory.enabled", false)
+    const token = `resume-token-${crypto.randomUUID()}`
+    const provider = installFakeProvider([fakeText("准备就绪"), fakeText("第二步完成")])
+    await runRuntimeTurn("准备就绪")
+    const sessionId = getActiveSessionId(), now = Date.now(), planId = "plan-resume-prior"
+    await planCheckpointStore.create({ schemaVersion: 3, planId, sessionId, rootTurnId: planId, intent: "恢复时交接前序结果",
+      state: "interrupted", summary: "恢复交接", estimatedComplexity: 2, version: 1, createdAt: now, updatedAt: now }, [
+      { planId, stepId: "1", title: "产出令牌", state: "done", attempt: 1, effectClass: "read_only", updatedAt: now },
+      { planId, stepId: "2", title: "消费令牌", state: "pending", attempt: 0, effectClass: "read_only", updatedAt: now },
+    ])
+    // 结果只存在于会话条目里（进程内没有这次执行的结果对象），恢复时必须从盘上回读。
+    const entryId = await planCheckpointStore.writeStepResult(sessionId, {
+      planId, stepId: "1", title: "产出令牌", acceptance: "unverified", index: 0,
+      success: true, durationMs: 10, toolCallsMade: 0, reply: `第一步产出 ${token}`, summaryHash: "resume-prior-hash",
+    })
+    expect(entryId).toBeTruthy()
+
+    const resumed = await resumePlan(sessionId, planId)
+    expect(resumed).toBeDefined()
+    // 只跑剩余步骤：初始回合 1 次请求 + 第二步 1 次请求，已完成的步骤不重跑。
+    expect(provider.state.callCount).toBe(2)
+    expect((provider.payloads[1] as Payload | undefined)?.messages).toBeDefined()
+    const stepPrompt = (provider.payloads[1] as Payload | undefined)?.systemPrompt ?? ""
+    expect(stepPrompt).toContain(token)
+    expect(stepPrompt).toContain(entryId!)
+
+    const record = planCheckpointStore.snapshot(planId)
+    expect(record?.plan.state).toBe("done")
+    expect(record?.steps.map(step => step.state)).toEqual(["done", "done"])
+    expect(record?.plan.completion).toBe("complete")
   }, 60_000)
 
   it("用户取消：一步都不执行、记录如实收尾、工具结果说明未执行任何步骤 [plan-tool-user-cancel]", async () => {

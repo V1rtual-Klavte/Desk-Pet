@@ -33,7 +33,7 @@ export const PROPOSE_PLAN_TOOL = "propose_plan"
 
 /** 准入结果：`ok` 时给出规范化前的步骤与摘要，`reason` 是给模型的中性诊断。 */
 type PlanAdmission =
-  | { ok: true; steps: PlanStep[]; summary: string }
+  | { ok: true; steps: PlanStep[]; summary: string; intent: string }
   | { ok: false; reason: string }
 
 /**
@@ -46,6 +46,9 @@ function admitPlan(params: Record<string, unknown>): PlanAdmission {
   const raw = params.steps
   if (!Array.isArray(raw) || raw.length === 0) {
     return { ok: false, reason: "步骤列表不能为空：steps 至少要有 1 步" }
+  }
+  if (params.intent !== undefined && typeof params.intent !== "string") {
+    return { ok: false, reason: "intent 必须是字符串（用户原始请求或等价目标）" }
   }
   const maxSteps = planConfig.maxSteps
   if (raw.length > maxSteps) {
@@ -96,7 +99,10 @@ function admitPlan(params: Record<string, unknown>): PlanAdmission {
     })
   }
   const summary = typeof params.summary === "string" && params.summary.trim() !== "" ? params.summary.trim() : "执行计划"
-  return { ok: true, steps, summary }
+  // 原目标优先取模型显式给出的 intent；没给（或只有空白）时退回计划摘要 —— 摘要通常就是目标的浓缩，
+  // 至少让步骤子代理看到「为什么做这些步骤」，而不是只有一串互不相干的标题。
+  const intent = typeof params.intent === "string" ? params.intent.trim() : ""
+  return { ok: true, steps, summary, intent: intent !== "" ? intent : summary }
 }
 
 const proposePlanTool: ToolDef = defineTool({
@@ -122,6 +128,7 @@ const proposePlanTool: ToolDef = defineTool({
         },
       },
       summary: { type: "string", description: "一句话概述计划（可选）" },
+      intent: { type: "string", description: "用户的原始请求或等价目标（可选；用于把目标传给每个步骤子代理，缺省用 summary）" },
     },
     required: ["steps"],
   },
@@ -175,6 +182,7 @@ const proposePlanTool: ToolDef = defineTool({
       rootTurnId: ctx.toolCallId ?? planId,
       steps: admission.steps,
       summary: admission.summary,
+      intent: admission.intent,
       estimatedComplexity: Math.min(5, Math.max(1, admission.steps.length)),
       runGeneration: ctx.runGeneration,
       isCurrent: ctx.isCurrent ?? (() => true),

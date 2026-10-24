@@ -45,10 +45,11 @@ import {
   requestPlanConfirm, requestPlanStepDecision,
 } from "../plan-confirmation"
 import {
-  executePlan, normalizePlan, planEffectClassFor, planToRecords,
+  executePlan, formatPlanDeliverySummary, normalizePlan, planEffectClassFor, planToRecords,
 } from "../planner"
 import type { PlanExecutionResult, PlanResult, PlanStep } from "../planner"
 import { planCheckpointStore } from "./checkpoint-store"
+import { stashPlanDelivery } from "./delivery"
 import { createPlanSettlement } from "./settlement"
 import type { PlanConfirmDeclineReason, PlanExecutionCancelReason } from "./settlement"
 
@@ -67,6 +68,8 @@ export interface ProposedPlanInput {
   steps: PlanStep[]
   summary: string
   estimatedComplexity: number
+  /** 用户原始请求（或等价目标）；步骤交接的「原始目标」与落盘记录都读它。 */
+  intent: string
   runGeneration: number
   /** 父回合代际守卫：失效后不再写计划状态、不再发进度。 */
   isCurrent: () => boolean
@@ -137,6 +140,7 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
       planId,
       sessionId,
       rootTurnId: input.rootTurnId,
+      intent: input.intent,
       effectOf: planEffectClassFor,
     })
     // create 失败直接上抛：计划还没跑、没有任何副作用，此时「降级继续」会让没有记录的计划真的执行起来。
@@ -193,10 +197,10 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
     await planSettlement.withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
     bindRunningPlan(sessionId, planId, planAbort)
     // 步骤产出证据（PLAN-09②）与显式命令入口同一条写盘链：entry id 在 `onStepDone` 里与
-    // checkpoint 同一收口落盘，按 stepId 收在这里，执行结束后回填到结果条目。
-    const stepResultEntryIds = new Map<string, string>()
+    // checkpoint 同一收口落盘并就地返回，`executePlan` 直接写进本步结果供后续步骤交接引用。
     let stepStartedAt = 0
     const result = await executePlan(plan, {
+      intent: input.intent,
       stepTimeoutMs: planConfig.stepTimeoutMs,
       stepMaxRounds: planConfig.stepMaxRounds,
       stepThinkingEffort: planConfig.stepThinkingEffort,
@@ -224,6 +228,8 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
         const entryId = await planCheckpointStore.writeStepResult(sessionId, {
           planId,
           stepId: String(step.id),
+          title: step.description,
+          acceptance: "unverified",
           index: plan.steps.findIndex(item => item.id === step.id),
           success: output.success,
           durationMs: Date.now() - stepStartedAt,
@@ -232,7 +238,8 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
           ...(output.error ? { error: output.error } : {}),
           summaryHash: await sha256Text(replyText),
         }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
-        if (entryId) stepResultEntryIds.set(String(step.id), entryId)
+        // 返回回读地址供后续步骤交接引用；写盘失败仍返回 undefined。
+        return entryId
       },
       // 工具解析报告（FIX-51，2026-10-06 收窄）：与显式命令入口 `runtime.ts::runPlanPhase`
       // 同一口径 —— 工具名不存在（真异常）发系统消息；未限定工具属例行情形，只留进度事件，
@@ -277,12 +284,6 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
       if (input.signal) input.signal.removeEventListener("abort", abortFromParent)
     })
 
-    // 回填回读地址：`formatStepResults` 的「原文见 plan_step_result 条目 <id>」从这来。
-    for (const stepResult of result.stepResults) {
-      const entryId = stepResultEntryIds.get(String(stepResult.step.id))
-      if (entryId !== undefined) stepResult.resultEntryId = entryId
-    }
-
     if (result.cancelled) {
       const reasonText = result.cancelled.reason === "user" ? "用户终止执行"
         : result.cancelled.reason === "deadline" ? "超过计划时限" : "按用户选择中止"
@@ -300,6 +301,9 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
       reason: result.overallSuccess ? "completed" : "failed",
       notify: result.overallSuccess ? "done" : "failed",
     })
+    // 工具入口拿不到回合结算：计划结果先挂在会话上，最终回复失败时由 `settleMainTurn`
+    // 作为系统消息交付（成功回合取走即清）。
+    stashPlanDelivery(sessionId, formatPlanDeliverySummary(result))
     return { kind: "completed", result, confirmation }
   }
 }

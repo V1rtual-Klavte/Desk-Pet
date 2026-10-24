@@ -8,9 +8,11 @@
 // ② 取消级联：handler 把工具上下文的取消域（sessionId / 代际 / signal）传给
 //    runForkAgent / runTeamAgent —— 旧实现签名不接 ctx，父回合停止 / 切会话都级联不到
 //    子运行，子代理会跑满自己的 90s 上限。
+// ③ angles 契约：仅 team 可用、2–3 个非空且不重复，非法时在派发前失败；
+//    team 部分完成保留可用结论并标注未完成角度，fork 不加标注。
 //
 // 归属 L3（不是 L2）：import `@/services/tool`（工具 barrel 会带出执行许可）。
-// ②用 `vi.mock("@/services/agent/sub-agent")` 观测动态 import 到的执行入口参数，
+// ②③用 `vi.mock("@/services/agent/sub-agent")` 观测动态 import 到的执行入口参数，
 // 不真跑子代理（真跑要 fake Provider 与整套 harness，收益只有「参数对不对」这一点）。
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -26,16 +28,25 @@ const HOISTED = vi.hoisted(() => ({
   forkInputs: [] as Array<Record<string, unknown>>,
   teamInputs: [] as Array<Record<string, unknown>>,
   teamSuccess: true,
+  teamIncomplete: [] as string[],
+  forkIncomplete: [] as string[],
+  teamFailedAngles: [] as string[],
 }))
 
 vi.mock("@/services/agent/sub-agent", () => ({
   runForkAgent: async (input: Record<string, unknown>) => {
     HOISTED.forkInputs.push(input)
-    return { status: "completed", reply: "fork-ok", toolCallsMade: 0, success: true, evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { runId: "fork", requestId: "fork", ownerKind: "conversation" } }
+    return { status: "completed", reply: "fork-ok", toolCallsMade: 0, success: true, evidence: { tools: [], incomplete: HOISTED.forkIncomplete, unconfirmedEffects: false }, audit: { runId: "fork", requestId: "fork", ownerKind: "conversation" } }
   },
   runTeamAgent: async (input: Record<string, unknown>) => {
     HOISTED.teamInputs.push(input)
-    return { status: "completed", reply: HOISTED.teamSuccess ? "team-ok" : "", toolCallsMade: 0, success: HOISTED.teamSuccess, error: HOISTED.teamSuccess ? undefined : "lead 执行失败", evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { runId: "team", requestId: "team", ownerKind: "conversation" } }
+    return {
+      status: "completed", reply: HOISTED.teamSuccess ? "team-ok" : "", toolCallsMade: 0, success: HOISTED.teamSuccess,
+      error: HOISTED.teamSuccess ? undefined : "lead 执行失败",
+      members: HOISTED.teamFailedAngles.map(role => ({ role, output: { success: false } })),
+      evidence: { tools: [], incomplete: HOISTED.teamIncomplete, unconfirmedEffects: false },
+      audit: { runId: "team", requestId: "team", ownerKind: "conversation" },
+    }
   },
 }))
 
@@ -98,6 +109,61 @@ describe("agent_spawn 超时对齐与取消级联", () => {
       expect(result.error).toBe("lead 执行失败")
       expect(result.content).toBe("")
     } finally { HOISTED.teamSuccess = true }
+  })
+
+  it("angles 仅 team 可用，数量与内容在派发前校验 [agent-spawn-angles-contract]", async () => {
+    const handler = getToolHandler(getToolByName("agent_spawn")!)!
+    const ctx = { sessionId: "angles-session", runGeneration: 1, isCurrent: () => true }
+
+    HOISTED.forkInputs.length = 0
+    const forkWithAngles = await handler({ task: "单路任务", angles: ["越权角度"] }, ctx)
+    expect(forkWithAngles.success, "fork 接受了仅 team 可用的 angles").toBe(false)
+    expect(forkWithAngles.error, "拒绝原因没有点明 angles 的使用范围").toContain("team")
+    expect(HOISTED.forkInputs, "带 angles 的 fork 仍然启动了子代理").toHaveLength(0)
+
+    const invalidMode = await handler({ task: "模式错误", mode: "solo" }, ctx)
+    expect(invalidMode.success, "非法 mode 被当成 fork 放行").toBe(false)
+    expect(invalidMode.error, "拒绝原因没有点名非法模式").toContain("solo")
+    expect(HOISTED.forkInputs).toHaveLength(0)
+
+    HOISTED.teamInputs.length = 0
+    for (const angles of [["只有一个"], ["一", "二", "三", "四"], ["同一", "同一"], ["一", "  "]]) {
+      const invalid = await handler({ task: "多角度分析", mode: "team", angles }, ctx)
+      expect(invalid.success, `非法 angles 被放行: ${JSON.stringify(angles)}`).toBe(false)
+      expect(invalid.error).toBe("团队角度需要 2–3 个非空且不重复的描述")
+    }
+    expect(HOISTED.teamInputs, "非法 angles 仍然启动了团队").toHaveLength(0)
+
+    const accepted = await handler({ task: "多角度分析", mode: "team", angles: [" 许可边界 ", "数据流"] }, ctx)
+    expect(accepted.success).toBe(true)
+    expect(HOISTED.teamInputs).toHaveLength(1)
+    expect(HOISTED.teamInputs[0]!.angles, "角度没有去掉首尾空白后传给团队").toEqual(["许可边界", "数据流"])
+    expect(HOISTED.teamInputs[0]).not.toHaveProperty("memberCount")
+  })
+
+  it("team 部分完成保留可用结论并标注未完成角度，fork 不加标注 [agent-team-partial]", async () => {
+    const handler = getToolHandler(getToolByName("agent_spawn")!)!
+    const ctx = { sessionId: "partial-session", runGeneration: 1, isCurrent: () => true }
+
+    // `evidence.incomplete` 还混有 MCP 等非角度条目：未完成角度必须从成员结果取，不能整段照抄。
+    HOISTED.teamIncomplete = ["MCP foo: 连接失败"]
+    HOISTED.teamFailedAngles = ["角度 2"]
+    try {
+      const partial = await handler({ task: "多角度分析", mode: "team" }, ctx)
+      expect(partial.success).toBe(true)
+      expect(partial.error).toBeUndefined()
+      expect(partial.content).toBe("【部分完成：未完成角度 角度 2】\n\nteam-ok")
+    } finally {
+      HOISTED.teamIncomplete = []
+      HOISTED.teamFailedAngles = []
+    }
+
+    HOISTED.forkIncomplete = ["残留"]
+    try {
+      const fork = await handler({ task: "单路任务" }, ctx)
+      expect(fork.success).toBe(true)
+      expect(fork.content, "fork 不应带上 team 的部分完成标注").toBe("fork-ok")
+    } finally { HOISTED.forkIncomplete = [] }
   })
 
 })

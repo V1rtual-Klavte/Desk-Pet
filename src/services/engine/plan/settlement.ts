@@ -28,7 +28,7 @@ import { getActiveSessionId } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"
 import { formatError } from "@/services/error"
 import { publishRuntimeTrace } from "@/services/engine/runtime"
-import type { RuntimeTraceContext } from "@/services/engine/runtime"
+import type { PlanCompletion, PlanStepState, RuntimeTraceContext } from "@/services/engine/runtime"
 import type { Logger } from "@/services/logger"
 import { notifyPlanEnd } from "../plan-confirmation"
 import type { PlanConfirmResult } from "../plan-confirmation"
@@ -92,6 +92,17 @@ export interface PlanSettlement {
 }
 
 /**
+ * 目标完成度：按已 `done` 的步骤数判定，与生命周期状态正交。
+ * 终态写盘共用（含 `discardPlan` 的直接落 failed），运行中不写。
+ */
+export function planCompletionOf(steps: readonly { state: PlanStepState }[]): PlanCompletion {
+  const completed = steps.filter(step => step.state === "done").length
+  return steps.length > 0 && completed === steps.length
+    ? "complete"
+    : completed > 0 ? "partial" : "none"
+}
+
+/**
  * 绑定调用方日志通道的结算原语工厂：同一份机制在显式命令入口记 `PiRuntime`、
  * 在提议入口记 `PlanProposal`，不去改动任一侧既有的日志前缀。
  */
@@ -115,7 +126,11 @@ export function createPlanSettlement(log: Logger): PlanSettlement {
     notify: PlanEndNotify
     traceContext?: RuntimeTraceContext
   }): Promise<void> {
-    await withPlanWriteDegrade(args.sessionId, args.planId, () => planCheckpointStore.transitionPlan(args.planId, args.state))
+    // 目标完成度与生命周期正交：完成/失败/中断都按「已 done 的步骤数」判定，
+    // 取消与用户拒绝因此自然得到 partial / none（取消时仍在跑的步骤落 interrupted）。
+    const completion = planCompletionOf(planCheckpointStore.snapshot(args.planId)?.steps ?? [])
+    await withPlanWriteDegrade(args.sessionId, args.planId,
+      () => planCheckpointStore.transitionPlan(args.planId, args.state, completion))
     if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_settled", () => ({ planId: args.planId, status: args.state }))
     // 收起 Plan 面板：没有这个事件时它只在两个按钮里被隐藏，跑完会一直挂着
     notifyPlanEnd(args.sessionId, args.notify)

@@ -57,10 +57,11 @@ describe("Plan恢复", () => {
     const sessionId = await ensureSession()
     const now = Date.now()
     await planCheckpointStore.create({
-      schemaVersion: 2,
+      schemaVersion: 3,
       planId: PLAN_ID,
       sessionId,
       rootTurnId: "turn-plan-live-resume",
+      intent: "验证计划恢复",
       state: "running",
       summary: "恢复验证计划",
       estimatedComplexity: 3,
@@ -144,7 +145,7 @@ describe("Plan恢复", () => {
     expect(stepStatesOf(PLAN_ID)).toEqual(["pending", "done", "unknown_side_effect"])
     for (const state of ["interrupted", "paused"] as const) {
       const planId = `plan-${state}`
-      await planCheckpointStore.create({ schemaVersion: 2, planId, sessionId, rootTurnId: planId,
+      await planCheckpointStore.create({ schemaVersion: 3, planId, sessionId, rootTurnId: planId, intent: "验证中断恢复",
         state, summary: "中断恢复", estimatedComplexity: 1, version: 1, createdAt: now, updatedAt: now }, [
         { planId, stepId: "effect", title: "写入", state: "interrupted", attempt: 1, effectClass: "external_side_effect", sideEffectStarted: true, updatedAt: now },
         { planId, stepId: "read", title: "读取", state: "interrupted", attempt: 1, effectClass: "read_only", sideEffectStarted: false, updatedAt: now },
