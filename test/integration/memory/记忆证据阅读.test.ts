@@ -271,7 +271,7 @@ describe("记忆证据阅读接线", () => {
       { item: "coconut milk ice cream", sourceId: "category-2" },
       { item: "chocolate mousse", sourceId: "category-2" },
     ])
-    expect(mocks.completePiText.mock.calls[0]![0].systemPrompt).toContain("完整的口味组合")
+    expect(mocks.completePiText.mock.calls[0]![0].systemPrompt).toContain("保留足以区分项目的限定词")
   })
 
 
@@ -606,6 +606,8 @@ describe("记忆证据阅读接线", () => {
     expect(MEMORY_READING_POLICY).toContain("必须把它落实在建议理由或具体步骤中，不得只给与用户无关的通用建议")
     expect(MEMORY_READING_POLICY).toContain("建议先针对该限制本身（例如工作方式、居住地点、时间安排），再用既有习惯或临时活动作辅助，不能只列现有爱好")
     expect(MEMORY_READING_POLICY).toContain("更晚的确认记录更新先前值")
+    expect(MEMORY_READING_POLICY).toContain("管理面纠正或 supersede 后，活动条目的 validFrom 晚于旧原话的记录时间")
+    expect(MEMORY_READING_POLICY).toContain("不得因旧值出自用户原话就回答旧值")
     expect(MEMORY_READING_POLICY).toContain("不以看不出、不敢确定或没翻到收尾")
     expect(MEMORY_READING_POLICY).toContain("相似事实只能作为附带说明，不得作为答案主体")
     expect(MEMORY_READING_POLICY).toContain("不得补造历史中未出现的地点、天气、光线、物品、心情、原因、结果、经历与双方当时的反应")

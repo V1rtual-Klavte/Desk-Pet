@@ -44,6 +44,29 @@ export const COMPACTION_DECLINED_ENTRY = "deskpet.compaction_declined"
  */
 export const RECALL_FAILED_ENTRY = "deskpet.recall_failed"
 
+/**
+ * 记忆引用溯源条目：记录某条助手回复实际渲染进请求的记忆条目与会话原文。
+ *
+ * JSONL 正文不会被遗忘改写；遗忘改变的是「还能否被召回」。会话索引据此排除
+ * 引用过已不存在或被更正的来源的助手回复，避免旧回复的转述在事实被忘掉后继续作为原文证据。
+ * 只存在于溯源条目里的追加写入，不进入模型消息流。
+ */
+export const MEMORY_CITATIONS_ENTRY = "deskpet.memory_citations"
+
+/** 被渲染进请求的一条会话原文；条目级去重，chunk 不重复登记。 */
+export interface MemoryCitationConversationRef {
+  sessionId: string
+  entryId: string
+}
+
+/** `deskpet.memory_citations` 的载荷；两个来源列表至少一个非空。 */
+export interface MemoryCitationEntryData {
+  assistantEntryId: string
+  itemIds: string[]
+  conversationRefs: MemoryCitationConversationRef[]
+  requestId: string
+}
+
 export type MessageOrigin =
   | "user"
   | "assistant"

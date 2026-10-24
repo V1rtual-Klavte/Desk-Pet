@@ -63,10 +63,12 @@ export {
   COMPACTION_DECLINED_ENTRY,
   DESKPET_GREETING_ENTRY,
   DESKPET_SYSTEM_MESSAGE_ENTRY,
+  MEMORY_CITATIONS_ENTRY,
   PROMPT_REWRITE_ENTRY,
   PROMPT_SNAPSHOT_ENTRY,
   RECALL_FAILED_ENTRY,
 } from "./types"
+export type { MemoryCitationConversationRef, MemoryCitationEntryData } from "./types"
 
 export {
   INPUT_SOURCE_FIELD,

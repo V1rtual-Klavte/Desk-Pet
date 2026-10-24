@@ -87,9 +87,10 @@ import { classifyFailureKind } from "@/services/error/failure-kind"
 import type { FailureKind } from "@/services/error/failure-kind"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createMemoryRecallMessage, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishMemoryRecallReferences, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, TURN_NOTE_CUSTOM_TYPE, userInputMessage } from "@/services/engine/runtime"
-import type { RuntimeTraceContext } from "@/services/engine/runtime"
+import { createMemoryRecallMessage, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, MEMORY_CITATIONS_ENTRY, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishMemoryRecallReferences, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, TURN_NOTE_CUSTOM_TYPE, userInputMessage } from "@/services/engine/runtime"
+import type { MemoryCitationConversationRef, MemoryCitationEntryData, RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
+import { MEMORY_LIMITS } from "@/services/agent/memory/protocol"
 
 import { SUB_AGENT_DEFAULT_MAX_TOOL_CALLS, SUB_AGENT_DEFAULT_TIMEOUT_MS } from "@/services/agent/timeouts"
 
@@ -1060,6 +1061,35 @@ function restoreRawAssistantHistory(messages: AgentMessage[]): AgentMessage[] {
   })
 }
 
+/** 本请求实际渲染进记忆块的来源：事实条目与会话原文；未渲染的投影不进入溯源。 */
+function renderedCitations(
+  projections: readonly MemoryProjection[],
+  sourceIds: readonly string[],
+): Pick<MemoryCitationEntryData, "itemIds" | "conversationRefs"> {
+  const rendered = new Set(sourceIds)
+  const itemIds: string[] = []
+  const itemSeen = new Set<string>()
+  const conversationRefs: MemoryCitationConversationRef[] = []
+  const conversationSeen = new Set<string>()
+  for (const projection of projections) {
+    if (!rendered.has(projection.sourceId)) continue
+    if (projection.conversation) {
+      const ref = { sessionId: projection.conversation.sessionId, entryId: projection.conversation.entryId }
+      const key = `${ref.sessionId}\u0000${ref.entryId}`
+      if (conversationSeen.add(key)) conversationRefs.push(ref)
+      continue
+    }
+    const separator = projection.memoryVersion.lastIndexOf(":")
+    if (separator <= 0) continue
+    const id = projection.memoryVersion.slice(0, separator)
+    if (itemSeen.add(id)) itemIds.push(id)
+  }
+  return {
+    itemIds: itemIds.slice(0, MEMORY_LIMITS.conversation.maxCitationRefs),
+    conversationRefs: conversationRefs.slice(0, MEMORY_LIMITS.conversation.maxCitationRefs),
+  }
+}
+
 function createRequestViewHook(args: {
   projectToolResults: boolean
   toolsByName: ReadonlyMap<string, ToolDef>
@@ -1078,7 +1108,7 @@ function createRequestViewHook(args: {
    * 落位由前缀缓存决定：记忆每回合都可能不同，留在 system prompt 里会把缓存断在会话正文之前。
    * hook 将当前视图剩余 headroom 传给 recall，由 runtime 按本轮查询与配置派生 tier 预算。
    */
-  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext; question: string }
+  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext; question: string; onCitations?: (citations: Pick<MemoryCitationEntryData, "itemIds" | "conversationRefs">) => void }
   /** Reader-produced enumeration items for the final answer; completion is applied at commit time. */
   onEnumeration?: (context: EnumerationAnswerContext) => void
   activeAdmission?: { owner: ProactiveOwner; beforeGenerate: NonNullable<ActiveMessageRequest["beforeGenerate"]>; maxOutputTokens: number }
@@ -1166,6 +1196,8 @@ function createRequestViewHook(args: {
             prepared = nextPrepared
             used = nextUsed
           }
+          // 记录本次请求实际渲染的事实与会话原文；最终回复据此在来源被更正/遗忘后退出召回。
+          args.memory.onCitations?.(renderedCitations(focused.projections, rendered.sourceIds))
           const renderEvent = publishRuntimeTrace(args.memory.traceContext, "memory_recall_rendered", () => ({
             sourceIds: rendered.sourceIds,
             conversationRefs: focused.projections.filter(item => item.conversation && rendered.sourceIds.includes(item.sourceId))
@@ -1185,6 +1217,7 @@ function createRequestViewHook(args: {
             sourceIds: [], projectedCount: 0, usedTokens: 0, droppedIds: [], status: "failed",
           }))
           // 记忆缺席不该让整轮起不来：这里只留痕，继续用不含记忆的视图。
+          args.memory.onCitations?.({ itemIds: [], conversationRefs: [] })
           log.warn("记忆召回块附加失败，按无记忆继续:", formatError(error))
         }
       }
@@ -1457,7 +1490,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
    */
   addressRefs?: () => Promise<ReadonlyMap<string, string>>
   /** 记忆召回块（只有主回合传）：headroom-aware 取数 thunk 与渲染在投影 hook 同处完成。 */
-  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext; question: string }
+  memory?: { recall: (availableTokens: number) => Promise<FocusedMemoryEvidence>; traceContext: RuntimeTraceContext; question: string; onCitations?: (citations: Pick<MemoryCitationEntryData, "itemIds" | "conversationRefs">) => void }
   /**
    * 子运行（规划 / 计划步骤 / 子代理）对聊天界面**不可见**：过程消息、工具结果与流式
    * 草稿都不进活跃会话的可见列表与瞬时尾巴。子运行槽是内存临时的、什么都不落盘，
@@ -2127,6 +2160,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       checkCounts: { supported: 0, missing: 0, conflicting: 0 },
     })
     let focusedMemory: FocusedMemoryEvidence = emptyFocusedEvidence()
+    /** 最后一次请求实际渲染的事实条目与会话原文；最终回复的转述以这份可见性为准。 */
+    let citedRefs: Pick<MemoryCitationEntryData, "itemIds" | "conversationRefs"> = { itemIds: [], conversationRefs: [] }
     const recordedRecallFailures = new Set<string>()
     const auditOptionalFailures = () => {
       for (const failure of memoryRequest.optionalFailures ?? []) {
@@ -2359,7 +2394,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       // 投影与压缩共用同一份地址目录 thunk：两路投影对同一条结果逐字相同（槽内有稳定缓存）。
       addressRefs: () => slot.addressRefs(),
       // 记忆块与额度一起交给投影 hook：额度是这块的硬上限，实际可用量还要减当前视图已用量。
-      memory: { recall: memoryRecallForRequest, traceContext, question: userText },
+      memory: { recall: memoryRecallForRequest, traceContext, question: userText, onCitations: citations => { citedRefs = citations } },
       // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
       isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
     })
@@ -2395,6 +2430,21 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       if (!output.activeCommit) {
         output.reply = ""
         output.failure = { kind: "unknown", message: "主动表达没有可核实的助手提交条目" }
+      }
+    }
+    // 溯源写入失败不影响回复；它只影响「来源被更正/遗忘后这条回复是否退出召回」。
+    const citationEntryId = output.committedAssistantEntryId ?? output.activeCommit?.assistantEntryId
+    if (citationEntryId && (citedRefs.itemIds.length || citedRefs.conversationRefs.length)) {
+      const citation: MemoryCitationEntryData = {
+        assistantEntryId: citationEntryId,
+        itemIds: citedRefs.itemIds,
+        conversationRefs: citedRefs.conversationRefs,
+        requestId,
+      }
+      try {
+        await slot.appendCustomEntry(MEMORY_CITATIONS_ENTRY, citation as unknown as JsonValue)
+      } catch (error) {
+        log.warn("记忆引用溯源条目写入失败:", { sessionId: turnSessionId, requestId }, formatError(error))
       }
     }
     deferTypingTitlebarRelease = defersTitlebarReleaseToReveal(output)

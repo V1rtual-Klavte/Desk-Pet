@@ -1,7 +1,15 @@
 // Shared local query cues; no model call or runtime dependencies.
 import { MEMORY_LIMITS } from "./protocol"
 
-export const MEMORY_QUERY_STOP_WORDS: ReadonlySet<string> = new Set(MEMORY_LIMITS.query.englishStopWords)
+/**
+ * Query stopwords are shared with the native host through the memory protocol:
+ * one vocabulary for lexical retrieval, entity extraction and rewrite grounding
+ * in both languages.
+ */
+export const MEMORY_QUERY_STOP_WORDS: ReadonlySet<string> = new Set([
+  ...MEMORY_LIMITS.query.stopWords.en,
+  ...MEMORY_LIMITS.query.stopWords.zh,
+])
 
 export type MemoryRecallIntent = "none" | "lookup" | "overview" | "explanation" | "procedure" | "advice" | "count"
 
@@ -54,6 +62,18 @@ const MEMORY_EVIDENCE_CUES: Record<string, Record<MemoryAspectLanguage, readonly
   count: { zh: ["次数", "经历"], en: ["times", "once"] },
   coverage: { zh: ["记录", "话题"], en: ["records", "talked about"] },
 }
+
+/**
+ * Generic search cues that may be used even when the wording is absent from
+ * evidence. Local aspect/evidence cues supply most of the vocabulary; the tail
+ * adds date/context words used only by follow-up searches.
+ */
+export const MEMORY_SEARCH_CUES: ReadonlySet<string> = new Set([
+  ...Object.values(MEMORY_ASPECT_CUES).flatMap(cue => [...cue.zh, ...cue.en]),
+  ...Object.values(MEMORY_EVIDENCE_CUES).flatMap(cue => [...cue.zh, ...cue.en]),
+  "日期", "reasons", "cause", "causes", "methods", "procedure", "context",
+  "date", "time", "history", "advice", "experience", "preference",
+])
 
 /**
  * Generic everyday vocabulary for questions whose answer terms usually do not
@@ -140,8 +160,8 @@ export function deriveAspectSubqueries(shape: LocalMemoryQueryShape, query = "")
   const cues = memoryAspectCues(shape)
   const anchors = selectAspectAnchors(shape.entities, language)
   const seedTerms = aspectSeedTerms(shape.aspectCategories ?? [], language)
-  // Prefer category words that share a prefix with the question (birdwatching ->
-  // birds) before spending the bounded facet budget on unrelated activities.
+  // Prefer category words that share a prefix with the question before spending
+  // the bounded facet budget on unrelated activities.
   const queryTokens = query.toLowerCase().match(/[a-z]{4,}/g) ?? []
   const sharedPrefix = (seed: string): boolean => queryTokens.some(token => {
     const prefix = seed.toLowerCase().slice(0, 4)
@@ -191,23 +211,17 @@ export function deriveAspectSubqueries(shape: LocalMemoryQueryShape, query = "")
 
 /**
  * Shared function words for lexical feedback and condition-term filtering.
- * Kept next to the query-shape vocabulary so projections and feedback do not
- * each grow a private English-only copy.
+ * The protocol stopwords cover both languages; this list only adds
+ * conversational fillers and light verbs that should never become search terms.
  */
 export const MEMORY_QUERY_FUNCTION_WORDS: ReadonlySet<string> = new Set([
   ...MEMORY_QUERY_STOP_WORDS,
-  "the", "and", "that", "this", "with", "from", "have", "been", "they", "their", "there",
-  "what", "when", "where", "which", "who", "how", "about", "into", "over", "under", "after", "before",
-  "also", "just", "very", "really", "much", "many", "some", "like", "would", "could", "should",
-  "will", "your", "you", "his", "her", "its", "our", "not", "but", "for", "are", "was", "were",
-  "has", "had", "did", "does", "can", "may", "might", "one", "two", "said", "says", "get", "got",
-  "make", "made", "know", "think", "yeah", "well", "great", "good", "nice", "sure", "thanks",
-  "hey", "hi", "hello", "what's", "that's", "it's", "i'm", "don't", "can't", "didn't", "series",
-  "them", "their", "off", "once", "here", "all", "any", "both", "each", "few", "more", "most",
-  "other", "such", "no", "nor", "only", "own", "same", "too", "now",
-  "什么", "怎么", "如何", "为什么", "哪些", "哪个", "这个", "那个", "一个", "一些", "我们",
-  "你们", "他们", "她们", "以及", "还有", "但是", "因为", "所以", "如果", "然后", "就是",
-  "可以", "应该", "已经", "没有", "不是", "非常", "很多", "东西", "事情", "时间",
+  "into", "over", "under", "after", "before", "also", "just", "very", "really", "much", "many",
+  "some", "like", "not", "may", "might", "one", "two", "said", "says", "get", "got", "make", "made",
+  "know", "think", "yeah", "well", "great", "good", "nice", "sure", "thanks", "hey", "hi", "hello",
+  "what's", "that's", "it's", "i'm", "don't", "can't", "didn't", "series", "off", "once", "here",
+  "all", "any", "both", "each", "few", "more", "most", "other", "such", "no", "nor", "only", "own",
+  "same", "too", "now",
 ])
 
 /**

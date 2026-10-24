@@ -258,14 +258,7 @@ async function probeCorpusTerms(terms: readonly string[]): Promise<ReadonlySet<s
 
 function contentTermsNotGrounded(query: string, groundingText: string): string[] {
   const grounding = normalizeMemoryQueryText(groundingText)
-  const normalized = normalizeMemoryQueryText(query)
-  const terms = normalized.match(/[\p{L}\p{N}]+/gu) ?? []
-  const content = terms.filter(term => term.length > 1 && !MEMORY_QUERY_STOP_WORDS.has(term))
-  for (const run of normalized.match(/[\p{Script=Han}]+/gu) ?? []) {
-    const points = [...run]
-    for (let index = 0; index < points.length - 1; index += 1) content.push(points.slice(index, index + 2).join(""))
-  }
-  return [...new Set(content.filter(term => !grounding.includes(term)))]
+  return memoryQueryContentTerms(query).filter(term => !grounding.includes(term))
 }
 
 function parsePlanOutput(
@@ -339,15 +332,23 @@ export function normalizeMemoryQueryText(text: string): string {
   return text.normalize("NFKC").toLowerCase()
 }
 
-function isGroundedLexicalQuery(query: string, groundingText: string, corpusTerms: ReadonlySet<string> = new Set()): boolean {
-  const normalized = normalizeMemoryQueryText(query)
-  const latinTerms = normalized.match(/[\p{L}\p{N}]+/gu) ?? []
-  const contentTerms = latinTerms.filter(term => term.length > 1 && !MEMORY_QUERY_STOP_WORDS.has(term))
-  const hanRuns = normalized.match(/[\p{Script=Han}]+/gu) ?? []
-  for (const run of hanRuns) {
+/** Latin tokens plus Chinese bigrams that carry content, minus shared stopwords. */
+export function memoryQueryContentTerms(text: string): string[] {
+  const normalized = normalizeMemoryQueryText(text)
+  const terms = (normalized.match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter(term => term.length > 1 && !MEMORY_QUERY_STOP_WORDS.has(term))
+  for (const run of normalized.match(/[\p{Script=Han}]+/gu) ?? []) {
     const points = [...run]
-    for (let index = 0; index < points.length - 1; index += 1) contentTerms.push(points.slice(index, index + 2).join(""))
+    for (let index = 0; index < points.length - 1; index += 1) {
+      const bigram = points.slice(index, index + 2).join("")
+      if (!MEMORY_QUERY_STOP_WORDS.has(bigram)) terms.push(bigram)
+    }
   }
+  return [...new Set(terms)]
+}
+
+function isGroundedLexicalQuery(query: string, groundingText: string, corpusTerms: ReadonlySet<string> = new Set()): boolean {
+  const contentTerms = memoryQueryContentTerms(query)
   return contentTerms.length > 0 && contentTerms.every(term => groundingText.includes(term) || corpusTerms.has(term))
 }
 

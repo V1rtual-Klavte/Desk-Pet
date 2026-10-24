@@ -410,6 +410,35 @@ describe("memory_item_detail（条目详情与历史）", () => {
     expect(payload.history[1]!.subtitle).toContain("来源审计已不可用。")
   })
 
+  it("详情分开显示记录时间、有效期与过期时间，事件时间不冒充记录时间 [native-ui-memory-temporal-detail]", async () => {
+    fixtures.detail = memoryItem({
+      draft: {
+        ...memoryItem().draft,
+        observedAt: Date.UTC(2026, 9, 20, 8, 0),
+        validFrom: Date.UTC(2026, 9, 1, 8, 0),
+        validTo: null,
+        expiresAt: Date.UTC(2026, 9, 30, 8, 0),
+        eventAt: { precision: "day", localDate: "2026-10-18", timezone: "Asia/Shanghai" },
+      },
+    })
+    const payload = (await dispatchHostRequest("memory_item_detail", { id: "mem-1" })) as { info: string }
+    expect(payload.info).toContain("记录时间：")
+    expect(payload.info).toContain("有效期间：")
+    expect(payload.info).toContain("～ 至今")
+    expect(payload.info).toContain("发生时间：2026-10-18")
+    expect(payload.info).toContain("过期时间：")
+    expect(payload.info).not.toContain('发生时间：{"precision"')
+
+    fixtures.detail = memoryItem({
+      draft: { ...memoryItem().draft, observedAt: undefined },
+    })
+    const unrecorded = (await dispatchHostRequest("memory_item_detail", { id: "mem-1" })) as { info: string }
+    expect(unrecorded.info).toContain("记录时间：未记录")
+    expect(unrecorded.info).toContain("有效期间：未限定")
+    expect(unrecorded.info).toContain("过期时间：未设置")
+    expect(unrecorded.info).toContain("发生时间：未记录")
+  })
+
   it("派生条目（系统观察）详情带来源类别行，用户条目不带 [native-ui-memory-derived-detail]", async () => {
     fixtures.detail = memoryItem({
       id: "mem-1",

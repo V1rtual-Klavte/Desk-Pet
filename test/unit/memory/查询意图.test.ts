@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { deriveMemoryQueryPlan } from "@/services/agent/memory/query"
-import { deriveFeedbackQueries, hasAdaptiveQueryShape, hasPersonalRecallIntent } from "@/services/agent/memory/query-shape"
+import { deriveMemoryQueryPlan, memoryQueryContentTerms } from "@/services/agent/memory/query"
+import { MEMORY_LIMITS } from "@/services/agent/memory/protocol"
+import { deriveFeedbackQueries, hasAdaptiveQueryShape, hasPersonalRecallIntent, MEMORY_QUERY_STOP_WORDS } from "@/services/agent/memory/query-shape"
 
 describe("记忆检索意图", () => {
   it("英文功能词不占实体名额，推断与历史的证据需求共用阅读分类 [memory-query-plan-inference-fields]", () => {
@@ -78,6 +79,12 @@ describe("记忆检索意图", () => {
     })
     expect(deriveMemoryQueryPlan("What did I tell you about my ThinkPad?").entities).toContain("ThinkPad")
     expect(deriveMemoryQueryPlan("How many properties did I view before making my offer?").entities).toContain("properties")
+    expect(MEMORY_LIMITS.query.stopWords.en).toContain("the")
+    expect(MEMORY_LIMITS.query.stopWords.zh).toEqual(expect.arrayContaining(["什么", "我们", "可以"]))
+    for (const word of ["the", "什么", "我们", "可以"]) expect(MEMORY_QUERY_STOP_WORDS.has(word), word).toBe(true)
+    expect(memoryQueryContentTerms("我们")).toEqual([])
+    expect(memoryQueryContentTerms("什么")).toEqual([])
+    expect(memoryQueryContentTerms("备用钥匙")).toEqual(expect.arrayContaining(["备用", "钥匙"]))
   })
 
   it("识别第一人称中文个人经历问题，但不把一般知识问题当回忆 [memory-query-plan-chinese-personal-question]", () => {

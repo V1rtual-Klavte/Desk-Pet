@@ -17,7 +17,7 @@ import { memoryConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { getMemoryRecallCandidates, memorySourceEvidence } from "./ipc"
-import type { MemoryEventTime, MemoryItem, MemoryOrigin, MemoryRecallCandidateSnapshot, MemoryRecallDiagnostics } from "./ipc"
+import type { MemoryEventTime, MemoryItem, MemoryOrigin, MemoryRecallCandidateSnapshot, MemoryRecallDiagnostics, TemporalAnchor } from "./ipc"
 import { DERIVED_BEHAVIOR_ORIGIN } from "./sources"
 import { parseRerankSelection } from "./rerank"
 import { fuseRankedLists } from "./fusion"
@@ -102,6 +102,15 @@ export interface MemoryProjection {
    */
   origin?: MemoryOrigin
   memoryRevision?: number
+  /** 系统记录这条事实的时间；问题问记录时间时用它，不能拿事件时间顶替。 */
+  observedAt?: number
+  /** 事实的生效区间（毫秒）；后一次确认/更正会关闭旧版本的 validTo。 */
+  validFrom?: number | null
+  validTo?: number | null
+  /** 所描述事件的发生时间；是事件时间，不是记录时间。 */
+  eventAt?: TemporalAnchor | null
+  /** 时限事实的过期时间；过期后不再进入召回。 */
+  expiresAt?: number | null
   /** Temporary, source-validated reading aid; never a new fact or a persisted memory. */
   readingNote?: { quote: string; relevance: string }
   /** A quoted conversation fragment, never an accepted user fact. */
@@ -142,18 +151,24 @@ export const DERIVED_PROVENANCE_MARK = "系统观察·可撤销的推断（非�
 
 function projection(item: MemoryItem, tokenBudget: number, memoryRevision?: number): MemoryProjection {
   const derived = item.origin === DERIVED_BEHAVIOR_ORIGIN
+  const draft = item.draft
   return {
     sourceId: `${item.id}@${item.version}`,
     memoryVersion: `${item.id}:${item.version}`,
     provenance: derived
       ? DERIVED_PROVENANCE_MARK
-      : `memory:${item.draft.scope}${item.draft.sourceIds.length ? `:${item.draft.sourceIds.join(",")}` : ""}`,
+      : `memory:${draft.scope}${draft.sourceIds.length ? `:${draft.sourceIds.join(",")}` : ""}`,
     taint: "derived" as MessageTaint,
-    text: item.draft.content,
+    text: draft.content,
     tokenBudget,
-    tier: item.draft.pinned ? "core" : "recall",
+    tier: draft.pinned ? "core" : "recall",
     origin: item.origin,
     ...(memoryRevision === undefined ? {} : { memoryRevision }),
+    ...(draft.observedAt === undefined ? {} : { observedAt: draft.observedAt }),
+    ...(draft.validFrom === undefined ? {} : { validFrom: draft.validFrom }),
+    ...(draft.validTo === undefined ? {} : { validTo: draft.validTo }),
+    ...(draft.eventAt === undefined ? {} : { eventAt: draft.eventAt }),
+    ...(draft.expiresAt === undefined ? {} : { expiresAt: draft.expiresAt }),
   }
 }
 

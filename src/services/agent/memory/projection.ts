@@ -1,9 +1,13 @@
 import { estimateContextTokens } from "@/services/context/budget"
+import { formatError } from "@/services/error"
+import { createLogger } from "@/services/logger"
 import type { MemoryProjection } from "./provider"
 import type { MemoryQueryPlan } from "./query"
 import { memoryReviewSourceIds } from "./evidence-review"
 import type { MemoryEvidenceReview } from "./evidence-review"
 import { MEMORY_QUERY_FUNCTION_WORDS, memoryAspectSeedTerms } from "./query-shape"
+
+const log = createLogger("MemoryProjection")
 
 export interface MemoryQuestionCheck {
   kind: "premise" | "detail"
@@ -199,8 +203,7 @@ export function enumerationEvidenceIds(
     return terms.some(term => normalized.includes(term))
   })
   // Keep every turn of a matched session, not only the turn whose wording hit a
-  // query term: a far sibling ("swimming" / "frisbees") often carries no question
-  // word. Sessions are ranked by their best hit; turns inside a session put the
+  // query term: a far sibling turn often carries no question word. Sessions are ranked by their best hit; turns inside a session put the
   // hit first, then the remaining complete turns in original order.
   const bySession = new Map<string, { rank: number; units: Array<{ unit: MemoryProjection[]; matched: boolean; order: number }> }>()
   memoryEvidenceUnits(projections).forEach((unit, order) => {
@@ -251,21 +254,62 @@ questionChecks的kind=premise先核对题意需要的主体/事件/范围：历�
 先在内部梳理当前问题需要的全部相关证据，再依据语义推理，不要求原文与问句使用相同词语。每条事实保留条件、否定、所属事件和时间；相关事件不能冒充所问的特定事件，相对日期按各记录时间解释。计数前列齐符合条件的不同事件，去重并排除不满足范围的项目。
 evidenceReview是本次阅读的暂定核对表，仍须对照原文，不是新增事实。kind=count时，items逐项区分已发生且符合范围的counted、同一经历的duplicate、planned、frequency、out_of_scope、not_occurred与uncertain；duplicate的sameAs只是本次表内关系，来源ID或不同记录日期不能证明是不同经历。observedCount是宿主对counted实例的汇总，不是召回穷尽的证明；回答0须有覆盖所问主体和范围的not_occurred明确否定，只有计划/频率/范围外项目仍是未知；complete只说明本次提供的证据已核对。先检查人物、事件时间与分组依据，频率、计划、旧照片的发表时间不得代替发生次数或事件时间；未决项不强行合并或拆开，证据明确的不同经历也不因频率描述改答范围。推断核对表只用于阅读器判断是否补查，不进入最终回答包；主答从实际evidence独立检查相关依据与反例，不将模型预先列出的结论当作唯一答案范围。complete=false时不能仅凭宽泛questionChecks的supported宣称数量或推断已完整核实；可说明已支持部分和具体缺口，不把未知写成没有。决定、计划已经作出，不等于它所指向的后续行动已发生。
 问题询问具名人物已发生的经历时，先独立核对“谁亲历了什么事件”，再核对该人的感受、原因、时间或结果。听说、安慰、评论他人的经历不能证明自己亲历；即使两人的感受相似，也不能替换主体。若问题的主体与原文当事人不同，只能回答所问前提无法确认，不以旁观者反应补答该问题。
-直接历史问题先逐项检查questionChecks：required的missing或conflicting只限制对应条件，不可把相似实体、相邻事件或计划替换成目标事实后继续计算；必须继续核对原始evidence，确实没有该必要条件的证据时按未知/无法确认回答。supporting的missing仅表示缺少额外佐证，不能抹除或否定其他supported项，也不能单独迫使弃答。supported表示存在经校验的相关证据；回答涉及该条件时应据此给出答案或建议。时间窗与事件是否已发生分别核对，不能将记录日期当成事件日期。同一事实或事件有多条时间不同的记录时按时间序解释：更晚的确认记录更新先前值，回答采用更新后的值并直接给出结论（用户当前纠正优先）；不要因为同时看到旧值就回答无法确定，只有同一时点互斥或先后无法判定才按conflicting处理。问句使用相对时间（如上周末、多少天前）时，先按题面给出的当前时间换算成日期区间再与记录时间比对。supported已覆盖问句所需必要条件时应直接给出结论或建议，不以看不出、不敢确定或没翻到收尾。问句限定的required条件为missing时，回答必须先说明该条件无法从记录确认，相似事实只能作为附带说明，不得作为答案主体。第一人称已完成或进行中的动作（decided/did/started 带 today/yesterday 等具体时间，或 currently doing / 正在做 等持续表述）按已发生处理，只有 thinking of / about to / 打算 / 计划 才算未发生。
+直接历史问题先逐项检查questionChecks：required的missing或conflicting只限制对应条件，不可把相似实体、相邻事件或计划替换成目标事实后继续计算；必须继续核对原始evidence，确实没有该必要条件的证据时按未知/无法确认回答。supporting的missing仅表示缺少额外佐证，不能抹除或否定其他supported项，也不能单独迫使弃答。supported表示存在经校验的相关证据；回答涉及该条件时应据此给出答案或建议。时间窗与事件是否已发生分别核对，不能将记录日期当成事件日期。同一事实或事件有多条时间不同的记录时按时间序解释：更晚的确认记录更新先前值，回答采用更新后的值并直接给出结论（用户当前纠正优先）；记忆条目带 observedAt/validFrom/validTo：管理面纠正或 supersede 后，活动条目的 validFrom 晚于旧原话的记录时间，回答采用该活动条目的值并说明旧值已更新，旧原话只能用于解释历史，不得因旧值出自用户原话就回答旧值；不要因为同时看到旧值就回答无法确定，只有同一时点互斥或先后无法判定才按conflicting处理。问句使用相对时间（如上周末、多少天前）时，先按题面给出的当前时间换算成日期区间再与记录时间比对。supported已覆盖问句所需必要条件时应直接给出结论或建议，不以看不出、不敢确定或没翻到收尾。问句限定的required条件为missing时，回答必须先说明该条件无法从记录确认，相似事实只能作为附带说明，不得作为答案主体。第一人称已完成或进行中的动作（decided/did/started 带 today/yesterday 等具体时间，或 currently doing / 正在做 等持续表述）按已发生处理，只有 thinking of / about to / 打算 / 计划 才算未发生。
 给个人建议时先找与需求有关的用户既有选择、物品、尝试、经历和兴趣，包括在其他话题中提到的内容；明确的第一人称当前陈述可支持拥有，计划、假设、条件句和assistant建议不能变成用户已拥有或已行动。存在对建议有直接帮助的supported个人证据时，必须把它落实在建议理由或具体步骤中，不得只给与用户无关的通用建议；也不强行罗列多条或强行个性化，不泄露无关历史。缺失的历史事实按未知处理，一般知识可补充建议，不能补造用户经历。正常回复，不展示内部笔记。当问题只问日期或时间，且用户未指定机器格式时，按回复语言自然表达所求事件的日期或区间；英文日历日期用月份名称、日、年，中文用年月日，精度不得超出证据。不要附带记录日期、相差天数或换算过程；只有明确询问相对时间、比较或计算时才输出相应的相对量或过程。
 按问句决定输出边界：若问题问是否/为什么，答案须给出一条有依据的理由；计数表complete=true时给observedCount精确数，complete=false时只给已确认下限并说明未决项，不把未知写成确定。列举问题只列题目实际索求且有据的项目。问要选、学习或喜欢什么时，明确排除的备选只用于内部核对，不附带输出“不是/不选/not X”；问避免、拒绝或不选什么时，相关负向项目本身就是答案。yes/no问题的否定结论仍是正常答案，必要的否定条件和不确定性须保留。`
 
 const MEMORY_RECALL_HEADER = "[记忆与会话参考]"
 
+function temporalIso(value: number | null | undefined): string | undefined {
+  if (value === null || value === undefined || !Number.isFinite(value)) return undefined
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
+}
+
+/** 分钟精度按记录时区输出带偏移时刻，避免 UTC 日期与用户所在日期错开一天。 */
+function zonedInstant(instant: number, timeZone: string): string | undefined {
+  const date = new Date(instant)
+  if (Number.isNaN(date.getTime())) return undefined
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+      timeZoneName: "longOffset",
+    }).formatToParts(date)
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(item => item.type === type)?.value ?? ""
+    const offset = part("timeZoneName").replace(/^GMT/u, "") || "Z"
+    return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}:${part("second")}${offset}`
+  } catch (error) {
+    // 非法 IANA 时区不阻断召回：退回 UTC ISO，日期仍可按显示时区核对。
+    log.warn("事件时间时区无效，退回 UTC ISO:", timeZone, formatError(error))
+    return temporalIso(instant)
+  }
+}
+
+function eventAtValue(anchor: MemoryProjection["eventAt"]): string | undefined {
+  if (!anchor) return undefined
+  return anchor.precision === "day" ? anchor.localDate : zonedInstant(anchor.instant, anchor.timezone)
+}
+
 function evidenceRecord(projection: MemoryProjection, aliases?: { id: string; sessionId?: string; entryId?: string }) {
   const conversation = projection.conversation
   const date = conversation ? new Date(conversation.timestamp) : undefined
+  const observedAt = temporalIso(projection.observedAt)
+  const validFrom = temporalIso(projection.validFrom)
+  const validTo = temporalIso(projection.validTo)
+  const expiresAt = temporalIso(projection.expiresAt)
+  const eventAt = eventAtValue(projection.eventAt)
   return {
     id: aliases?.id ?? projection.sourceId,
     kind: conversation ? "quote" : projection.origin === "derived_behavior" ? "observation" : projection.tier === "core" ? "core" : "fact",
     source: aliases
       ? conversation ? "会话原文" : (projection.provenance || "memory").split(":").slice(0, 2).join(":")
       : projection.provenance || "memory",
+    ...(observedAt ? { observedAt } : {}),
+    ...(validFrom ? { validFrom } : {}),
+    ...(validTo ? { validTo } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+    ...(eventAt ? { eventAt } : {}),
     ...(conversation ? {
       sessionId: aliases?.sessionId ?? conversation.sessionId,
       entryId: aliases?.entryId ?? conversation.entryId,

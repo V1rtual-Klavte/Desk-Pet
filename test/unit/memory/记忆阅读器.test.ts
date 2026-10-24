@@ -210,6 +210,9 @@ describe("query-focused memory reading", () => {
   it("keeps grounded follow-up searches and drops invented entities without discarding valid notes [memory-reading-grounded-followup-search]", () => {
     expect(isGroundedMemorySearch("would preferences", "Would Nora likely enjoy hiking?")).toBe(false)
     expect(isGroundedMemorySearch("Nora preferences", "Would Nora likely enjoy hiking?")).toBe(true)
+    expect(isGroundedMemorySearch("原因 我们", "我们之前讨论过露营的原因")).toBe(false)
+    expect(isGroundedMemorySearch("原因 露营", "我们之前讨论过露营的原因")).toBe(true)
+    expect(isGroundedMemorySearch("日期 露营", "我们之前讨论过露营的原因")).toBe(true)
     const query = "What should I do with my power bank?"
     const parsed = parseMemoryReadingNotes(JSON.stringify({
       notes: [note],

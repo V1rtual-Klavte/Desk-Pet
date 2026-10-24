@@ -1,3 +1,6 @@
+// 2026-10-24 记忆时间语义批次：management-intents.ts 的 memory_item_detail 分开显示记录时间、
+// 有效期间、发生时间、提醒时间、过期时间与事项状态，缺失值用「未记录/未限定/至今/未设置/不适用」
+// 如实标注；新增 nui-35（1 个 L2 caseId）。sourceHash 按当前源码复算。
 // 2026-10-23 执行许可批次：sourceFiles 中 host/types.ts 的 bash_exec 线形状新增
 // borrowerId/permitRequestId（工具执行 IPC，不新增原生 UI 命令或决策方法）；原生 UI 投影、
 // 推送与设置面未改，nui-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -217,7 +220,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "b9c28a596ef633576c217eed77120c7831db70a0066925c4c12eb8ff1cbd22bf",
+  sourceHash: "83528c09947ce204a185d044f1778a6707c8b61e517f401dcccd3cdbf487f9af",
   coverage: [
     {
       id: "nui-34",
@@ -618,6 +621,17 @@ export const nativeUiContract: ModuleContract = {
       layer: "integration",
       depth: "deep",
       scenarios: ["native-ui-session-activity-order"],
+    },
+    // 2026-10-24 记忆时间语义批次（analyze→generate）：新增 nui-35（L2）。
+    {
+      id: "nui-35",
+      feature: "记忆条目详情的时间语义",
+      description:
+        "memory_item_detail 的 info 分开显示记录时间、有效期间、发生时间、提醒时间、过期时间与事项状态：observedAt/validFrom/validTo/expiresAt 按本地日期与短时间渲染；eventAt/dueAt 为日精度时只显示本地日期，分钟精度按记录时区显示本地时刻并附时区名（不把 UTC 日期当成用户日期）；缺失值分别显示「未记录 / 未限定 / 至今 / 未设置 / 不适用」，发生时间不冒充记录时间，也不把锚点对象序列化进详情",
+      why: "条目的记录时间、事件时间和有效期是三种不同语义：详情混用会让用户把事件发生日当成记忆写入日，把已过期或未开始的有效期当成当前结论；缺失值编造占位日期会制造没发生过的历史",
+      layer: "unit",
+      depth: "shallow",
+      scenarios: ["native-ui-memory-temporal-detail"],
     },
   ],
   // 本契约全部覆盖点在 L2 / L3：原生 UI 桥的推送与请求面是纯适配层，不需要真 Rust 边界

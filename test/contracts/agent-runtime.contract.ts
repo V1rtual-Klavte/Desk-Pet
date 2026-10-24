@@ -1,3 +1,7 @@
+// 2026-10-24 记忆引用溯源批次（定向复核）：runtime.ts 在回合提交后把本次实际渲染的记忆
+// itemId 写成 deskpet.memory_citations 自定义条目，runtime/types.ts 与 runtime/index.ts
+// 导出该常量；写入失败只留痕。索引侧引用表与读取排除由 memory mm-79 自持，ar-* 不复制
+// 覆盖；回合准入、取消、usage、提交与流式调度未改，仅按当前源码刷新 sourceHash。
 // 2026-10-24 计划闭环与团队角度批次：runtime.ts 的计划恢复从会话条目回读前序结果并按
 // stepId 小于当前步注入（恢复语义的宿主适配仍由 memory mm-15 锚定），主回合结算新增计划
 // 交付摘要的取走/失败交付（planner pl-15 自持该行为）；sub-agent.ts 的 team 由固定成员改为
@@ -278,7 +282,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "43429f93af3f88a1b4683b01352ca7c2ba0cd1dfaa642375c50317b0cc4a17fd",
+  sourceHash: "6f55e6bca585b3b01621b4758666808456935a6bfd61c71e8446a3e9de2d21de",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

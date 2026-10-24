@@ -27,7 +27,7 @@
 import { flushConfig, initConfig } from "@/services/config"
 import { formatError } from "@/services/error"
 // 只取类型（运行时仍走动态 import；`import type` 不加载模块）。
-import type { MemoryJobListItem } from "@/services/agent/memory"
+import type { MemoryJobListItem, TemporalAnchor } from "@/services/agent/memory"
 // 记忆草稿 summary 上限取零依赖叶子（静态常量不加载记忆域，与上面的动态 import 纪律一致）。
 import { DRAFT_SUMMARY_CHARS } from "@/services/agent/memory/draft"
 // MCP 表单的 KEY=VALUE 行格式与 manager 共用同一套解析/渲染（不在这里第二份实现）。
@@ -334,6 +334,18 @@ function formatTime(at: number): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(at)
 }
 
+/** 日期锚点只显示日期；分钟锚点按记录时区显示本地时刻，不把 UTC 日期当成用户日期。 */
+function formatTemporalAnchor(anchor: TemporalAnchor | null | undefined): string {
+  if (!anchor) return "未记录"
+  return anchor.precision === "day" ? anchor.localDate : `${formatTime(anchor.instant)}（${anchor.timezone}）`
+}
+
+/** 生效区间；两端都未记录时如实说未限定，而不是编一个起始日期。 */
+function formatValidity(draft: { validFrom?: number | null; validTo?: number | null }): string {
+  if (draft.validFrom == null && draft.validTo == null) return "未限定"
+  return `${draft.validFrom == null ? "未记录" : formatTime(draft.validFrom)} ～ ${draft.validTo == null ? "至今" : formatTime(draft.validTo)}`
+}
+
 function truncate(text: string, max = 160): string {
   const normalized = text.replace(/\s+/g, " ").trim()
   return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized
@@ -441,8 +453,11 @@ export async function memoryItemDetail(args: unknown): Promise<MemoryItemDetailP
       // 与列表投影同源（同一判据 + 同一枚标记）：派生条目在详情里也看不出「用户说过的」歧义。
       ...(memory.isDerivedBehaviorSource(detail) ? [`来源类别：${memory.DERIVED_PROVENANCE_MARK}`] : []),
       `重要性：${draft.importance}　置信度：${draft.confidence}`,
-      `发生时间：${draft.eventAt ? JSON.stringify(draft.eventAt) : "未记录"}`,
-      `提醒时间：${draft.dueAt ? JSON.stringify(draft.dueAt) : "未记录"}`,
+      `记录时间：${draft.observedAt ? formatTime(draft.observedAt) : "未记录"}`,
+      `有效期间：${formatValidity(draft)}`,
+      `发生时间：${formatTemporalAnchor(draft.eventAt)}`,
+      `提醒时间：${formatTemporalAnchor(draft.dueAt)}`,
+      `过期时间：${draft.expiresAt ? formatTime(draft.expiresAt) : "未设置"}`,
       `事项状态：${draft.workingState ?? "不适用"}`,
     ].join("\n"),
     content: draft.content,

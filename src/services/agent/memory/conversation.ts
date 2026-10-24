@@ -6,13 +6,13 @@ import type { Entry, JsonlSessionMetadata } from "@earendil-works/pi-agent-core"
 import { createHash, randomUUID } from "node:crypto"
 import { getHostBridge } from "@/services/host"
 import { MEMORY_LIMITS } from "./protocol"
-import type { ConversationClearFence, ConversationIndexBatch, ConversationIndexEntry, ConversationSearchEntry, ConversationSearchResult, MemorySource } from "@/services/agent/memory/protocol"
+import type { ConversationClearFence, ConversationIndexBatch, ConversationIndexEntry, ConversationQuoteRef, ConversationSearchEntry, ConversationSearchResult, MemorySource } from "@/services/agent/memory/protocol"
 import type { FileInfoPayload } from "@/services/tool/pi/native-execution-env"
 import { estimateContextTokens } from "@/services/context/budget"
 import { BaseDirs, relativeWithinRoot } from "@/services/paths"
 import { createLogger } from "@/services/logger"
 import { errorCode } from "@/services/error"
-import { messageEventId } from "@/services/engine/runtime"
+import { MEMORY_CITATIONS_ENTRY, messageEventId } from "@/services/engine/runtime"
 import { getPiSessionRepo, listPiSessionMetadata, readPiSessionEntriesOnce, readVisibleSessionTranscript, withPiSessionFileLock } from "@/services/session"
 import type { MemoryProjection } from "./provider"
 import { deriveMemoryQueryPlan } from "./query"
@@ -33,7 +33,7 @@ export const MEMORY_NEIGHBOR_TOKEN_BUDGET = 2_000
 const MEMORY_NEIGHBOR_SESSION_LIMIT = 3
 const MEMORY_NEIGHBOR_MAX_SPAN = 10
 const MAX_INDEX_RETRIES = 2
-const CHUNK_SCHEMA_VERSION = 3
+const CHUNK_SCHEMA_VERSION = 4
 const CHUNK_MAX_CODEPOINTS = 1_600
 const CHUNK_MAX_TOKENS = 400
 const CHUNK_OVERLAP_TOKENS = 48
@@ -884,12 +884,51 @@ async function statSession(metadata: JsonlSessionMetadata, signal?: AbortSignal)
   return info
 }
 
+/** 将宿主写入的引用溯源条目收敛为「助手 entry → 事实条目 id / 会话原文引用」；只认可见助手回复。 */
+function citationRefsByAssistantEntry(
+  entries: readonly Entry[],
+  visible: ReadonlyMap<string, { role: string }>,
+): Map<string, { itemIds: string[]; quoteRefs: ConversationQuoteRef[] }> {
+  const refs = new Map<string, { itemIds: string[]; quoteRefs: ConversationQuoteRef[] }>()
+  for (const entry of entries) {
+    if (entry.type !== "custom" || entry.customType !== MEMORY_CITATIONS_ENTRY) continue
+    const data = entry.data
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue
+    const { assistantEntryId, itemIds, conversationRefs } = data as {
+      assistantEntryId?: unknown
+      itemIds?: unknown
+      conversationRefs?: unknown
+    }
+    if (typeof assistantEntryId !== "string") continue
+    if (visible.get(assistantEntryId)?.role !== "assistant") continue
+    const validIds = (Array.isArray(itemIds) ? itemIds : [])
+      .filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 512)
+    const uniqueIds = [...new Set(validIds)].slice(0, MEMORY_LIMITS.conversation.maxCitationRefs)
+    const validQuotes: ConversationQuoteRef[] = []
+    const quoteSeen = new Set<string>()
+    for (const value of Array.isArray(conversationRefs) ? conversationRefs : []) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue
+      const { sessionId, entryId } = value as { sessionId?: unknown; entryId?: unknown }
+      if (typeof sessionId !== "string" || !sessionId || sessionId.length > 512) continue
+      if (typeof entryId !== "string" || !entryId || entryId.length > 512) continue
+      const key = `${sessionId}\u0000${entryId}`
+      if (quoteSeen.has(key)) continue
+      quoteSeen.add(key)
+      validQuotes.push({ sessionId, entryId })
+    }
+    const quoteRefs = validQuotes.slice(0, MEMORY_LIMITS.conversation.maxCitationRefs)
+    if (uniqueIds.length || quoteRefs.length) refs.set(assistantEntryId, { itemIds: uniqueIds, quoteRefs })
+  }
+  return refs
+}
+
 function* buildIndexEntryBatches(
   entries: readonly Entry[],
   messages: readonly { id: string; eventId?: string; role: string; text: string; timestamp: number; isUserInput?: boolean }[],
   signal: AbortSignal,
 ): Generator<ConversationIndexEntry[]> {
   const visible = new Map(messages.map(message => [message.id, message]))
+  const citationRefs = citationRefsByAssistantEntry(entries, visible)
   const ordered = messages.filter(message => message.role === "user" || message.role === "assistant")
   const positions = new Map(ordered.map((message, index) => [message.id, index]))
   const neighborsOf = (id: string): string[] => {
@@ -962,8 +1001,17 @@ function* buildIndexEntryBatches(
       ...(anchor ? { anchorEntryId: anchor.entryId } : {}),
       ...(anchor?.eventId ? { anchorEventId: anchor.eventId } : {}),
     } as const
+    // 只在 chunk 0 上携带引用：同一回复的后续片段共享 entry 身份，Rust 侧按 entry 过滤。
+    const citations = citationRefs.get(entry.id)
     for (const indexed of chunksForEntry(source, signal)) {
-      batch.push(indexed)
+      const withCitations = citations && indexed.chunk === 0
+        ? {
+            ...indexed,
+            ...(citations.itemIds.length ? { memoryRefs: citations.itemIds } : {}),
+            ...(citations.quoteRefs.length ? { quoteRefs: citations.quoteRefs } : {}),
+          }
+        : indexed
+      batch.push(withCitations)
       if (batch.length >= CONVERSATION_INDEX_BATCH_SIZE) {
         yield batch
         batch = []

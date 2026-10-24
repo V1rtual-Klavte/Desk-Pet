@@ -31,6 +31,7 @@ vi.mock("@/services/paths", () => ({
 }))
 
 vi.mock("@/services/engine/runtime", () => ({
+  MEMORY_CITATIONS_ENTRY: "deskpet.memory_citations",
   messageEventId: (message: { deskpetEventId?: unknown }) => typeof message.deskpetEventId === "string"
     ? message.deskpetEventId : undefined,
 }))
@@ -62,6 +63,10 @@ function messageEntry(id: string, seq: number, role: "user" | "assistant", times
     message: role === "assistant" ? fauxAssistantMessage(`${role}:${id}`, { timestamp })
       : { role, content: `${role}:${id}`, timestamp, ...(eventId ? { deskpetEventId: eventId } : {}) },
   }
+}
+
+function citationEntry(id: string, seq: number, timestamp: number, data: Record<string, unknown>): Entry {
+  return { id, parentId: null, seq, timestamp, type: "custom", customType: "deskpet.memory_citations", data } as Entry
 }
 
 function installBridge() {
@@ -633,6 +638,112 @@ describe("会话原文索引", () => {
     expect(relativeRow.searchText).toContain("event-date 2026-10-04")
     expect(relativeRow.eventAtDate).toBe("2026-10-04")
     expect(relativeRow.eventAtMs).toBe(new Date(2026, 9, 4).getTime())
+  })
+
+  it("助手回复的引用溯源只落在 chunk 0，并过滤重复与非字符串 id [conversation-index-citation-refs]", async () => {
+    const current = session("citation-session")
+    fixture.metadata = [current]
+    const user = messageEntry("citation-user", 1, "user", 100, "citation-event")
+    const assistant = messageEntry("citation-assistant", 2, "assistant", 110)
+    const longReply = "你对花生过敏，我会避开含花生的建议。".repeat(160)
+    const citation = citationEntry("citation-ref", 3, 120, {
+      assistantEntryId: assistant.id,
+      itemIds: ["mem-allergy", "mem-allergy", 7, "", "mem-diet"],
+      requestId: "request-1",
+    })
+    fixture.transcripts.set(current.id, {
+      entries: [user, assistant, citation],
+      messages: [
+        { id: user.id, eventId: "citation-event", role: "user", text: "我对花生过敏", timestamp: 100, isUserInput: true },
+        { id: assistant.id, role: "assistant", text: longReply, timestamp: 110 },
+      ],
+    })
+    installBridge()
+
+    await recallConversation({ sessionId: current.id, query: "花生", tokenBudget: 500, signal: new AbortController().signal })
+
+    const rows = fixture.calls
+      .filter(call => call.method === "conversation_index_replace")
+      .flatMap(call => call.args.entries as Array<Record<string, unknown>>)
+    const replyRows = rows.filter(row => row.entryId === assistant.id)
+    expect(replyRows.length).toBeGreaterThan(1)
+    expect(replyRows.filter(row => row.chunk === 0).map(row => row.memoryRefs)).toEqual([["mem-allergy", "mem-diet"]])
+    expect(replyRows.filter(row => row.chunk !== 0).every(row => row.memoryRefs === undefined)).toBe(true)
+    expect(rows.find(row => row.entryId === user.id)?.memoryRefs).toBeUndefined()
+  })
+
+  it("助手回复的会话原文引用与事实引用同落 chunk 0，并按会话条目去重 [conversation-index-quote-refs]", async () => {
+    const current = session("quote-session")
+    fixture.metadata = [current]
+    const user = messageEntry("quote-user", 1, "user", 100, "quote-event")
+    const assistant = messageEntry("quote-assistant", 2, "assistant", 110)
+    const longReply = "你上周提到喜欢乌龙茶，我记下了。".repeat(160)
+    const citation = citationEntry("quote-ref", 3, 120, {
+      assistantEntryId: assistant.id,
+      itemIds: ["mem-taste"],
+      conversationRefs: [
+        { sessionId: current.id, entryId: user.id },
+        { sessionId: current.id, entryId: user.id },
+        { sessionId: "", entryId: "empty-session" },
+        { sessionId: current.id, entryId: 7 },
+        { sessionId: "other-session", entryId: "other-entry" },
+      ],
+      requestId: "request-quote",
+    })
+    fixture.transcripts.set(current.id, {
+      entries: [user, assistant, citation],
+      messages: [
+        { id: user.id, eventId: "quote-event", role: "user", text: "我喜欢乌龙茶", timestamp: 100, isUserInput: true },
+        { id: assistant.id, role: "assistant", text: longReply, timestamp: 110 },
+      ],
+    })
+    installBridge()
+
+    await recallConversation({ sessionId: current.id, query: "乌龙茶", tokenBudget: 500, signal: new AbortController().signal })
+
+    const rows = fixture.calls
+      .filter(call => call.method === "conversation_index_replace")
+      .flatMap(call => call.args.entries as Array<Record<string, unknown>>)
+    const replyRows = rows.filter(row => row.entryId === assistant.id)
+    expect(replyRows.length).toBeGreaterThan(1)
+    expect(replyRows.filter(row => row.chunk === 0).map(row => row.memoryRefs)).toEqual([["mem-taste"]])
+    expect(replyRows.filter(row => row.chunk === 0).map(row => row.quoteRefs)).toEqual([[
+      { sessionId: current.id, entryId: user.id },
+      { sessionId: "other-session", entryId: "other-entry" },
+    ]])
+    expect(replyRows.filter(row => row.chunk !== 0).every(row => row.memoryRefs === undefined && row.quoteRefs === undefined)).toBe(true)
+    expect(rows.find(row => row.entryId === user.id)?.quoteRefs).toBeUndefined()
+  })
+
+
+  it("引用溯源指向非可见或非助手条目时整条忽略 [conversation-index-citation-visible-only]", async () => {
+    const current = session("citation-reject-session")
+    fixture.metadata = [current]
+    const user = messageEntry("reject-user", 1, "user", 100, "reject-event")
+    const assistant = messageEntry("reject-assistant", 2, "assistant", 110)
+    const hidden = messageEntry("reject-hidden", 3, "assistant", 120)
+    fixture.transcripts.set(current.id, {
+      entries: [
+        user,
+        assistant,
+        hidden,
+        citationEntry("cite-user", 4, 130, { assistantEntryId: user.id, itemIds: ["mem-user"] }),
+        citationEntry("cite-hidden", 5, 140, { assistantEntryId: hidden.id, itemIds: ["mem-hidden"] }),
+      ],
+      messages: [
+        { id: user.id, eventId: "reject-event", role: "user", text: "可信原文", timestamp: 100, isUserInput: true },
+        { id: assistant.id, role: "assistant", text: "可见回复", timestamp: 110 },
+      ],
+    })
+    installBridge()
+
+    await recallConversation({ sessionId: current.id, query: "可信", tokenBudget: 500, signal: new AbortController().signal })
+
+    const rows = fixture.calls
+      .filter(call => call.method === "conversation_index_replace")
+      .flatMap(call => call.args.entries as Array<Record<string, unknown>>)
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows.every(row => row.memoryRefs === undefined)).toBe(true)
   })
 
   it("计数/概览/枚举/建议扫描意图发送 scan 且上限500，普通查询保持50 [memory-conversation-scan-mode]", async () => {

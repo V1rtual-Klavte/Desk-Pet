@@ -46,6 +46,81 @@ const SUPPRESSION_EXISTS: &str = "EXISTS (
   )
 )";
 
+/// 回复引用过的事实条目已不存在：它只是旧事实的转述，不能再作为原文证据被召回。
+/// JSONL 正文不动，遗忘只改变召回；同一 id 恢复后自动重新可见。
+const STALE_MEMORY_REF_EXISTS: &str = "EXISTS (
+  SELECT 1 FROM conversation_index_entry_refs r
+  LEFT JOIN memory_items i ON i.id=r.item_id
+  WHERE r.session_id=e.session_id AND r.entry_id=e.entry_id AND i.id IS NULL
+)";
+
+/// `MEMORY_READING_POLICY` 中的更正规则需要召回侧配合：旧值的用户原话来源、以及同一轮
+/// 助手转述，在条目被内容或时间不同的活动版本取代后不再作为证据出现。JSONL 正文不动。
+const SUPERSEDED_SOURCE_EXISTS: &str = "EXISTS (
+  SELECT 1 FROM memory_item_sources l
+  JOIN memory_sources s ON s.source_id=l.source_id AND s.origin='user'
+  JOIN memory_items old ON old.id=l.item_id AND old.version=l.item_version
+  JOIN memory_items cur ON cur.id=l.item_id AND cur.status='active' AND cur.version>l.item_version
+  WHERE s.session_id=e.session_id AND (
+    e.entry_id=s.entry_id OR e.event_id=s.event_id
+    OR (e.role='assistant' AND (e.anchor_entry_id=s.entry_id OR e.anchor_event_id=s.event_id))
+  )
+  AND (
+    old.content_norm IS NOT cur.content_norm
+    OR old.summary_norm IS NOT cur.summary_norm
+    OR old.due_at_json IS NOT cur.due_at_json
+    OR old.event_at_json IS NOT cur.event_at_json
+    OR old.expires_at IS NOT cur.expires_at
+  )
+)";
+
+/// 助手回复引用过某条目，但生成时的活动版本与当前活动值不同：这是旧值转述。
+/// 按 valid_from/valid_to 判定生成时的版本，纠正后产生的新转述不受影响。
+const STALE_CITATION_VALUE_EXISTS: &str = "EXISTS (
+  SELECT 1 FROM conversation_index_entry_refs r
+  JOIN memory_items cur ON cur.id=r.item_id AND cur.status='active'
+  JOIN memory_items cited ON cited.id=r.item_id AND cited.version<=cur.version
+  WHERE r.session_id=e.session_id AND r.entry_id=e.entry_id AND e.role='assistant'
+    AND (cited.valid_from IS NULL OR cited.valid_from<=e.timestamp)
+    AND (cited.valid_to IS NULL OR e.timestamp<cited.valid_to)
+    AND (
+      cited.content_norm IS NOT cur.content_norm
+      OR cited.summary_norm IS NOT cur.summary_norm
+      OR cited.due_at_json IS NOT cur.due_at_json
+      OR cited.event_at_json IS NOT cur.event_at_json
+      OR cited.expires_at IS NOT cur.expires_at
+    )
+)";
+
+/// 助手回复在生成时渲染过的一条会话原文后来被遗忘，或该原文所属的记忆版本被更正：
+/// 这条回复只是旧来源的转述，不能再作为原文证据被召回。JSONL 正文不动，同一来源恢复/更正
+/// 回来前保持不可见；跨会话引用同样适用。
+const STALE_QUOTE_SOURCE_EXISTS: &str = "EXISTS (
+  SELECT 1 FROM conversation_index_entry_quote_refs q
+  WHERE q.session_id=e.session_id AND q.entry_id=e.entry_id AND e.role='assistant'
+    AND (
+      EXISTS (
+        SELECT 1 FROM memory_tombstones t
+        WHERE t.session_id=q.source_session_id AND t.entry_id=q.source_entry_id
+          AND t.effect='block_extraction'
+      )
+      OR EXISTS (
+        SELECT 1 FROM memory_item_sources l
+        JOIN memory_sources s ON s.source_id=l.source_id AND s.origin='user'
+        JOIN memory_items old ON old.id=l.item_id AND old.version=l.item_version
+        JOIN memory_items cur ON cur.id=l.item_id AND cur.status='active' AND cur.version>l.item_version
+        WHERE s.session_id=q.source_session_id AND s.entry_id=q.source_entry_id
+          AND (
+            old.content_norm IS NOT cur.content_norm
+            OR old.summary_norm IS NOT cur.summary_norm
+            OR old.due_at_json IS NOT cur.due_at_json
+            OR old.event_at_json IS NOT cur.event_at_json
+            OR old.expires_at IS NOT cur.expires_at
+          )
+      )
+    )
+)";
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ConversationIndexEntry {
@@ -67,6 +142,20 @@ pub(crate) struct ConversationIndexEntry {
     pub anchor_entry_id: Option<String>,
     #[serde(default)]
     pub anchor_event_id: Option<String>,
+    /// 本回复实际渲染过的事实条目 id；只允许出现在助手 chunk 0。
+    #[serde(default)]
+    pub memory_refs: Vec<String>,
+    /// 本回复实际渲染过的会话原文（可跨会话）；只允许出现在助手 chunk 0。
+    #[serde(default)]
+    pub quote_refs: Vec<ConversationQuoteRef>,
+}
+
+/// 被渲染进请求的一条会话原文；只存条目身份，正文仍以 JSONL 为准。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConversationQuoteRef {
+    pub session_id: String,
+    pub entry_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -270,6 +359,41 @@ fn validate_entry(entry: &ConversationIndexEntry) -> AppResult<()> {
     if let Some(anchor) = &entry.anchor_event_id {
         valid_id(anchor, "anchorEventId", ID_MAX)?;
     }
+    if !entry.memory_refs.is_empty() {
+        if entry.role != "assistant"
+            || entry.chunk != 0
+            || entry.memory_refs.len() > super::protocol::MEMORY_CONVERSATION_MAX_CITATION_REFS as usize
+        {
+            return Err(AppError::Memory(
+                "memoryRefs 只允许出现在助手 chunk 0，且数量受限".into(),
+            ));
+        }
+        let mut unique = std::collections::HashSet::with_capacity(entry.memory_refs.len());
+        for item_id in &entry.memory_refs {
+            valid_id(item_id, "memoryRefs", ID_MAX)?;
+            if !unique.insert(item_id.as_str()) {
+                return Err(AppError::Memory("memoryRefs 含重复条目 id".into()));
+            }
+        }
+    }
+    if !entry.quote_refs.is_empty() {
+        if entry.role != "assistant"
+            || entry.chunk != 0
+            || entry.quote_refs.len() > super::protocol::MEMORY_CONVERSATION_MAX_CITATION_REFS as usize
+        {
+            return Err(AppError::Memory(
+                "quoteRefs 只允许出现在助手 chunk 0，且数量受限".into(),
+            ));
+        }
+        let mut unique = std::collections::HashSet::with_capacity(entry.quote_refs.len());
+        for quote in &entry.quote_refs {
+            valid_id(&quote.session_id, "quoteRefs.sessionId", SESSION_ID_MAX)?;
+            valid_id(&quote.entry_id, "quoteRefs.entryId", ID_MAX)?;
+            if !unique.insert((quote.session_id.as_str(), quote.entry_id.as_str())) {
+                return Err(AppError::Memory("quoteRefs 含重复会话条目".into()));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -318,10 +442,35 @@ fn delete_suppressed_session_tx(tx: &Transaction<'_>, session_id: &str) -> AppRe
         "DELETE FROM conversation_index_entries AS e WHERE e.session_id=?1 AND {SUPPRESSION_EXISTS}"
     );
     let suppressed = tx.execute(&sql, [session_id]).map_err(db_err)?;
+    delete_orphan_entry_refs(tx, Some(session_id))?;
     if suppressed > 0 {
         MemoryStore::rebuild_conversation_terms(tx, session_id)?;
     }
     Ok(suppressed)
+}
+
+/// 删除已没有对应索引片段的引用行：片段被抑制/裁剪后，溯源不能继续挂在不存在的内容上。
+fn delete_orphan_entry_refs(conn: &Connection, session_id: Option<&str>) -> AppResult<usize> {
+    let sql = "DELETE FROM conversation_index_entry_refs AS r WHERE NOT EXISTS (
+        SELECT 1 FROM conversation_index_entries e
+        WHERE e.session_id=r.session_id AND e.entry_id=r.entry_id
+    )";
+    let removed = match session_id {
+        Some(session_id) => conn
+            .execute(&format!("{sql} AND r.session_id=?1"), [session_id])
+            .map_err(db_err)?,
+        None => conn.execute(sql, []).map_err(db_err)?,
+    };
+    let quote_sql = "DELETE FROM conversation_index_entry_quote_refs AS q WHERE NOT EXISTS (
+        SELECT 1 FROM conversation_index_entries e
+        WHERE e.session_id=q.session_id AND e.entry_id=q.entry_id
+    )";
+    match session_id {
+        Some(session_id) => conn.execute(&format!("{quote_sql} AND q.session_id=?1"), [session_id]),
+        None => conn.execute(quote_sql, []),
+    }
+    .map_err(db_err)?;
+    Ok(removed)
 }
 
 /// Recreate derived conversation suppression identities from durable extraction tombstones,
@@ -344,6 +493,7 @@ pub(super) fn reconcile_conversation_suppressions(conn: &Connection) -> AppResul
     let delete_entries_sql =
         format!("DELETE FROM conversation_index_entries AS e WHERE {SUPPRESSION_EXISTS}");
     let removed = conn.execute(&delete_entries_sql, []).map_err(db_err)?;
+    delete_orphan_entry_refs(conn, None)?;
     if removed > 0 {
         conn.execute("DELETE FROM conversation_index_terms", [])
             .map_err(db_err)?;
@@ -566,6 +716,16 @@ impl MemoryStore {
         tx.execute("DELETE FROM conversation_index_terms WHERE session_id=?1", [session_id])
             .map_err(db_err)?;
         tx.execute(
+            "DELETE FROM conversation_index_entry_refs WHERE session_id=?1",
+            [session_id],
+        )
+        .map_err(db_err)?;
+        tx.execute(
+            "DELETE FROM conversation_index_entry_quote_refs WHERE session_id=?1",
+            [session_id],
+        )
+        .map_err(db_err)?;
+        tx.execute(
             "DELETE FROM conversation_index_entries WHERE session_id=?1",
             [session_id],
         )
@@ -595,7 +755,7 @@ impl MemoryStore {
         entry: &ConversationIndexEntry,
         cutoff: i64,
     ) -> AppResult<()> {
-        tx.execute(
+        let inserted = tx.execute(
             &format!(
                 "INSERT INTO conversation_index_entries(session_id,entry_id,event_id,seq,chunk,role,text,search_text,event_at_ms,event_at_date,timestamp,anchor_entry_id,anchor_event_id)
                  SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
@@ -620,6 +780,31 @@ impl MemoryStore {
             ],
         )
         .map_err(db_err)?;
+        if inserted > 0 {
+            Self::insert_conversation_entry_refs_tx(tx, session_id, entry)?;
+        }
+        Ok(())
+    }
+
+    fn insert_conversation_entry_refs_tx(
+        tx: &Transaction<'_>,
+        session_id: &str,
+        entry: &ConversationIndexEntry,
+    ) -> AppResult<()> {
+        for item_id in &entry.memory_refs {
+            tx.execute(
+                "INSERT INTO conversation_index_entry_refs(session_id,entry_id,item_id) VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
+                params![session_id, entry.entry_id, item_id],
+            )
+            .map_err(db_err)?;
+        }
+        for quote in &entry.quote_refs {
+            tx.execute(
+                "INSERT INTO conversation_index_entry_quote_refs(session_id,entry_id,source_session_id,source_entry_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
+                params![session_id, entry.entry_id, quote.session_id, quote.entry_id],
+            )
+            .map_err(db_err)?;
+        }
         Ok(())
     }
 
@@ -783,9 +968,13 @@ impl MemoryStore {
             .checked_add(entries.len() as i64)
             .ok_or_else(|| AppError::Memory("会话索引 batch offset 溢出".into()))?;
         for (index, entry) in entries.iter().enumerate() {
+            let memory_refs_json = serde_json::to_string(&entry.memory_refs)
+                .map_err(|error| AppError::Memory(format!("memoryRefs 编码失败: {error}")))?;
+            let quote_refs_json = serde_json::to_string(&entry.quote_refs)
+                .map_err(|error| AppError::Memory(format!("quoteRefs 编码失败: {error}")))?;
             tx.execute(
-                "INSERT INTO conversation_index_staging_entries(session_id,batch_id,batch_offset,entry_id,event_id,seq,chunk,role,text,search_text,event_at_ms,event_at_date,timestamp,anchor_entry_id,anchor_event_id)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                "INSERT INTO conversation_index_staging_entries(session_id,batch_id,batch_offset,entry_id,event_id,seq,chunk,role,text,search_text,event_at_ms,event_at_date,timestamp,anchor_entry_id,anchor_event_id,memory_refs_json,quote_refs_json)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
                 params![
                     session_id,
                     batch.id,
@@ -802,6 +991,8 @@ impl MemoryStore {
                     entry.timestamp,
                     entry.anchor_entry_id,
                     entry.anchor_event_id,
+                    memory_refs_json,
+                    quote_refs_json,
                 ],
             )
             .map_err(db_err)?;
@@ -842,6 +1033,16 @@ impl MemoryStore {
             tx.execute("DELETE FROM conversation_index_terms WHERE session_id=?1", [session_id])
                 .map_err(db_err)?;
             tx.execute(
+                "DELETE FROM conversation_index_entry_refs WHERE session_id=?1",
+                [session_id],
+            )
+            .map_err(db_err)?;
+            tx.execute(
+                "DELETE FROM conversation_index_entry_quote_refs WHERE session_id=?1",
+                [session_id],
+            )
+            .map_err(db_err)?;
+            tx.execute(
                 "DELETE FROM conversation_index_entries WHERE session_id=?1",
                 [session_id],
             )
@@ -861,6 +1062,29 @@ impl MemoryStore {
                      ORDER BY e.batch_offset", clear_eligibility(3)
                 ),
                 params![session_id, batch.id, cutoff],
+            )
+            .map_err(db_err)?;
+            // 只为实际进入索引的片段保留引用；被 clear fence 挡下的条目不应留下溯源行。
+            tx.execute(
+                "INSERT INTO conversation_index_entry_refs(session_id,entry_id,item_id)
+                 SELECT s.session_id,s.entry_id,j.value
+                 FROM conversation_index_staging_entries s, json_each(s.memory_refs_json) j
+                 WHERE s.session_id=?1 AND s.batch_id=?2
+                   AND EXISTS (SELECT 1 FROM conversation_index_entries e
+                               WHERE e.session_id=s.session_id AND e.entry_id=s.entry_id)
+                 ON CONFLICT DO NOTHING",
+                params![session_id, batch.id],
+            )
+            .map_err(db_err)?;
+            tx.execute(
+                "INSERT INTO conversation_index_entry_quote_refs(session_id,entry_id,source_session_id,source_entry_id)
+                 SELECT s.session_id,s.entry_id,j.value->>'sessionId',j.value->>'entryId'
+                 FROM conversation_index_staging_entries s, json_each(s.quote_refs_json) j
+                 WHERE s.session_id=?1 AND s.batch_id=?2
+                   AND EXISTS (SELECT 1 FROM conversation_index_entries e
+                               WHERE e.session_id=s.session_id AND e.entry_id=s.entry_id)
+                 ON CONFLICT DO NOTHING",
+                params![session_id, batch.id],
             )
             .map_err(db_err)?;
             let revision = Self::finish_conversation_replace_tx(tx, session_id)?;
@@ -928,6 +1152,16 @@ impl MemoryStore {
             .map_err(db_err)?;
             tx.execute(
                 "DELETE FROM conversation_index_terms WHERE session_id=?1",
+                [session_id],
+            )
+            .map_err(db_err)?;
+            tx.execute(
+                "DELETE FROM conversation_index_entry_refs WHERE session_id=?1",
+                [session_id],
+            )
+            .map_err(db_err)?;
+            tx.execute(
+                "DELETE FROM conversation_index_entry_quote_refs WHERE session_id=?1",
                 [session_id],
             )
             .map_err(db_err)?;
@@ -1035,7 +1269,11 @@ impl MemoryStore {
                 let mut sql = format!(
                     "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
                      FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}
-                       AND NOT {SUPPRESSION_EXISTS}"
+                       AND NOT {SUPPRESSION_EXISTS}
+                       AND NOT {STALE_MEMORY_REF_EXISTS}
+                       AND NOT {SUPERSEDED_SOURCE_EXISTS}
+                       AND NOT {STALE_CITATION_VALUE_EXISTS}
+                       AND NOT {STALE_QUOTE_SOURCE_EXISTS}"
                 );
                 let mut values = vec![rusqlite::types::Value::Integer(clear_cutoff)];
                 if let Some(before) = before {
@@ -1078,7 +1316,7 @@ impl MemoryStore {
                 sql.push_str(&format!(" AND e.timestamp<?{p}"));
                 values.push(rusqlite::types::Value::Integer(before));
             }
-            sql.push_str(&format!(" AND NOT {SUPPRESSION_EXISTS} AND ("));
+            sql.push_str(&format!(" AND NOT {SUPPRESSION_EXISTS} AND NOT {STALE_MEMORY_REF_EXISTS} AND NOT {SUPERSEDED_SOURCE_EXISTS} AND NOT {STALE_CITATION_VALUE_EXISTS} AND NOT {STALE_QUOTE_SOURCE_EXISTS} AND ("));
             let mut conditions = Vec::new();
             if let Some(expression) = fts_expression(&terms) {
                 let p = values.len() + 1;
@@ -1300,7 +1538,7 @@ impl MemoryStore {
         let mut anchor_sql = format!(
             "SELECT EXISTS(SELECT 1 FROM conversation_index_entries e
              WHERE e.session_id=?2 AND e.entry_id=?3 AND {CLEAR_CUTOFF_PREDICATE}
-               AND NOT {SUPPRESSION_EXISTS}"
+               AND NOT {SUPPRESSION_EXISTS} AND NOT {STALE_MEMORY_REF_EXISTS} AND NOT {SUPERSEDED_SOURCE_EXISTS} AND NOT {STALE_CITATION_VALUE_EXISTS} AND NOT {STALE_QUOTE_SOURCE_EXISTS}"
         );
         let mut anchor_values = vec![
             rusqlite::types::Value::Integer(clear_cutoff),
@@ -1323,7 +1561,8 @@ impl MemoryStore {
             let mut sql = format!(
                 "SELECT e.session_id,e.entry_id,e.event_id,e.seq,e.chunk,e.role,e.text,e.search_text,e.event_at_ms,e.event_at_date,e.timestamp,e.anchor_entry_id,e.anchor_event_id
                  FROM conversation_index_entries e WHERE {CLEAR_CUTOFF_PREDICATE}
-                   AND NOT {SUPPRESSION_EXISTS} AND e.session_id=?2 AND e.chunk=0 AND e.seq>?3"
+                   AND NOT {SUPPRESSION_EXISTS} AND NOT {STALE_MEMORY_REF_EXISTS} AND NOT {SUPERSEDED_SOURCE_EXISTS} AND NOT {STALE_CITATION_VALUE_EXISTS} AND NOT {STALE_QUOTE_SOURCE_EXISTS}
+                   AND e.session_id=?2 AND e.chunk=0 AND e.seq>?3"
             );
             let mut values = vec![
                 rusqlite::types::Value::Integer(clear_cutoff),
@@ -1414,7 +1653,10 @@ impl MemoryStore {
                 .unwrap_or(rusqlite::types::Value::Null),
             rusqlite::types::Value::Integer(clear_cutoff),
         ];
-        let visibility = format!(" AND {} AND NOT {SUPPRESSION_EXISTS}", clear_eligibility(4));
+        let visibility = format!(
+            " AND {} AND NOT {SUPPRESSION_EXISTS} AND NOT {STALE_MEMORY_REF_EXISTS} AND NOT {SUPERSEDED_SOURCE_EXISTS} AND NOT {STALE_CITATION_VALUE_EXISTS} AND NOT {STALE_QUOTE_SOURCE_EXISTS}",
+            clear_eligibility(4)
+        );
         sql.push_str(&visibility);
         if let Some(before) = before {
             sql.push_str(" AND e.timestamp<?5");
@@ -1457,7 +1699,7 @@ impl MemoryStore {
             rusqlite::types::Value::Integer(clear_cutoff),
         ];
         sql.push_str(&format!(
-            " AND {} AND NOT {SUPPRESSION_EXISTS}",
+            " AND {} AND NOT {SUPPRESSION_EXISTS} AND NOT {STALE_MEMORY_REF_EXISTS} AND NOT {SUPERSEDED_SOURCE_EXISTS} AND NOT {STALE_CITATION_VALUE_EXISTS} AND NOT {STALE_QUOTE_SOURCE_EXISTS}",
             clear_eligibility(4)
         ));
         if let Some(before) = before {
@@ -1490,7 +1732,7 @@ impl MemoryStore {
             rusqlite::types::Value::Integer(clear_cutoff),
         ];
         sql.push_str(&format!(
-            " AND {} AND NOT {SUPPRESSION_EXISTS}",
+            " AND {} AND NOT {SUPPRESSION_EXISTS} AND NOT {STALE_MEMORY_REF_EXISTS} AND NOT {SUPERSEDED_SOURCE_EXISTS} AND NOT {STALE_CITATION_VALUE_EXISTS} AND NOT {STALE_QUOTE_SOURCE_EXISTS}",
             clear_eligibility(4)
         ));
         if let Some(before) = before {
@@ -1603,6 +1845,7 @@ impl MemoryStore {
             let removed = tx
                 .execute(&delete_entries_sql, [&session_id])
                 .map_err(db_err)?;
+            delete_orphan_entry_refs(tx, Some(&session_id))?;
             if removed > 0 {
                 Self::rebuild_conversation_terms(tx, &session_id)?;
             }
@@ -1657,6 +1900,10 @@ impl MemoryStore {
         tx.execute("DELETE FROM conversation_fts", [])
             .map_err(db_err)?;
         tx.execute("DELETE FROM conversation_index_terms", [])
+            .map_err(db_err)?;
+        tx.execute("DELETE FROM conversation_index_entry_refs", [])
+            .map_err(db_err)?;
+        tx.execute("DELETE FROM conversation_index_entry_quote_refs", [])
             .map_err(db_err)?;
         tx.execute("DELETE FROM conversation_index_entries", [])
             .map_err(db_err)?;
@@ -1744,6 +1991,8 @@ mod tests {
             timestamp: 1_700_000_000_000 + seq,
             anchor_entry_id: anchor.map(str::to_string),
             anchor_event_id: None,
+            memory_refs: Vec::new(),
+            quote_refs: Vec::new(),
         }
     }
 
@@ -2765,6 +3014,8 @@ mod tests {
             timestamp: 1_700_000_000_002,
             anchor_entry_id: Some("u1".into()),
             anchor_event_id: Some("u1:user".into()),
+            memory_refs: Vec::new(),
+            quote_refs: Vec::new(),
         };
         let assistant_chunk1 = ConversationIndexEntry {
             chunk: 1,
@@ -2913,5 +3164,551 @@ mod tests {
             .conversation_search("support group", "dated-session", Some(5), None, false, false, &[], &[], Some(&missing), None)
             .expect("event-date miss succeeds");
         assert!(miss["entries"].as_array().expect("miss entries").is_empty());
+    }
+
+    fn seed_fact(fixture: &Fixture, id: &str) {
+        let conn = fixture.1.lock().expect("memory lock");
+        conn.execute(
+            "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,aliases_json,pinned,importance,confidence,created_at,updated_at)
+             VALUES (?1,1,'active','对花生过敏','花生过敏','preference','global','[]',0,0.5,0.9,1,1)",
+            [id],
+        )
+        .expect("seed fact");
+    }
+
+    fn drop_fact(fixture: &Fixture, id: &str) {
+        let conn = fixture.1.lock().expect("memory lock");
+        conn.execute("DELETE FROM memory_items WHERE id=?1", [id])
+            .expect("drop fact");
+    }
+
+    #[test]
+    fn forgetting_a_cited_fact_hides_the_assistant_paraphrase_but_keeps_user_restatement() {
+        let fixture = Fixture::new();
+        seed_fact(&fixture, "mem-allergy");
+        let user = entry(
+            "u1",
+            Some("u1:user"),
+            1,
+            "user",
+            "我对花生过敏，别再推荐花生零食",
+            None,
+        );
+        let mut cited = entry(
+            "a1",
+            Some("a1:assistant"),
+            2,
+            "assistant",
+            "记住你对花生过敏",
+            Some("u1"),
+        );
+        cited.memory_refs = vec!["mem-allergy".into()];
+        let uncited = entry(
+            "a2",
+            Some("a2:assistant"),
+            3,
+            "assistant",
+            "花生属于坚果",
+            Some("u1"),
+        );
+        fixture.replace("s1", "fp1", None, vec![user, cited, uncited], 0);
+
+        let before = fixture
+            .1
+            .conversation_search("花生", "s1", Some(10), None, false, false, &[], &[], None, None)
+            .expect("search before forget");
+        assert!(
+            before["entries"].as_array().unwrap().iter().any(|row| row["entryId"] == "a1"),
+            "the citation is live while the cited fact exists"
+        );
+
+        drop_fact(&fixture, "mem-allergy");
+        let after = fixture
+            .1
+            .conversation_search("花生", "s1", Some(10), None, false, false, &[], &[], None, None)
+            .expect("search after forget");
+        let ids = after["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["entryId"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(!ids.contains(&"a1"), "a stale paraphrase leaves recall");
+        assert!(ids.contains(&"u1"), "the user's own restatement remains primary evidence");
+        assert!(ids.contains(&"a2"), "uncited replies stay eligible");
+
+        let context = fixture
+            .1
+            .conversation_context("s1", "a1", None, Some(10), None)
+            .expect("context after forget");
+        assert!(
+            context["entries"].as_array().unwrap().is_empty(),
+            "a stale reply cannot be read back as context evidence"
+        );
+    }
+
+    #[test]
+    fn stale_citation_survives_reindex_and_restoring_the_item_id_revives_the_reply() {
+        let fixture = Fixture::new();
+        seed_fact(&fixture, "mem-allergy");
+        let user = entry("u1", Some("u1:user"), 1, "user", "我对花生过敏", None);
+        let mut cited = entry(
+            "a1",
+            Some("a1:assistant"),
+            2,
+            "assistant",
+            "记住你对花生过敏",
+            Some("u1"),
+        );
+        cited.memory_refs = vec!["mem-allergy".into()];
+        fixture.replace("s1", "fp1", None, vec![user.clone(), cited.clone()], 0);
+        drop_fact(&fixture, "mem-allergy");
+
+        // Reindexing the same JSONL must preserve the citation and keep the paraphrase excluded.
+        fixture.replace("s1", "fp2", Some("fp1"), vec![user, cited], 0);
+        let reindexed = fixture
+            .1
+            .conversation_search("花生", "s1", Some(10), None, false, false, &[], &[], None, None)
+            .expect("search after reindex");
+        assert!(reindexed["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["entryId"] != "a1"));
+
+        // The same item id restored (e.g. re-extracted later) makes the preserved reply recallable again.
+        seed_fact(&fixture, "mem-allergy");
+        let restored = fixture
+            .1
+            .conversation_search("花生", "s1", Some(10), None, false, false, &[], &[], None, None)
+            .expect("search after restore");
+        assert!(restored["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["entryId"] == "a1"));
+    }
+
+    fn seed_sourced_fact(
+        fixture: &Fixture,
+        id: &str,
+        session: &str,
+        entry_id: &str,
+        event_id: &str,
+        text: &str,
+    ) {
+        let conn = fixture.1.lock().expect("memory lock");
+        conn.execute(
+            "INSERT INTO memory_sources(source_id,session_id,entry_id,event_id,seq,content_hash,evidence,card_id,taint,origin,observed_at)
+             VALUES (?1,?2,?3,?4,1,'hash',NULL,NULL,'trusted_user','user',1)",
+            params![format!("src-{entry_id}"), session, entry_id, event_id],
+        )
+        .expect("seed source");
+        conn.execute(
+            "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,created_at,updated_at,content_norm,summary_norm)
+             VALUES (?1,1,'active',?2,?2,'preference','global','[]',0,0.5,0.9,1,NULL,NULL,1,1,?2,?2)",
+            params![id, text],
+        )
+        .expect("seed fact");
+        conn.execute(
+            "INSERT INTO memory_item_sources(item_id,item_version,source_id) VALUES (?1,1,?2)",
+            params![id, format!("src-{entry_id}")],
+        )
+        .expect("seed source link");
+    }
+
+    fn supersede_fact(
+        fixture: &Fixture,
+        id: &str,
+        at: i64,
+        text: &str,
+        source: Option<(&str, &str, &str)>,
+    ) {
+        let conn = fixture.1.lock().expect("memory lock");
+        let version: i64 = conn
+            .query_row(
+                "SELECT MAX(version) FROM memory_items WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("current version");
+        let next = version + 1;
+        conn.execute(
+            "UPDATE memory_items SET status='superseded',valid_to=?2,updated_at=?2 WHERE id=?1 AND status='active'",
+            params![id, at],
+        )
+        .expect("close old version");
+        conn.execute(
+            "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,created_at,updated_at,content_norm,summary_norm)
+             VALUES (?1,?2,'active',?3,?3,'preference','global','[]',0,0.5,0.9,1,?4,NULL,?4,?4,?3,?3)",
+            params![id, next, text, at],
+        )
+        .expect("insert new version");
+        if let Some((session, entry_id, event_id)) = source {
+            conn.execute(
+                "INSERT INTO memory_sources(source_id,session_id,entry_id,event_id,seq,content_hash,evidence,card_id,taint,origin,observed_at)
+                 VALUES (?1,?2,?3,?4,1,'hash',NULL,NULL,'trusted_user','user',?5)",
+                params![format!("src-{entry_id}"), session, entry_id, event_id, at],
+            )
+            .expect("seed correction source");
+            conn.execute(
+                "INSERT INTO memory_item_sources(item_id,item_version,source_id) VALUES (?1,?2,?3)",
+                params![id, next, format!("src-{entry_id}")],
+            )
+            .expect("link correction source");
+        }
+    }
+
+    fn search_entry_ids(fixture: &Fixture, query: &str, session: &str) -> Vec<String> {
+        fixture
+            .1
+            .conversation_search(query, session, Some(10), None, false, false, &[], &[], None, None)
+            .expect("search")
+            ["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .map(|row| row["entryId"].as_str().expect("entry id").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn correcting_a_value_hides_the_superseded_quote_and_its_same_turn_paraphrase() {
+        let fixture = Fixture::new();
+        seed_sourced_fact(&fixture, "mem-roast", "s1", "u1", "u1:user", "咖啡喜欢浅烘");
+        let mut u1 = entry("u1", Some("u1:user"), 1, "user", "我咖啡喜欢浅烘", None);
+        u1.timestamp = 1_700_000_000_000;
+        let mut a1 = entry(
+            "a1",
+            Some("a1:assistant"),
+            2,
+            "assistant",
+            "记住你喜欢浅烘",
+            Some("u1"),
+        );
+        a1.timestamp = 1_700_000_000_100;
+        a1.memory_refs = vec!["mem-roast".into()];
+        let mut u2 = entry("u2", Some("u2:user"), 3, "user", "不对 现在改喝深烘了", None);
+        u2.timestamp = 1_700_000_000_900;
+        let mut a2 = entry(
+            "a2",
+            Some("a2:assistant"),
+            4,
+            "assistant",
+            "好 深烘",
+            Some("u2"),
+        );
+        a2.timestamp = 1_700_000_001_100;
+        a2.memory_refs = vec!["mem-roast".into()];
+        fixture.replace("s1", "fp1", None, vec![u1, a1, u2, a2], 0);
+
+        let before = search_entry_ids(&fixture, "浅烘", "s1");
+        assert!(before.contains(&"u1".to_string()) && before.contains(&"a1".to_string()));
+
+        supersede_fact(
+            &fixture,
+            "mem-roast",
+            1_700_000_001_000,
+            "咖啡喜欢深烘",
+            Some(("s1", "u2", "u2:user")),
+        );
+
+        assert!(
+            search_entry_ids(&fixture, "浅烘", "s1").is_empty(),
+            "the superseded quote and its paraphrase leave recall"
+        );
+        let fresh = search_entry_ids(&fixture, "深烘", "s1");
+        assert!(fresh.contains(&"u2".to_string()) && fresh.contains(&"a2".to_string()));
+        let context = fixture
+            .1
+            .conversation_context("s1", "a1", None, Some(10), None)
+            .expect("context after correction");
+        assert!(context["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_cited_paraphrase_from_another_turn_leaves_recall_after_the_value_changes() {
+        let fixture = Fixture::new();
+        seed_sourced_fact(&fixture, "mem-allergy", "s1", "u1", "u1:user", "对花生过敏");
+        let mut u1 = entry("u1", Some("u1:user"), 1, "user", "我对花生过敏", None);
+        u1.timestamp = 1_700_000_000_000;
+        let mut a1 = entry(
+            "a1",
+            Some("a1:assistant"),
+            2,
+            "assistant",
+            "记住你对花生过敏",
+            Some("u1"),
+        );
+        a1.timestamp = 1_700_000_000_100;
+        a1.memory_refs = vec!["mem-allergy".into()];
+        let mut u3 = entry("u3", Some("u3:user"), 3, "user", "今天吃了点东西", None);
+        u3.timestamp = 1_700_000_000_200;
+        let mut a3 = entry(
+            "a3",
+            Some("a3:assistant"),
+            4,
+            "assistant",
+            "你对花生过敏 别碰花生",
+            Some("u3"),
+        );
+        a3.timestamp = 1_700_000_000_300;
+        a3.memory_refs = vec!["mem-allergy".into()];
+        let mut u2 = entry(
+            "u2",
+            Some("u2:user"),
+            5,
+            "user",
+            "其实不是花生 是杏仁",
+            None,
+        );
+        u2.timestamp = 1_700_000_000_900;
+        fixture.replace("s1", "fp1", None, vec![u1, a1, u3, a3, u2], 0);
+
+        let before = search_entry_ids(&fixture, "花生", "s1");
+        assert!(before.contains(&"a3".to_string()));
+
+        supersede_fact(
+            &fixture,
+            "mem-allergy",
+            1_700_000_001_000,
+            "对杏仁过敏",
+            Some(("s1", "u2", "u2:user")),
+        );
+
+        let after = search_entry_ids(&fixture, "花生", "s1");
+        assert!(!after.contains(&"u1".to_string()), "superseded source leaves");
+        assert!(!after.contains(&"a1".to_string()), "same-turn paraphrase leaves");
+        assert!(
+            !after.contains(&"a3".to_string()),
+            "a paraphrase citing the old value from another turn leaves"
+        );
+        assert!(after.contains(&"u2".to_string()), "the correction itself remains");
+    }
+
+    #[test]
+    fn pin_only_updates_keep_quotes_and_citations_visible() {
+        let fixture = Fixture::new();
+        seed_sourced_fact(&fixture, "mem-allergy", "s1", "u1", "u1:user", "对花生过敏");
+        let mut u1 = entry("u1", Some("u1:user"), 1, "user", "我对花生过敏", None);
+        u1.timestamp = 1_700_000_000_000;
+        let mut a1 = entry(
+            "a1",
+            Some("a1:assistant"),
+            2,
+            "assistant",
+            "记住你对花生过敏",
+            Some("u1"),
+        );
+        a1.timestamp = 1_700_000_000_100;
+        a1.memory_refs = vec!["mem-allergy".into()];
+        let mut u3 = entry("u3", Some("u3:user"), 3, "user", "今天吃了点东西", None);
+        u3.timestamp = 1_700_000_000_200;
+        let mut a3 = entry(
+            "a3",
+            Some("a3:assistant"),
+            4,
+            "assistant",
+            "你对花生过敏 别碰花生",
+            Some("u3"),
+        );
+        a3.timestamp = 1_700_000_000_300;
+        a3.memory_refs = vec!["mem-allergy".into()];
+        fixture.replace("s1", "fp1", None, vec![u1, a1, u3, a3], 0);
+
+        supersede_fact(&fixture, "mem-allergy", 1_700_000_001_000, "对花生过敏", None);
+
+        let after = search_entry_ids(&fixture, "花生", "s1");
+        assert!(after.contains(&"u1".to_string()));
+        assert!(after.contains(&"a1".to_string()));
+        assert!(after.contains(&"a3".to_string()));
+    }
+
+    #[test]
+    fn quote_refs_only_attach_to_assistant_chunk_zero_and_must_be_unique() {
+        let fixture = Fixture::new();
+        let mut user = entry("u1", Some("u1:user"), 1, "user", "被引原文", None);
+        user.quote_refs = vec![ConversationQuoteRef {
+            session_id: "s1".into(),
+            entry_id: "u1".into(),
+        }];
+        let error = fixture
+            .1
+            .conversation_index_replace("s1", "fp1", None, 0, &[user], None)
+            .expect_err("user quote ref must be rejected");
+        assert!(format!("{error}").contains("quoteRefs"));
+
+        let mut duplicate = entry(
+            "a1",
+            Some("a1:assistant"),
+            1,
+            "assistant",
+            "引用原文",
+            Some("u1"),
+        );
+        duplicate.quote_refs = vec![
+            ConversationQuoteRef {
+                session_id: "s1".into(),
+                entry_id: "u1".into(),
+            },
+            ConversationQuoteRef {
+                session_id: "s1".into(),
+                entry_id: "u1".into(),
+            },
+        ];
+        let error = fixture
+            .1
+            .conversation_index_replace("s1", "fp1", None, 0, &[duplicate], None)
+            .expect_err("duplicate quote ref must be rejected");
+        assert!(format!("{error}").contains("重复"));
+
+        let mut chunk_one = entry(
+            "a1",
+            Some("a1:assistant"),
+            1,
+            "assistant",
+            "引用原文",
+            Some("u1"),
+        );
+        chunk_one.chunk = 1;
+        chunk_one.quote_refs = vec![ConversationQuoteRef {
+            session_id: "s1".into(),
+            entry_id: "u1".into(),
+        }];
+        let error = fixture
+            .1
+            .conversation_index_replace("s1", "fp1", None, 0, &[chunk_one], None)
+            .expect_err("quote ref outside chunk 0 must be rejected");
+        assert!(format!("{error}").contains("chunk 0"));
+
+        let mut empty_session = entry(
+            "a1",
+            Some("a1:assistant"),
+            1,
+            "assistant",
+            "引用原文",
+            Some("u1"),
+        );
+        empty_session.quote_refs = vec![ConversationQuoteRef {
+            session_id: String::new(),
+            entry_id: "u1".into(),
+        }];
+        let error = fixture
+            .1
+            .conversation_index_replace("s1", "fp1", None, 0, &[empty_session], None)
+            .expect_err("empty quote session id must be rejected");
+        assert!(format!("{error}").contains("quoteRefs.sessionId"));
+    }
+
+    #[test]
+    fn forgetting_a_rendered_quote_source_hides_the_cross_session_paraphrase() {
+        let fixture = Fixture::new();
+        let source = entry(
+            "src-1",
+            Some("src-1:user"),
+            1,
+            "user",
+            "我喜欢乌龙茶",
+            None,
+        );
+        fixture.replace("source-session", "fp-source", None, vec![source], 0);
+        let ask = entry("ask-1", Some("ask-1:user"), 1, "user", "我上次说喜欢什么茶", None);
+        let mut reply = entry(
+            "reply-1",
+            Some("reply-1:assistant"),
+            2,
+            "assistant",
+            "你说过喜欢乌龙茶",
+            Some("ask-1"),
+        );
+        reply.quote_refs = vec![ConversationQuoteRef {
+            session_id: "source-session".into(),
+            entry_id: "src-1".into(),
+        }];
+        fixture.replace(
+            "target-session",
+            "fp-target",
+            None,
+            vec![ask.clone(), reply.clone()],
+            0,
+        );
+        assert!(search_entry_ids(&fixture, "乌龙茶", "target-session").contains(&"reply-1".to_string()));
+
+        {
+            let conn = fixture.1.lock().expect("memory lock");
+            conn.execute(
+                "INSERT INTO memory_tombstones(session_id,entry_id,content_hash,effect,reason,forget_epoch,created_at)
+                 VALUES ('source-session','src-1','hash','block_extraction',NULL,0,1)",
+                [],
+            )
+            .expect("seed forget tombstone");
+            // 真实 forget 在同一事务里同时回填 suppression 并删除来源片段；只写墓碑时
+            // 来源原文仍会作为跨会话命中返回，掩盖回复是否被 quote 闭包挡住。
+            reconcile_conversation_suppressions(&conn).expect("reconcile forget suppressions");
+        }
+        assert!(
+            search_entry_ids(&fixture, "乌龙茶", "target-session").is_empty(),
+            "the uncited cross-session paraphrase leaves recall with its forgotten source"
+        );
+
+        // Re-indexing the same JSONL preserves quote refs and keeps the reply excluded.
+        fixture.replace(
+            "target-session",
+            "fp-target-2",
+            Some("fp-target"),
+            vec![ask, reply],
+            0,
+        );
+        assert!(search_entry_ids(&fixture, "乌龙茶", "target-session").is_empty());
+    }
+
+    #[test]
+    fn correcting_a_rendered_quote_source_hides_the_cross_session_paraphrase() {
+        let fixture = Fixture::new();
+        seed_sourced_fact(
+            &fixture,
+            "mem-tea",
+            "source-session",
+            "src-1",
+            "src-1:user",
+            "喜欢乌龙茶",
+        );
+        let mut source = entry(
+            "src-1",
+            Some("src-1:user"),
+            1,
+            "user",
+            "我平时喜欢乌龙茶",
+            None,
+        );
+        source.timestamp = 1_700_000_000_000;
+        fixture.replace("source-session", "fp-source", None, vec![source], 0);
+        let mut ask = entry("ask-1", Some("ask-1:user"), 1, "user", "我平时喝什么茶", None);
+        ask.timestamp = 1_700_000_000_200;
+        let mut reply = entry(
+            "reply-1",
+            Some("reply-1:assistant"),
+            2,
+            "assistant",
+            "你平时喜欢乌龙茶",
+            Some("ask-1"),
+        );
+        reply.timestamp = 1_700_000_000_300;
+        reply.quote_refs = vec![ConversationQuoteRef {
+            session_id: "source-session".into(),
+            entry_id: "src-1".into(),
+        }];
+        fixture.replace("target-session", "fp-target", None, vec![ask, reply], 0);
+        assert!(search_entry_ids(&fixture, "乌龙茶", "target-session").contains(&"reply-1".to_string()));
+
+        // A metadata-only rewrite that keeps the value identical must not hide the reply.
+        supersede_fact(&fixture, "mem-tea", 1_700_000_001_000, "喜欢乌龙茶", None);
+        assert!(search_entry_ids(&fixture, "乌龙茶", "target-session").contains(&"reply-1".to_string()));
+
+        supersede_fact(&fixture, "mem-tea", 1_700_000_002_000, "喜欢普洱", None);
+        assert!(
+            search_entry_ids(&fixture, "乌龙茶", "target-session").is_empty(),
+            "the cross-session paraphrase leaves recall once its rendered source is superseded"
+        );
     }
 }

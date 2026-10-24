@@ -1,3 +1,6 @@
+// 2026-10-24 记忆引用溯源批次（定向复核）：sourceFiles 中 runtime.ts 只在回合提交后追加
+// deskpet.memory_citations 自定义条目；计划记录、步骤交接、恢复执行与结算路径未改，
+// pl-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-24 计划闭环批次（analyze→generate）：① 步骤交接 —— 计划记录冻结 `intent`（原始目标），
 // 每步请求注入原始目标与有界的前序步骤结果（成功行带摘要与回读地址、失败行只给错误；
 // 直接前驱 1500、其余 600、总额 4000，超限标注截断），恢复执行从 `plan_step_result` 条目回读
@@ -127,7 +130,7 @@ export const plannerContract: ModuleContract = {
     // 取消归宿的唯一实现（此前 runtime.ts 与 proposal.ts 各存一份同形复刻）。
     // 2026-10-24 交付兜底批次补入：回合内计划结果的暂存（pl-15）—— 工具入口写入、主回合结算取走。
     "src/services/engine/plan/settlement.ts", "src/services/engine/plan/delivery.ts"],
-  sourceHash: "bb55e666726ec603479bcdfc08f33bd45abd0e7915ae83be7208c08da3d78ab7",
+  sourceHash: "dede3cac3113c576a15d8867749d048f734d51dfc27d1f0f818148af148e2c2e",
   coverage: [
     // 退役预评估的三个 caseId 随功能删除；显式入口沿用原 ID，普通入口改测零额外请求。
     { id: "pl-01", feature: "显式 --plan 入口", description: "启用 ai.plan.enabled 时，行首 --plan 后为字尾或空白才触发生成、确认、步骤执行和主回复；无额外复杂度评估请求，计划终态 done", why: "用户仍可显式要求计划，命令不能误匹配普通文本", layer: "integration", depth: "deep", scenarios: ["plan-force-trigger"] },

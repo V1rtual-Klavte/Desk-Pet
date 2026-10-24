@@ -439,38 +439,7 @@ impl MemoryEventTime {
 pub(super) fn memory_query_terms(query: &str) -> Vec<String> {
     let normalized_query = normalize_memory_text(query);
     let query = normalized_query.as_str();
-    // 停用词：疑问词、指代词与功能词；切出的短词命中它们不代表内容相关。
-    const QUERY_STOP_WORDS: &[&str] = &[
-        "你",
-        "我",
-        "他",
-        "她",
-        "它",
-        "用户",
-        "的",
-        "了",
-        "吗",
-        "呢",
-        "啊",
-        "是",
-        "在",
-        "想",
-        "怎么",
-        "什么",
-        "哪个",
-        "哪里",
-        "平时",
-        "让我",
-        "告诉",
-        "记得",
-        "有没有",
-        "能不能",
-        "请问",
-        "一下",
-        "可以",
-        "这个",
-        "那个",
-    ];
+    // 停用词由共享协议提供（中英双语）；切出的短词命中它们不代表内容相关。
     let mut terms = Vec::new();
     let mut chinese = Vec::new();
     let mut latin = String::new();
@@ -509,8 +478,8 @@ pub(super) fn memory_query_terms(query: &str) -> Vec<String> {
     }
     flush_chinese(&mut chinese, &mut terms);
     flush_latin(&mut latin, &mut terms);
-    terms.retain(|term| !QUERY_STOP_WORDS.contains(&term.as_str())
-        && !super::protocol::MEMORY_QUERY_ENGLISH_STOP_WORDS.contains(&term.as_str())
+    terms.retain(|term| !super::protocol::MEMORY_QUERY_STOP_WORDS_EN.contains(&term.as_str())
+        && !super::protocol::MEMORY_QUERY_STOP_WORDS_ZH.contains(&term.as_str())
         && term.chars().count() >= 2);
     terms.sort();
     terms.dedup();
@@ -2002,6 +1971,9 @@ impl MemoryStore {
                     .clone()
                     .unwrap_or_else(|| format!("mem-{}-{}", now_ms(), rand_suffix()));
                 touched_item = Some(id.clone());
+                // 旧版本关闭与新版本生效必须落在同一时点，否则更正的记忆会出现
+                // 「旧值仍有效」或「新值尚未生效」的空档。
+                let now = now_ms();
                 let version = match action {
                     "add" => 1,
                     _ => {
@@ -2033,7 +2005,7 @@ impl MemoryStore {
                         transaction
                             .execute(
                                 "UPDATE memory_items SET status='superseded',updated_at=?2,valid_to=?2 WHERE id=?1 AND status='active'",
-                                params![id, now_ms()],
+                                params![id, now],
                             )
                             .map_err(db_err)?;
                         if matches!(action, "complete" | "cancel") {
@@ -2070,12 +2042,15 @@ impl MemoryStore {
                             b(draft, "pinned") as i64,
                             number(draft, "importance", DEFAULT_IMPORTANCE),
                             number(draft, "confidence", DEFAULT_CONFIDENCE),
-                            i(draft, "observedAt").unwrap_or_else(now_ms),
-                            draft.get("validFrom").and_then(Value::as_i64),
+                            i(draft, "observedAt").unwrap_or(now),
+                            draft
+                                .get("validFrom")
+                                .and_then(Value::as_i64)
+                                .or_else(|| (action != "add").then_some(now)),
                             draft.get("validTo").and_then(Value::as_i64),
                             draft.get("expiresAt").and_then(Value::as_i64),
                             draft.get("supersedesId").and_then(Value::as_str).or_else(|| if action == "add" { None } else { Some(id.as_str()) }),
-                            now_ms(),
+                            now,
                             draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
                             draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
                             opt_s(draft, "workingState"),
@@ -2541,7 +2516,40 @@ impl MemoryStore {
             }
             let scope = s(&draft, "scope");
             let scope_id = opt_s(&draft, "scopeId");
+            let now = now_ms();
             let id = format!("mem-{}-{}", now_ms(), rand_suffix());
+            // 新条目的生效起点：显式值优先；合并沿用被吸收条目里已知的最早生效时间
+            // （整理不是新事实，不能把生效时间改成「今天」）；单条覆盖从覆盖时点开始。
+            let valid_from = match draft.get("validFrom").and_then(Value::as_i64) {
+                Some(explicit) => Some(explicit),
+                None if !merge_targets.is_empty() => {
+                    let mut earliest: Option<i64> = None;
+                    for (target_id, _) in &merge_targets {
+                        let target_from: Option<i64> = transaction
+                            .query_row(
+                                "SELECT valid_from FROM memory_items WHERE id=?1 AND status='active'",
+                                [target_id],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(db_err)?
+                            .flatten();
+                        if let Some(value) = target_from {
+                            earliest = Some(earliest.map_or(value, |current| current.min(value)));
+                        }
+                    }
+                    earliest
+                }
+                None
+                    if draft
+                        .get("supersedesId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.is_empty()) =>
+                {
+                    Some(now)
+                }
+                None => None,
+            };
             // supersedes_id 列：单条覆盖取 supersedesId；合并取列表首条做链上代表
             // （完整列表的失效语义由下方 merge_targets 循环执行，旧条目行与版本链全部保留）。
             let column_supersedes = draft
@@ -2565,12 +2573,12 @@ impl MemoryStore {
                         b(&draft, "pinned") as i64,
                         number(&draft, "importance", DEFAULT_IMPORTANCE),
                         number(&draft, "confidence", DEFAULT_CONFIDENCE),
-                        i(&draft, "observedAt").unwrap_or_else(now_ms),
-                        draft.get("validFrom").and_then(Value::as_i64),
+                        i(&draft, "observedAt").unwrap_or(now),
+                        valid_from,
                         draft.get("validTo").and_then(Value::as_i64),
                         draft.get("expiresAt").and_then(Value::as_i64),
                         column_supersedes,
-                        now_ms(),
+                        now,
                         draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
                         draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
                         opt_s(&draft, "workingState"),
@@ -2603,7 +2611,7 @@ impl MemoryStore {
                 let changed = transaction
                     .execute(
                         "UPDATE memory_items SET status='superseded',valid_to=?2,updated_at=?2 WHERE id=?1 AND status='active'",
-                        params![target_id, now_ms()],
+                        params![target_id, now],
                     )
                     .map_err(db_err)?;
                 if changed == 0 {
@@ -2620,7 +2628,7 @@ impl MemoryStore {
                     transaction
                         .execute(
                             "UPDATE memory_items SET status='superseded',valid_to=?2,updated_at=?2 WHERE id=?1 AND status='active'",
-                            params![previous, now_ms()],
+                            params![previous, now],
                         )
                         .map_err(db_err)?;
                     crate::proactive::store::invalidate_memory_closure_tx(&transaction, &previous)?;

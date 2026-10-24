@@ -712,6 +712,23 @@ fn english_query_function_words_do_not_admit_unrelated_facts() {
 }
 
 #[test]
+fn chinese_query_function_words_do_not_admit_unrelated_facts() {
+    for stop in ["我们", "什么", "可以"] {
+        assert!(super::store::memory_query_terms(stop).is_empty(), "{stop}");
+    }
+    let terms = super::store::memory_query_terms("你还记得备用钥匙吗？");
+    for expected in ["备用", "钥匙"] {
+        assert!(terms.iter().any(|term| term == expected), "{expected}");
+    }
+    assert!(!terms.iter().any(|term| term == "记得"));
+    let terms = super::store::memory_query_terms("我们之前说的备用钥匙");
+    for expected in ["备用", "钥匙"] {
+        assert!(terms.iter().any(|term| term == expected), "{expected}");
+    }
+    assert!(!terms.iter().any(|term| term == "我们"));
+}
+
+#[test]
 fn memory_query_weights_content_before_summary_before_aliases() {
     let (_fixture, store) = Fixture::new();
     store
@@ -2285,6 +2302,91 @@ fn merge_candidates_union_sources_and_supersede_targets() {
 }
 
 #[test]
+fn correction_starts_new_validity_at_the_instant_old_version_closes() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("user-1", "entry-u1", "hash-u1"),
+            source("user-2", "entry-u2", "hash-u2"),
+        ])
+        .unwrap();
+    let revision = add(&store, "op-a", 0, &draft("用户偏好浓缩咖啡", vec!["user-1"]));
+    let items = store.list(Some("user"), None, 10).unwrap();
+    let id = item_id_by_content(&items, "用户偏好浓缩咖啡");
+    let version = items[0]["version"].as_i64().unwrap();
+
+    let mut correction = draft("用户现在偏好手冲咖啡", vec!["user-2"]);
+    correction["supersedesId"] = json!(id);
+    store
+        .apply_change(
+            "op-b",
+            revision,
+            "update",
+            Some(&id),
+            Some(version),
+            Some(&correction),
+        )
+        .expect("更正写入");
+
+    let history = store.history(&id).unwrap();
+    assert_eq!(history.len(), 2);
+    let old_valid_to = history[0]["item"]["draft"]["validTo"]
+        .as_i64()
+        .expect("旧版本没有关闭有效期");
+    let new_valid_from = history[1]["item"]["draft"]["validFrom"]
+        .as_i64()
+        .expect("新版本没有从覆盖时点开始生效");
+    assert_eq!(
+        old_valid_to, new_valid_from,
+        "旧版本 validTo 与新版本 validFrom 不是同一时点"
+    );
+}
+
+#[test]
+fn merge_keeps_earliest_known_validity_start_and_closes_targets_together() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("user-1", "entry-u1", "hash-u1"),
+            source("user-2", "entry-u2", "hash-u2"),
+        ])
+        .unwrap();
+    let mut latte = draft("用户喜欢喝拿铁", vec!["user-1"]);
+    latte["validFrom"] = json!(1_700_000_000_000i64);
+    let revision = add(&store, "op-a", 0, &latte);
+    let mut coffee = draft("用户早上喝咖啡", vec!["user-2"]);
+    coffee["validFrom"] = json!(1_710_000_000_000i64);
+    add(&store, "op-b", revision, &coffee);
+    let items = store.list(Some("user"), None, 10).unwrap();
+    let latte_id = item_id_by_content(&items, "用户喜欢喝拿铁");
+    let coffee_id = item_id_by_content(&items, "用户早上喝咖啡");
+
+    let merge = merge_draft(
+        "用户早上喝咖啡，也喜欢拿铁",
+        &["user-1"],
+        &[coffee_id.clone(), latte_id.clone()],
+    );
+    publish_candidates(&store, &[merge]).expect("合并候选没有发布");
+
+    let active = store.list(Some("user"), None, 10).unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(
+        active[0]["draft"]["validFrom"],
+        json!(1_700_000_000_000i64),
+        "合并把已知的最早生效时间改成了现在"
+    );
+    let closed: Vec<i64> = [&coffee_id, &latte_id]
+        .iter()
+        .map(|id| {
+            store.history(id).unwrap()[0]["item"]["draft"]["validTo"]
+                .as_i64()
+                .expect("被合并条目没有关闭有效期")
+        })
+        .collect();
+    assert_eq!(closed[0], closed[1], "同一次合并对旧条目写入了不同的失效时点");
+}
+
+#[test]
 fn merge_publish_rejects_pinned_stale_or_cross_pool_targets() {
     let (_fixture, store) = Fixture::new();
     store
@@ -2518,6 +2620,8 @@ fn database_repair_restores_cache_index_and_fts_without_losing_facts_forget_or_s
                 timestamp: 1_800_000_000_000,
                 anchor_entry_id: None,
                 anchor_event_id: None,
+                memory_refs: Vec::new(),
+                quote_refs: Vec::new(),
             }],
             None,
         )
@@ -2944,6 +3048,8 @@ fn database_repair_recovers_clear_cutoff_before_conversation_cache_existed() {
                     timestamp: cutoff.saturating_sub(1_000),
                     anchor_entry_id: None,
                     anchor_event_id: None,
+                    memory_refs: Vec::new(),
+                quote_refs: Vec::new(),
                 },
                 ConversationIndexEntry {
                     entry_id: "future-user-entry".into(),
@@ -2958,6 +3064,8 @@ fn database_repair_recovers_clear_cutoff_before_conversation_cache_existed() {
                     timestamp: cutoff + 10_000,
                     anchor_entry_id: None,
                     anchor_event_id: None,
+                    memory_refs: Vec::new(),
+                quote_refs: Vec::new(),
                 },
             ],
             None,
@@ -3073,6 +3181,8 @@ fn database_repair_does_not_infer_complete_clear_inventory_from_a_leftover_fence
                 timestamp: cutoff + 10_000,
                 anchor_entry_id: None,
                 anchor_event_id: None,
+                memory_refs: Vec::new(),
+                quote_refs: Vec::new(),
             }],
             None,
         )

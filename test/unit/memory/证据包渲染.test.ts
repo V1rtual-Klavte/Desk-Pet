@@ -103,6 +103,31 @@ describe("结构化记忆证据包", () => {
     expect(rendered.droppedIds).toEqual([unrelated.sourceId, unreferencedNote.sourceId])
   })
 
+  it("事实证据带记录/有效期/过期与事件时间，事件时间不冒充记录时间 [memory-recall-temporal-fields]", () => {
+    const base: MemoryProjection = {
+      ...quote, memoryVersion: "mem-1:2", provenance: "memory:user", text: "用户现在偏好降噪耳机。",
+      observedAt: Date.UTC(2026, 9, 20, 8, 0),
+      validFrom: Date.UTC(2026, 9, 20, 8, 0),
+      expiresAt: Date.UTC(2026, 9, 30, 8, 0),
+      eventAt: { precision: "day", localDate: "2026-10-18", timezone: "Asia/Shanghai" },
+    }
+    const current = { ...base, sourceId: "mem-1@2", conversation: undefined }
+    const previous = { ...base, sourceId: "mem-0@1", memoryVersion: "mem-0:1", conversation: undefined,
+      validFrom: Date.UTC(2026, 9, 1, 8, 0), validTo: Date.UTC(2026, 9, 20, 8, 0),
+      eventAt: { precision: "minute" as const, instant: Date.UTC(2026, 9, 17, 9, 30), timezone: "Asia/Shanghai" } }
+    const text = memoryRecallText([current, previous])
+    const packet = JSON.parse(text.slice(text.indexOf("\n{") + 1))
+    expect(packet.evidence[0]).toMatchObject({
+      id: "mem-1@2", kind: "fact", observedAt: "2026-10-20T08:00:00.000Z",
+      validFrom: "2026-10-20T08:00:00.000Z", expiresAt: "2026-10-30T08:00:00.000Z", eventAt: "2026-10-18",
+    })
+    expect(packet.evidence[0]).not.toHaveProperty("timestamp")
+    expect(packet.evidence[1]).toMatchObject({
+      validFrom: "2026-10-01T08:00:00.000Z", validTo: "2026-10-20T08:00:00.000Z",
+      eventAt: "2026-10-17T17:30:00+08:00",
+    })
+  })
+
   it("required核对缺失时只渲染清单，不暴露未核对候选 [memory-recall-missing-guide-only]", () => {
     const guide: MemoryQuestionGuide = { questionChecks: [{
       kind: "detail", obligation: "required", condition: "The named historical field", status: "missing", sourceIds: [],

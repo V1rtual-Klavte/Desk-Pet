@@ -3,8 +3,13 @@
   "title": "Desk-Pet memory IPC protocol",
   "version": 6,
   "constants": {
-    "conversation": {"batchChunks": 512, "maxSearchResults": 50, "maxScanResults": 500},
-    "query": {"englishStopWords": ["a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "can", "could", "did", "do", "does", "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his", "how", "i", "if", "in", "is", "it", "its", "me", "my", "of", "on", "or", "our", "ours", "she", "should", "so", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those", "to", "us", "was", "we", "were", "what", "when", "where", "which", "who", "why", "will", "with", "would", "you", "your", "yours", "answer", "using", "according", "based", "previously", "remember", "please", "about", "likely"]}
+    "conversation": {"batchChunks": 512, "maxSearchResults": 50, "maxScanResults": 500, "maxCitationRefs": 64},
+    "query": {
+      "stopWords": {
+        "en": ["a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by", "can", "could", "did", "do", "does", "for", "from", "had", "has", "have", "he", "her", "hers", "him", "his", "how", "i", "if", "in", "is", "it", "its", "me", "my", "of", "on", "or", "our", "ours", "she", "should", "so", "than", "that", "the", "their", "them", "then", "there", "these", "they", "this", "those", "to", "us", "was", "we", "were", "what", "when", "where", "which", "who", "why", "will", "with", "would", "you", "your", "yours", "answer", "using", "according", "based", "previously", "remember", "please", "about", "likely"],
+        "zh": ["你", "我", "他", "她", "它", "用户", "的", "了", "吗", "呢", "啊", "是", "在", "想", "怎么", "什么", "哪个", "哪里", "平时", "让我", "告诉", "记得", "有没有", "能不能", "请问", "一下", "可以", "这个", "那个", "如何", "为什么", "哪些", "一个", "一些", "我们", "你们", "他们", "她们", "以及", "还有", "但是", "因为", "所以", "如果", "然后", "就是", "应该", "已经", "没有", "不是", "非常", "很多", "东西", "事情", "时间"]
+      }
+    }
   },
   "definitions": {
     "ConversationIndexEntry": {
@@ -83,6 +88,41 @@
             "string",
             "null"
           ]
+        },
+        "memoryRefs": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "助手回复实际渲染过的记忆条目 id（去重）；只随 chunk 0 发送。条目被遗忘后，会话索引据此排除该回复",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "quoteRefs": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "助手回复实际渲染过的会话原文条目（跨会话，按 sessionId+entryId 去重）；只随 chunk 0 发送。被引原文后来被更正或遗忘时，会话索引据此排除该回复",
+          "items": {
+            "$ref": "#/definitions/ConversationQuoteRef"
+          }
+        }
+      }
+    },
+    "ConversationQuoteRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "entryId"],
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "entryId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
         }
       }
     },

@@ -236,6 +236,27 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           ON conversation_index_entries(session_id, anchor_entry_id, anchor_event_id, seq, chunk);
         CREATE INDEX IF NOT EXISTS conversation_index_entries_event_time
           ON conversation_index_entries(event_at_ms, event_at_date, session_id, seq);
+        -- 助手回复引用过的事实条目 id（可重建的溯源投影）。条目被遗忘后 memory_items 行消失，
+        -- 读路径据此排除该回复；引用行不随遗忘删除，同一 id 恢复后回复重新可召回。
+        -- 同一 entry 的后续 chunk 共享 entry 身份，故父键不是 entries 主键，不能建复合外键。
+        CREATE TABLE IF NOT EXISTS conversation_index_entry_refs (
+          session_id TEXT NOT NULL,
+          entry_id TEXT NOT NULL,
+          item_id TEXT NOT NULL,
+          PRIMARY KEY(session_id, entry_id, item_id),
+          FOREIGN KEY(session_id) REFERENCES conversation_index_sessions(session_id) ON DELETE CASCADE
+        ) STRICT;
+        -- 助手回复生成时实际渲染过的会话原文条目（可重建的溯源投影，可跨会话）。
+        -- 被引原文后来被遗忘、或所属记忆版本被更正时，读路径据此排除该回复；引用行不随遗忘删除。
+        -- 同 entry 后续 chunk 共享 entry 身份，故只按会话级联，不引用 entries 复合主键。
+        CREATE TABLE IF NOT EXISTS conversation_index_entry_quote_refs (
+          session_id TEXT NOT NULL,
+          entry_id TEXT NOT NULL,
+          source_session_id TEXT NOT NULL,
+          source_entry_id TEXT NOT NULL,
+          PRIMARY KEY(session_id, entry_id, source_session_id, source_entry_id),
+          FOREIGN KEY(session_id) REFERENCES conversation_index_sessions(session_id) ON DELETE CASCADE
+        ) STRICT;
         -- 词表/文档频率是可重建会话索引的一部分；查询纠正与 IDF 共用。
         CREATE TABLE IF NOT EXISTS conversation_index_terms (
           session_id TEXT NOT NULL,
@@ -292,6 +313,8 @@ fn create_authoritative_objects(conn: &Connection) -> AppResult<()> {
           timestamp INTEGER NOT NULL CHECK (timestamp >= 0),
           anchor_entry_id TEXT,
           anchor_event_id TEXT,
+          memory_refs_json TEXT NOT NULL DEFAULT '[]',
+          quote_refs_json TEXT NOT NULL DEFAULT '[]',
           PRIMARY KEY(session_id,batch_id,batch_offset),
           UNIQUE(session_id,batch_id,entry_id,chunk),
           FOREIGN KEY(session_id,batch_id) REFERENCES conversation_index_staging_batches(session_id,batch_id) ON DELETE CASCADE
@@ -1496,6 +1519,7 @@ fn repair_regular_tables(
 ) -> AppResult<()> {
     if plan.recreate_conversation_cache {
         for table in [
+            "conversation_index_entry_refs",
             "conversation_index_terms",
             "conversation_index_entries",
             "conversation_index_sessions",

@@ -1,3 +1,6 @@
+// 2026-10-24 记忆引用溯源批次（定向复核）：sourceFiles 中 memory/protocol.ts 由 protocol.json
+// 重新生成，仅新增 conversation 的 maxCitationRefs 与条目 memoryRefs；主动机会、约定、回执与
+// presence 的线形状未改，pr-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
 // 2026-10-23 提醒拒绝治理批次：pr-18/pr-20 更新为 decline 仅接收 proposalId、目标与来源由
 // 宿主冻结的可见提议取得，拒绝写抑制并保留事项正文、版本与 open 状态；多提议或多任务须原话
 // 唯一指向。config.ts 删除计划复杂度字段（本域不读取）；调度状态机与投影其余行为未改，
@@ -284,7 +287,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "58c6d802da6f6f0391968e1e7412db872eb61e4f68dd7849e8a4b3ea0717af10",
+  module:"proactive",sourceHash: "99cf6998e1b10020b93cbb280a39ad49b51d0e75fd262f00adae3545e2efe166",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

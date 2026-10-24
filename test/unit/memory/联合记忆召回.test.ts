@@ -567,6 +567,38 @@ describe("联合记忆召回", () => {
     expect(ids.filter(id => id.startsWith("conversation:")).length).toBeGreaterThan(0)
   })
 
+  it("事实投影保留记录/有效/过期/事件时间，缺失字段保持省略 [memory-projection-temporal-fields]", async () => {
+    const preference = memoryItem("preference", { text: "用户现在偏好降噪耳机" })
+    preference.draft.observedAt = 1_760_000_000_000
+    preference.draft.validFrom = 1_760_000_000_000
+    preference.draft.validTo = null
+    preference.draft.expiresAt = 1_760_086_400_000
+    preference.draft.eventAt = { precision: "day", localDate: "2026-10-18", timezone: "Asia/Shanghai" }
+    fake.factSnapshot = factSnapshot([preference])
+
+    const result = await sqliteMemoryProvider.recall(request({
+      query: "我的偏好是什么", queryRewriteMode: "off", rerankMode: "off",
+    }))
+    expect(result.find(item => item.sourceId === "preference@2")).toMatchObject({
+      observedAt: 1_760_000_000_000,
+      validFrom: 1_760_000_000_000,
+      validTo: null,
+      expiresAt: 1_760_086_400_000,
+      eventAt: { precision: "day", localDate: "2026-10-18", timezone: "Asia/Shanghai" },
+    })
+
+    const plain = memoryItem("plain", { text: "用户住在杭州" })
+    fake.factSnapshot = factSnapshot([plain])
+    const withoutTemporal = await sqliteMemoryProvider.recall(request({
+      query: "我住在哪里", queryRewriteMode: "off", rerankMode: "off",
+    }))
+    const projected = withoutTemporal.find(item => item.sourceId === "plain@2")!
+    expect(projected).toBeDefined()
+    expect(projected).not.toHaveProperty("observedAt")
+    expect(projected).not.toHaveProperty("validFrom")
+    expect(projected).not.toHaveProperty("eventAt")
+  })
+
   it("预算允许时把SQLite关联的user/assistant完整回合成组保留 [memory-recall-complete-turn-bundle]", async () => {
     fake.conversationSnapshot = {
       ...conversationSnapshot(0),
