@@ -664,6 +664,11 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
     }))
     return { status, jobId, ...outcome }
   }
+  /** 取消检查点共用同一条收口：回收作业后按 cancelled 返回，已写的候选留在 staging 不发布。 */
+  const cancelled = async (): Promise<DreamingOutcome> => {
+    await cancelMemoryJob(jobId).catch(error => log.warn("取消整理作业失败:", formatError(error)))
+    return finish("cancelled", { sourcesProcessed, candidatesAdded, publishedCount, oversized }, "signal_aborted")
+  }
 
   try {
     // 输出预算按模型窗口推导一次快照（reasoning 的 thinking 也计入），显式配置只作更小的上限；
@@ -674,10 +679,7 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
     let reviewExisting: ReviewExistingItem[] | undefined
 
     for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch += 1) {
-      if (options.signal?.aborted) {
-        await cancelMemoryJob(jobId).catch(error => log.warn("取消整理作业失败:", formatError(error)))
-        return finish("cancelled", { sourcesProcessed, candidatesAdded, publishedCount, oversized }, "signal_aborted")
-      }
+      if (options.signal?.aborted) return cancelled()
       const pending = await memoryJobSources(jobId, sourceClass ?? undefined)
       if (pending.length === 0) break
       // 分区：同一批只处理一类来源（用户事实 / 系统观察）。新作业由 sourceClass 冻结；
@@ -766,6 +768,8 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
           await settleMemoryDreamingBudget(`${jobId}:${input.resumedBatchOffset + batch}`, today, reservation, actualUsage)
           reservedTokens -= reservation
         }
+        // 取消可能发生在模型等待期间：晚到的响应只能记账，不能继续写候选或提交。
+        if (options.signal?.aborted) return cancelled()
         const parsed = parseReviewCandidates(result.text, usable, reviewExisting)
         candidateCount += parsed.length
         if (parsed.length > 0) {
@@ -786,6 +790,10 @@ async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
       revision = checkpoint.revision
       if (pool.length <= MAX_SOURCES_PER_BATCH) break
     }
+
+    // 最后一批 checkpoint 之后也可能收到取消：提交前再核对一次，避免已推进水位的
+    // 取消作业把候选发布出去。
+    if (options.signal?.aborted) return cancelled()
 
     // Candidate rows are only an internal, hash-checked staging area. There is no
     // review screen: the finished job commits all eligible candidates atomically.

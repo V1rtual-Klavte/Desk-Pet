@@ -2,10 +2,11 @@
 // 更新真相源与安装流程在 Rust Native UpdatePort；设置窗 checkUpdate 是原生本地 action，
 // 不伪装成已经存在的 Node update UI 服务或 HostRequest 方法。
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, expectTypeOf, it } from "vitest"
 
 import { getHostBridge, setHostBridge } from "@/services/host"
 import type { HostBridge, HostCommandMap } from "@/services/host"
+import type { HostUpdateCheckResult } from "@/services/host/types"
 import { dispatchHostRequest } from "@/services/native-ui"
 
 type UpdateResponse = HostCommandMap["update_check"]["result"]
@@ -37,6 +38,19 @@ describe("Native update command boundary", () => {
   })
 
   it("Native install commands keep their HostCommandMap names and response shapes [native-update-command-map]", async () => {
+    // 冻结的是命令边界本身的类型形状：参数为空对象、结果只有版本描述/版本号/void。
+    expectTypeOf<HostCommandMap["update_check"]>().toEqualTypeOf<{
+      args: Record<string, never>
+      result: HostUpdateCheckResult | null
+    }>()
+    expectTypeOf<HostCommandMap["update_download_and_install"]>().toEqualTypeOf<{
+      args: Record<string, never>
+      result: { version: string }
+    }>()
+    expectTypeOf<HostCommandMap["app_restart"]>().toEqualTypeOf<{
+      args: Record<string, never>
+      result: void
+    }>()
     const candidate: UpdateResponse = { version: "0.17.0", notes: "candidate" }
     const calls = installBridge({ update_check: candidate })
     expect(await getHostBridge().request("update_check", {})).toEqual(candidate)

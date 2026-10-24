@@ -15,7 +15,7 @@
 // 假时钟推进统一调度器、固定本地日期；不触真 Provider、不触真 SQLite。
 // 每个用例 vi.resetModules() + 重装宿主桥：每例独立持久槽夹具，
 // 模块重载不会抹掉同一用例已认领的钟点。
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -230,6 +230,28 @@ describe("记忆整理档位门禁", () => {
     restarted.startDreaming()
     await advance(60_000)
     expect(ipc.startMemoryJob).toHaveBeenCalledTimes(1)
+  })
+
+  it("崩溃遗留的已认领槽在重载后不重放，下一个钟点才重新认领 [dreaming-claimed-slot-restart-no-replay]", async () => {
+    const at = new Date(2026, 9, 5, 10, 0, 0)
+    const dreaming = await bootDreaming("medium", { usedTokens: 0, reservedTokens: 0 }, at)
+    // 模拟上一个进程认领 10:00 槽后在运行中崩溃：槽已持久化、没有结算。
+    const scheduledAt = at.getTime() - at.getMinutes() * 60_000 - at.getSeconds() * 1000 - at.getMilliseconds()
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    writeFileSync(join(root, "scheduler-slots.fixture.json"), JSON.stringify([{
+      key: "dreaming", slotId: `${timezone}:${scheduledAt}`, scheduledAt, timezone,
+      status: "claimed", revision: 1, lastAttemptAt: at.getTime(), businessRef: null, updatedAt: at.getTime(),
+    }]), "utf8")
+
+    dreaming.startDreaming()
+    await advance(1_000)
+    expect(ipc.startMemoryJob, "崩溃遗留的已认领槽被当成未认领重放了").not.toHaveBeenCalled()
+    const persisted = JSON.parse(readFileSync(join(root, "scheduler-slots.fixture.json"), "utf8")) as Array<{status:string}>
+    expect(persisted[0]!.status, "重启时擅自改写了遗留槽的状态").toBe("claimed")
+
+    // 下一个钟点（14:00）是新槽，可以重新认领；遗留槽不阻塞后续调度。
+    await advance(4 * 3600_000)
+    expect(ipc.startMemoryJob, "下一个钟点没有重新认领").toHaveBeenCalledTimes(1)
   })
 
 })

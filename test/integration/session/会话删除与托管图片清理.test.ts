@@ -29,7 +29,22 @@ import { appendTopicEvidence, hasTopicSource } from "@/services/observation/stor
 const HOISTED = vi.hoisted(() => ({
   calls: [] as Array<{ paths: string[] }>,
   failNext: false,
+  scanFailSession: "",
 }))
+
+// 其他会话引用扫描的失败注入：只对指定会话抛出，其余读取原样委托真实仓库。
+vi.mock("@/services/session/repo", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/services/session/repo")>()
+  return {
+    ...actual,
+    readPiSessionEntriesOnce: async (...args: Parameters<typeof actual.readPiSessionEntriesOnce>) => {
+      if (HOISTED.scanFailSession && args[0] === HOISTED.scanFailSession) {
+        throw new Error("scan fixture failure")
+      }
+      return actual.readPiSessionEntriesOnce(...args)
+    },
+  }
+})
 
 vi.mock("@/services/host", async importOriginal => {
   // 只替换 Rust 专属命令 `chat_delete_session_images`（观测调用参数 + 失败注入），
@@ -117,6 +132,7 @@ beforeAll(async () => {
 beforeEach(() => {
   HOISTED.calls = []
   HOISTED.failNext = false
+  HOISTED.scanFailSession = ""
 })
 
 afterEach(async () => {
@@ -225,6 +241,19 @@ describe("deleteSession 与托管聊天图片清理", () => {
     await expect(deleteSession(sessionId)).resolves.toBe(true)
 
     expect(HOISTED.calls).toHaveLength(0)
+  })
+
+  it("其他会话引用扫描失败时跳过本次清理，不把无法证明无引用的图片交给宿主 [session-delete-images-scan-failure]", async () => {
+    const managed = join(root, "screenshots", "1700000000013.png")
+    writeFixture(managed, "png")
+    const sessionA = await seedSession("删除的会话", [[managed]])
+    const unreadable = await seedSession("读取失败的会话", [[]])
+    HOISTED.scanFailSession = unreadable
+
+    await expect(deleteSession(sessionA)).resolves.toBe(true)
+
+    expect(HOISTED.calls, "无法证明无人引用时仍把图片交给了宿主").toHaveLength(0)
+    expect(existsSync(managed), "跳过清理时不应由 Node 删除文件").toBe(true)
   })
 
   it("宿主清理失败只留痕，不改变 deleteSession 的返回语义 [session-delete-images-failure]", async () => {

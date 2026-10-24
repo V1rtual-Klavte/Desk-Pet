@@ -1,3 +1,7 @@
+// 2026-10-24 契约覆盖复核批次（analyze）：up-01 的 `native-update-command-map` 原用例只
+// 断言测试替身回传的响应（D2 风险），补 HostCommandMap 三命令的参数/结果类型断言；
+// 运行面仍只验证取用口透传与 Node 请求面隔离（真实更新流程在 Rust UpdatePort）。
+// up-01 描述与场景未变；sourceHash 按当前源码复算。
 // 2026-10-24 计划抗漂移批次（定向复核）：sourceFiles 中 host/types.ts 的 plan-start 载荷
 // 新增 summary，与更新命令的名字、参数和 Node 请求面隔离无关；up-01 未修订覆盖点，仅按当前
 // 源码刷新 sourceHash。

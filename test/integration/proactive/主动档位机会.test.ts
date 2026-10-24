@@ -21,6 +21,8 @@ const observed = vi.hoisted(() => ({
   variableSlots: [] as string[],
   /** tick 进入扫描流程的次数：作为「变量提交回调已跑完」的同步信号（回调末尾会 enqueueTick）。 */
   reconcileCalls: 0,
+  /** scanner 注册到变量池的提交观察者：用于注入 system/跨 Card 等真实写路径难以构造的事件。 */
+  commitListeners: [] as Array<(event: never) => void>,
 }))
 
 // 观测点：scanner 内部调用 `opportunity()` 构造机会。替身记录参数后委托真实实现，
@@ -36,6 +38,19 @@ vi.mock("@/services/proactive/opportunities", async importOriginal => {
   }
 })
 
+// 捕获 scanner 的提交订阅：真实提交照常穿过（委托 actual），另外允许用例注入
+// system 重置与跨 Card 的事件 —— 这两类没有一条只走公开写入口的等价路径。
+vi.mock("@/services/personality/variable-pool", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/services/personality/variable-pool")>()
+  return {
+    ...actual,
+    subscribeVariableCommits: (listener: Parameters<typeof actual.subscribeVariableCommits>[0]) => {
+      observed.commitListeners.push(listener as (event: never) => void)
+      return actual.subscribeVariableCommits(listener)
+    },
+  }
+})
+
 import { setTestDataRoot } from "../../host/node-ipc"
 import { standardSetup } from "../../host/standard-setup"
 import { initPaths } from "@/services/paths"
@@ -43,7 +58,7 @@ import { loadCard } from "@/services/personality/loader"
 import { getActiveCard } from "@/services/personality/registry"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
-import { batchWriteVars, savePoolToDisk } from "@/services/personality/variable-pool"
+import { batchWriteVars, getVariableRegistry, savePoolToDisk } from "@/services/personality/variable-pool"
 import { configureProactive, start, stop } from "@/services/proactive"
 
 let root = ""
@@ -88,12 +103,29 @@ afterAll(() => {
 beforeEach(async () => {
   observed.variableSlots.length = 0
   observed.reconcileCalls = 0
+  observed.commitListeners.length = 0
   await standardSetup()
 })
 
 afterEach(async () => {
   await stop()
 })
+
+/**
+ * sessionId 故意不匹配当前会话：tick 走完 reconcile 后即因 owner 失效返回，
+ * 不触达 ipc.scan（Node 适配层没有 proactive 命令面）。
+ */
+function configureBandScanner(card: NonNullable<ReturnType<typeof getActiveCard>>): void {
+  configureProactive({
+    expression: {
+      captureOwner: async () => ({ sessionId: "proactive-band-session", cardId: card.id, cardHash: card.hash, runGeneration: 1 }),
+      express: async () => mustNotBeCalled("主动表达"),
+    },
+    runPlanner: async () => mustNotBeCalled("主动规划"),
+    cancelExpression: async () => {},
+    reconcileSession: async () => { observed.reconcileCalls++ },
+  })
+}
 
 describe("主动档位机会", () => {
   // 单测预算大于两个 waitFor 窗口之和：红色路径（档位没活）要走到 waitFor 报错，
@@ -104,17 +136,7 @@ describe("主动档位机会", () => {
     expect(card?.id, "场景前提：激活卡必须是默认卡").toBe("default")
     if (!card) return
 
-    configureProactive({
-      expression: {
-        // sessionId 故意不匹配当前会话：tick 走完 reconcile 后即因 owner 失效返回，
-        // 不触达 ipc.scan（Node 适配层没有 proactive 命令面）。
-        captureOwner: async () => ({ sessionId: "proactive-band-session", cardId: card.id, cardHash: card.hash, runGeneration: 1 }),
-        express: async () => mustNotBeCalled("主动表达"),
-      },
-      runPlanner: async () => mustNotBeCalled("主动规划"),
-      cancelExpression: async () => {},
-      reconcileSession: async () => { observed.reconcileCalls++ },
-    })
+    configureBandScanner(card)
     start()
 
     // 同一档位内 0 → 5：不形成机会（变量机会只在跨档时产生，不是任何写入都触发）
@@ -133,4 +155,67 @@ describe("主动档位机会", () => {
     await vi.waitFor(() => expect(observed.variableSlots).toHaveLength(1), { timeout: 5000 })
     expect(observed.variableSlots[0]).toMatch(/^好感度:1:/)
   }, 20_000)
+
+  it("基线取启动时池值；system 只刷新基线；跨 Card 提交不串卡 [proactive-variable-baseline-reset-card]", async () => {
+    const card = getActiveCard()
+    expect(card?.id, "场景前提：激活卡必须是默认卡").toBe("default")
+    if (!card) return
+
+    // 启动前先写到第 1 档（默认档位 [0,10,30,60,85]）：scanner 的基线必须取这个值，
+    // 而不是固定从 Card 初始值 0 起算。
+    batchWriteVars({ 好感度: "15" })
+    await savePoolToDisk()
+    configureBandScanner(card)
+    start()
+    await nextTick()
+    expect(observed.commitListeners, "scanner 没有订阅变量提交").toHaveLength(1)
+    const listener = observed.commitListeners[0]!
+
+    // system 重置与跨 Card 事件没有只走公开写入口的等价路径；直接喂给 scanner 的订阅者。
+    const definitions = getVariableRegistry()
+    const emit = (cardId: string, reason: "llm" | "manual" | "system" | "proactive_response", value: number): void => {
+      listener({ cardId, committedAt: Date.now(), reason, values: { 好感度: value }, definitions } as never)
+    }
+
+    // 初始化基线 = 15：同一档位内 15 → 25 不产生机会
+    batchWriteVars({ 好感度: "25" })
+    await savePoolToDisk()
+    await nextTick()
+    await internalScheduler.drain()
+    await vi.waitFor(() => expect(observed.reconcileCalls).toBeGreaterThanOrEqual(1), { timeout: 5000 })
+    expect(observed.variableSlots, "基线没有按启动时的池值初始化").toEqual([])
+
+    // 25 → 65 跨到第 3 档：产生机会
+    batchWriteVars({ 好感度: "65" })
+    await savePoolToDisk()
+    await nextTick()
+    await internalScheduler.drain()
+    await vi.waitFor(() => expect(observed.variableSlots).toHaveLength(1), { timeout: 5000 })
+    expect(observed.variableSlots[0]).toMatch(/^好感度:3:/)
+
+    // system 重置（第 3 档 → 第 1 档）只刷新基线，不产生机会
+    emit(card.id, "system", 15)
+    expect(observed.variableSlots, "system 重置产生了机会").toHaveLength(1)
+
+    // 重置后的同档写入不得按旧基线（65）误判为跨档
+    emit(card.id, "llm", 20)
+    await nextTick()
+    await vi.waitFor(() => expect(observed.reconcileCalls).toBeGreaterThanOrEqual(2), { timeout: 5000 })
+    expect(observed.variableSlots, "system 重置没有刷新基线，同档写入被误判为跨档").toHaveLength(1)
+
+    // 其他 Card 真正跨档时也不能借用当前 Card 的 owner 产生机会：
+    // 先给它一条基线（system 不产生机会），再跨档；若缺 Card 归属检查，这里会多出一个槽位。
+    emit("other-card", "system", 0)
+    emit("other-card", "llm", 80)
+    emit(card.id, "llm", 15)
+    await nextTick()
+    await vi.waitFor(() => expect(observed.reconcileCalls).toBeGreaterThanOrEqual(3), { timeout: 5000 })
+    expect(observed.variableSlots, "其他 Card 的提交被当成当前 Card 的跨档机会").toHaveLength(1)
+
+    // 正对照：当前 Card 真的跨档（第 1 → 第 3）时机会照常产生
+    emit(card.id, "llm", 65)
+    await nextTick()
+    await vi.waitFor(() => expect(observed.variableSlots).toHaveLength(2), { timeout: 5000 })
+    expect(observed.variableSlots[1]).toMatch(/^好感度:3:/)
+  }, 30_000)
 })

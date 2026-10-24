@@ -1,3 +1,8 @@
+// 2026-10-24 契约覆盖复核批次（analyze 定向）：ar-24 订正 task 流判据 —— 当前实现只有
+// 计划/任务步骤上下文（taskReply）走 task，普通聊天里的工具调用不改变 flow（casual）；
+// 原描述「task 流由真实工具调用记录分流」是 2026-10-20 实机修复前的旧口径。同点的
+// 「task SILENT → Card 短回复」仍未由本点 caseId 直接观测（现用例只覆盖 casual 工具轮），
+// 已登记到《未完成工作与已知缺口》§5。其余 ar-* 与 scenario 未修订；sourceHash 按当前源码复算。
 // 2026-10-24 故障槽恢复批次：runner.ts 的用户消息入口在准入前显式恢复已密封的故障槽
 // （`harnessSlots.recoverFaulted` → dispose，随后 begin 新建槽从盘上重开会话），不再把
 // 「内核 fault」当永久忙碌拒绝到删会话；harness-slot.ts 新增 isFaulted/recoverFaulted，
@@ -551,7 +556,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-24",
       feature: "拟人表达的提交与请求投影",
-      description: "启用拟人表达后，after_response 先剥离 RUNTIME_DATA 再把代码外的 SPLIT token（含粘连、空格/大小写变体；casual 流无标记时空行分段同效，单个换行与围栏内空行不分，代码前后正文照常分泡）写成同一原生助手条目的多个 text part，原始配对仍使变量写入落池；合法 casual SILENT 写成 completed 空助手条目并带可核验语义标记，读模型与后续 Provider 请求省略它，跨进程连续沉默护栏从该原生标记重建；用户图片只以 deskpetImagePaths 元数据落盘，请求投影才读文件形成真实 image part，base64 不进入原始 JSONL；task 流由真实工具调用记录分流，task 输出的 SILENT 改为 Card 短回复且不启动 casual 揭示",
+      description: "启用拟人表达后，after_response 先剥离 RUNTIME_DATA 再把代码外的 SPLIT token（含粘连、空格/大小写变体；casual 流无标记时空行分段同效，单个换行与围栏内空行不分，代码前后正文照常分泡）写成同一原生助手条目的多个 text part，原始配对仍使变量写入落池；合法 casual SILENT 写成 completed 空助手条目并带可核验语义标记，读模型与后续 Provider 请求省略它，跨进程连续沉默护栏从该原生标记重建；用户图片只以 deskpetImagePaths 元数据落盘，请求投影才读文件形成真实 image part，base64 不进入原始 JSONL；task 流由计划/任务步骤上下文决定（普通聊天的工具调用不改变 flow，仍是 casual），task 输出的 SILENT 改为 Card 短回复且不启动 casual 揭示",
       why: "拟人标记、空白沉默与图片字节必须只改变请求/展示视图，不能破坏变量通道或把 transient 表达数据变成第二份持久事实",
       layer: "integration",
       depth: "deep",

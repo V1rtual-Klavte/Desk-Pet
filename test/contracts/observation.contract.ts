@@ -1,3 +1,13 @@
+// 2026-10-24 契约覆盖复核批次（analyze 定向）：① sourceFiles 补入
+// `src/services/observation/quality.ts` —— ob-12 的「纯否定结论不算了解」真正定义在这里
+// （store 的写入与快照两侧都调用它），此前只列了消费它的 store.ts；② ob-12 的截图判据
+// 订正为当前实现：宽 ≥200、高 ≥120 且高度不小于宽度 1/10（原描述漏了宽度下限）；
+// ③ 其余 ob-* 与 scenario 未修订，sourceHash 按当前源码复算。
+// 2026-10-24 主动选材去重与话题窗探针批次（定向复核）：sourceFiles 中
+// proactive/content/pool.ts 只改角色变体回退的抽签顺序（只在未使用变体里抽签、用尽返回
+// 空），它消费的 getTopicWeights / 话题立场与观察数据未变；proactive/store.rs 仅新增
+// 30 天话题窗单测。观察、画像与 presence 行为未变，ob-01..ob-12 未修订覆盖点，仅按当前
+// 源码刷新 sourceHash。
 // 2026-10-24 故障槽恢复与共享图片批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口
 // 新增故障槽显式恢复，harness-slot.ts 新增 isFaulted/recoverFaulted，manager.ts 的删会话图片
 // 清理新增跨会话引用过滤；观察、静默了解与钟点调度不经过这两条路径，ob-* 未修订覆盖点，
@@ -271,6 +281,8 @@ export const observationContract: ModuleContract = {
     "src/services/observation/index.ts",
     "src/services/observation/types.ts",
     "src/services/observation/store.ts",
+    // ob-12: 摘要质量判定（写入与快照两侧共用），零依赖叶子。
+    "src/services/observation/quality.ts",
     "src/services/observation/topics.ts",
     "src/services/observation/scheduler.ts",
     "src/services/observation/evidence.ts",
@@ -328,7 +340,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "3c9f0e3ed589ae99aeda1e20f363feab7a13100ec0a0b5d165ad80f27417f858",
+  sourceHash: "9c668049be25224027ad4e3f5ecb37de06b5296d55d9c505c59d5e3b00219c48",
   coverage: [
     {
       id: "ob-01",
@@ -432,7 +444,7 @@ export const observationContract: ModuleContract = {
     {
       id: "ob-12",
       feature: "了解方向、摘要质量与沉淀时机",
-      description: "批次方向：breadth 铺开整台电脑、depth 挑一个方向往下钻，两种 depth 走法各 50%——existing 贴着已知观察读过的路径（宿主按路径边界终裁，越界目标丢弃）、new 自己另找方面深入（不设路径限制）；了解层为空时强制 breadth；决策提示按方向拆分（公共段 + 单一方向段），模型不再从 mode 文本里自选规则。摘要质量：纯否定结论（截图无有效内容、目录里没有项目文件、读取失败）在写入与快照两侧都不进入了解层，不计覆盖率、不参与沉淀；ready 只数有信息的观察。截图：宽高退化的扁带（高 <120 或不足宽 1/10）判不可用，回退窗口快照。沉淀：了解批次落盘后事件驱动触发一次派生整理，同批观察不等下一个钟点，幂等且失败留痕",
+      description: "批次方向：breadth 铺开整台电脑、depth 挑一个方向往下钻，两种 depth 走法各 50%——existing 贴着已知观察读过的路径（宿主按路径边界终裁，越界目标丢弃）、new 自己另找方面深入（不设路径限制）；了解层为空时强制 breadth；决策提示按方向拆分（公共段 + 单一方向段），模型不再从 mode 文本里自选规则。摘要质量：纯否定结论（截图无有效内容、目录里没有项目文件、读取失败）在写入与快照两侧都不进入了解层，不计覆盖率、不参与沉淀；ready 只数有信息的观察。截图：宽高退化的画布判不可用（宽 <200、高 <120，或高度不足宽度的 1/10），回退窗口快照。沉淀：了解批次落盘后事件驱动触发一次派生整理，同批观察不等下一个钟点，幂等且失败留痕",
       why: "2026-10-21 实机：depth 读了三个顶层目录、噪声观察凑满 ready 并被沉淀、截图只有标题栏、同钟点 dreaming 赶在了解之前跑完",
       layer: "unit",
       depth: "deep",

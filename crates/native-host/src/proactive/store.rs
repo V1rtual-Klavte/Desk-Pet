@@ -2670,6 +2670,49 @@ mod tests {
         }
     }
 
+    /// 话题去重窗：scan 只回传 30 天内使用过的 topicKey，窗外行随扫描清理。
+    #[test]
+    fn scan_returns_only_topics_used_within_thirty_days() {
+        let fixture = Fixture::new();
+        let now = now_ms();
+        let conn = connection(&fixture.1).expect("锁库");
+        conn.execute(
+            "INSERT INTO proactive_attempts(attempt_id,request_id,kind,status,owner_json,source_refs_json,source_fingerprint,source_revision,control_revision,occurrence_ids_json,local_date,session_id,reserved_tokens,created_at,updated_at) VALUES ('attempt-recent','request-recent','expression','failed','{}','[]','fp',0,0,'[]','2026-10-03','s1',0,?1,?1),('attempt-stale','request-stale','expression','failed','{}','[]','fp',0,0,'[]','2026-10-03','s1',0,?1,?1)",
+            [now],
+        )
+        .expect("准备话题来源尝试");
+        conn.execute(
+            "INSERT INTO proactive_topics(topic_key,attempt_id,used_at) VALUES ('topic:recent','attempt-recent',?1),('topic:stale','attempt-stale',?2)",
+            params![
+                now - 1_000,
+                now - crate::memory::protocol::PROACTIVE_EVALUATION_RETENTION_DAYS * DAY_MS - 1
+            ],
+        )
+        .expect("准备话题行");
+        drop(conn);
+        let scan = fixture
+            .1
+            .proactive_scan(
+                &json!({"owner":Fixture::owner(),"now":now,"localDate":"2026-10-03","limit":1}),
+                &ProactiveLimits::medium(),
+            )
+            .expect("扫描话题去重");
+        assert_eq!(
+            scan["usedTopicKeys"],
+            json!(["topic:recent"]),
+            "30 天窗内的话题才应回传给选材"
+        );
+        let conn = connection(&fixture.1).expect("锁库");
+        let stale: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proactive_topics WHERE topic_key='topic:stale'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("回读陈旧话题");
+        assert_eq!(stale, 0, "30 天外的话题行应随扫描清理");
+    }
+
     #[test]
     fn first_daily_success_is_admitted_without_profile_and_random_interval_survives_restart() {
         let fixture = Fixture::new();

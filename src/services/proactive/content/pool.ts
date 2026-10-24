@@ -18,10 +18,7 @@ export function contentPool(card:PersonalityCard,behavior:BehaviorSnapshot,owner
   const topics=getTopicWeights(card.id).filter(item=>item.topic.trim()&&Number.isFinite(item.weight)&&item.weight>0)
   const weightedPool=topics.flatMap(item=>variations.map(variant=>({item,variant,key:`topic:${item.topic}:${variant}`})))
     .filter(candidate=>!usedTopicKeys.includes(candidate.key))
-  const randomChoice=(seed:string):Choice=>{
-    const variant=variations[stableChoice(seed,variations.length)]!
-    return {key:`role:${card.hash}:${variant}`,context:`角色设定作为虚构叙事依据：${card.sections.roleSetting}\n分享符合角色的小日常或有趣知识。内容自足，不声称操作过现实文件、桌面或外部应用；不伪造当前新闻。\n选题方向：${variant}`,source:cardSource,targets:[]}
-  }
+  const roleChoice=(variant:string):Choice=>({key:`role:${card.hash}:${variant}`,context:`角色设定作为虚构叙事依据：${card.sections.roleSetting}\n分享符合角色的小日常或有趣知识。内容自足，不声称操作过现实文件、桌面或外部应用；不伪造当前新闻。\n选题方向：${variant}`,source:cardSource,targets:[]})
   let selected:Choice
   if(weightedPool.length&&stableChoice(`${day}:${card.hash}:topic-branch`,100)<80) {
     const total=weightedPool.reduce((sum,candidate)=>sum+candidate.item.weight/variations.length,0)
@@ -34,7 +31,8 @@ export function contentPool(card:PersonalityCard,behavior:BehaviorSnapshot,owner
   } else {
     const available=variations.filter(variant=>!usedTopicKeys.includes(`role:${card.hash}:${variant}`))
     if(!available.length)return null
-    selected=randomChoice(`${day}:${card.hash}:pure-random:${available[stableChoice(`${day}:${card.hash}:pure-random-choice`,available.length)]}`)
+    // 只在未使用的变体里抽签：先抽后重哈希会落回已用变体，30 日去重因此失效。
+    selected=roleChoice(available[stableChoice(`${day}:${card.hash}:pure-random-choice`,available.length)]!)
   }
   return selected
 }

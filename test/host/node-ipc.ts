@@ -164,7 +164,9 @@ function arg<T>(args: Args, key: string): T {
 
 /** 可选参数：Rust 侧是 `Option<T>` 的那些键。 */
 function optionalArg<T>(args: Args, key: string): T | undefined {
-  return args[key] as T | undefined
+  // Rust 的 `Option<T>` 线语义：缺省与 null 都是 None（serde 反序列化同口径）。
+  // 把 null 当成有值会让 `maxBytes: null` 走进大小判定并恒失败。
+  return (args[key] ?? undefined) as T | undefined
 }
 
 // ── 文件类型与路径解析（只复现解析语义，不复现允许根裁决）──

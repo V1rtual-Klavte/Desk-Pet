@@ -1,3 +1,7 @@
+// 2026-10-24 契约覆盖复核批次（analyze→generate）：ci-07 的「扫描其他会话引用失败时
+// 失败安全跳过」此前只有描述没有用例，补 `session-delete-images-scan-failure`（L3，
+// 对指定会话注入仓库读取失败）后登记；ci-07 其余场景与 ci-01..06 未修订。
+// sourceHash 按当前源码复算。
 // 2026-10-24 托管图片跨会话引用批次：manager.ts 的删会话清理先扫描其余会话仍引用的
 // 图片路径，只把「无人引用」的路径交给宿主命令；全部仍被引用时不再调用宿主，扫描失败
 // 按失败安全跳过本次清理（残留可后续回收，误删不可逆）。ci-07 描述与场景同步新增
@@ -218,6 +222,6 @@ export const chatImagesContract: ModuleContract = {
     // 切会话、退出回滚）与「发送只清列表不删文件」的区分由 `PendingDraftRelease::{Send,Discard}`
     // 在类型上承载，行为由 placeholders.rs / model.rs / ui.rs 的 Rust 单测背书（managed 项才删、
     // 用户自有文件一律不删；无 caseId，故不登记覆盖点，文件已纳入 sourceFiles）。
-    { id: "ci-07", feature: "删会话清理托管聊天图片", description: "删会话成功后，从该会话全部 message 条目收集图片路径（跨条目重复引用去重成一个集合），再扫描其余会话条目剔除仍被引用的路径，只把剩余死路径交给宿主命令 chat_delete_session_images：恰好一次调用，载荷同时含托管图片（screenshots/、pasted/）与条目里只存路径的用户原图 —— 两类都如实交出，删不删由 Rust 按托管根包含判定（Node 侧不删任何文件，含已删除会话的托管图片文件仍原样存在）；其他会话仍引用同一张图时该路径不交出（fork 共享引用不能误删），最后一个引用会话删除后才清理，过滤后为空则不调用宿主；条目里没有任何图片路径时不调用宿主（不产生空请求）；扫描其他会话引用失败时按失败安全跳过本次清理（无法证明无人引用就不删）；宿主清理失败只留痕，deleteSession 照常返回 true（2026-10-06 取消 200 张保留上限后残留不再自动淘汰，留在目录中由用户手动删除）", why: "删会话是用户可见的破坏动作：漏清托管图片会让数据根累积无人引用的截图/粘贴图（没有别的回收点），而越界删除（用户原图）或把失败伪装成成功是不可逆的数据损失；共享图片被其他会话引用时误删会直接破坏那个会话的聊天记录，因此清理口径必须是「最后一个引用者删除时才清理」；去重收集、跨会话过滤、空集不调用与失败不改返回各自有独立用例实测，包含判定则必须由 Rust 侧负向断言（根外不删）背书", layer: "integration", depth: "deep", scenarios: ["session-delete-images-call", "session-delete-images-shared-ref", "session-delete-images-all-shared", "session-delete-images-empty", "session-delete-images-failure"] }],
+    { id: "ci-07", feature: "删会话清理托管聊天图片", description: "删会话成功后，从该会话全部 message 条目收集图片路径（跨条目重复引用去重成一个集合），再扫描其余会话条目剔除仍被引用的路径，只把剩余死路径交给宿主命令 chat_delete_session_images：恰好一次调用，载荷同时含托管图片（screenshots/、pasted/）与条目里只存路径的用户原图 —— 两类都如实交出，删不删由 Rust 按托管根包含判定（Node 侧不删任何文件，含已删除会话的托管图片文件仍原样存在）；其他会话仍引用同一张图时该路径不交出（fork 共享引用不能误删），最后一个引用会话删除后才清理，过滤后为空则不调用宿主；条目里没有任何图片路径时不调用宿主（不产生空请求）；扫描其他会话引用失败时按失败安全跳过本次清理（无法证明无人引用就不删）；宿主清理失败只留痕，deleteSession 照常返回 true（2026-10-06 取消 200 张保留上限后残留不再自动淘汰，留在目录中由用户手动删除）", why: "删会话是用户可见的破坏动作：漏清托管图片会让数据根累积无人引用的截图/粘贴图（没有别的回收点），而越界删除（用户原图）或把失败伪装成成功是不可逆的数据损失；共享图片被其他会话引用时误删会直接破坏那个会话的聊天记录，因此清理口径必须是「最后一个引用者删除时才清理」；去重收集、跨会话过滤、空集不调用与失败不改返回各自有独立用例实测，包含判定则必须由 Rust 侧负向断言（根外不删）背书", layer: "integration", depth: "deep", scenarios: ["session-delete-images-call", "session-delete-images-shared-ref", "session-delete-images-all-shared", "session-delete-images-empty", "session-delete-images-scan-failure", "session-delete-images-failure"] }],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: true },
 }

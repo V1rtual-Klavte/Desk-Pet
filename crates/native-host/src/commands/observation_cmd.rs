@@ -509,6 +509,8 @@ mod tests {
         // 必须判不可用，让 Node 回退到窗口快照，而不是让模型写成一条无用了解。
         assert!(!usable_capture(1280, 27));
         assert!(!usable_capture(1280, 100));
+        // 宽度同样有下限：窄条不是「真实窗口」，不应让模型把它写成一条了解。
+        assert!(!usable_capture(199, 800));
         // 正常窗口尺寸放行（含小窗与超宽窗）。
         assert!(usable_capture(1280, 800));
         assert!(usable_capture(320, 200));

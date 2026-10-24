@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"
+import { entryMessageText } from "../../host/session-entries"
 import { standardSetup } from "../../host/standard-setup"
 import { ensureSession, runRuntimeTurn } from "./回合夹具"
 import { initPaths } from "@/services/paths"
@@ -107,7 +108,14 @@ describe("助手回复的记忆引用溯源载荷", () => {
     expect(output.reply).toBe("我记住你喜欢乌龙茶")
     const payloads = await citationPayloads(sessionId)
     expect(payloads).toHaveLength(1)
-    expect(payloads[0]?.assistantEntryId).toEqual(expect.any(String))
+    // 绑定的必须是本条真实提交的助手条目，不是任意 UUID。
+    const entries = await readPiSessionEntriesOnce(sessionId)
+    const assistant = entries.find(entry => entry.type === "message" && entry.message.role === "assistant"
+      && entryMessageText(entry.message) === output.reply)
+    expect(payloads[0]?.assistantEntryId, "溯源没有绑定本条助手条目").toBe(
+      assistant?.type === "message" ? assistant.id : undefined,
+    )
+    expect(payloads[0]?.requestId, "溯源应记录本回合的请求身份").toEqual(expect.any(String))
     expect(payloads[0]?.itemIds).toEqual(["mem-taste"])
     expect(payloads[0]?.conversationRefs).toEqual([{ sessionId, entryId: "quote-1" }])
   })
