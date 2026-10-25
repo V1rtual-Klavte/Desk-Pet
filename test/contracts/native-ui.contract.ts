@@ -241,7 +241,7 @@ export const nativeUiContract: ModuleContract = {
     // 推送仍带旧层，而 L3 的「舞台快照与回读同构」用例会红，hash 不算上它就漏判。
     "src/services/profile/loader.ts",
   ],
-  sourceHash: "70e05ea3e474865418e880de2efa26a33012fb9fc6ab1b6cf10b963fe558f408",
+  sourceHash: "fbb52fa0751f8208547913f8f3b18a7e4604b76df6435c0d520dafb49560b818",
   coverage: [
     {
       id: "nui-34",

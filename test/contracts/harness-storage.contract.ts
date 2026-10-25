@@ -86,7 +86,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/engine/harness/harness-slot.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加内存字段，JSONL 条目 schema 未变；定向复核后刷新。
-  sourceHash: "5ba6548264e904dfdcb7bca195ac1c6f7db37283f9051f84d3a15f7c4a4b6bc6",
+  sourceHash: "5978776e01860f6502b420640e3e222c027deeed8a8d3986e3021162c045005d",
   coverage: [
     {
       id: "hs-11",

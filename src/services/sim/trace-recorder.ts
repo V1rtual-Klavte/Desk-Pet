@@ -259,6 +259,7 @@ export function createSimTraceRecorder(options: SimTraceRecorderOptions = {}): S
       }),
       fd,
       chain: Promise.resolve(),
+      periodicFlushing: false,
       chunkCount: 0,
       eventCount: 0,
       orphanCount: 0,

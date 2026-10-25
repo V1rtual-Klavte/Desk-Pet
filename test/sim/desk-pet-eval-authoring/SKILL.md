@@ -120,7 +120,7 @@ test/ideal-traces/
   → 起草 case、合成 fixture、写 driver
   → 逐条写 probes 与证据引用
   → dataset validate 自查格式、引用、重复与反例
-  → 银标试跑（另用 runner；W3 已有隔离采集与封存，聊天驱动尚未实现）
+  → 银标试跑（另用 runner；W3 隔离采集与封存已验收，聊天驱动尚未实现）
   → 用户审阅并修改预期
   → 冻结 gold 版本
 ```

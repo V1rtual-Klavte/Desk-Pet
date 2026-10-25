@@ -290,7 +290,8 @@ async function resolveAttemptLocation(
   if (normalizePath(dirname(attemptReal)) !== normalizePath(attemptsRootReal)) {
     throw new Error(`attemptDir 必须位于 test/reports/chat/${evaluationRunId}/attempts 下：${attemptDir}`)
   }
-  const attemptId = attemptReal.split(/[\\/]/).at(-1) ?? ""
+  const segments = attemptReal.split(/[\\/]/)
+  const attemptId = segments[segments.length - 1] ?? ""
   if (!ATTEMPT_ID_PATTERN.test(attemptId)) {
     throw new Error(`attempt 目录必须是四位序号：${attemptId}`)
   }

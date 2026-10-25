@@ -126,11 +126,13 @@
 // eval 入口）。本机已通过 W2 相关 L2、tsc/cargo check、Rust 单测与真实隔离起停（含非法路径、
 // 跨进程单实例、E2E 互斥与停止后锁释放）；eval-01..09 未修订覆盖点，sourceHash 按当前源码复算。
 // 固定时钟、跨天间隔、聊天驱动、证据/评分与正式报告仍未实现，不能由本次隔离起停验收替代。
-// 2026-10-25 W3 采集封存落位（本批新增 sourceFiles，sourceHash 待验收复算）：纯 trace 从
-// test/trace/evidence.ts 迁入 src/services/sim/trace-chunk.ts（E2E 观察器同步 import，原文件删除）；
-// 新增 capture.ts 的跨会话取证与 trace-recorder 的 trial 归属／有界分块；sim-eval-run 与
-// chat-bridge 增加采集生命周期、封存与同源报告接线。eval-01..09 未修订覆盖点；W3 反例测试
-// 已写但未运行，验收轮执行快层／类型／Rust 后按当前源码复算 sourceHash。
+// 2026-10-25 W3 采集封存验收（本批刷新）：纯 trace 从 test/trace/evidence.ts 迁入
+// src/services/sim/trace-chunk.ts（E2E 观察器同步 import，原文件删除）；新增 capture.ts 的
+// 跨会话取证与 trace-recorder 的 trial 归属／有界分块；sim-eval-run 与 chat-bridge 增加采集
+// 生命周期、封存与同源报告接线。验收轮已运行 W1/W2/W3 定向单测、tsc/cargo check、Rust 单测与
+// 三次真实隔离 prepare/start/finish（不完整证据退出码 1），并修复 capture.ts attemptId 取尾段与
+// trace-recorder CaptureState 缺 periodicFlushing 的类型错误。eval-01..09 未修订覆盖点，
+// sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
@@ -138,7 +140,7 @@ export const evaluationContract: ModuleContract = {
   module: "evaluation",
   sourceFiles: ["test/host/standard-setup.ts", "vite.config.ts", "src/services/engine/runtime/trace.ts", "src/services/agent/memory/reading-errors.ts", "src/services/agent/memory/provider.ts", "src/services/agent/memory/dreaming.ts", "crates/native-host/src/e2e_trace.rs", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/host/dispatch.rs", "test/host/trace-observer.ts", "src/services/sim/trace-chunk.ts", "src/services/sim/trace-recorder.ts", "src/services/sim/capture.ts", "scripts/report-retention.mjs", "scripts/trace-evidence.mjs", "scripts/contract-layers.mjs", "scripts/e2e-test.mjs", "scripts/check-contract-hashes.mjs", "test/memory-quality/dataset.mjs", "test/memory-quality/index.mjs", "test/memory-quality/live-adapter.ts", "scripts/memory-quality-review.mjs", "scripts/memory-performance.mjs", "src/services/sim/eval-models.ts", "src/services/sim/eval-overrides.ts", "src/services/sim/run-context.ts", "src/services/sim/chat-bridge.ts", "src/services/sim/direct-seed-plan.ts", "src/services/sim/direct-seed.ts", "crates/native-host/src/paths/sim_eval.rs", "crates/native-host/src/main.rs", "scripts/sim-eval-run.mjs", "scripts/desk-pet-chat.mjs", "test/eval-models.json", "test/e2e/memory-performance.ts", "test/host/performance.ts", "test/e2e/native-main.ts", "test/e2e/scene-runner.ts"],
   // 2026-10-18 列项答案补全批次：评测口径未变，仅共享 runtime/trace 增加列项补全计数；定向复核后刷新。
-  sourceHash: "58409b8c85e03929bd18b886755512887decf3b54cd567ef9dfecc0653519ebc",
+  sourceHash: "e46fc7d19119f75c3d54cc91079c01302ce6c376871c0af9d2d8021f377ceb47",
   coverage: [
     {"id": "eval-01", "feature": "生产 trace 提交线路", "description": "真实 sendMessage 经过 Rust IPC：输入、host/Pi关联、Provider span、首文本生成与 JSONL assistant entry commit 一致；消息结束不冒充提交或UI首显", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "e2e", "depth": "deep", "scenarios": ["trace-production-commit"]},
     {"id": "eval-02", "feature": "惰性与隔离观测", "description": "无订阅者不计算payload；listener异常隔离、event冻结、spread context共享单调序号；阅读状态/合法来源ID及固定错误计数（含缺失/非法语义核对表）可见，核对条件只登记有界哈希、状态与引用数，核对条件正文/引文/查询和任意错误键被过滤；正文与工具参数结果不进入允许字段，主动/行为事件只保留结构字段（应用身份、标题与任务正文被白名单挡下）", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-lazy-off", "trace-listener-isolation", "trace-sequence-redaction", "trace-preview", "trace-scope-candidates", "trace-memory-rendered-schema", "trace-memory-reading-schema", "trace-proactive-behavior-schema"]},

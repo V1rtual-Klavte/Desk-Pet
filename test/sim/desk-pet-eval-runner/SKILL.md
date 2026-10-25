@@ -1,13 +1,13 @@
 ---
 name: desk-pet-eval-runner
-description: 执行 V1rtual-Desk-Pet 结构化聊天评测用例：冻结规格与预算，隔离驱动真实 app，采集证据，先跑确定性检查，再用异构 API judge 评语义探针，输出同源报告。用户说“跑结构化评测”“执行评测用例”“跑一次聊天评测”“用 API judge 评分”时使用。W2 的隔离起停已验收，W3 的采集与封存已落位但未验收；聊天驱动、自动评分与人工裁决仍未实现，未实现前只能说明阻塞，不得伪造运行结果。
+description: 执行 V1rtual-Desk-Pet 结构化聊天评测用例：冻结规格与预算，隔离驱动真实 app，采集证据，先跑确定性检查，再用异构 API judge 评语义探针，输出同源报告。用户说“跑结构化评测”“执行评测用例”“跑一次聊天评测”“用 API judge 评分”时使用。W2 的隔离起停与 W3 的采集、封存已验收（2026-10-25）；聊天驱动、自动评分与人工裁决仍未实现，未实现前只能说明阻塞，不得伪造运行结果。
 ---
 
 # 结构化聊天评测运行与判分
 
 ## 现状（W2–W3b）
 
-W2 已实现并验收 **debug 隔离根 + 宿主所有权核验 + direct-seed 装载器**（2026-10-25）。W3a 的测试侧证据封存／同源报告／五回保留模块与 W3b 的产品 trace 采集、跨会话取证、采集生命周期和运行器封存接线已落位，反例测试已写但尚未运行验收；聊天驱动、`dataset run`、固定时钟、自动评分与人工裁决仍未实现（W4–W6）。W2 相关单元测试、类型检查与 Rust 单测已运行通过，真实隔离起停覆盖了 ready／装载核验、非法路径、跨进程单实例、E2E 互斥和停止后锁释放。用户要求“跑评测”时，先说明这些阻塞，不要用聊天报告、coding agent 打分或隔离起停成功来冒充正式评测结果。
+W2 已实现并验收 **debug 隔离根 + 宿主所有权核验 + direct-seed 装载器**（2026-10-25）。W3a 的测试侧证据封存／同源报告／五回保留模块与 W3b 的产品 trace 采集、跨会话取证、采集生命周期和运行器封存接线已验收（2026-10-25）；聊天驱动、`dataset run`、固定时钟、自动评分与人工裁决仍未实现（W4–W6）。W3 定向单测、完整 unit、类型检查、Rust 单测、契约哈希与三次隔离封存冒烟已运行通过；真实隔离起停覆盖了 ready／装载核验、非法路径、跨进程单实例、E2E 互斥和停止后锁释放。用户要求“跑评测”时，先说明这些阻塞，不要用聊天报告、coding agent 打分或隔离起停成功来冒充正式评测结果。
 
 ```bash
 node scripts/desk-pet-chat.mjs eval prepare --case saturday-companionship --card <card.md> [--run-id <id>]
@@ -37,7 +37,7 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 
 `review` 是给用户审批看的，驱动方不得先读。隔离起停和结构校验通过都不产生质量结论。
 
-## 目标流程（W3–W5，W3 采集与封存已落位）
+## 目标流程（W3–W5，W3 采集与封存已验收）
 
 ```text
 冻结 case 选择、运行意图、trial 数、预算、允许修复范围
@@ -68,7 +68,7 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 ## 驱动与隔离
 
 - `direct-seed` 与 `real-chain` 不能混用：前者只预置初始状态，后者必须通过真实导入建立；不要把纠正结果 seed 进去再宣称纠正成功。
-- `fixed` 时钟仍待 runner 注入（W3b 未实现，随 W4）；未注入时只能声明时间格式已冻结，不能声明真实间隔或自动抽取时序已验证。
+- `fixed` 时钟仍待 runner 注入（随 W4）；未注入时只能声明时间格式已冻结，不能声明真实间隔或自动抽取时序已验证。
 - 探针窗口限定 driver 步骤；fixture 预置的助手消息不得进入 `last-assistant` 或 `all-assistant` 判定。
 - driver 只读 `dataset driver` 的 `userRole` + `driver`；不得读题型、探针、oracle、检查点、证据、评分、修复提示或留出材料。driver 里的 `at` 只是固定时钟标签，不要自行等待或伪造跨天。
 - 题型（`questionType`）和 `questionTypes` 只用于运行方路由与报告分组，不进入驱动包；驱动代理不需要知道题目分类，避免按题型反推判据。

@@ -255,6 +255,14 @@ export function createChatRun(options: {
   budget: Record<string, unknown>;
   baseline?: unknown;
 }): { runDir: string; run: ChatRun };
+export function ensureChatRun(options: {
+  reportsDir: string;
+  evaluationRunId: string;
+  createdAt: string;
+  scope: Record<string, unknown>;
+  budget: Record<string, unknown>;
+  baseline?: unknown;
+}): { runDir: string; run: ChatRun; created: boolean };
 export function listChatRuns(reportsDir: string): ChatRunEntry[];
 export function readChatRun(runDir: string): ChatRun;
 export function readChatWorkflow(runDir: string): ChatWorkflow;
@@ -270,6 +278,10 @@ export function beginChatAttempt(options: {
   expectedSessions: string[];
   createdAt: string;
 }): StartedChatAttempt;
+export function extendChatAttemptSessions(options: {
+  attemptDir: string;
+  sessionIds: string[];
+}): StartedChatAttempt["attempt"];
 export function createDialogueWriter(attemptDir: string): DialogueWriter;
 export function createTraceWriter(attemptDir: string): TraceWriter;
 export function writeStateSnapshot(options: { attemptDir: string; name: string; value: unknown }): string;
