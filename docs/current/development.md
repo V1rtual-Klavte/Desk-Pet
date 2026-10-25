@@ -50,7 +50,7 @@ dev 与 release 的路径区分：
 | E2E | `DESKPET_E2E=1` 且 `DESKPET_E2E_CHANNEL` 指向私有通道时走 `test/.tmp/e2e-*` 隔离根；E2E 分支仅 debug 编译 | 不编译 E2E 分支 |
 | 聊天评测隔离 | `DESKPET_SIM_EVAL=1` + `DESKPET_SIM_EVAL_RUN_DIR=<仓库>/test/.tmp/sim-eval-*` 时数据根固定为 `<run>/data`；只接受 `test/.tmp` 的直接子目录和 `sim-eval-` 前缀，拒绝与 E2E 并用 | 不编译该分支 |
 
-聊天评测隔离入口由 [scripts/sim-eval-run.mjs](../../scripts/sim-eval-run.mjs) 的 `eval prepare|start|status|stop` 使用：宿主在取得数据根单实例锁后写 `ready.json`，Node 侧核对父进程、路径同源与 `runtimeMode: development` 后才装载 fixture；它不是面向用户的启动方式，也不改变正常 dev 数据根。
+聊天评测隔离入口由 [scripts/sim-eval-run.mjs](../../scripts/sim-eval-run.mjs) 的 `eval prepare|start|status|finish|stop` 使用：宿主在取得数据根单实例锁后写 `ready.json`，Node 侧核对父进程、路径同源与 `runtimeMode: development` 后才装载 fixture；`start` 建 attempt 并开始 trace 采集，`finish` 收口采集并封存，采集状态可用 [desk-pet-chat.mjs](../../scripts/desk-pet-chat.mjs) 的 `capture status|sessions` 核对。它不是面向用户的启动方式，也不改变正常 dev 数据根。
 
 ### 打包与发布
 

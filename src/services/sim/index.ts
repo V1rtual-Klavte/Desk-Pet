@@ -14,3 +14,9 @@ export { buildDirectSeedPlan } from "./direct-seed-plan"
 export type {
   DirectSeedMemory, DirectSeedMessage, DirectSeedPlan, DirectSeedSourceMessage,
 } from "./direct-seed-plan"
+export { createSimCaptureManager, summarizeCaptureResult } from "./capture"
+export type {
+  SimCaptureFinishResult, SimCaptureManager, SimCaptureMessage, SimCaptureSessionsResult,
+  SimCaptureStartResult, SimCaptureStatus, SimCaptureSummary,
+} from "./capture"
+export type { SimCaptureTrialSpec } from "./trace-recorder"

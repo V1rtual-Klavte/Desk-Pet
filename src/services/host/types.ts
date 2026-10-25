@@ -1374,8 +1374,8 @@ export type HostCommandMap = {
   //
   // TODO(W0): 这 5 条的消费方只存在于测试侧，类型归属尚未裁定：
   //   - e2e_options 的 TS 投影是 test/e2e/e2e-main.ts:33 的模块私有 RuntimeOptions；
-  //   - e2e_trace 的 TraceChunk/TraceChunkAck 在 test/trace/evidence.ts（src 不依赖 test，
-  //     故此处只冻结确定的外形，chunk 内部 TraceRecord 结构留 unknown）；
+  //   - e2e_trace 的 TraceChunk/TraceChunkAck 在 src/services/sim/trace-chunk.ts（E2E 与
+  //     sim 评测共用的纯格式）；此处只冻结确定的外形，chunk 内部 TraceRecord 结构留 unknown；
   //   - e2e_memory_performance 的完整测量结构只被 scripts/ 消费。
   //   W11 迁移测试驱动时决定：命令留在宿主测试通道（新 Native 宿主保留同名命令），还是
   //   移出产品 HostCommandMap。届时把类型落到不再跨 src/test 树的位置。
@@ -1418,8 +1418,8 @@ export type HostCommandMap = {
   /** 落盘 e2e-result.txt 并以退出码 0 结束进程（测试协议，非产品路径）。 */
   e2e_complete: { args: { passed: boolean; report: string }; result: void }
   e2e_trace: {
-    // TODO(W0): chunk 类型在 test/trace/evidence.ts（见上方组注释）；此处保留 unknown，
-    //   不跨 src/test 树引用，也不在本包重抄一份测试结构。
+    // TODO(W0): chunk 类型在 src/services/sim/trace-chunk.ts（见上方组注释）；此处保留
+    //   unknown，避免把宿主命令矩阵与采集器内部形状耦合，也不重抄一份结构。
     args: { chunk: unknown }
     result: { chunkId: string; chunkSeq: number; persisted: boolean }
   }

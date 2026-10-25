@@ -161,6 +161,17 @@ export function createChatRun({ reportsDir, evaluationRunId, createdAt, scope, b
   return { runDir, run };
 }
 
+/** 运行器可能在宿主启动后才知道采集范围；同一 evaluationRunId 只建一次运行组。 */
+export function ensureChatRun({ reportsDir, evaluationRunId, createdAt, scope, budget, baseline = null }) {
+  assertId(evaluationRunId, "evaluationRunId");
+  const runDir = join(reportsDir, evaluationRunId);
+  if (existsSync(join(runDir, "run.json"))) {
+    const run = readChatRun(runDir);
+    return { runDir, run, created: false };
+  }
+  return { ...createChatRun({ reportsDir, evaluationRunId, createdAt, scope, budget, baseline }), created: true };
+}
+
 export function listChatRuns(reportsDir) {
   return listRunDirs(reportsDir).map(({ evaluationRunId, runPath, run }) => ({
     evaluationRunId,
@@ -277,6 +288,25 @@ export function beginChatAttempt({ runDir, attemptId, identity, expectedTrials, 
   };
   writeJsonAtomic(join(attemptDir, MANIFEST_PENDING), attempt);
   return { attemptDir, attempt };
+}
+
+/**
+ * 驱动可能新建会话，采集结束时才知道完整范围；封存前必须把这些会话补进声明，
+ * 否则封存会以「收集到未声明会话」判为不完整。已封存的 attempt 不再接受追加。
+ */
+export function extendChatAttemptSessions({ attemptDir, sessionIds }) {
+  if (existsSync(join(attemptDir, MANIFEST_FILE))) fail("attempt.sealed", "attempt 已封存，不能追加会话范围");
+  const pendingPath = join(attemptDir, MANIFEST_PENDING);
+  if (!existsSync(pendingPath)) fail("attempt.missing", "attempt 草稿不存在");
+  if (!Array.isArray(sessionIds) || sessionIds.length === 0) fail("sessions.empty", "sessionIds 不能为空");
+  const attempt = readJsonFile(pendingPath);
+  const merged = [...new Set([
+    ...(attempt.expectedSessions ?? []),
+    ...sessionIds.map((id) => assertId(id, "sessionIds entry")),
+  ])];
+  const next = { ...attempt, expectedSessions: merged };
+  writeJsonAtomic(pendingPath, next);
+  return next;
 }
 
 export function createDialogueWriter(attemptDir) {

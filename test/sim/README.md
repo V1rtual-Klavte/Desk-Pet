@@ -7,7 +7,7 @@
 与桌宠聊天时先读 [`desk-pet-chat/SKILL.md`](desk-pet-chat/SKILL.md)。评测数据集另有两个 Skill：
 写题与用户审批见 [`desk-pet-eval-authoring/SKILL.md`](desk-pet-eval-authoring/SKILL.md)，
 结构化执行、API judge 判分与报告见 [`desk-pet-eval-runner/SKILL.md`](desk-pet-eval-runner/SKILL.md)。
-三者共用同一份数据集与 CLI 规则；W1–W2 已落数据集、题型、审阅、银标候选、debug 隔离起停与 direct-seed 装载（W2 已验收 2026-10-25）；W3 测试侧 `evidence.mjs`／`report.mjs` 与反例测试已落位但未运行验收，聊天驱动、产品侧因果采集和判分仍未实施。
+三者共用同一份数据集与 CLI 规则；W1–W2 已落数据集、题型、审阅、银标候选、debug 隔离起停与 direct-seed 装载（W2 已验收 2026-10-25）；W3 测试侧 `evidence.mjs`／`report.mjs`、产品侧 trace 采集与跨会话取证、运行器封存接线均已落位但未运行验收，聊天驱动和判分仍未实施。
 
 ## 启动
 

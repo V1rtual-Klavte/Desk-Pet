@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { BoundedTraceBuffer, captureTraceContext, TraceContextMap } from "../../trace/evidence"
+import { BoundedTraceBuffer, captureTraceContext, TraceContextMap } from "@/services/sim/trace-chunk"
 
 const event = (runId: string, requestId: string) => ({
   schemaVersion: 1,
@@ -9,7 +9,7 @@ const event = (runId: string, requestId: string) => ({
   requestId,
 })
 
-/** payload 字符数用来给单条事件定字节量级（序列化口径：JSON 字节 + 1，见 trace/evidence.ts）。 */
+/** payload 字符数用来给单条事件定字节量级（序列化口径：JSON 字节 + 1，见 sim/trace-chunk.ts）。 */
 const sizedEvent = (runId: string, requestId: string, payloadChars: number) => ({
   ...event(runId, requestId),
   payload: { blob: "x".repeat(payloadChars) },

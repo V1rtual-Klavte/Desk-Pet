@@ -203,7 +203,7 @@ Trace 默认 `full`；`light` 省略 payload/snapshot 事件，`off` 只用于�
 
 **性能**测 1k/10k 合成库，查询包含短中文、别名/长词、组合条件和无关词，分别逐次记录 query + get_items 和真实 MemoryProvider 端口调用（off重排；绑定实际会话与测试操作来源），报告 P50/P95 与原始样本。10k 的四条代表查询都须热路径 P95≤500ms，任一超标都失败（用户于2026-10-02放宽原50ms目标）。普通L4场景默认等5分钟、显式场景时限优先；整批截止至少30分钟，三trial批为30分钟，质量采集8小时，超时仍失败并保全证据。release Rust 存储和 debug 原生宿主 IPC 分列；连接重开不等于 OS 冷缓存。另记录建库、FTS 重建、发布、备份、磁盘、后台查询争用下的前台真实回合，以及按 idle/运行区间区分的进程树 RSS/CPU 样本。进程树必须覆盖 native-host + 唯一 Node 及其子进程（MCP / Bash 由宿主管理、不留孤儿）；完整产品 RSS、release IPC、二进制增量与原生 UI 延迟仍需相应实机验收，不能由编译进程样本或 debug 结果替代。性能报告位于 `test/reports/performance/`，按与日期戳报告一致的口径淘汰：最近 3 场、累计不超过 200 MiB、最新一份始终保留。
 
-## 结构化聊天评测数据集（W1–W2）
+## 结构化聊天评测数据集（W1–W3）
 
 [`test/ideal-traces/`](ideal-traces/README.md) 除旧格式 `*.ideal.md` 外，还承载可执行的结构化聊天用例（`suites/<suiteId>/` 下的 `suite.json` / `cases/` / `fixtures/` / `approvals/`，schema v3）。分类复用 `test/sim/desk-pet-chat/categories.json`，题型复用 `test/sim/desk-pet-chat/question-types.json`，多标签用例在总数里只计一次。case 是可跨会话的场景容器，探针是独立计分的最小断言：每条探针用 `after` 绑定驱动步骤，`window` 取 `last-assistant` / `state` / `all-assistant`，`polarity` 取 `required` / `forbidden`，`critical` 标记 case 级必要条件，`questionType` 标明认知维度，`difficulty`（1–5）用于报告分层且不改变判定；case 的 `questionTypes` 必须恰好等于探针题型的并集。fixture 必须声明 `loading`：`direct-seed` 只把初始状态写入隔离数据根、待测行为仍走真实消息链，`real-chain` 则禁止 seed 会话或记忆。`fixed` 时钟要求每个 driver 步骤带升序 `at`，case 起点不得早于 `fixture.clock`；探针窗口只看 driver 步骤，不吸收 fixture 预置的助手消息。一个用户消息可挂多条探针，case 通过要求全部关键 required 成立、非关键达到阈值且没有 forbidden 违规。消息轮数不设上限。
 
@@ -220,12 +220,15 @@ node scripts/desk-pet-chat.mjs dataset driver saturday-companionship
 node scripts/desk-pet-chat.mjs eval prepare --case saturday-companionship --card <card.md> [--run-id <id>]
 node scripts/desk-pet-chat.mjs eval start --run-id <id>
 node scripts/desk-pet-chat.mjs eval status --run-id <id>
+node scripts/desk-pet-chat.mjs eval finish --run-id <id>
 node scripts/desk-pet-chat.mjs eval stop --run-id <id>
+node scripts/desk-pet-chat.mjs capture status
+node scripts/desk-pet-chat.mjs capture sessions
 ```
 
-`dataset` 命令只读数据，不启动 app、不调用模型。W1–W2 已有格式、引用、题型覆盖、时钟与装载约束、难度分布、哈希与金银标计算，以及 debug 隔离起停和 direct-seed 装载核验；没有聊天驱动、评分或 CI 门禁。相关单元测试已在 2026-10-25 W2 验收轮运行通过（56 条）；W6 仍须集中执行数据集治理反例与完整门禁。
+`dataset` 命令只读数据，不启动 app、不调用模型。W1–W2 已有格式、引用、题型覆盖、时钟与装载约束、难度分布、哈希与金银标计算，以及 debug 隔离起停和 direct-seed 装载核验；W3 已有测试侧证据封存／同源报告／五回保留与产品侧 trace 采集、跨会话取证、`finish` 封存接线，封存证据落在 `test/reports/chat/<evaluationRunId>/`（未运行验收）；仍没有聊天驱动、自动评分或 CI 门禁。W1–W2 相关单元测试已在 2026-10-25 W2 验收轮运行通过（56 条）；W6 仍须集中执行数据集治理反例与完整门禁。
 
-W2 的 `eval` 命令只服务隔离运行，不评分、不产生质量结论。`prepare` 在 `test/.tmp/sim-eval-<id>` 建运行根：用随仓 `CONFIG.yaml` 模板合成隔离 `settings/CONFIG.yaml`（不读真实 CONFIG），要求显式 `--card <path>`（fixture 需要的 Card 不在仓库内，不得自动读取真实数据根），把 fixture 初始会话与旧记忆写进 `seed.json`，并 stage `test/eval-models*.json` 供运行期覆盖被测模型。debug 宿主仅在 `DESKPET_SIM_EVAL=1` + 合法运行根下把数据根固定到 `<run>/data`，拿到单实例锁后写 `ready.json`；Node 只信 `ready.json`（父进程 pid、数据根、控制目录与 development 模式）。`start` 构建并拉起宿主，依次核对宿主 ready、控制通道 ready 与 `seed-report.json` 后才进入 running；`stop` 只写 `stop.request`，不发送信号。`status` 输出阶段与所有权核验结果。真实启动、ready、非法路径失败、跨进程单实例、E2E 互斥与停止后锁释放已于 2026-10-25 验收（证据保留在 `test/.tmp/sim-eval-w2-accept-*`）；`.instance.lock` 文件按设计保留，OS 在进程退出时释放锁。固定时钟尚未注入，跨天间隔、聊天驱动与评分仍属 W3–W4。
+W2 的 `eval` 命令只服务隔离运行，不评分、不产生质量结论。`prepare` 在 `test/.tmp/sim-eval-<id>` 建运行根：用随仓 `CONFIG.yaml` 模板合成隔离 `settings/CONFIG.yaml`（不读真实 CONFIG），要求显式 `--card <path>`（fixture 需要的 Card 不在仓库内，不得自动读取真实数据根），把 fixture 初始会话与旧记忆写进 `seed.json`，并 stage `test/eval-models*.json` 供运行期覆盖被测模型。debug 宿主仅在 `DESKPET_SIM_EVAL=1` + 合法运行根下把数据根固定到 `<run>/data`，拿到单实例锁后写 `ready.json`；Node 只信 `ready.json`（父进程 pid、数据根、控制目录与 development 模式）。`start` 构建并拉起宿主，依次核对宿主 ready、控制通道 ready 与 `seed-report.json`，通过后建 attempt 并开始 trace 采集；`finish` 收口采集、写 dialogue、补声明会话、封存 attempt、生成同源报告并执行五回保留；`stop` 只写 `stop.request`，不发送信号，未完成采集以中断状态收口。`status` 输出阶段与所有权核验结果；`capture status|sessions` 经开发控制通道核对采集范围与来源，不读取真实用户会话。真实启动、ready、非法路径失败、跨进程单实例、E2E 互斥与停止后锁释放已于 2026-10-25 验收（证据保留在 `test/.tmp/sim-eval-w2-accept-*`）；`.instance.lock` 文件按设计保留，OS 在进程退出时释放锁。W3 的产品采集、封存与报告模块及反例测试已落位但未运行验收；固定时钟尚未注入，聊天驱动、评分与人工裁决仍属 W4–W6。
 
 三个 Skill 分工：[`desk-pet-chat`](sim/desk-pet-chat/SKILL.md) 负责真实聊天/自由评测，[`desk-pet-eval-authoring`](sim/desk-pet-eval-authoring/SKILL.md) 负责写用例与收集用户审批，[`desk-pet-eval-runner`](sim/desk-pet-eval-runner/SKILL.md) 负责结构化执行与评分。结构化探针按权威路由；coding agent 只评聊天记录与自由定性结果，不代替 API judge 判定探针成败，也不代替用户裁决 humanizer 或代填 gold 审批。审阅入口在 authoring Skill：先列候选、询问要审哪条，再把审阅卡贴到聊天区；W1–W2 不写审批文件。数据规则、当前候选与审批边界见 [ideal-traces/README.md](ideal-traces/README.md)。
 

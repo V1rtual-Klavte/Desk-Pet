@@ -4,7 +4,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { BoundedTraceBuffer } from "../../trace/evidence";
+import { BoundedTraceBuffer } from "@/services/sim/trace-chunk";
 import {
   appendGrade,
   appendReview,
@@ -12,6 +12,9 @@ import {
   createChatRun,
   createDialogueWriter,
   createTraceWriter,
+  ensureChatRun,
+  extendChatAttemptSessions,
+  readChatRun,
   readChatWorkflow,
   readSealedAttempt,
   sealChatAttempt,
@@ -82,9 +85,12 @@ async function makeCompleteAttempt(runDir: string, options: any = {}) {
     runDir,
     identity: identity(),
     expectedTrials: [{ caseId: CASE_ID, trialId }],
-    expectedSessions: sessions,
+    expectedSessions: options.declaredSessions ?? sessions,
     createdAt: START,
   });
+  if (options.extendSessions) {
+    extendChatAttemptSessions({ attemptDir: started.attemptDir, sessionIds: options.extendSessions });
+  }
   const dialogue = createDialogueWriter(started.attemptDir);
   for (const message of options.messages ?? defaultMessages(sessions)) dialogue.append(message);
   dialogue.close();
@@ -362,5 +368,76 @@ describe("聊天证据完整性", () => {
     chmodSync(dialoguePath, 0o644);
     appendFileSync(dialoguePath, `{"seq":100}\n`);
     expect(renderChatReport({ runDir, generatedAt: SEALED })).toContain("不能判为通过");
+  });
+});
+
+describe("运行组复用与采集后补声明", () => {
+  it("同一 evaluationRunId 只建一次运行组，复用不重置阶段与范围", () => {
+    const reportsDir = makeRoot();
+    const args = {
+      reportsDir,
+      evaluationRunId: "run-ensure",
+      createdAt: START,
+      scope: { suiteIds: ["daily-companionship"], caseIds: [CASE_ID] },
+      budget: { trials: 1, maxCostUsd: 1 },
+    };
+    const first = ensureChatRun(args);
+    expect(first.created).toBe(true);
+    setChatRunPhase(first.runDir, { phase: "running", updatedAt: START });
+
+    const second = ensureChatRun(args);
+    expect(second.created).toBe(false);
+    expect(second.runDir).toBe(first.runDir);
+    expect(readChatRun(first.runDir)).toMatchObject({
+      evaluationRunId: "run-ensure",
+      scope: { suiteIds: ["daily-companionship"], caseIds: [CASE_ID] },
+    });
+    expect(readChatWorkflow(first.runDir).phase).toBe("running");
+  });
+
+  it("驱动新建的会话在封存前补声明后才算完整", async () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-extend");
+    const attempt = await makeCompleteAttempt(runDir, {
+      sessions: ["session-1", "session-2"],
+      declaredSessions: ["session-1"],
+      extendSessions: ["session-2", "session-1"],
+    });
+
+    expect(attempt.status).toBe("complete");
+    expect(readSealedAttempt(attempt.attemptDir).expectedSessions).toEqual(["session-1", "session-2"]);
+    expect(readSealedAttempt(attempt.attemptDir).evidence.dialogue.sessions).toEqual(["session-1", "session-2"]);
+  });
+
+  it("收集到未声明的会话时封存不完整", async () => {
+    const reportsDir = makeRoot();
+    const attempt = await makeCompleteAttempt(makeRun(reportsDir, "run-undeclared"), {
+      sessions: ["session-1", "session-2"],
+      declaredSessions: ["session-1"],
+    });
+
+    expect(attempt.status).toBe("inconclusive");
+    expect(attempt.issues.join("\n")).toContain("收集到未声明会话：session-2");
+  });
+
+  it("封存后不再接受追加声明，草稿阶段只去重不引入空会话", async () => {
+    const reportsDir = makeRoot();
+    const started = beginChatAttempt({
+      runDir: makeRun(reportsDir, "run-extend-guard"),
+      identity: identity(),
+      expectedTrials: [{ caseId: CASE_ID, trialId: "trial-1" }],
+      expectedSessions: ["session-1"],
+      createdAt: START,
+    });
+    expect(extendChatAttemptSessions({
+      attemptDir: started.attemptDir,
+      sessionIds: ["session-2", "session-1"],
+    }).expectedSessions).toEqual(["session-1", "session-2"]);
+    expect(() => extendChatAttemptSessions({ attemptDir: started.attemptDir, sessionIds: [] }))
+      .toThrow(/不能为空/);
+
+    const sealed = await makeCompleteAttempt(makeRun(reportsDir, "run-extend-sealed"));
+    expect(() => extendChatAttemptSessions({ attemptDir: sealed.attemptDir, sessionIds: ["session-3"] }))
+      .toThrow(/已封存/);
   });
 });

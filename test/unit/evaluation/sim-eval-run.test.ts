@@ -336,3 +336,140 @@ describe("控制通道日志读取", () => {
     expect(runner.latestBridgeReady([{ type: "message" }])).toBeUndefined()
   })
 })
+
+describe("证据 id 与采集生命周期回执", () => {
+  const attemptDir = join(tmpdir(), "desk-pet-repo", "test", "reports", "chat", "chat-w3b", "attempts", "0001")
+  const expected = { evaluationRunId: "chat-w3b", attemptId: "0001", attemptDir }
+  const target = { ...expected }
+  const caseId = "saturday-companionship"
+  const trialId = "trial-w3b"
+
+  it("evaluation-run-id 与 trial-id 只接受小写安全字符，且不超长", () => {
+    expect(runner.validateEvaluationRunId("chat-20261025.1")).toBe("chat-20261025.1")
+    expect(runner.validateEvaluationRunId("a".repeat(64))).toBe("a".repeat(64))
+    expect(runner.validateTrialId("trial-1_repair.2")).toBe("trial-1_repair.2")
+    expect(runner.validateTrialId("a".repeat(96))).toBe("a".repeat(96))
+    for (const invalid of ["", "Chat", "-a", ".a", "a b", "a/b", "a".repeat(65), undefined]) {
+      expect(() => runner.validateEvaluationRunId(invalid), String(invalid)).toThrow(/evaluation-run-id 不合法/)
+    }
+    for (const invalid of ["", "Trial", ".a", "-a", "a b", "a/b", "a".repeat(97), undefined]) {
+      expect(() => runner.validateTrialId(invalid), String(invalid)).toThrow(/trial-id 不合法/)
+    }
+  })
+
+  it("capture_started 必须指向本次 attempt，before 快照不完整时拒绝继续", () => {
+    const complete = { type: "capture_started", result: { ...target, complete: true, issues: [] } }
+    expect(runner.validateCaptureStarted(complete, expected).complete).toBe(true)
+
+    expect(() => runner.validateCaptureStarted({
+      type: "capture_started",
+      result: { ...target, complete: false, issues: ["会话 session-broken 读取失败", "记忆条目未完采"] },
+    }, expected)).toThrow(/会话 session-broken 读取失败；记忆条目未完采/)
+
+    const cases: Array<[string, any, RegExp]> = [
+      ["type", { ...complete, type: "capture_trial" }, /没有返回 capture_started/],
+      ["run", { ...complete, result: { ...target, evaluationRunId: "other", complete: true } }, /evaluationRunId/],
+      ["attempt", { ...complete, result: { ...target, attemptId: "0002", complete: true } }, /attemptId/],
+      ["dir", { ...complete, result: { ...target, attemptDir: join(tmpdir(), "elsewhere"), complete: true } }, /attemptDir/],
+      ["missing result", { type: "capture_started" }, /缺少 result/],
+    ]
+    for (const [label, value, pattern] of cases) {
+      expect(() => runner.validateCaptureStarted(value, expected), label).toThrow(pattern)
+    }
+  })
+
+  it("capture_trial 的开始与结束都必须绑定本次用例与试次", () => {
+    const begin = { type: "capture_trial", phase: "begin", caseId, trialId }
+    const end = { type: "capture_trial", phase: "end", caseId, trialId, status: "completed" }
+    expect(runner.validateCaptureTrial(begin, { phase: "begin", caseId, trialId })).toBe(begin)
+    expect(runner.validateCaptureTrial(end, { phase: "end", caseId, trialId })).toBe(end)
+
+    const expectedEnd = { phase: "end", caseId, trialId }
+    const cases: Array<[string, any, RegExp]> = [
+      ["type", { ...begin, type: "capture_started" }, /没有返回 capture_trial/],
+      ["phase", begin, /期望 end/],
+      ["case", { ...end, caseId: "other" }, /caseId/],
+      ["trial", { ...end, trialId: "other" }, /trialId/],
+    ]
+    for (const [label, value, pattern] of cases) {
+      expect(() => runner.validateCaptureTrial(value, expectedEnd), label).toThrow(pattern)
+    }
+  })
+
+  it("capture_finished 允许不完整，但必须同一 attempt 且带完整对话数组与 issues", () => {
+    const incomplete = {
+      type: "capture_finished",
+      result: {
+        ...target,
+        complete: false,
+        issues: ["trace 封口失败"],
+        dialogue: { messages: [{ role: "user", text: "问题" }] },
+      },
+    }
+    const accepted = runner.validateCaptureFinished(incomplete, expected)
+    expect(accepted.complete).toBe(false)
+    expect(accepted.dialogue.messages).toHaveLength(1)
+
+    const cases: Array<[string, any, RegExp]> = [
+      ["type", { ...incomplete, type: "capture_status" }, /没有返回 capture_finished/],
+      ["run", { ...incomplete, result: { ...incomplete.result, evaluationRunId: "other" } }, /evaluationRunId/],
+      ["attempt", { ...incomplete, result: { ...incomplete.result, attemptId: "0002" } }, /attemptId/],
+      ["dir", { ...incomplete, result: { ...incomplete.result, attemptDir: join(tmpdir(), "elsewhere") } }, /attemptDir/],
+      ["messages", { ...incomplete, result: { ...incomplete.result, dialogue: {} } }, /完整对话数组/],
+      ["issues", { ...incomplete, result: { ...incomplete.result, issues: undefined } }, /issues 数组/],
+      ["complete", { ...incomplete, result: { ...incomplete.result, complete: "yes" } }, /complete 标记/],
+    ]
+    for (const [label, value, pattern] of cases) {
+      expect(() => runner.validateCaptureFinished(value, expected), label).toThrow(pattern)
+    }
+  })
+})
+
+describe("数据集输入哈希与请求模型身份", () => {
+  it("哈希覆盖用例、fixture 与套件，忽略读取路径等运行期字段", () => {
+    const base = runner.datasetInputHash(dataset, entry)
+    expect(base).toMatch(/^sha256:[0-9a-f]{64}$/)
+    expect(runner.datasetInputHash({
+      ...dataset,
+      repoRoot: join(tmpdir(), "elsewhere"),
+      categoriesPath: "elsewhere.json",
+      questionTypesPath: "elsewhere.json",
+      errors: [{ code: "noise", message: "运行期噪声" }],
+      warnings: [{ code: "noise", message: "运行期噪声" }],
+    }, entry)).toBe(base)
+
+    const caseCopy = JSON.parse(JSON.stringify(dataset))
+    const caseEntry = caseCopy.cases.find((candidate: any) => candidate.caseId === entry.caseId)
+    caseEntry.case.driver[0].text = `${caseEntry.case.driver[0].text}（被改写）`
+    expect(runner.datasetInputHash(caseCopy, caseEntry)).not.toBe(base)
+
+    const fixtureCopy = JSON.parse(JSON.stringify(dataset))
+    const fixtureEntry = fixtureCopy.cases.find((candidate: any) => candidate.caseId === entry.caseId)
+    fixtureEntry.fixture.initialMemory[0].content = `${fixtureEntry.fixture.initialMemory[0].content}（被改写）`
+    expect(runner.datasetInputHash(fixtureCopy, fixtureEntry)).not.toBe(base)
+
+    const suiteCopy = JSON.parse(JSON.stringify(dataset))
+    const suite = suiteCopy.suites.find((candidate: any) => candidate.suiteId === entry.suiteId)
+    suite.purpose = `${suite.purpose}（被改写）`
+    expect(runner.datasetInputHash(suiteCopy, suiteCopy.cases.find((candidate: any) => candidate.caseId === entry.caseId))).not.toBe(base)
+  })
+
+  it("实际响应模型只认主聊天请求，忽略后台链路与失败请求", () => {
+    const event = (kind: string, payload: Record<string, unknown>) => ({
+      chunk: { events: [{ seq: 1, orphan: false, event: { kind, payload } }] },
+    })
+    const trace = [
+      event("provider_request_end", { purpose: "main", responseModel: "provider/model-b" }),
+      event("provider_request_end", { purpose: "main", responseModel: "provider/model-a" }),
+      event("provider_request_end", { purpose: "main", responseModel: "provider/model-b" }),
+      event("provider_request_end", { purpose: "memory", responseModel: "provider/memory-model" }),
+      event("provider_request_end", { purpose: "main", status: "stream_failed" }),
+      event("provider_request_end", { purpose: "main", responseModel: "  " }),
+      event("provider_request_start", { purpose: "main", model: "provider/model-a" }),
+    ].map(record => JSON.stringify(record)).join("\n")
+
+    expect(runner.extractActualModels(`${trace}\n`)).toEqual(["provider/model-a", "provider/model-b"])
+    expect(runner.extractActualModels("")).toEqual([])
+    expect(runner.extractActualModels('{"chunk":{"events":[{"event":{"kind":"turn_end"}}]}}\n')).toEqual([])
+  })
+})

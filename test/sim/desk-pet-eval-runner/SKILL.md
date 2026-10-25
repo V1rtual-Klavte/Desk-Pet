@@ -1,25 +1,28 @@
 ---
 name: desk-pet-eval-runner
-description: 执行 V1rtual-Desk-Pet 结构化聊天评测用例：冻结规格与预算，隔离驱动真实 app，采集证据，先跑确定性检查，再用异构 API judge 评语义探针，输出同源报告。用户说“跑结构化评测”“执行评测用例”“跑一次聊天评测”“用 API judge 评分”时使用。W2 只有隔离起停与装载核验，聊天驱动、评分与报告仍未实现；未实现前只能说明阻塞，不得伪造运行结果。
+description: 执行 V1rtual-Desk-Pet 结构化聊天评测用例：冻结规格与预算，隔离驱动真实 app，采集证据，先跑确定性检查，再用异构 API judge 评语义探针，输出同源报告。用户说“跑结构化评测”“执行评测用例”“跑一次聊天评测”“用 API judge 评分”时使用。W2 的隔离起停已验收，W3 的采集与封存已落位但未验收；聊天驱动、自动评分与人工裁决仍未实现，未实现前只能说明阻塞，不得伪造运行结果。
 ---
 
 # 结构化聊天评测运行与判分
 
-## 现状（W2）
+## 现状（W2–W3b）
 
-W2 已实现并验收 **debug 隔离根 + 宿主所有权核验 + direct-seed 装载器**（2026-10-25），但没有聊天驱动、`dataset run`、评分与报告；W3 测试侧证据封存／同源报告／五回保留模块已落位但未运行验收，W3b–W5 才补齐产品采集、驱动、自动评分与人工裁决。W2 相关单元测试、类型检查与 Rust 单测已运行通过，真实隔离起停覆盖了 ready／装载核验、非法路径、跨进程单实例、E2E 互斥和停止后锁释放；固定时钟仍未注入宿主。用户要求“跑评测”时，先说明这些阻塞，不要用聊天报告、coding agent 打分或隔离起停成功来冒充正式评测结果。
+W2 已实现并验收 **debug 隔离根 + 宿主所有权核验 + direct-seed 装载器**（2026-10-25）。W3a 的测试侧证据封存／同源报告／五回保留模块与 W3b 的产品 trace 采集、跨会话取证、采集生命周期和运行器封存接线已落位，反例测试已写但尚未运行验收；聊天驱动、`dataset run`、固定时钟、自动评分与人工裁决仍未实现（W4–W6）。W2 相关单元测试、类型检查与 Rust 单测已运行通过，真实隔离起停覆盖了 ready／装载核验、非法路径、跨进程单实例、E2E 互斥和停止后锁释放。用户要求“跑评测”时，先说明这些阻塞，不要用聊天报告、coding agent 打分或隔离起停成功来冒充正式评测结果。
 
 ```bash
 node scripts/desk-pet-chat.mjs eval prepare --case saturday-companionship --card <card.md> [--run-id <id>]
 node scripts/desk-pet-chat.mjs eval start --run-id <id>
 node scripts/desk-pet-chat.mjs eval status --run-id <id>
+node scripts/desk-pet-chat.mjs eval finish --run-id <id>
 node scripts/desk-pet-chat.mjs eval stop --run-id <id>
+node scripts/desk-pet-chat.mjs capture status
+node scripts/desk-pet-chat.mjs capture sessions
 ```
 
 - `prepare` 只在 `test/.tmp/sim-eval-<id>/` 建隔离根，写入合成 CONFIG、显式给出的 Card、`seed.json` 与 `runner.json`；`--card` 必须由调用方提供，不读取真实 CONFIG、凭据或用户 Card。
-- `start` 只接受 debug 构建，设置 `DESKPET_SIM_EVAL=1` / `DESKPET_SIM_EVAL_RUN_DIR` 拉起宿主，依次核对 `ready.json`、控制通道 ready 与 `seed-report`：pid 必须是本次子进程、`runDir`／`dataRoot`／`controlDir` 必须同源、运行模式必须是 development，fixture／会话／消息数／记忆数必须与 `runner.json` 一致。
-- `stop` 只写 `stop.request`，由宿主走产品退出序列并移除 ready；停止条件是进程退出且 ready 消失。`.instance.lock` 文件按设计保留（OS 在进程退出时释放锁，删除文件会引入 unlink 竞争），无残留判据是无宿主进程、无 ready、锁未被持有且真实数据根未变。不要 kill 进程来“收尾”。
-- `status` 只读现有证据，不修复、不重启、不清理失败现场。
+- `start` 只接受 debug 构建，设置 `DESKPET_SIM_EVAL=1` / `DESKPET_SIM_EVAL_RUN_DIR` 拉起宿主，依次核对 `ready.json`、控制通道 ready 与 `seed-report`：pid 必须是本次子进程、`runDir`／`dataRoot`／`controlDir` 必须同源、运行模式必须是 development，fixture／会话／消息数／记忆数必须与 `runner.json` 一致；核对通过后建 attempt 并开始 trace 采集。
+- `finish` 结束试次、收口采集，写 dialogue、补声明会话、封存 attempt 并生成同源报告；`stop` 只写 `stop.request`，由宿主走产品退出序列并移除 ready，未完成采集以中断状态收口。停止条件是进程退出且 ready 消失。`.instance.lock` 文件按设计保留（OS 在进程退出时释放锁，删除文件会引入 unlink 竞争），无残留判据是无宿主进程、无 ready、锁未被持有且真实数据根未变。不要 kill 进程来“收尾”。
+- `status` 只读现有证据，不修复、不重启、不清理失败现场；`capture status|sessions` 通过开发控制通道核对本次采集的范围与来源，不读取真实用户会话。
 
 当前候选 `saturday-companionship` 为 27 条用户消息 + 2 个 host 步骤、3 个会话、21 条探针（9 条 critical），fixture 为 `direct-seed`，时钟固定。W2 装载器会把 fixture 的初始会话/记忆写入隔离数据根，纠正、自动记忆抽取和跨会话召回仍应由真实消息触发；但**固定时钟尚未注入**，不能假装跨天间隔已经发生。探针窗口只看 driver 步骤，fixture 预置的助手消息不参与判定。
 
@@ -34,7 +37,7 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 
 `review` 是给用户审批看的，驱动方不得先读。隔离起停和结构校验通过都不产生质量结论。
 
-## 目标流程（W3–W5）
+## 目标流程（W3–W5，W3 采集与封存已落位）
 
 ```text
 冻结 case 选择、运行意图、trial 数、预算、允许修复范围
@@ -65,7 +68,7 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 ## 驱动与隔离
 
 - `direct-seed` 与 `real-chain` 不能混用：前者只预置初始状态，后者必须通过真实导入建立；不要把纠正结果 seed 进去再宣称纠正成功。
-- `fixed` 时钟仍待 runner 注入（W2 未实现）；未注入时只能声明时间格式已冻结，不能声明真实间隔或自动抽取时序已验证。
+- `fixed` 时钟仍待 runner 注入（W3b 未实现，随 W4）；未注入时只能声明时间格式已冻结，不能声明真实间隔或自动抽取时序已验证。
 - 探针窗口限定 driver 步骤；fixture 预置的助手消息不得进入 `last-assistant` 或 `all-assistant` 判定。
 - driver 只读 `dataset driver` 的 `userRole` + `driver`；不得读题型、探针、oracle、检查点、证据、评分、修复提示或留出材料。driver 里的 `at` 只是固定时钟标签，不要自行等待或伪造跨天。
 - 题型（`questionType`）和 `questionTypes` 只用于运行方路由与报告分组，不进入驱动包；驱动代理不需要知道题目分类，避免按题型反推判据。

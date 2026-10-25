@@ -126,12 +126,17 @@
 // eval 入口）。本机已通过 W2 相关 L2、tsc/cargo check、Rust 单测与真实隔离起停（含非法路径、
 // 跨进程单实例、E2E 互斥与停止后锁释放）；eval-01..09 未修订覆盖点，sourceHash 按当前源码复算。
 // 固定时钟、跨天间隔、聊天驱动、证据/评分与正式报告仍未实现，不能由本次隔离起停验收替代。
+// 2026-10-25 W3 采集封存落位（本批新增 sourceFiles，sourceHash 待验收复算）：纯 trace 从
+// test/trace/evidence.ts 迁入 src/services/sim/trace-chunk.ts（E2E 观察器同步 import，原文件删除）；
+// 新增 capture.ts 的跨会话取证与 trace-recorder 的 trial 归属／有界分块；sim-eval-run 与
+// chat-bridge 增加采集生命周期、封存与同源报告接线。eval-01..09 未修订覆盖点；W3 反例测试
+// 已写但未运行，验收轮执行快层／类型／Rust 后按当前源码复算 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const evaluationContract: ModuleContract = {
   module: "evaluation",
-  sourceFiles: ["test/host/standard-setup.ts", "vite.config.ts", "src/services/engine/runtime/trace.ts", "src/services/agent/memory/reading-errors.ts", "src/services/agent/memory/provider.ts", "src/services/agent/memory/dreaming.ts", "crates/native-host/src/e2e_trace.rs", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/host/dispatch.rs", "test/host/trace-observer.ts", "test/trace/evidence.ts", "scripts/report-retention.mjs", "scripts/trace-evidence.mjs", "scripts/contract-layers.mjs", "scripts/e2e-test.mjs", "scripts/check-contract-hashes.mjs", "test/memory-quality/dataset.mjs", "test/memory-quality/index.mjs", "test/memory-quality/live-adapter.ts", "scripts/memory-quality-review.mjs", "scripts/memory-performance.mjs", "src/services/sim/eval-models.ts", "src/services/sim/eval-overrides.ts", "src/services/sim/run-context.ts", "src/services/sim/chat-bridge.ts", "src/services/sim/direct-seed-plan.ts", "src/services/sim/direct-seed.ts", "crates/native-host/src/paths/sim_eval.rs", "crates/native-host/src/main.rs", "scripts/sim-eval-run.mjs", "scripts/desk-pet-chat.mjs", "test/eval-models.json", "test/e2e/memory-performance.ts", "test/host/performance.ts", "test/e2e/native-main.ts", "test/e2e/scene-runner.ts"],
+  sourceFiles: ["test/host/standard-setup.ts", "vite.config.ts", "src/services/engine/runtime/trace.ts", "src/services/agent/memory/reading-errors.ts", "src/services/agent/memory/provider.ts", "src/services/agent/memory/dreaming.ts", "crates/native-host/src/e2e_trace.rs", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/host/dispatch.rs", "test/host/trace-observer.ts", "src/services/sim/trace-chunk.ts", "src/services/sim/trace-recorder.ts", "src/services/sim/capture.ts", "scripts/report-retention.mjs", "scripts/trace-evidence.mjs", "scripts/contract-layers.mjs", "scripts/e2e-test.mjs", "scripts/check-contract-hashes.mjs", "test/memory-quality/dataset.mjs", "test/memory-quality/index.mjs", "test/memory-quality/live-adapter.ts", "scripts/memory-quality-review.mjs", "scripts/memory-performance.mjs", "src/services/sim/eval-models.ts", "src/services/sim/eval-overrides.ts", "src/services/sim/run-context.ts", "src/services/sim/chat-bridge.ts", "src/services/sim/direct-seed-plan.ts", "src/services/sim/direct-seed.ts", "crates/native-host/src/paths/sim_eval.rs", "crates/native-host/src/main.rs", "scripts/sim-eval-run.mjs", "scripts/desk-pet-chat.mjs", "test/eval-models.json", "test/e2e/memory-performance.ts", "test/host/performance.ts", "test/e2e/native-main.ts", "test/e2e/scene-runner.ts"],
   // 2026-10-18 列项答案补全批次：评测口径未变，仅共享 runtime/trace 增加列项补全计数；定向复核后刷新。
   sourceHash: "58409b8c85e03929bd18b886755512887decf3b54cd567ef9dfecc0653519ebc",
   coverage: [

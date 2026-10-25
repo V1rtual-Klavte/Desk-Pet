@@ -1,3 +1,15 @@
+// ==========================================
+// trace 分块纯逻辑 — E2E 与 sim 评测共用
+// ==========================================
+//
+// 这里只有形状、上下文归属与有界缓冲；传输与落盘由各自的宿主适配：
+// - E2E 观察器（test/host/trace-observer.ts）经私有 `e2e_trace` 交给 Rust 落盘；
+// - sim 评测采集器（./trace-recorder.ts）直接写 attempt 的 trace.jsonl。
+// 两条路径共用同一 chunk 形状与 ACK 语义，判分与封存只认这一套格式。
+//
+// 「写盘成功后 ACK」是硬约束：`BoundedTraceBuffer` 在收到匹配 ACK 前一直持有 pending
+// chunk，调用方不得在持久化失败时丢弃它。
+
 export type TraceBoundaryKind =
   | "periodic"
   | "scene_start"
@@ -161,7 +173,9 @@ export class BoundedTraceBuffer {
   }
 
   get pendingEventCount(): number { return this.#active.length }
-  get hasUnackedChunk(): boolean { return this.#pending !== undefined }
+  get hasUnackedChunk(): boolean { return this.#pending !== undefined; }
+  get droppedCount(): number { return this.#dropped; }
+  get nextEventSeq(): number { return this.#nextEventSeq; }
 
   append(event: TraceEvent, context?: TraceContext): TraceRecord | undefined {
     const seq = this.#nextEventSeq++

@@ -1,8 +1,8 @@
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
 import type { RuntimeTraceEvent } from "@/services/engine/runtime"
 import { getHostBridge } from "@/services/host"
-import { BoundedTraceBuffer, captureTraceContext, TraceContextMap } from "../trace/evidence"
-import type { TraceChunk, TraceChunkAck, TraceContext } from "../trace/evidence"
+import { BoundedTraceBuffer, captureTraceContext, TraceContextMap } from "@/services/sim/trace-chunk"
+import type { TraceChunk, TraceChunkAck, TraceContext } from "@/services/sim/trace-chunk"
 
 export function captureRuntimeTrace() {
   const events: RuntimeTraceEvent[] = []

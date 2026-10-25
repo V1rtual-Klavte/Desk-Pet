@@ -120,7 +120,7 @@ test/ideal-traces/
   → 起草 case、合成 fixture、写 driver
   → 逐条写 probes 与证据引用
   → dataset validate 自查格式、引用、重复与反例
-  → 银标试跑（另用 runner；W2 只有隔离装载与起停，聊天驱动尚未实现）
+  → 银标试跑（另用 runner；W3 已有隔离采集与封存，聊天驱动尚未实现）
   → 用户审阅并修改预期
   → 冻结 gold 版本
 ```
@@ -147,7 +147,7 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 2. 用户选定后跑 `dataset review <caseId>`，把输出**原样贴在聊天区**；至少能看到来源、fixture、题型与评审权威、驱动步骤、检查点、探针、证据、未解决点与 `specHash`。
 3. 请用户按三类决定回复：**批准当前版本 / 修改具体条目 / 暂缓**。修改意见落到 case 或 fixture，改完提升 `revision`，重新展示新的 `specHash`。装载方式、难度分布与固定时钟也属于审阅内容；不只口头说“改好了”。
 4. 保留用户原话、`caseId` 与 `specHash`，作为后续写入审批的候选来源。不要把“框架可以”“测试全绿”或代理判断当成用户批准，也不要代填 `reviewer`、`feedbackSource` 或 `decision`。
-5. W1–W2 没有写审批文件的命令。用户在聊天里批准后，当前 case 仍是 silver / pending；不要手写 approval JSON。
+5. W1–W3 没有写审批文件的命令。用户在聊天里批准后，当前 case 仍是 silver / pending；不要手写 approval JSON。
 6. 看过审阅包的代理不得再驱动同一个 case。驱动要换独立会话／代理，只读 `dataset driver`，避免探针与 oracle 视野污染。
 
 ## 金标与信任边界

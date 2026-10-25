@@ -34,7 +34,9 @@ import { localDayKey } from "@/services/proactive/time"
 import { activeOwner, pickRecentWindow, seedAndDeliverTask } from "./loop"
 import type { SimTaskResult } from "./loop"
 import { createSimTraceRecorder } from "./trace-recorder"
-import type { SimTraceSummary } from "./trace-recorder"
+import type { SimCaptureTrialSpec, SimTraceSummary } from "./trace-recorder"
+import { createSimCaptureManager, summarizeCaptureResult } from "./capture"
+import type { SimCaptureManager } from "./capture"
 import { writeSimFiles } from "./report"
 import { getSimEvalRunContext } from "./run-context"
 import { getDirectSeedReport } from "./direct-seed"
@@ -76,6 +78,12 @@ type SimChatCommand =
   | { id?: string; type: "task"; kind?: "reminder" | "agent_job"; text?: string
       work?: { goal: string; inputs: string[]; capabilities: string[]; output: string; completion: string } }
   | { id?: string; type: "report" }
+  | { id?: string; type: "capture_start"; attemptDir: string; evaluationRunId: string; expectedTrials: SimCaptureTrialSpec[] }
+  | { id?: string; type: "capture_begin"; caseId: string; trialId: string }
+  | { id?: string; type: "capture_end"; caseId: string; trialId: string; status?: "completed" | "failed"; error?: string }
+  | { id?: string; type: "capture_sessions" }
+  | { id?: string; type: "capture_finish"; status?: "completed" | "failed" | "interrupted"; reason?: string }
+  | { id?: string; type: "capture_status" }
   | { id?: string; type: "stop" }
 
 export interface SimChatBridge {
@@ -104,7 +112,8 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
   const outbox = join(dir, "outbox.jsonl")
   await writeFile(inbox, "", { flag: "a" })
   await writeFile(outbox, "", { flag: "a" })
-  const recorder = createSimTraceRecorder()
+  const recorder = createSimTraceRecorder({ collectEvents: !evalContext })
+  const capture: SimCaptureManager | null = evalContext ? createSimCaptureManager(recorder) : null
   const transcript: SimChatMessage[] = []
   const startedAt = Date.now()
   let offset = (await stat(inbox)).size
@@ -177,14 +186,29 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
     stopped = true
     clearInterval(timer)
     clearInterval(planTimer)
-    try {
-      const files = await writeReport()
-      await emit({ type: "report", ...files })
-    } catch (error) {
-      log.warn("聊天控制通道收尾报告失败:", formatError(error))
-      await emit({ type: "error", error: formatError(error) }).catch(() => undefined)
+    if (capture) {
+      // 评测运行不写开发演练报告：正式证据只认 attempt 目录。采集未封口就按中断收口，
+      // 让证据显式不完整，而不是让 recorder.stop() 抛错后留下「看似正常退出」。
+      try {
+        if (capture.status() && !capture.status()?.finished) {
+          const result = await capture.finish({ status: "interrupted", reason: "宿主停止时采集仍未封口" })
+          await emit({ type: "capture_finished", reason: "host_stop", result: summarizeCaptureResult(result) })
+        }
+      } catch (error) {
+        log.warn("评测采集收尾失败:", formatError(error))
+        await emit({ type: "error", error: formatError(error) }).catch(() => undefined)
+      }
+      try { recorder.stop() } catch (error) { log.warn("trace recorder 停止失败:", formatError(error)) }
+    } else {
+      try {
+        const files = await writeReport()
+        await emit({ type: "report", ...files })
+      } catch (error) {
+        log.warn("聊天控制通道收尾报告失败:", formatError(error))
+        await emit({ type: "error", error: formatError(error) }).catch(() => undefined)
+      }
+      recorder.stop()
     }
-    recorder.stop()
     active = undefined
     await emit({ type: "stopped" })
   }
@@ -351,8 +375,59 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
           return
         }
         case "report": {
+          if (capture) {
+            await emit({ id, type: "report", capture: capture.status() })
+            return
+          }
           const files = await writeReport()
           await emit({ id, type: "report", ...files })
+          return
+        }
+        case "capture_start": {
+          if (!capture) throw new Error("当前不是 sim-eval 隔离运行，不能开始正式采集")
+          const result = await capture.start({
+            attemptDir: command.attemptDir,
+            evaluationRunId: command.evaluationRunId,
+            expectedTrials: command.expectedTrials,
+          })
+          await emit({ id, type: "capture_started", result })
+          return
+        }
+        case "capture_begin": {
+          if (!capture) throw new Error("当前不是 sim-eval 隔离运行，不能开始试次")
+          await capture.beginTrial(command.caseId, command.trialId)
+          await emit({ id, type: "capture_trial", phase: "begin", caseId: command.caseId, trialId: command.trialId })
+          return
+        }
+        case "capture_end": {
+          if (!capture) throw new Error("当前不是 sim-eval 隔离运行，不能结束试次")
+          await capture.endTrial(command.caseId, command.trialId, {
+            ...(command.status ? { status: command.status } : {}),
+            ...(command.error ? { error: command.error } : {}),
+          })
+          await emit({
+            id, type: "capture_trial", phase: "end",
+            caseId: command.caseId, trialId: command.trialId, status: command.status ?? "completed",
+            ...(command.error ? { error: command.error } : {}),
+          })
+          return
+        }
+        case "capture_sessions": {
+          if (!capture) throw new Error("当前不是 sim-eval 隔离运行，不能读取采集范围")
+          await emit({ id, type: "capture_sessions", result: await capture.sessions() })
+          return
+        }
+        case "capture_finish": {
+          if (!capture) throw new Error("当前不是 sim-eval 隔离运行，不能封口采集")
+          const result = await capture.finish({
+            ...(command.status ? { status: command.status } : {}),
+            ...(command.reason ? { reason: command.reason } : {}),
+          })
+          await emit({ id, type: "capture_finished", result })
+          return
+        }
+        case "capture_status": {
+          await emit({ id, type: "capture_status", capture: capture?.status() ?? null })
           return
         }
         case "stop": {
