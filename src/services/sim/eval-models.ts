@@ -1,6 +1,14 @@
-// 测试侧统一模型配置的解析（纯函数，无 IPC）。
+// ==========================================
+// 测试侧统一模型配置的解析（纯函数，无 IPC）
+// ==========================================
+//
 // 来源优先级：环境变量 > test/eval-models.local.json（本地专属、已 gitignore、可含凭据）
 // > test/eval-models.json（进 git、不得含 apiKey）> 内置默认。
+//
+// 两个消费者共用本模块，避免解析规则分叉：
+// - E2E（test/e2e/native-main.ts）把解析结果写进隔离副本；
+// - sim-eval（./eval-overrides）在完整产品初始化时读取 stage 到隔离数据根的同名文件。
+//
 // 解析结果只用于隔离副本内的 setOverrides 与 judge 传参；凭据与真实配置不受影响。
 
 export interface EvalModelsFile {

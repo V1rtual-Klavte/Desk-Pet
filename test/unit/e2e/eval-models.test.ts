@@ -1,8 +1,8 @@
 // ==========================================
-// 测试侧统一模型配置解析（test/e2e/eval-models.ts）
+// 测试侧统一模型配置解析（src/services/sim/eval-models.ts）
 // ==========================================
 import { describe, expect, it } from "vitest"
-import { parseEvalModelsFile, resolveEvalModels } from "../../e2e/eval-models"
+import { parseEvalModelsFile, resolveEvalModels } from "../../../src/services/sim/eval-models"
 
 describe("resolveEvalModels", () => {
   it("环境变量优先于本地文件，本地文件优先于进 git 的基线", () => {

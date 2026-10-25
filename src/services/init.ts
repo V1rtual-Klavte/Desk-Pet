@@ -24,6 +24,7 @@ import { initSlashCommands } from "@/services/engine/slash"
 import { initSessions, chatHistory, initWelcome, getActiveSessionId } from "@/services/session"
 import { applyLogLevel, computeMcpEnabled, enabledMcpServerNames, initConfig } from "@/services/config"
 import { initPaths, getRuntimeMode } from "@/services/paths"
+import { isSimEvalRequested } from "@/services/sim/run-context"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -71,6 +72,16 @@ async function runDomainBootstrap(): Promise<void> {
   // debug 证据整段丢失。刻意不放进 initConfig() —— 它被多个 L2 用例直接调用，放进去会
   // 给每次调用加一次 set_log_config 下行请求与噪声。
   applyLogLevel()
+
+  // ── 1b. 测试侧模型覆盖（只对 sim-eval 生效）──
+  // 必须在任何模型消费者（记忆 dreaming、主动、会话）之前写入隔离副本 CONFIG；
+  // 解析入口与 E2E 共用 src/services/sim/eval-models.ts，凭据只经本地测试文件与环境变量。
+  if (isSimEvalRequested()) {
+    const { applySimEvalModelOverrides } = await import("@/services/sim")
+    const models = await applySimEvalModelOverrides()
+    if (!models) throw new Error("sim-eval 已开启但测试侧模型覆盖没有运行")
+    log.info("1b/12 测试侧模型覆盖就绪")
+  }
   log.info("1/11 路径与运行时 CONFIG 就绪")
 
   // ── 2. Memory 文件系统 ──
@@ -87,6 +98,15 @@ async function runDomainBootstrap(): Promise<void> {
   // ── 4. 人格模块（激活卡按需加载 → registry）──
   await initRegistry()
   log.info("4/11 人格模块就绪")
+
+  // ── 4b. 评测隔离根的直接装载（只对 sim-eval 生效）──
+  // 必须早于 initSessions()：fixture 会话要由正常扫描发现并激活，避免先建出「新会话」或欢迎语。
+  if (isSimEvalRequested()) {
+    const { seedDirectFixture } = await import("@/services/sim")
+    const seeded = await seedDirectFixture()
+    if (!seeded) throw new Error("sim-eval 已开启但 direct-seed 没有运行")
+    log.info(`4b/12 direct-seed 就绪: ${seeded.fixtureId} / ${seeded.sessionId} (${seeded.status})`)
+  }
 
   // Proactive owns SQLite receipts; install readers before session projection/recovery.
   const proactive = await import("@/services/proactive")

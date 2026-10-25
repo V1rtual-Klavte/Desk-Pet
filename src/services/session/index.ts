@@ -66,6 +66,7 @@ export {
   readPiSessionEntries,
   readPiSessionEntriesOnce,
   createPiSession,
+  createPiSessionWithId,
   deletePiSession,
   persistPiSessionName,
   appendPiSessionCustomEntry,

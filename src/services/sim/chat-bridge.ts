@@ -36,6 +36,8 @@ import type { SimTaskResult } from "./loop"
 import { createSimTraceRecorder } from "./trace-recorder"
 import type { SimTraceSummary } from "./trace-recorder"
 import { writeSimFiles } from "./report"
+import { getSimEvalRunContext } from "./run-context"
+import { getDirectSeedReport } from "./direct-seed"
 
 const log = createLogger("SimChat")
 const POLL_MS = 500
@@ -92,7 +94,11 @@ export function isSimChatBridgeRunning(): boolean {
 export async function startSimChatBridge(): Promise<SimChatBridge> {
   if (getRuntimeMode() !== "development") throw new Error("聊天控制通道仅在开发模式可用")
   if (active) return active
-  const dir = await runtimePath("data", "logs", "sim", "control")
+  // 评测运行只认宿主 ready.json 的隔离控制目录；未完成 direct-seed 就不报告 ready。
+  const evalContext = await getSimEvalRunContext()
+  const seed = evalContext ? getDirectSeedReport() : null
+  if (evalContext && !seed) throw new Error("sim-eval 聊天通道启动前 direct-seed 未完成")
+  const dir = evalContext?.controlDir ?? await runtimePath("data", "logs", "sim", "control")
   await mkdir(dir, { recursive: true })
   const inbox = join(dir, "inbox.jsonl")
   const outbox = join(dir, "outbox.jsonl")
@@ -410,6 +416,20 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
     type: "ready", dir, inbox, outbox,
     sessionId: getActiveSessionId(),
     cardId: getActiveCard()?.id ?? null,
+    // 评测运行额外带所有权与装载摘要：执行器据此确认「同一个宿主 + 同一个运行根 + 已装载」。
+    ...(evalContext && seed ? {
+      generation: evalContext.generation,
+      hostPid: evalContext.hostPid,
+      runDir: evalContext.runDir,
+      seed: {
+        fixtureId: seed.fixtureId,
+        fixtureHash: seed.fixtureHash,
+        sessionId: seed.sessionId,
+        messageCount: seed.messageCount,
+        memoryItemIds: seed.memoryItemIds,
+        status: seed.status,
+      },
+    } : {}),
   })
   log.info("聊天控制通道已启动:", dir)
   return bridge

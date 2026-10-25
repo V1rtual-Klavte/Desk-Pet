@@ -1,5 +1,6 @@
 mod security;
 mod seeding;
+pub mod sim_eval;
 
 pub use security::{home_dir, is_credential_path, is_managed_memory_path};
 use security::{is_allowed_file_path, normalize_absolute};
@@ -98,6 +99,8 @@ impl AppPaths {
 
         // 唯一环境判断：开发→项目工作区，生产→宿主解析出的应用专属数据目录。
         let data_root = if cfg!(debug_assertions) {
+            // 两套隔离入口互斥：同时出现说明启动器配置错了，不能靠优先级猜。
+            ensure_isolation_modes_exclusive(is_e2e(), sim_eval::is_sim_eval())?;
             // 临时根只允许由 E2E runner 启用，普通开发启动不受遗留环境变量影响。
             if is_e2e() {
                 let requested = std::env::var("DESKPET_E2E_DATA_ROOT")
@@ -119,6 +122,10 @@ impl AppPaths {
                     return Err(AppError::PathEscape);
                 }
                 root
+            } else if sim_eval::is_sim_eval() {
+                let root = project_root()
+                    .ok_or_else(|| AppError::Config("sim-eval 运行根校验需要工作区根".into()))?;
+                sim_eval::data_root(&sim_eval::run_dir(&root)?)
             } else {
                 development_data_root()?
             }
@@ -128,8 +135,8 @@ impl AppPaths {
         };
 
         let settings = data_root.join("settings");
-        let config_file = if cfg!(debug_assertions) && is_e2e() {
-            // E2E 设置变更只写启动器复制的完整配置，不能覆盖真实开发配置。
+        let config_file = if cfg!(debug_assertions) && (is_e2e() || sim_eval::is_sim_eval()) {
+            // E2E / sim-eval 设置变更只写启动器合成的完整配置，不能覆盖真实开发配置。
             settings.join("CONFIG.yaml")
         } else if cfg!(debug_assertions) {
             let root = project_root()
@@ -181,6 +188,15 @@ impl AppPaths {
 
         if cfg!(debug_assertions) && is_e2e() {
             seed_e2e_stages(&paths)?;
+        }
+
+        // sim-eval 只认启动器合成的配置：缺失就失败，绝不回退到 CONFIG-DEV.yaml / 模板，
+        // 否则整场评测会在用户真实模型配置上跑。
+        if cfg!(debug_assertions) && sim_eval::is_sim_eval() && !paths.config_file.exists() {
+            return Err(AppError::Config(format!(
+                "sim-eval 隔离根缺少合成 CONFIG: {}（启动器应先写入 settings/CONFIG.yaml）",
+                paths.config_file.display()
+            )));
         }
 
         if !cfg!(debug_assertions) && !paths.config_file.exists() {
@@ -385,7 +401,7 @@ impl AppPaths {
 
 /// 开发工作区根。由 `AppPaths::init` 在 debug 构建启动时注入。
 /// 单元测试不经过 init，读到 `None`；`security::allowed_file_roots` 会跳过该候选。
-fn project_root() -> Option<PathBuf> {
+pub(crate) fn project_root() -> Option<PathBuf> {
     WORKSPACE_ROOT.get().cloned()
 }
 
@@ -440,12 +456,37 @@ pub fn is_e2e() -> bool {
     std::env::var("DESKPET_E2E").ok().as_deref() == Some("1")
 }
 
+/// 两套隔离入口互斥：同时出现说明启动器配置错了，不能靠优先级猜。
+/// 启动分派必须先调用（E2E 分支早于 `AppPaths::init`），`AppPaths` 内部再兜底。
+pub fn ensure_isolation_modes_exclusive(e2e: bool, sim_eval: bool) -> AppResult<()> {
+    if e2e && sim_eval {
+        return Err(AppError::Config(
+            "DESKPET_E2E 与 DESKPET_SIM_EVAL 不能同时启用".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// E2E 只从由 AppPaths 定义的开发根复制阶段种子，避免测试脚本另行维护路径布局。
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn 两套隔离入口不能同时启用() {
+        assert!(ensure_isolation_modes_exclusive(true, true).is_err());
+        assert!(
+            ensure_isolation_modes_exclusive(true, false).is_ok(),
+            "E2E 单独启用合法"
+        );
+        assert!(
+            ensure_isolation_modes_exclusive(false, true).is_ok(),
+            "评测隔离单独启用合法"
+        );
+        assert!(ensure_isolation_modes_exclusive(false, false).is_ok());
+    }
 
     #[test]
     fn 便携标记存在时数据根落在安装位置旁() {

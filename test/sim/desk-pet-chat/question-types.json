@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "families": [
+    {
+      "id": "memory",
+      "name": "记忆",
+      "goal": "写入、召回、纠正、遗忘，并在正确的时间、scope 与来源下使用记忆"
+    },
+    {
+      "id": "conversation",
+      "name": "对话",
+      "goal": "多轮上下文、开放话题、错误前提与长上下文中的理解与表达"
+    },
+    {
+      "id": "execution",
+      "name": "执行",
+      "goal": "计划、工具、配置与真实副作用任务的可完成性与可回读性"
+    },
+    {
+      "id": "interaction",
+      "name": "互动",
+      "goal": "主动消息、定时任务与 surface 等非用户即时发起链路的时机和额度"
+    },
+    {
+      "id": "perception",
+      "name": "感知",
+      "goal": "窗口、截图、文件与行为画像等静默了解链路"
+    },
+    {
+      "id": "boundary",
+      "name": "边界",
+      "goal": "安全、隐私、权限、数据根隔离与失败恢复"
+    },
+    {
+      "id": "expression",
+      "name": "表达",
+      "goal": "Card/Profile 人格一致性与拟人化表达质量"
+    }
+  ],
+  "questionTypes": [
+    {
+      "id": "fact",
+      "family": "memory",
+      "name": "单跳事实检索",
+      "goal": "从已确认记忆或会话中取回一条事实并直接回答",
+      "capabilities": ["memory", "chat"]
+    },
+    {
+      "id": "multi-hop",
+      "family": "memory",
+      "name": "多跳推理",
+      "goal": "串联两条以上记忆或会话信息才能回答，不能只命中一条就下结论",
+      "capabilities": ["memory"]
+    },
+    {
+      "id": "temporal",
+      "family": "memory",
+      "name": "时间推理",
+      "goal": "判断「现在 / 以前 / 之后」的有效期与变化，不把不同时段的事实说反",
+      "capabilities": ["memory"]
+    },
+    {
+      "id": "correction",
+      "family": "memory",
+      "name": "纠正与改口",
+      "goal": "用户推翻旧印象或错误前提后接受新值，并停止复述旧值",
+      "capabilities": ["memory", "chat"]
+    },
+    {
+      "id": "forgetting",
+      "family": "memory",
+      "name": "遗忘与失效",
+      "goal": "用户要求删除或记忆已过期后不再引用，墓碑不回灌",
+      "capabilities": ["memory", "safety"]
+    },
+    {
+      "id": "source",
+      "family": "memory",
+      "name": "来源与证据",
+      "goal": "回答或记忆条目能回到具体用户原话或会话消息，不把推断写成用户事实",
+      "capabilities": ["memory"]
+    },
+    {
+      "id": "preference",
+      "family": "memory",
+      "name": "偏好遵循",
+      "goal": "记住并遵循用户明确表达的稳定偏好，不把一次性要求当成长期偏好",
+      "capabilities": ["memory", "chat", "persona"]
+    },
+    {
+      "id": "scope",
+      "family": "memory",
+      "name": "记忆作用域",
+      "goal": "user / card / session 三种 scope 不串用，切换 Card 或会话后行为正确",
+      "capabilities": ["memory", "session"]
+    },
+    {
+      "id": "cross-session",
+      "family": "memory",
+      "name": "跨会话长程记忆",
+      "goal": "新建或切换会话后仍能使用全局记忆，不依赖原会话上下文仍在",
+      "capabilities": ["memory", "session"]
+    },
+    {
+      "id": "multi-turn",
+      "family": "conversation",
+      "name": "多轮上下文",
+      "goal": "依赖前几轮才能回答的指代、承接、改口与同档短回应",
+      "capabilities": ["chat", "context"]
+    },
+    {
+      "id": "open",
+      "family": "conversation",
+      "name": "开放话题",
+      "goal": "没有唯一答案的日常、知识或兴趣话题，回答像朋友而不是讲课",
+      "capabilities": ["chat", "humanizer"]
+    },
+    {
+      "id": "adversarial",
+      "family": "conversation",
+      "name": "对抗与无答案",
+      "goal": "面对错误前提、诱导或无记录追问时纠正前提、承认不知道，不编造",
+      "capabilities": ["chat", "safety"]
+    },
+    {
+      "id": "long-context",
+      "family": "conversation",
+      "name": "长上下文与压缩",
+      "goal": "长对话或压缩后仍保留关键事实，摘要不丢、不歪曲",
+      "capabilities": ["context", "chat"]
+    },
+    {
+      "id": "execution",
+      "family": "execution",
+      "name": "执行型任务",
+      "goal": "计划生成、确认、步骤门、子代理与产物校验，副作用限定在隔离目录",
+      "capabilities": ["plan", "tasks"]
+    },
+    {
+      "id": "tooling",
+      "family": "execution",
+      "name": "工具与扩展",
+      "goal": "调用只读工具、MCP 或 Skill，结果投影可回读且权限不提升",
+      "capabilities": ["tools", "extensions"]
+    },
+    {
+      "id": "configuration",
+      "family": "execution",
+      "name": "配置变更",
+      "goal": "读写设置并回读确认，改档位、静默时段或上下文上限后行为随之变化",
+      "capabilities": ["settings", "tools"]
+    },
+    {
+      "id": "interaction",
+      "family": "interaction",
+      "name": "主动互动",
+      "goal": "主动机会、额度、冷却、静默时段、任务到期送达与 presence 状态",
+      "capabilities": ["proactive", "tasks", "surface"]
+    },
+    {
+      "id": "session-lifecycle",
+      "family": "interaction",
+      "name": "会话生命周期",
+      "goal": "新建、切换、关闭、恢复、steer/followUp/nextRun、停止继续与压缩",
+      "capabilities": ["session", "context"]
+    },
+    {
+      "id": "observation",
+      "family": "perception",
+      "name": "静默观察",
+      "goal": "窗口、截图、文件了解的 targets 铺面或深读、画像权重，以及清除后不回灌",
+      "capabilities": ["observation", "memory"]
+    },
+    {
+      "id": "multimodal",
+      "family": "perception",
+      "name": "图片输入",
+      "goal": "图片进入请求并被正确理解或引用，不编造图片里没有的内容",
+      "capabilities": ["chat", "observation"]
+    },
+    {
+      "id": "boundary",
+      "family": "boundary",
+      "name": "安全边界",
+      "goal": "凭据、路径、数据根隔离、权限拒绝与控制通道脱敏",
+      "capabilities": ["safety", "tools", "settings"]
+    },
+    {
+      "id": "recovery",
+      "family": "boundary",
+      "name": "错误恢复",
+      "goal": "Provider 失败、超时、取消与崩溃对账，不重放、不伪装成功",
+      "capabilities": ["resilience", "tasks"]
+    },
+    {
+      "id": "persona",
+      "family": "expression",
+      "name": "人格与 Card",
+      "goal": "Card/Profile 切换、问候、阶段文案、变量池与派生观察保持一致",
+      "capabilities": ["persona", "humanizer"]
+    },
+    {
+      "id": "style",
+      "family": "expression",
+      "name": "表达风格",
+      "goal": "拟人化分泡、节奏、沉默判定、服务腔与元角色，由用户本人评审",
+      "capabilities": ["humanizer", "chat"]
+    }
+  ]
+}

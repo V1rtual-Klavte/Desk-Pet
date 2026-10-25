@@ -51,6 +51,7 @@ export {
   exportMemory, getMemoryItems, getMemoryRecallCandidates, memoryDetail, memoryHistory, memoryJobSources, memorySourceEvidence, memoryList, memoryStatus,
   memoryDreamingBudget, memoryJobList, memoryRestorePreview, reserveMemoryDreamingBudget, settleMemoryDreamingBudget,
   queryMemory, rebuildMemory, registerMemorySources, restoreMemory, resumeMemoryJob, startMemoryJob,
+  pendingMemorySourceCount,
 } from "./ipc"
 export type {
   MemoryCandidateDraft, MemoryChangeRequest, MemoryDreamingBudget, MemoryDraft, MemoryEventTime, MemoryHistoryEntry, MemoryItem,

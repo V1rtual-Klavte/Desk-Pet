@@ -1,6 +1,6 @@
 ---
 name: desk-pet-chat
-description: 通过真实 app 的 dev 控制通道和 V1rtual-Desk-Pet 桌宠自然聊天，并按 ideal trace 检测拟人化。用户说“和桌宠聊天”“聊桌宠”“desk pet chat”“跑一下陪伴闭环”“测拟人化/像不像人”时使用。
+description: 通过真实 app 的 dev 控制通道和 V1rtual-Desk-Pet 桌宠自然聊天，并对聊天记录做自由定性评测（coding agent 评审）。用户说“和桌宠聊天”“聊桌宠”“desk pet chat”“跑一下陪伴闭环”“测拟人化/像不像人”“自由评测聊天”时使用。结构化用例的编写与审批用 desk-pet-eval-authoring，结构化执行与 API judge 判分用 desk-pet-eval-runner。
 ---
 
 # 和桌宠聊天（真实链路）
@@ -139,8 +139,8 @@ node scripts/desk-pet-chat.mjs tail
 
 ## 聊天规范（最重要）
 
-像用户本人一样说话，不要像测试脚本。直接参考 `test/ideal-traces/本体卡-小雪.ideal.md` 与
-`test/ideal-traces/本体卡-小雪-休息日.ideal.md` 里用户本人的口述（不含括号内的）。
+像用户本人一样说话，不要像测试脚本。用户本人的口述（不含括号内的）已并入
+`daily-companionship/saturday-companionship` 的 fixture 与 driver；原 `.ideal.md` 已按用户要求删除。
 
 - 短句为主，一两句就够；空格或短逗号断句，不用冒号、破折号、引号、书名号，句号基本不打。
 - 条数不固定：有时一条，有时两条；不要每次都齐刷刷三连。
@@ -275,8 +275,7 @@ node scripts/desk-pet-chat.mjs humanize on
 
 ### 怎么对照 ideal trace
 
-只看 `test/ideal-traces/本体卡-小雪.ideal.md` 与 `test/ideal-traces/本体卡-小雪-休息日.ideal.md`
-的 **【输出】**，那是桌宠的期望回复；用户口吻只看**【用户】**。
+风格对照以用户原稿的 **【输出】** 为准，用户口吻看 **【用户】**；原稿已删除，现有参考表与 case fixture 保留了口吻样例。
 不要求逐字，要求同一口气、同一长度级别、同一自我中心程度。
 
 同场景参考：
@@ -486,6 +485,21 @@ node scripts/desk-pet-chat.mjs suite observation,tasks --run --rounds 3
 
 组合时按依赖顺序执行；`plan` 依赖 `chat`，`tools`/`resilience`/`surface` 也依赖 `chat`。
 每轮结束用 `report` 落报告，trace 里按类别核对证据。用户给多少轮就跑多少轮，不截断。
+
+## 自由定性评测（coding agent 可评）
+
+本 Skill 的评测对象是自由聊天和最终定性结果。用户要求“自由评测”“看看聊得像不像”时，可以按下面的边界给判断：
+
+- 可以评：自然度、接话、人格一致、信息完整性、是否答非所问、长期体验等可由聊天记录支撑的结论。
+- 不可以评：结构化用例的探针成败、gold 批准、没有证据的内部状态。结构化探针走 runner 的确定性检查与异构 API judge；coding agent 的结论不能替代它。
+- 结论必须引用具体回复或报告字段；缺证据写未知，不按风格分补产品失败。
+- 报告里分开写“自由定性结论”和“结构化探针结果（未运行／由 runner 提供）”。
+
+## 结构化评测
+
+结构化用例不在这里驱动或判分：写题、审阅与用户审批见 [`desk-pet-eval-authoring`](../desk-pet-eval-authoring/SKILL.md)，冻结规格、执行、确定性检查与异构 API judge 见 [`desk-pet-eval-runner`](../desk-pet-eval-runner/SKILL.md)。本 Skill 只负责真实聊天和上面的自由定性评测；不要代替 runner 判探针，也不要代填 gold 审批。
+
+如果用户只是让你按某条用例自然扮演用户，使用 authoring 输出的 `dataset driver`，只读 `userRole` + `driver`，不要先看 `dataset review`。driver 里的 `at` 只是评测方的固定时钟标签，不代表真实时间已经推进；不要自行等待或伪造跨天间隔。
 
 ## 边界
 

@@ -26,6 +26,12 @@ V1rtual-Desk-Pet 的运行时验证以 [Live Test 使用规范](../../test/READM
 
 外部记忆基准（memory-bench：LongMemEval / LoCoMo / MemoryBank cn）是**质量对照的主口径**（观测性证据，与自建 80 题物理隔离）；**门禁保持现状**——CI 与 `test:release` 不跑评测集（最多冒烟级自检），完整分层在本机跑通后再发布；自建 80 题只作兜底冒烟与治理语义回归。数据集文件不进仓库：版本锁（固定 revision + SHA-256、许可原文、判分移植代码）在 git，数据由 `pnpm run test:memory-bench:prepare [-- --data-dir <目录>]` 装进开发者指定的 data-dir（默认 `test/memory-bench/.data/`，可弃缓存），运行期不下载。判分为官方脚本/模板的自适配移植（LoCoMo 用异构 LLM judge 的语义正确率，不用官方词面 F1；LongMemEval judge 必须异构于被测模型，官方 `evaluate_qa.py` 链保留），报告口径为 `source: external` / `status: observational`、不设质量阈值；运行方法、口径差异与非商用许可约束见 [memory-bench/README](../../test/memory-bench/README.md)。
 
+## 聊天评测数据集
+
+`test/ideal-traces/suites/<suiteId>/` 的结构化聊天用例（`suite.json` / `cases/` / `fixtures/` / `approvals/`，schema v3）与旧格式 `.ideal.md` 线路稿分开治理：前者允许代理起草 silver，只有用户按当前哈希绑定真实会话消息审批的用例才是 gold；实际输出不能充当期望来源，驱动包不包含题型、探针、oracle、检查点、证据与评分。case 是可跨会话的场景容器，探针逐条绑定驱动步骤、题型、难度与评审权威，按 `required` / `forbidden`、`critical` 与非关键阈值计分，用户消息轮数不设上限。题型注册表固定 7 族 24 型，并要求每个产品分类至少被一个题型覆盖；case 的 `questionTypes` 必须恰好等于探针题型的并集。fixture 必须声明 `loading`：`direct-seed` 只预置初始状态、待测行为仍走真实消息链，`real-chain` 禁止同时 seed 会话或记忆；`fixed` 时钟要求每个驱动步骤带升序 `at`，但 runner 尚未实现时间注入。探针窗口限定 driver 步骤，`difficulty`（1–5）只用于报告分层。当前只有 `daily-companionship/saturday-companionship` 一条 silver/pending 候选（27 条用户消息 + 2 个 host 步骤、3 个会话、21 条探针其中 9 条关键、8 种题型；direct-seed、固定时钟），其他套件为空占位。
+
+三个 Skill 分工：`desk-pet-chat` 负责真实聊天与自由定性评测，`desk-pet-eval-authoring` 负责起草用例并收集用户审批，`desk-pet-eval-runner` 负责结构化执行与评分。评审权威按 checker 路由：非 semantic 走 deterministic，非 humanizer 的 semantic 走异构 API judge，`humanizer.*` semantic 与 humanizer 质量 rubric 只由用户裁决，coding agent 仅保留建议位。coding agent 只评聊天记录和自由定性结果，不代替 API judge 判定探针成败，也不代替用户裁决 humanizer 或代填 gold 审批。W1–W1.7 实现格式、题型覆盖、时钟与装载校验、难度分层、哈希与金银标计算；W2 实现并验收 debug 隔离运行根、ready/所有权核验、direct-seed 装载器与 `prepare`／`start`／`status`／`stop` 运行器（2026-10-25）；W2 单测、类型检查与 Rust 单测已运行通过，真实隔离起停验证了 ready/装载、非法路径、跨进程单实例、E2E 互斥、停止后锁释放与真实数据根未变。仍无自动评分、证据报告与 CI 门禁；固定时钟尚未注入宿主，因此不能由已有数据集或隔离起停推断聊天质量或真实间隔已经验证。
+
 ## 未验证边界
 
 - 恢复中断运行时「MCP 不可用 → 显式提示」的异常路径：无法由现有场景直接验证，缺的是**前提不可构造**——它要求中断运行里待重放的工具是 `mcp_*` 且其服务器本次借不到（`pendingInterruptedToolNames` 与本次能力准备的 `unavailableMcp` 取交集），而构造该前提需要「曾借用过 mcp_* 工具的中断运行 + 届时借不到的服务器」两个条件同时成立：现有场景只有前者（`MCP真IPC假server` 已连真 stdio 脚本服务器并完成借用→发现→调用），`MCP大结果回读` 仅在传输边界替换 `callTool`，未构造后者。这条失败不是「只存在于界面呈现」：运行入口先 `appendAssistantMessage` 落成普通助手条目（`stopReason: "stop"`，读模型可见），再把它作为 `reply` 返回，观测面存在。代理由 `runtime-resume-capability-prep` 覆盖：恢复路径确实重新执行能力准备（Skill 目录在恢复后可用），且会话里不落上游「Tool … is unavailable」通用文案。

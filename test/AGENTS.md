@@ -19,7 +19,8 @@
 | L4 场景 | 真原生宿主（`crates/native-host`）+ 唯一 Node Scene runner + 真 Rust IPC 的端到端 | README「Scene 规范」；`pnpm run test:e2e` | `test/reports/<stamp>.*` + `traces/` bundle |
 | 契约 | 模块行为覆盖门禁（sourceHash + caseId 三层记账） | README「Contract 与 sourceHash」；`test/contracts/` | 预检 attestation；caseids-*.json |
 | trace 证据 | 运行线路完整落盘、完整性核对、理想稿审阅 | README「Trace、记忆质量与性能门禁」；`test:trace-review` | `test/reports/traces/trace-bundle-*`（bench / quality 在各自子目录的 `traces/`） |
-| 理想稿 | 用户手写的"期望线路"，审阅对照基准（只由用户写） | [ideal-traces/README.md](ideal-traces/README.md) | 审阅 JSON（与报告配对、连带淘汰） |
+| 理想稿 | 用户手写的旧格式 `.ideal.md`"期望线路"，审阅对照基准（只由用户写，正文原样保留） | [ideal-traces/README.md](ideal-traces/README.md) | 审阅 JSON（与报告配对、连带淘汰） |
+| 结构化聊天评测数据集 | 可执行聊天用例池：代理起草 silver，用户按当前哈希审批 gold；题型是探针的认知维度，评审权威按 checker 路由（humanizer 只由用户裁决）；驱动包与题型／探针／oracle 隔离；写题、运行与聊天由三个 Skill 分工；W2 起可在 `test/.tmp/sim-eval-<id>` 隔离开 debug 宿主并装载 fixture，尚不评分 | [ideal-traces/README.md](ideal-traces/README.md)；`node scripts/desk-pet-chat.mjs dataset validate\|list\|types\|review\|driver`、`eval prepare\|start\|status\|stop` | `suites/<suiteId>/` 下的 `suite.json` / `cases/` / `fixtures/` / `approvals/`（当前仅 `daily-companionship/saturday-companionship` 为 silver/pending，21 条探针、9 条 critical、8 种题型；其他套件空占位） |
 | 外部记忆基准（权威对照） | 质量主口径：LongMemEval（官方模板）/ MemoryBank cn / LoCoMo（异构 LLM judge 语义正确率，不用官方 F1；按消耗分层跑，不进 CI／发布门禁）；LoCoMo 固定真人角色适配与统一任务规则、LongMemEval oracle 的 privileged reader control 均显式标记非产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
 | 记忆质量（自建兜底） | 兜底冒烟与治理语义回归：外部集未覆盖的来源/scope 反例、纠正、遗忘、称呼/偏好（真实 Provider，烧 token） | README 记忆质量段；`test:memory-quality` | 报告 + review/scored 包（组保留） |
 | 记忆性能 | release 存储 + debug IPC 的资源账（1k/10k 库、P95） | README 性能段；`test:memory-performance` | `test/reports/performance/`（3 份滚动） |
@@ -71,11 +72,22 @@
   `test:release` 不跑评测集（重成本不进流水线），最多冒烟级自检；完整评测集在本机跑通后再发布。
   judge 必须异构于被测模型，不许被测模型自评；上游数据不进仓库（`upstream-lock.json` 锁定
   revision + SHA-256，数据装到 data-dir）。
+- **聊天评测数据集**：结构化用例的 gold 只能由用户针对当前 `specHash` 的真实会话消息审批；
+  代理只能起草 silver，不得代填审批，也不得把 actual 输出当 oracle。驱动包只含
+  `schemaVersion` / `caseId` / `revision` / `specHash` / `userRole` / `driver`；
+  题型、probes／oracle／检查点／证据／评分不得进入驱动。一条消息可以挂多条 probe，case 分按 critical 探针、
+  非 critical 阈值与 forbidden 违例计算，不按消息条数算；不设用户消息轮数上限。题型是探针的认知维度，
+  case 声明的 `questionTypes` 必须恰好等于探针题型的并集；评审权威按 checker 路由，所有 `humanizer.*`
+  semantic 与 humanizer 质量 rubric 只由用户裁决，coding agent 仅保留建议位。结构化探针的正式判分走
+  异构 API judge；coding agent 只做聊天驱动、自由评述和最终定性复核，不能替代 API judge 产出结构化通过，
+  也不能替代用户裁决 humanizer。fixture 必须声明 `loading`：`direct-seed` 只预置初始状态，待测行为仍走真实链路；
+  `real-chain` 不得同时 seed 会话或记忆。`fixed` 时钟要求每个 driver 步骤带升序 `at`；`difficulty` 只用于报告分层，
+  不改变通过判定；探针窗口限定 driver 步骤。W1–W2 未接聊天驱动、评分与 CI 门禁；W2 只有 debug 隔离起停与装载核验。
 - **产物边界**：测试产物一律在 `test/` 下，不落仓库外；保留单元是「组」（报告与审阅/评分卫星连带淘汰、临时根按已知前缀 + 年龄回收），查看方式与口径见 README「报告在哪、怎么看」；L4 的 Node runner bundle 在 `test/.tmp/native-host-e2e/`（每次运行重建，不进保留链）；
   memory-bench 外部判分导出/回填使用 `<stamp>.json.hypotheses-<report-hash>.jsonl`、
   `<stamp>.json.verdicts-judge-<judge-hash>-<verdict-log-hash>.jsonl` 与
   `<stamp>.json.scored-judge-<judge-hash>-<verdict-log-hash>.json/.html`，均按父报告卫星归组，原始 run 文件保持只读；
-  理想稿只由用户编写、不被清理，见 [ideal-traces/README.md](ideal-traces/README.md)。
+  旧格式 `.ideal.md` 只由用户编写、不被清理；结构化数据集的 silver 可由代理起草，gold 只能按上述审批边界产生，见 [ideal-traces/README.md](ideal-traces/README.md)。
 - **LoCoMo 终态归档**：诊断、试跑和重跑证据保存在 `test/.tmp/`；只有用户明确认定为终态的结果才能放入 `test/reports/bench/final/`。完整跑完、judge 判分或代码门禁通过都不能代替用户认定；目前没有用户认定的 LoCoMo 终态结果。
 
 ## 维护义务（改了什么 → 必须同步什么）
@@ -87,7 +99,7 @@
 | 测试命令、过滤参数、门禁组合（test:release / test:smoke） | README「运行命令与过滤」+ 根 `package.json` scripts |
 | 报告 / 产物路径、保留策略、清理行为，或新增任何落盘产物 | README「报告在哪、怎么看」+ 本文件「产物边界」+ 实施脚本（`e2e-test.mjs` / `trace-evidence.mjs` / `memory-performance.mjs` 等） |
 | Contract / Scene 协议、caseId 字母表、sourceHash 流程 | README「Contract 与 sourceHash」「Scene 规范」+ SKILL |
-| trace / 理想稿 / 记忆质量 / 外部记忆基准（memory-bench）/ 性能评测机制 | README 对应章节 + 各子目录 README（如 `ideal-traces/README.md`、`memory-bench/README.md`）+ 本文件「全功能索引」 |
+| trace / 理想稿（含结构化聊天数据集）/ 记忆质量 / 外部记忆基准（memory-bench）/ 性能评测机制 | README 对应章节 + 各子目录 README（如 `ideal-traces/README.md`、`memory-bench/README.md`）+ 本文件「全功能索引」 |
 | 评测模型 / judge 模型 / 数据目录等测试侧配置 | 本文件「信息获取入口」+ 对应 README 与解析实现 |
 | L4 环境约束（宿主形态、睡眠/挂起判据） | README「环境注意」 |
 | 宿主设施行为（standard-setup、确认 / 计划通道、隔离与超时） | README 对应章节 |

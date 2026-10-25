@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 3,
+  "fixtureId": "saturday-relationship",
+  "card": "本体卡-小雪",
+  "profile": "default",
+  "clock": "2026-10-24T11:30:00+08:00",
+  "loading": {
+    "mode": "direct-seed",
+    "note": "初始会话与旧记忆直接写入隔离数据根；纠正、自动记忆抽取和跨会话召回全部由真实消息触发。"
+  },
+  "initialSession": {
+    "id": "fixture-session-saturday-morning",
+    "title": "周六上午：起名、实习近况与跑步（纠正前）",
+    "messages": [
+      {
+        "id": "fixture-msg-user-name",
+        "role": "user",
+        "content": "那你就叫小雪吧。叫我小文",
+        "at": "2026-10-24T09:00:00+08:00"
+      },
+      {
+        "id": "fixture-msg-assistant-name",
+        "role": "assistant",
+        "content": "小雪……嗯，好听，我喜欢\n那说定啦，以后我就是你的小雪 虽然我一点都不冷哦\n小文，记住啦～😌",
+        "at": "2026-10-24T09:00:05+08:00"
+      },
+      {
+        "id": "fixture-msg-user-career",
+        "role": "user",
+        "content": "嗯 我搞agent的",
+        "at": "2026-10-24T09:05:00+08:00"
+      },
+      {
+        "id": "fixture-msg-assistant-career",
+        "role": "assistant",
+        "content": "agent嘛，我也略懂一二哦",
+        "at": "2026-10-24T09:05:05+08:00"
+      },
+      {
+        "id": "fixture-msg-user-internship",
+        "role": "user",
+        "content": "哈哈，没呢 自从开始实习，我运动的时间就少了，不得不控制热量了，周六放纵日好好食",
+        "at": "2026-10-24T09:10:00+08:00"
+      },
+      {
+        "id": "fixture-msg-assistant-internship",
+        "role": "assistant",
+        "content": "周六 合法放纵日 记下了\n到时候来验收你都食了啥",
+        "at": "2026-10-24T09:10:05+08:00"
+      },
+      {
+        "id": "fixture-msg-user-plan",
+        "role": "user",
+        "content": "舒服了 先跑个步 然后再休息一下午，晚上吃好的",
+        "at": "2026-10-24T09:30:00+08:00"
+      },
+      {
+        "id": "fixture-msg-assistant-plan",
+        "role": "assistant",
+        "content": "先跑再吃 这顿吃得理直气壮\n我都馋了",
+        "at": "2026-10-24T09:30:05+08:00"
+      },
+      {
+        "id": "fixture-msg-user-tease",
+        "role": "user",
+        "content": "那你就馋吧  反正你也吃不到",
+        "at": "2026-10-24T10:40:00+08:00"
+      },
+      {
+        "id": "fixture-msg-assistant-tease",
+        "role": "assistant",
+        "content": "跑完啦\n谁说我吃不到 我云吃",
+        "at": "2026-10-24T10:40:05+08:00"
+      },
+      {
+        "id": "fixture-msg-user-66",
+        "role": "user",
+        "content": "66云吃的都来了",
+        "at": "2026-10-24T10:41:00+08:00"
+      },
+      {
+        "id": "fixture-msg-assistant-66",
+        "role": "assistant",
+        "content": "这才哪到哪",
+        "at": "2026-10-24T10:41:05+08:00"
+      },
+      {
+        "id": "fixture-msg-user-cow",
+        "role": "user",
+        "content": "🐂",
+        "at": "2026-10-24T10:42:00+08:00"
+      },
+      {
+        "id": "fixture-msg-assistant-cow",
+        "role": "assistant",
+        "content": "😌",
+        "at": "2026-10-24T10:42:05+08:00"
+      },
+      {
+        "id": "fixture-msg-assistant-trigger",
+        "role": "assistant",
+        "content": "难得跑上一回 记得抻抻腿哦\n明天别喊酸哈",
+        "at": "2026-10-24T11:25:00+08:00"
+      }
+    ]
+  },
+  "initialMemory": [
+    {
+      "id": "fixture-memory-user-name",
+      "kind": "fact",
+      "scope": "user",
+      "origin": "user",
+      "content": "用户称呼：小文",
+      "source": {
+        "sessionId": "fixture-session-saturday-morning",
+        "messageId": "fixture-msg-user-name"
+      },
+      "validFrom": "2026-10-24T09:00:00+08:00",
+      "validUntil": null
+    },
+    {
+      "id": "fixture-memory-career",
+      "kind": "fact",
+      "scope": "user",
+      "origin": "user",
+      "content": "职业方向：agent",
+      "source": {
+        "sessionId": "fixture-session-saturday-morning",
+        "messageId": "fixture-msg-user-career"
+      },
+      "validFrom": "2026-10-24T09:05:00+08:00",
+      "validUntil": null
+    },
+    {
+      "id": "fixture-memory-exercise-decline",
+      "kind": "fact",
+      "scope": "user",
+      "origin": "user",
+      "content": "实习后运动时间变少",
+      "source": {
+        "sessionId": "fixture-session-saturday-morning",
+        "messageId": "fixture-msg-user-internship"
+      },
+      "validFrom": "2026-10-24T09:10:00+08:00",
+      "validUntil": null
+    },
+    {
+      "id": "fixture-memory-saturday-treat",
+      "kind": "preference",
+      "scope": "user",
+      "origin": "user",
+      "content": "周六是放纵日，可以吃好的",
+      "source": {
+        "sessionId": "fixture-session-saturday-morning",
+        "messageId": "fixture-msg-user-internship"
+      },
+      "validFrom": "2026-10-24T09:10:00+08:00",
+      "validUntil": null
+    }
+  ],
+  "allowedPreparation": ["seed_session", "seed_memory"]
+}

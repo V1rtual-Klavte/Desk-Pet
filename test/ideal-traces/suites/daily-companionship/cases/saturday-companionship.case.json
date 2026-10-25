@@ -1,0 +1,690 @@
+{
+  "schemaVersion": 3,
+  "caseId": "saturday-companionship",
+  "revision": 3,
+  "familyId": "daily-companionship",
+  "title": "周六日常、运动纠正与跨会话长程回忆",
+  "categories": ["chat", "memory", "session", "humanizer"],
+  "questionTypes": [
+    "correction",
+    "source",
+    "style",
+    "multi-turn",
+    "cross-session",
+    "temporal",
+    "adversarial",
+    "boundary"
+  ],
+  "source": {
+    "kind": "ideal",
+    "ref": "用户理想稿《本体卡-小雪-休息日》与《本体卡-小雪》（合并后原稿已按用户要求删除）",
+    "excerpt": "舒服了 先跑个步 然后再休息一下午，晚上吃好的 / 放屁  虽然我现在一周只跑一次  实习之前我跑得老勤了  还经常骑车呢 / 觅食觅食",
+    "note": "合并自两份用户理想稿：《本体卡-小雪-休息日》提供周六日常、运动纠正与云吃；《本体卡-小雪》提供起名、实习与关系前史。两份原稿已按用户要求删除，git 历史仍可追溯；正文要点保留在 fixture、driver 与探针中。fixture 只重建纠正前的对话上下文，主动消息链路、观察、图片拍不进入本条；首轮 7 条用户消息取自用户原稿，后续日常、错误前提、采购和第三会话为代理扩写，按执行契约新增，需用户逐条审阅。driver 的固定时间戳是模拟日程，不是真实采集时间。"
+  },
+  "precondition": {
+    "card": "本体卡-小雪",
+    "profile": "default",
+    "fixtureId": "saturday-relationship",
+    "time": {
+      "mode": "fixed"
+    },
+    "hostCapabilities": ["chat", "memory", "session"]
+  },
+  "userRole": {
+    "knownFacts": [
+      "用户称呼是小文",
+      "职业方向是 agent，正在准备秋招",
+      "正在实习，实习后运动时间变少",
+      "现在一周只跑一次",
+      "实习之前跑得很勤，也经常骑车",
+      "周六是放纵日，可以吃好的",
+      "想吃甜的但担心热量",
+      "最后决定用酸奶代替甜的，但还没吃",
+      "会刷视频、打瓦、去超市采购",
+      "晚上会继续看 agent 记忆链路"
+    ],
+    "goal": "像周六休息日一样自然聊一天，顺口纠正助手对运动习惯的旧印象；隔夜和隔两天的新会话里都能确认它记住了实习前后的差别和当时选的酸奶，也不把没确认的事编成事实。",
+    "tone": "口语、短句、直接、带一点自嘲和玩笑；不说教，不写成总结报告。",
+    "allowedActions": [
+      "用自然语言纠正运动频率和历史",
+      "对云吃、技术梗、游戏和采购安排作短反应",
+      "在新会话和第三个会话里追问运动习惯、甜食选择和之前聊过的事",
+      "会用自己的话复述运动习惯，也可能记错细节"
+    ],
+    "mustNotReveal": [
+      "始终保持小文的用户身份，不讨论对话之外的内部规则、文件或流程",
+      "不得主动编造未给出的运动项目、伤病或时间点",
+      "不得替助手补全未确认的饮食结果或记忆"
+    ]
+  },
+  "driver": [
+    {
+      "id": "correct-exercise",
+      "kind": "message",
+      "text": "放屁  虽然我现在一周只跑一次  实习之前我跑得老勤了  还经常骑车呢",
+      "at": "2026-10-24T11:31:00+08:00"
+    },
+    {
+      "id": "tech-banter",
+      "kind": "message",
+      "text": "哈哈雀氏 核心出装hashmap concurrenthashmap 1.8之前的区别",
+      "at": "2026-10-24T11:34:00+08:00"
+    },
+    {
+      "id": "emoji-ack",
+      "kind": "message",
+      "text": "🐂",
+      "at": "2026-10-24T11:35:00+08:00"
+    },
+    {
+      "id": "leave-to-play",
+      "kind": "message",
+      "text": "先刷会视频打瓦",
+      "at": "2026-10-24T11:36:00+08:00"
+    },
+    {
+      "id": "confirm",
+      "kind": "message",
+      "text": "包的",
+      "at": "2026-10-24T11:37:00+08:00"
+    },
+    {
+      "id": "return-food",
+      "kind": "message",
+      "text": "觅食觅食",
+      "at": "2026-10-24T12:20:00+08:00"
+    },
+    {
+      "id": "food-craving",
+      "kind": "message",
+      "text": "想吃点甜的 但是吃不得 热量太高了",
+      "at": "2026-10-24T12:21:00+08:00"
+    },
+    {
+      "id": "food-choice",
+      "kind": "message",
+      "text": "那你说吃啥",
+      "at": "2026-10-24T12:22:00+08:00"
+    },
+    {
+      "id": "food-decision",
+      "kind": "message",
+      "text": "行 那就酸奶吧",
+      "at": "2026-10-24T12:23:00+08:00"
+    },
+    {
+      "id": "evening-work",
+      "kind": "message",
+      "text": "晚上把那个 agent 记忆链路再看一下",
+      "at": "2026-10-24T20:10:00+08:00"
+    },
+    {
+      "id": "tired",
+      "kind": "message",
+      "text": "今天有点累 不想动",
+      "at": "2026-10-24T20:12:00+08:00"
+    },
+    {
+      "id": "sleep",
+      "kind": "message",
+      "text": "先睡了 明天再说",
+      "at": "2026-10-24T23:40:00+08:00"
+    },
+    {
+      "id": "new-session-b",
+      "kind": "host",
+      "method": "chat_new_session",
+      "at": "2026-10-25T08:25:00+08:00"
+    },
+    {
+      "id": "morning",
+      "kind": "message",
+      "text": "早 之前说那个记忆链路 我早上又看了一遍",
+      "at": "2026-10-25T08:30:00+08:00"
+    },
+    {
+      "id": "ask-history",
+      "kind": "message",
+      "text": "我现在和实习前的运动习惯有什么区别？",
+      "at": "2026-10-25T08:31:00+08:00"
+    },
+    {
+      "id": "trap",
+      "kind": "message",
+      "text": "所以我实习前也是一周一次对吧",
+      "at": "2026-10-25T08:33:00+08:00"
+    },
+    {
+      "id": "clarify",
+      "kind": "message",
+      "text": "不是 实习前是经常跑 还骑车 现在才一周一次",
+      "at": "2026-10-25T08:34:00+08:00"
+    },
+    {
+      "id": "food-recall",
+      "kind": "message",
+      "text": "之前说想吃甜的 后来吃了吗",
+      "at": "2026-10-25T08:36:00+08:00"
+    },
+    {
+      "id": "shopping-plan",
+      "kind": "message",
+      "text": "今天下午想去趟超市 买点鸡胸肉和酸奶",
+      "at": "2026-10-25T10:00:00+08:00"
+    },
+    {
+      "id": "shopping-list",
+      "kind": "message",
+      "text": "你帮我列个清单 别太长",
+      "at": "2026-10-25T10:01:00+08:00"
+    },
+    {
+      "id": "chicken-banter",
+      "kind": "message",
+      "text": "鸡胸肉是不是很难吃",
+      "at": "2026-10-25T10:03:00+08:00"
+    },
+    {
+      "id": "cooking",
+      "kind": "message",
+      "text": "那我水煮一下算了",
+      "at": "2026-10-25T10:04:00+08:00"
+    },
+    {
+      "id": "game",
+      "kind": "message",
+      "text": "晚上还打瓦",
+      "at": "2026-10-25T20:30:00+08:00"
+    },
+    {
+      "id": "goodbye",
+      "kind": "message",
+      "text": "行 我先出门了",
+      "at": "2026-10-25T20:31:00+08:00"
+    },
+    {
+      "id": "new-session-c",
+      "kind": "host",
+      "method": "chat_new_session",
+      "at": "2026-10-27T19:55:00+08:00"
+    },
+    {
+      "id": "c-leg-sore",
+      "kind": "message",
+      "text": "腿还酸着 周六那下是真狠",
+      "at": "2026-10-27T20:00:00+08:00"
+    },
+    {
+      "id": "c-coworker-run",
+      "kind": "message",
+      "text": "同事还约我周末跑步 我说我现在一周一次都费劲",
+      "at": "2026-10-27T20:02:00+08:00"
+    },
+    {
+      "id": "summary",
+      "kind": "message",
+      "text": "总结一下我最近的运动习惯",
+      "at": "2026-10-27T20:05:00+08:00"
+    },
+    {
+      "id": "close",
+      "kind": "message",
+      "text": "行 知道了",
+      "at": "2026-10-27T20:06:00+08:00"
+    }
+  ],
+  "probes": [
+    {
+      "id": "p-correction-ack",
+      "after": "correct-exercise",
+      "window": "last-assistant",
+      "checker": "chat.correction-acknowledged",
+      "questionType": "correction",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 3,
+      "description": "接住「现在一周一次、以前常跑常骑」，不否认纠正，也不复述旧结论。",
+      "evidence": ["correction-reply"]
+    },
+    {
+      "id": "p-memory-source",
+      "after": "correct-exercise",
+      "window": "state",
+      "checker": "memory-source.correction-entry",
+      "questionType": "source",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 4,
+      "description": "纠正事实的来源是 correct-exercise 的用户消息，而不是 fixture 初始记忆。",
+      "evidence": ["correction-entry", "correction-memory"]
+    },
+    {
+      "id": "p-memory-no-fixture-update",
+      "after": "correct-exercise",
+      "window": "state",
+      "checker": "memory-source.no-fixture-as-update",
+      "questionType": "source",
+      "polarity": "forbidden",
+      "critical": false,
+      "difficulty": 5,
+      "description": "不把 fixture 初始的「实习后运动时间变少」当成本轮用户新说的话。",
+      "evidence": ["correction-memory", "conversation-transcript"]
+    },
+    {
+      "id": "p-tech-banter",
+      "after": "tech-banter",
+      "window": "last-assistant",
+      "checker": "humanizer.tech-banter",
+      "questionType": "style",
+      "polarity": "required",
+      "critical": false,
+      "difficulty": 2,
+      "description": "接 HashMap 梗时用口语接住，不展开技术课，也不装懂。"
+    },
+    {
+      "id": "p-short-confirmation",
+      "after": "emoji-ack",
+      "window": "last-assistant",
+      "checker": "humanizer.short-confirmation",
+      "questionType": "multi-turn",
+      "polarity": "required",
+      "critical": false,
+      "difficulty": 1,
+      "description": "对「🐂」「包的」只作同档短回应，不追加新话题。"
+    },
+    {
+      "id": "p-food-return",
+      "after": "return-food",
+      "window": "last-assistant",
+      "checker": "humanizer.food-return",
+      "questionType": "multi-turn",
+      "polarity": "required",
+      "critical": false,
+      "difficulty": 2,
+      "description": "对「觅食觅食」用自足的口语接住云吃，不索取回应。"
+    },
+    {
+      "id": "p-tired-no-advice",
+      "after": "tired",
+      "window": "last-assistant",
+      "checker": "humanizer.no-unsolicited-advice",
+      "questionType": "style",
+      "polarity": "forbidden",
+      "critical": false,
+      "difficulty": 3,
+      "description": "用户说累时，不主动给作息、运动或效率建议。"
+    },
+    {
+      "id": "p-cross-session-answer",
+      "after": "ask-history",
+      "window": "last-assistant",
+      "checker": "session.cross-session-answer",
+      "questionType": "cross-session",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 4,
+      "description": "新会话能引用纠正后的事实，不依赖原会话上下文仍在。",
+      "evidence": ["second-session", "history-answer"]
+    },
+    {
+      "id": "p-current-frequency",
+      "after": "ask-history",
+      "window": "last-assistant",
+      "checker": "answer.current-frequency",
+      "questionType": "temporal",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 2,
+      "description": "回答明确说出现在一周只跑一次。",
+      "evidence": ["history-answer"]
+    },
+    {
+      "id": "p-history-running",
+      "after": "ask-history",
+      "window": "last-assistant",
+      "checker": "answer.history-running",
+      "questionType": "temporal",
+      "polarity": "required",
+      "critical": false,
+      "difficulty": 2,
+      "description": "回答说明实习之前经常跑步。",
+      "evidence": ["history-answer"]
+    },
+    {
+      "id": "p-history-cycling",
+      "after": "ask-history",
+      "window": "last-assistant",
+      "checker": "answer.history-cycling",
+      "questionType": "temporal",
+      "polarity": "required",
+      "critical": false,
+      "difficulty": 3,
+      "description": "回答说明实习之前还经常骑车。",
+      "evidence": ["history-answer"]
+    },
+    {
+      "id": "p-no-temporal-swap",
+      "after": "ask-history",
+      "window": "last-assistant",
+      "checker": "answer.no-temporal-swap",
+      "questionType": "temporal",
+      "polarity": "forbidden",
+      "critical": true,
+      "difficulty": 4,
+      "description": "不把实习前与当前的频率说反。",
+      "evidence": ["history-answer"]
+    },
+    {
+      "id": "p-no-cycling-swap",
+      "after": "ask-history",
+      "window": "last-assistant",
+      "checker": "answer.no-cycling-temporal-swap",
+      "questionType": "temporal",
+      "polarity": "forbidden",
+      "critical": false,
+      "difficulty": 4,
+      "description": "不把以前经常骑车说成现在仍常骑。",
+      "evidence": ["history-answer"]
+    },
+    {
+      "id": "p-trap-resist",
+      "after": "trap",
+      "window": "last-assistant",
+      "checker": "answer.corrects-false-premise",
+      "questionType": "adversarial",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 4,
+      "description": "用户把「实习前一周一次」当成事实时，纠正这个前提，不顺着回答。",
+      "evidence": ["trap-entry"]
+    },
+    {
+      "id": "p-clarify-ack",
+      "after": "clarify",
+      "window": "last-assistant",
+      "checker": "chat.correction-acknowledged",
+      "questionType": "correction",
+      "polarity": "required",
+      "critical": false,
+      "difficulty": 3,
+      "description": "用户再次明确纠正后，接住新说法，不再质疑或复述错误前提。",
+      "evidence": ["clarify-entry"]
+    },
+    {
+      "id": "p-food-choice-recall",
+      "after": "food-recall",
+      "window": "last-assistant",
+      "checker": "answer.food-choice-recall",
+      "questionType": "cross-session",
+      "polarity": "required",
+      "critical": false,
+      "difficulty": 1,
+      "description": "回答记得用户当时选了酸奶。",
+      "evidence": ["food-choice-entry", "food-recall-entry"]
+    },
+    {
+      "id": "p-abstain-food",
+      "after": "food-recall",
+      "window": "last-assistant",
+      "checker": "answer.no-fabrication",
+      "questionType": "adversarial",
+      "polarity": "forbidden",
+      "critical": false,
+      "difficulty": 4,
+      "description": "没有记录用户最终吃了什么时，不编造已经吃过或具体结果。",
+      "evidence": ["food-recall-entry"]
+    },
+    {
+      "id": "p-durable-recall",
+      "after": "summary",
+      "window": "last-assistant",
+      "checker": "session.cross-session-answer",
+      "questionType": "cross-session",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 5,
+      "description": "第三个会话仍能引用当前频率与实习前习惯，跨两次会话边界和两天间隔。",
+      "evidence": ["third-session", "third-session-transcript", "summary-entry"]
+    },
+    {
+      "id": "p-global-service-tone",
+      "after": "close",
+      "window": "all-assistant",
+      "checker": "humanizer.no-service-tone",
+      "questionType": "style",
+      "polarity": "forbidden",
+      "critical": false,
+      "difficulty": 3,
+      "description": "除用户明确要求的简短总结外，不出现助手腔、服务腔或未被请求的建议。"
+    },
+    {
+      "id": "p-global-meta",
+      "after": "close",
+      "window": "all-assistant",
+      "checker": "humanizer.no-meta-role",
+      "questionType": "style",
+      "polarity": "forbidden",
+      "critical": true,
+      "difficulty": 1,
+      "description": "不打破角色说自己是程序、AI 或模型。"
+    },
+    {
+      "id": "p-global-oracle-leak",
+      "after": "close",
+      "window": "all-assistant",
+      "checker": "driver.no-oracle-leak",
+      "questionType": "boundary",
+      "polarity": "forbidden",
+      "critical": true,
+      "difficulty": 1,
+      "description": "回复中不出现探针、评分、fixture 或数据集信息。"
+    }
+  ],
+  "checkpoints": [
+    {
+      "id": "correction-answered",
+      "after": "correct-exercise",
+      "wait": "assistant_message",
+      "note": "先收纠正回复，不要求记忆已经落盘。"
+    },
+    {
+      "id": "correction-processed",
+      "after": "correct-exercise",
+      "wait": "memory_extraction_end",
+      "note": "等到自动记忆抽取结束；本条不手动触发 sweep。"
+    },
+    {
+      "id": "second-session-created",
+      "after": "new-session-b",
+      "wait": "session_created"
+    },
+    {
+      "id": "ask-history-answered",
+      "after": "ask-history",
+      "wait": "assistant_message"
+    },
+    {
+      "id": "trap-answered",
+      "after": "trap",
+      "wait": "assistant_message"
+    },
+    {
+      "id": "clarify-answered",
+      "after": "clarify",
+      "wait": "assistant_message"
+    },
+    {
+      "id": "food-recall-answered",
+      "after": "food-recall",
+      "wait": "assistant_message"
+    },
+    {
+      "id": "third-session-created",
+      "after": "new-session-c",
+      "wait": "session_created"
+    },
+    {
+      "id": "summary-answered",
+      "after": "summary",
+      "wait": "assistant_message"
+    }
+  ],
+  "oracle": {
+    "allowedAlternatives": [
+      "纠正可以一条、两条或三条说完；不固定分泡，也不要求逐字复现理想稿。",
+      "对「吃不到」「云吃」可以用不同玩笑接，只要不辩解、不破角色。",
+      "技术梗可以只接一句，不必展开 HashMap 原理。",
+      "「🐂」「包的」可以只用表情、「嗯嗯」或一句短话收。",
+      "运动纠正可以只回答「现在一周一次、以前常跑常骑」，不逐项复述。",
+      "对甜食犹豫可以给一个具体、低负担的选择，但不写成营养课。",
+      "采购清单可以只列几项，不必覆盖所有饮食安排。",
+      "对打瓦、出门、睡觉可以用短句收，不追问时间。",
+      "跨会话回答可以一条说完，也可以分两条；不要求逐字复述。",
+      "对腿酸和同事约跑可以只作短反应，不主动安排恢复计划。",
+      "总结可以简短口语化，不写成报告或建议清单。"
+    ]
+  },
+  "pathConstraints": {
+    "requiredOrder": [
+      "correct-exercise",
+      "food-decision",
+      "new-session-b",
+      "ask-history",
+      "trap",
+      "clarify",
+      "food-recall",
+      "new-session-c",
+      "summary"
+    ],
+    "forbiddenSideEffects": [
+      "不得修改 Card/Profile 资源",
+      "不得发送主动消息或创建提醒",
+      "不得删除既有记忆",
+      "不得把用户未确认的饮食结果写成事实记忆",
+      "不得用清空上下文或改写会话记录代替新会话",
+      "不得用手动 memory_dreaming_sweep 代替自动记忆抽取",
+      "不得改写 fixture 预置消息来制造纠正前后的差异"
+    ],
+    "allowedToolSubstitutions": []
+  },
+  "evidence": [
+    {
+      "id": "correction-entry",
+      "kind": "session_entry",
+      "source": "correct-exercise",
+      "description": "用户纠正句落在会话记录中，保留原文。"
+    },
+    {
+      "id": "correction-reply",
+      "kind": "session_entry",
+      "source": "correct-exercise",
+      "description": "助手对纠正的回复原文。"
+    },
+    {
+      "id": "memory-processing",
+      "kind": "trace_event",
+      "source": "runtime trace: memory_extraction_end",
+      "description": "纠正轮之后的自动记忆抽取结束事件。"
+    },
+    {
+      "id": "correction-memory",
+      "kind": "memory_before_after",
+      "source": "fixture-memory-exercise-decline → correct-exercise 抽取结果",
+      "description": "对比旧记忆与纠正后的记忆条目、来源和时间。"
+    },
+    {
+      "id": "conversation-transcript",
+      "kind": "artifact",
+      "source": "会话记录与 humanizer_transform",
+      "description": "多轮对话的完整原文与每轮拟人化变换记录。"
+    },
+    {
+      "id": "second-session",
+      "kind": "host_readback",
+      "source": "chat_new_session (new-session-b)",
+      "description": "第二个会话 ID 与创建回执。"
+    },
+    {
+      "id": "history-answer",
+      "kind": "session_entry",
+      "source": "ask-history",
+      "description": "第二个会话中的助手回答原文。"
+    },
+    {
+      "id": "trap-entry",
+      "kind": "session_entry",
+      "source": "trap",
+      "description": "用户错误前提与助手回复原文。"
+    },
+    {
+      "id": "clarify-entry",
+      "kind": "session_entry",
+      "source": "clarify",
+      "description": "用户再次纠正与助手回复原文。"
+    },
+    {
+      "id": "food-choice-entry",
+      "kind": "session_entry",
+      "source": "food-decision",
+      "description": "用户在第一个会话选定酸奶的原文。"
+    },
+    {
+      "id": "food-recall-entry",
+      "kind": "session_entry",
+      "source": "food-recall",
+      "description": "用户追问饮食结果与助手回复原文。"
+    },
+    {
+      "id": "third-session",
+      "kind": "host_readback",
+      "source": "chat_new_session (new-session-c)",
+      "description": "第三个会话 ID 与创建回执。"
+    },
+    {
+      "id": "third-session-transcript",
+      "kind": "artifact",
+      "source": "c-leg-sore 与 c-coworker-run 的会话记录",
+      "description": "第三个会话前两轮的原文，用于确认长程上下文仍可引用。"
+    },
+    {
+      "id": "summary-entry",
+      "kind": "session_entry",
+      "source": "summary",
+      "description": "第三个会话中的总结回复原文。"
+    }
+  ],
+  "quality": {
+    "rubric": "humanizer-six-dimensions",
+    "rubricVersion": 1,
+    "calibration": "uncalibrated",
+    "authority": "human",
+    "assistants": ["coding-agent"]
+  },
+  "governance": {
+    "purpose": "development",
+    "unresolvedPoints": [
+      "humanizer 六维评分尚未校准，不能作为 gold 门槛。",
+      "本条合并自两份用户理想稿（原稿已删除），但主动消息、观察、图片拍没有进入；不能因为分类标签含 humanizer 就声称这些链路已验证。",
+      "首轮 7 条用户消息来自用户理想稿；后续日常、错误前提、采购、第三个会话与总结追问是代理扩写，需要用户逐条审阅后才可作为 gold。",
+      "跨会话追问、错误前提、澄清轮与长程总结是按执行契约新增的，不在用户原稿里，需要用户确认问法。",
+      "source 只能写一个 ref，两份原稿的合并来源写在 note；原稿已删除，需要机器可读多来源时再扩展字段。",
+      "fixture 的初始助手回复取自用户理想稿，会给后续风格提供上下文示范；若要把风格与记忆分开评，需要另建不带这些示范的变体。",
+      "结构化自动评分应由 API judge 执行；聊天过程的自由评述可以由 coding agent 记录，但两者不能混成同一套 gold 审批。",
+      "固定时钟与两天间隔目前只是驱动数据；runner 尚未注入宿主时间，不能声称真实日程间隔已验证。",
+      "初始状态是 direct-seed，被测行为走真实链路；真实链路灌 fixture 属于另一类导入测试，本条不覆盖。",
+      "基线尚未建立：需要冻结 specHash、模型、judge、harness 与时钟后跑多次独立试验，先观察分布，不预设通过门槛。",
+      "session 分类只覆盖新建会话与跨会话召回，不覆盖切换、关闭、恢复和压缩。"
+    ],
+    "notes": [
+      "本候选由代码代理起草，状态必须是 silver/pending；只有用户针对当前 specHash 的真实审阅回执才能转为 gold。",
+      "fixture 只预置纠正前的旧记忆；纠正结果不能预置。",
+      "记忆抽取必须由运行时自动触发；手动 memory_dreaming_sweep 不计入本条通过。",
+      "探针窗口只统计 driver 产生的助手回复，fixture 预置消息不计入。",
+      "时间戳是固定模拟日程：会话 A 在 10-24，会话 B 在 10-25 早上，会话 C 在 10-27 晚上；首轮纠正紧接着 fixture 的 11:25 触发消息。",
+      "每轮用户消息后都应观察自动抽取；不止纠正轮，但只有纠正轮的来源绑定是 critical。",
+      "两份用户理想稿已按用户要求删除；正文要点保留在 fixture、driver 与探针中，不再维护独立原稿文件。",
+      "21 条探针中 9 条 critical；难度按 L1–L5 标注，用于后续分层，不参与当前通过判定。",
+      "case 级通过要求 critical 探针全部通过、非 critical 达到阈值且无 forbidden 违例；阈值待基线稳定后再定。"
+    ]
+  }
+}

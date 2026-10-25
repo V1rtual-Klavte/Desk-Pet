@@ -1,0 +1,366 @@
+import {
+  appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { BoundedTraceBuffer } from "../../trace/evidence";
+import {
+  appendGrade,
+  appendReview,
+  beginChatAttempt,
+  createChatRun,
+  createDialogueWriter,
+  createTraceWriter,
+  readChatWorkflow,
+  readSealedAttempt,
+  sealChatAttempt,
+  setChatRunPhase,
+  verifySealedAttempt,
+} from "../../sim/desk-pet-chat/evidence.mjs";
+import { renderChatReport, writeChatReport } from "../../sim/desk-pet-chat/report.mjs";
+
+const START = "2026-10-25T10:00:00.000+08:00";
+const SEALED = "2026-10-25T10:05:00.000+08:00";
+const HASH = `sha256:${"a".repeat(64)}`;
+const HASH_B = `sha256:${"b".repeat(64)}`;
+const CASE_ID = "saturday-companionship";
+const roots: string[] = [];
+
+function makeRoot() {
+  const root = mkdtempSync(join(tmpdir(), "desk-pet-chat-evidence-"));
+  roots.push(root);
+  return root;
+}
+
+afterEach(() => {
+  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+function identity(): any {
+  return {
+    code: { commit: "abc1234", sourceHash: HASH, dirty: false },
+    inputs: { datasetHash: HASH, fixtureHash: HASH, cardHash: HASH, configHash: HASH },
+    tools: { driverVersion: "driver-1", rubricVersion: "rubric-1", graderVersion: "grader-1" },
+    host: { mode: "full-desktop", capabilities: ["chat", "memory", "session"] },
+    platform: { os: "darwin", arch: "arm64" },
+    runtime: { version: "22.22.3" },
+    models: { requested: "provider/model-a" },
+    budget: { trials: 1, maxCostUsd: 1 },
+  };
+}
+
+function makeRun(reportsDir: string, name: string, phase = "completed") {
+  const { runDir } = createChatRun({
+    reportsDir,
+    evaluationRunId: name,
+    createdAt: START,
+    scope: { suiteIds: ["daily-companionship"], caseIds: [CASE_ID] },
+    budget: { trials: 1, maxCostUsd: 1 },
+  });
+  if (phase !== "preparing") setChatRunPhase(runDir, { phase, updatedAt: START } as any);
+  return runDir;
+}
+
+function defaultMessages(sessions: string[]) {
+  return sessions.flatMap((sessionId, index) => [
+    {
+      role: "user" as const, text: `问题 ${sessionId}`, sessionId, entryId: `${sessionId}-user`,
+      at: Date.parse(START) + index * 2, origin: "driver" as const,
+    },
+    {
+      role: "assistant" as const, text: `回答 ${sessionId}`, sessionId, entryId: `${sessionId}-assistant`,
+      at: Date.parse(START) + index * 2 + 1, origin: "assistant" as const,
+    },
+  ]);
+}
+
+async function makeCompleteAttempt(runDir: string, options: any = {}) {
+  const trialId = options.trialId ?? "trial-1";
+  const sessions = options.sessions ?? ["session-1"];
+  const started = beginChatAttempt({
+    runDir,
+    identity: identity(),
+    expectedTrials: [{ caseId: CASE_ID, trialId }],
+    expectedSessions: sessions,
+    createdAt: START,
+  });
+  const dialogue = createDialogueWriter(started.attemptDir);
+  for (const message of options.messages ?? defaultMessages(sessions)) dialogue.append(message);
+  dialogue.close();
+
+  const trace = createTraceWriter(started.attemptDir);
+  const buffer = options.traceOverflow
+    ? new BoundedTraceBuffer({ maxEvents: 1, maxBytes: 4096, maxChunkBytes: 4096 })
+    : new BoundedTraceBuffer({ maxEvents: 128, maxBytes: 65536, maxChunkBytes: 32768 });
+  const context = { sceneId: CASE_ID, trialId, runId: "run-1", tokenId: "token-1" };
+  const omitted = new Set(options.omit ?? []);
+  const boundaryTrialId = options.boundaryTrialId ?? trialId;
+  const flush = (boundary: { kind: string; sceneId?: string; trialId?: string }) => {
+    const chunk = buffer.drainChunk(boundary as any);
+    trace.appendChunk(chunk);
+    buffer.ackChunk({ chunkId: chunk.chunkId, chunkSeq: chunk.chunkSeq, persisted: true });
+  };
+  if (!omitted.has("scene_start")) flush({ kind: "scene_start", sceneId: CASE_ID, trialId: boundaryTrialId });
+  if (!omitted.has("trial_start")) flush({ kind: "trial_start", sceneId: CASE_ID, trialId: boundaryTrialId });
+  buffer.append({ schemaVersion: 1, kind: "turn_reply", createdAt: Date.parse(START) }, context);
+  if (options.orphan) buffer.append({ schemaVersion: 1, kind: "background_event", createdAt: Date.parse(START) + 1 });
+  if (options.traceOverflow) buffer.append({ schemaVersion: 1, kind: "overflow_event", createdAt: Date.parse(START) + 2 }, context);
+  if (!omitted.has("trial_end")) flush({ kind: "trial_end", sceneId: CASE_ID, trialId: boundaryTrialId });
+  if (!omitted.has("scene_end")) flush({ kind: "scene_end", sceneId: CASE_ID, trialId: boundaryTrialId });
+  if (!omitted.has("complete")) flush({ kind: "complete" });
+  trace.close();
+
+  if (options.beforeSeal) options.beforeSeal(started.attemptDir);
+  const sealed = await sealChatAttempt({
+    attemptDir: started.attemptDir,
+    sealedAt: SEALED,
+    models: { actual: "provider/model-b" },
+    sourceHash: options.sealSourceHash ?? HASH,
+    inputs: options.sealInputs ?? identity().inputs,
+    outcome: options.outcome ?? "completed",
+  });
+  return { ...sealed, attemptDir: started.attemptDir, attemptId: started.attempt.attemptId };
+}
+
+describe("聊天证据完整性", () => {
+  it("完整采集封存后可核验，判分与人工裁决只追加", async () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-complete");
+    const attempt = await makeCompleteAttempt(runDir);
+
+    expect(attempt.status).toBe("complete");
+    expect(verifySealedAttempt(attempt.attemptDir).status).toBe("complete");
+    expect(verifySealedAttempt(attempt.attemptDir).issues).toEqual([]);
+
+    const dialoguePath = join(attempt.attemptDir, "dialogue.jsonl");
+    const before = statSync(dialoguePath).mtimeMs;
+    appendGrade({
+      attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      checks: [], summary: { note: "format check only" },
+    });
+    appendReview({
+      attemptDir: attempt.attemptDir, reviewId: "review-1", createdAt: SEALED,
+      reviewer: { role: "user", name: "用户" }, verdict: "pass", notes: "已核对证据",
+    });
+    expect(statSync(dialoguePath).mtimeMs).toBe(before);
+    expect(readChatWorkflow(runDir).attempts).toHaveLength(1);
+    expect(() => appendGrade({
+      attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      checks: [], summary: {},
+    })).toThrow(/不覆盖/);
+  });
+
+  it("声明的跨会话未被收集时封存不完整，不能生成正式判分或通过裁决", async () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-missed-session");
+    const attempt = await makeCompleteAttempt(runDir, {
+      sessions: ["session-1", "session-2"],
+      messages: defaultMessages(["session-1"]),
+    });
+
+    expect(attempt.status).toBe("inconclusive");
+    expect(attempt.issues.join("\n")).toContain("声明的会话未被收集：session-2");
+    expect(() => appendGrade({
+      attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      checks: [], summary: {},
+    })).toThrow(/证据不完整/);
+    expect(() => appendReview({
+      attemptDir: attempt.attemptDir, reviewId: "review-1", createdAt: SEALED,
+      reviewer: { role: "user", name: "用户" }, verdict: "pass",
+    })).toThrow(/证据不完整/);
+    const failed = appendReview({
+      attemptDir: attempt.attemptDir, reviewId: "review-fail", createdAt: SEALED,
+      reviewer: { role: "user", name: "用户" }, verdict: "fail", notes: "采集缺失",
+    });
+    expect(failed.verdict).toBe("fail");
+  });
+
+  it("对话截断不会被当成完整证据", async () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-truncated-dialogue");
+    const attempt = await makeCompleteAttempt(runDir, {
+      beforeSeal: (attemptDir: string) => {
+        const path = join(attemptDir, "dialogue.jsonl");
+        const raw = readFileSync(path, "utf8");
+        writeFileSync(path, raw.slice(0, -8));
+      },
+    });
+
+    expect(attempt.status).toBe("inconclusive");
+    expect(attempt.issues.join("\n")).toMatch(/最后一行未完整换行|不是合法 JSON/);
+  });
+
+  it("缺失边界、错绑 trial 与内容哈希不符分别被识别", async () => {
+    const reportsDir = makeRoot();
+    const missing = await makeCompleteAttempt(makeRun(reportsDir, "run-missing-boundary"), { omit: ["scene_end"] });
+    expect(missing.issues.join("\n")).toContain("missing scene_end boundary");
+
+    const misbound = await makeCompleteAttempt(makeRun(reportsDir, "run-misbound"), { boundaryTrialId: "trial-other" });
+    expect(misbound.issues.join("\n")).toContain("missing trial_start boundary");
+
+    const mismatched = await makeCompleteAttempt(makeRun(reportsDir, "run-hash-mismatch"), {
+      beforeSeal: (attemptDir: string) => {
+        const path = join(attemptDir, "trace.jsonl");
+        const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+        const envelope = JSON.parse(lines[0]!);
+        envelope.chunk.injected = true;
+        lines[0] = JSON.stringify(envelope);
+        writeFileSync(path, `${lines.join("\n")}\n`);
+      },
+    });
+    expect(mismatched.issues.join("\n")).toContain("content hash mismatch");
+  });
+
+  it("采集后源码或输入配置漂移会阻止完整封存", async () => {
+    const reportsDir = makeRoot();
+    const source = await makeCompleteAttempt(makeRun(reportsDir, "run-source-drift"), { sealSourceHash: HASH_B });
+    expect(source.issues.join("\n")).toContain("源码哈希与采集开始不一致");
+
+    const config = await makeCompleteAttempt(makeRun(reportsDir, "run-config-drift"), {
+      sealInputs: { ...identity().inputs, configHash: HASH_B },
+    });
+    expect(config.status).toBe("inconclusive");
+    expect(config.issues.join("\n")).toContain("输入哈希与采集开始不一致：configHash");
+  });
+
+  it("trace 超预算丢事件记录为不完整，不伪装成空数组成功", async () => {
+    const reportsDir = makeRoot();
+    const attempt = await makeCompleteAttempt(makeRun(reportsDir, "run-trace-overflow"), { traceOverflow: true });
+
+    expect(attempt.status).toBe("inconclusive");
+    expect(attempt.manifest.evidence.trace.droppedCount).toBe(1);
+    expect(attempt.issues.join("\n")).toContain("dropped events reported");
+  });
+
+  it("重复 chunk 与 complete 之后的追加块被识别", async () => {
+    const reportsDir = makeRoot();
+    const attempt = await makeCompleteAttempt(makeRun(reportsDir, "run-duplicate-chunk"), {
+      beforeSeal: (attemptDir: string) => {
+        const path = join(attemptDir, "trace.jsonl");
+        const lines = readFileSync(path, "utf8").trimEnd().split("\n");
+        appendFileSync(path, `${lines[lines.length - 1]}\n`);
+      },
+    });
+
+    expect(attempt.status).toBe("inconclusive");
+    expect(attempt.issues.join("\n")).toMatch(/duplicate chunk id|chunk appears after complete boundary/);
+  });
+
+  it("未归属 orphan 事件不会被静默丢弃或当作完整证据", async () => {
+    const reportsDir = makeRoot();
+    const attempt = await makeCompleteAttempt(makeRun(reportsDir, "run-orphan"), { orphan: true });
+
+    expect(attempt.status).toBe("inconclusive");
+    expect(attempt.manifest.evidence.trace.orphanCount).toBe(1);
+    expect(attempt.issues.join("\n")).toContain("orphan");
+  });
+
+  it("对话只允许白名单正文，隐藏思维链字段被拒绝", () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-hidden-cot");
+    const started = beginChatAttempt({
+      runDir,
+      identity: identity(),
+      expectedTrials: [{ caseId: CASE_ID, trialId: "trial-1" }],
+      expectedSessions: ["session-1"],
+      createdAt: START,
+    });
+    const writer = createDialogueWriter(started.attemptDir);
+    expect(() => writer.append({
+      role: "user", text: "你好", sessionId: "session-1", entryId: "entry-1",
+      at: Date.parse(START), origin: "driver", reasoning: "hidden chain",
+    } as any)).toThrow(/白名单/);
+    writer.close();
+  });
+
+  it("封存后篡改证据或新增文件会被核验发现并阻止判分", async () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-tampered");
+    const attempt = await makeCompleteAttempt(runDir);
+    const dialoguePath = join(attempt.attemptDir, "dialogue.jsonl");
+    chmodSync(dialoguePath, 0o644);
+    appendFileSync(dialoguePath, `{"seq":99}\n`);
+
+    const verification = verifySealedAttempt(attempt.attemptDir);
+    expect(verification.status).toBe("inconclusive");
+    expect(verification.issues.join("\n")).toContain("哈希不匹配");
+    expect(() => appendGrade({
+      attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      checks: [], summary: {},
+    })).toThrow(/封存证据不可信/);
+    expect(() => appendReview({
+      attemptDir: attempt.attemptDir, reviewId: "review-1", createdAt: SEALED,
+      reviewer: { role: "user", name: "用户" }, verdict: "pass",
+    })).toThrow(/封存证据不可信/);
+
+    const extra = await makeCompleteAttempt(makeRun(reportsDir, "run-extra-file"), { trialId: "trial-2" });
+    writeFileSync(join(extra.attemptDir, "unexpected.txt"), "tamper");
+    expect(verifySealedAttempt(extra.attemptDir).status).toBe("inconclusive");
+    expect(verifySealedAttempt(extra.attemptDir).issues.join("\n")).toContain("未声明文件");
+  });
+
+  it("失败重跑创建新 attempt，旧证据与 manifest 哈希保持不变", async () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-retry");
+    const first = await makeCompleteAttempt(runDir);
+    const firstHash = readSealedAttempt(first.attemptDir).manifestSha256;
+    const second = await makeCompleteAttempt(runDir, { trialId: "trial-2", outcome: "failed" });
+
+    expect(second.attemptId).toBe("0002");
+    expect(second.status).toBe("inconclusive");
+    expect(second.issues.join("\n")).toContain("outcome=failed");
+    expect(readSealedAttempt(first.attemptDir).manifestSha256).toBe(firstHash);
+    expect(readChatWorkflow(runDir).attempts.map((item) => item.attemptId)).toEqual(["0001", "0002"]);
+    expect(() => beginChatAttempt({
+      runDir,
+      identity: identity(),
+      expectedTrials: [{ caseId: CASE_ID, trialId: "trial-1" }],
+      expectedSessions: ["session-1"],
+      createdAt: START,
+    })).toThrow(/已在同运行组使用/);
+  });
+
+  it("报告只重建视图：完整证据可展示判分与裁决，未封存/不完整证据不得显示为通过", async () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-report");
+    const attempt = await makeCompleteAttempt(runDir);
+    appendGrade({
+      attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      checks: [], summary: {},
+    });
+    appendReview({
+      attemptDir: attempt.attemptDir, reviewId: "review-1", createdAt: SEALED,
+      reviewer: { role: "user", name: "用户" }, verdict: "pass",
+    });
+    const dialoguePath = join(attempt.attemptDir, "dialogue.jsonl");
+    const before = statSync(dialoguePath).mtimeMs;
+
+    const markdown = renderChatReport({ runDir, generatedAt: SEALED });
+    expect(markdown).toContain("证据完整性通过");
+    expect(markdown).toContain("grade-1");
+    expect(markdown).toContain("review-1");
+    expect(markdown).toContain("provider/model-b");
+    const written = writeChatReport({ runDir, generatedAt: SEALED });
+    expect(existsSync(written.path)).toBe(true);
+    expect(statSync(dialoguePath).mtimeMs).toBe(before);
+
+    beginChatAttempt({
+      runDir,
+      identity: identity(),
+      expectedTrials: [{ caseId: CASE_ID, trialId: "trial-2" }],
+      expectedSessions: ["session-1"],
+      createdAt: START,
+    });
+    expect(renderChatReport({ runDir, generatedAt: SEALED })).toContain("尚未封存");
+
+    chmodSync(dialoguePath, 0o644);
+    appendFileSync(dialoguePath, `{"seq":100}\n`);
+    expect(renderChatReport({ runDir, generatedAt: SEALED })).toContain("不能判为通过");
+  });
+});

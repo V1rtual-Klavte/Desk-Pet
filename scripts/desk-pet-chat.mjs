@@ -16,6 +16,8 @@
  *   node scripts/desk-pet-chat.mjs tasks
  *   node scripts/desk-pet-chat.mjs proactive-state
  *   node scripts/desk-pet-chat.mjs understanding
+ *   node scripts/desk-pet-chat.mjs dataset validate|list|types|review|driver ...
+ *   node scripts/desk-pet-chat.mjs eval prepare|start|status|stop ...
  *   node scripts/desk-pet-chat.mjs wait <id>
  *   node scripts/desk-pet-chat.mjs ready
  *   node scripts/desk-pet-chat.mjs tail [条数]
@@ -25,19 +27,27 @@
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { join, relative, resolve } from "node:path";
+import {
+  buildDriverPackage,
+  buildReviewPackage,
+  formatReviewPackage,
+  loadDataset,
+  summarizeDataset,
+} from "../test/sim/desk-pet-chat/dataset.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const control = process.env.DESKPET_SIM_CONTROL ?? join(root, "data/desk-pet/logs/sim/control");
 const inbox = join(control, "inbox.jsonl");
 const outbox = join(control, "outbox.jsonl");
 const categoriesPath = join(root, "test/sim/desk-pet-chat/categories.json");
-mkdirSync(control, { recursive: true });
 
 const json = (value) => JSON.stringify(value, null, 2);
 const now = () => Date.now();
 
 function append(event) {
+  mkdirSync(control, { recursive: true });
   appendFileSync(inbox, `${JSON.stringify(event)}\n`, "utf8");
 }
 
@@ -235,6 +245,161 @@ try {
       printReply(await waitFor(id), asJson);
       break;
     }
+    case "dataset": {
+      const positional = rest.filter((part) => !part.startsWith("--"));
+      const [action = "list", target] = positional;
+      const dataset = loadDataset({ repoRoot: root });
+      if (action === "types") {
+        const summary = summarizeDataset(dataset);
+        const rows = dataset.questionTypes.map((type) => ({
+          id: type.id,
+          family: type.family,
+          name: type.name,
+          goal: type.goal,
+          capabilities: type.capabilities,
+          probeCount: summary.questionTypeCounts[type.id] ?? 0,
+          caseCount: summary.caseQuestionTypeCounts[type.id] ?? 0,
+        }));
+        if (asJson) {
+          console.log(
+            json({
+              path: dataset.questionTypesPath,
+              families: dataset.questionTypeFamilies,
+              questionTypes: rows,
+            }),
+          );
+        } else {
+          console.log(`题型注册表：${dataset.questionTypesPath ?? "（未加载）"}`);
+          for (const family of dataset.questionTypeFamilies) {
+            const types = rows.filter((row) => row.family === family.id);
+            console.log("");
+            console.log(`${family.name}（${family.id}） ${types.length} 类：${family.goal}`);
+            for (const row of types) {
+              console.log(
+                `  ${row.id} ${row.name} [${row.capabilities.join(", ")}] 探针 ${row.probeCount} · 用例 ${row.caseCount} — ${row.goal}`,
+              );
+            }
+          }
+        }
+        if (dataset.questionTypes.length === 0) {
+          for (const problem of dataset.errors) {
+            console.error(`${problem.code}${problem.file ? ` ${problem.file}` : ""}: ${problem.message}`);
+          }
+          process.exitCode = 1;
+        }
+        break;
+      }
+      if (action === "validate") {
+        if (target && !dataset.suites.some((suite) => suite.suiteId === target)) {
+          throw new Error(`找不到套件：${target}`);
+        }
+        const errors = target
+          ? dataset.errors.filter((problem) => problem.suiteId === undefined || problem.suiteId === target)
+          : dataset.errors;
+        const warnings = target
+          ? dataset.warnings.filter((warning) => warning.suiteId === undefined || warning.suiteId === target)
+          : dataset.warnings;
+        const scoped = target
+          ? {
+              ...dataset,
+              suites: dataset.suites.filter((suite) => suite.suiteId === target),
+              cases: dataset.cases.filter((entry) => entry.suiteId === target),
+            }
+          : dataset;
+        const summary = summarizeDataset(scoped);
+        if (asJson) {
+          console.log(json({
+            datasetRoot: relative(root, dataset.root),
+            errors,
+            warnings,
+            summary,
+          }));
+        } else {
+          console.log(`数据集：${relative(root, dataset.root)}`);
+          console.log(
+            `套件 ${summary.suiteCount} · 用例 ${summary.caseCount} · 探针 ${summary.probeCount}（关键 ${summary.criticalProbeCount}） · gold ${summary.goldCount} · silver ${summary.silverCount}`,
+          );
+          const usedTypes = Object.entries(summary.questionTypeCounts).filter(([, count]) => count > 0);
+          if (usedTypes.length > 0) {
+            console.log(`题型：${usedTypes.map(([id, count]) => `${id} ${count}`).join(" · ")}`);
+          }
+          console.log(
+            `评审权威：${Object.entries(summary.authorityCounts)
+              .map(([authority, count]) => `${authority} ${count}`)
+              .join(" · ")}`,
+          );
+          console.log(
+            `难度：${Object.entries(summary.difficultyCounts)
+              .map(([level, count]) => `L${level} ${count}`)
+              .join(" · ")}`,
+          );
+          for (const problem of errors) {
+            console.error(`${problem.code}${problem.file ? ` ${problem.file}` : ""}: ${problem.message}`);
+          }
+          for (const warning of warnings) {
+            console.error(`warning ${warning.code}: ${warning.message}`);
+          }
+          console.log(errors.length === 0 ? "结构校验通过（不证明测试或评测通过）" : `失败：${errors.length} 个错误`);
+        }
+        if (errors.length > 0) process.exitCode = 1;
+        break;
+      }
+      if (action === "list") {
+        if (target && !dataset.suites.some((suite) => suite.suiteId === target)) {
+          throw new Error(`找不到套件：${target}`);
+        }
+        const rows = (target ? dataset.cases.filter((entry) => entry.suiteId === target) : dataset.cases).map(
+          (entry) => ({
+            caseId: entry.caseId,
+            suiteId: entry.suiteId,
+            revision: entry.case.revision,
+            tier: entry.label.tier,
+            status: entry.label.status,
+            categories: entry.case.categories,
+            questionTypes: entry.case.questionTypes,
+            probeCount: entry.case.probes.length,
+            criticalProbeCount: entry.case.probes.filter((probe) => probe.critical).length,
+            difficultyCounts: [1, 2, 3, 4, 5].map(
+              (level) => entry.case.probes.filter((probe) => probe.difficulty === level).length,
+            ),
+          }),
+        );
+        if (asJson) console.log(json(rows));
+        else {
+          for (const row of rows) {
+            const difficulty = row.difficultyCounts.map((count, index) => `L${index + 1} ${count}`).join(" · ");
+            console.log(
+              `${row.caseId}  ${row.tier}/${row.status}  r${row.revision}  ${row.suiteId}  探针 ${row.probeCount}（关键 ${row.criticalProbeCount}）  难度 ${difficulty}  题型 ${row.questionTypes.length} [${row.questionTypes.join(", ")}]  [${row.categories.join(", ")}]`,
+            );
+          }
+        }
+        break;
+      }
+      if (action === "review") {
+        if (!target) throw new Error("用法：dataset review <caseId> [--json]");
+        const entry = dataset.cases.find((candidate) => candidate.caseId === target);
+        if (!entry) throw new Error(`找不到用例：${target}`);
+        const review = buildReviewPackage(entry);
+        console.log(asJson ? json(review) : formatReviewPackage(review));
+        break;
+      }
+      if (action === "driver") {
+        if (!target) throw new Error("用法：dataset driver <caseId>");
+        const entry = dataset.cases.find((candidate) => candidate.caseId === target);
+        if (!entry) throw new Error(`找不到用例：${target}`);
+        console.log(json(buildDriverPackage(entry)));
+        break;
+      }
+      throw new Error(
+        "用法：dataset validate [suiteId] | list [suiteId] | review <caseId> | driver <caseId> | types",
+      );
+    }
+    case "eval": {
+      const result = spawnSync(process.execPath, [join(root, "scripts", "sim-eval-run.mjs"), ...rest], { stdio: "inherit" });
+      if (result.error) throw result.error;
+      if (result.status !== 0) process.exitCode = result.status ?? 1;
+      break;
+    }
     case "wait": {
       const id = rest.find((part) => part !== "--json");
       if (!id) throw new Error("缺少 id");
@@ -301,7 +466,7 @@ try {
       break;
     }
     default:
-      console.error("用法：chat <text> | send <text> | cmd <type> [--screenshot] | observe [--screenshot] [--force] | host <method> [json] | humanize on|off|status | choice list|pick N|other|cancel | confirm list|allow|session|deny | context | window | sessions | tasks | proactive-state | understanding | plan <mode> | task [json] | suite <ids> [--rounds N] [--run] | wait <id> | ready | tail [n]");
+      console.error("用法：chat <text> | send <text> | cmd <type> [--screenshot] | observe [--screenshot] [--force] | host <method> [json] | humanize on|off|status | choice list|pick N|other|cancel | confirm list|allow|session|deny | context | window | sessions | tasks | proactive-state | understanding | plan <mode> | task [json] | dataset validate [suiteId] | dataset list [suiteId] | dataset types | dataset review <caseId> | dataset driver <caseId> | eval prepare|start|status|stop ... | suite <ids> [--rounds N] [--run] | wait <id> | ready | tail [n]");
       process.exitCode = 1;
   }
 } catch (error) {

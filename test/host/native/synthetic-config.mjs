@@ -97,8 +97,11 @@ export function assertCredentialFree(tree, path = "") {
 /**
  * 合成并序列化 CONFIG 文本。返回写入文件的同一份字节 —— seedHash 覆盖的就是它
  * （报告摘要必须描述本次运行真正加载的配置，而不是某个真实开发配置）。
+ *
+ * `overrides` 是每次运行各自的显式覆盖（例如 sim-eval 的激活 Card / Profile、
+ * 关闭主动调度），在仓库共用的覆盖文件之后合并，并同样经过凭据守卫。
  */
-export function buildSyntheticConfig({ repoRoot = process.cwd() } = {}) {
+export function buildSyntheticConfig({ repoRoot = process.cwd(), overrides: runOverrides } = {}) {
   const templatePath = join(repoRoot, CONFIG_TEMPLATE_NAME)
   const overridesPath = join(repoRoot, CONFIG_OVERRIDES_PATH)
   assertNotRealConfig(templatePath)
@@ -109,12 +112,16 @@ export function buildSyntheticConfig({ repoRoot = process.cwd() } = {}) {
     throw new Error(`CONFIG 模板不是 YAML 映射：${templatePath}`)
   }
   const rawOverrides = yaml.load(readFileSync(overridesPath, "utf8"))
-  const overrides = rawOverrides === undefined || rawOverrides === null ? {} : rawOverrides
-  if (!isRecord(overrides)) {
+  const fileOverrides = rawOverrides === undefined || rawOverrides === null ? {} : rawOverrides
+  if (!isRecord(fileOverrides)) {
     throw new Error(`CONFIG 覆盖文件不是 YAML 映射：${overridesPath}`)
   }
+  const extra = runOverrides === undefined || runOverrides === null ? {} : runOverrides
+  if (!isRecord(extra)) {
+    throw new Error("CONFIG 单次运行覆盖必须是映射")
+  }
 
-  const merged = deepMerge(template, overrides, "")
+  const merged = deepMerge(deepMerge(template, fileOverrides, ""), extra, "")
   assertCredentialFree(merged, "")
   return yaml.dump(merged, { lineWidth: 120, noRefs: true })
 }

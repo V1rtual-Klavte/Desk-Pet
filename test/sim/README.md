@@ -4,7 +4,10 @@
 让 Claude Code 通过文件控制通道和桌宠聊天，并在同一个进程里触发静默了解、dreaming、
 主动消息与定时任务。不启动 E2E 宿主，不替换模型，不伪造业务入口。
 
-与桌宠聊天时先读 [`desk-pet-chat/SKILL.md`](desk-pet-chat/SKILL.md)。
+与桌宠聊天时先读 [`desk-pet-chat/SKILL.md`](desk-pet-chat/SKILL.md)。评测数据集另有两个 Skill：
+写题与用户审批见 [`desk-pet-eval-authoring/SKILL.md`](desk-pet-eval-authoring/SKILL.md)，
+结构化执行、API judge 判分与报告见 [`desk-pet-eval-runner/SKILL.md`](desk-pet-eval-runner/SKILL.md)。
+三者共用同一份数据集与 CLI 规则；W1–W2 已落数据集、题型、审阅、银标候选、debug 隔离起停与 direct-seed 装载（W2 已验收 2026-10-25）；W3 测试侧 `evidence.mjs`／`report.mjs` 与反例测试已落位但未运行验收，聊天驱动、产品侧因果采集和判分仍未实施。
 
 ## 启动
 
@@ -70,9 +73,35 @@ node scripts/desk-pet-chat.mjs understanding
 node scripts/desk-pet-chat.mjs suite memory --rounds 4
 node scripts/desk-pet-chat.mjs suite observation,tasks --run --rounds 3
 node scripts/desk-pet-chat.mjs tail 10
+node scripts/desk-pet-chat.mjs dataset validate
+node scripts/desk-pet-chat.mjs dataset list
+node scripts/desk-pet-chat.mjs dataset types
+node scripts/desk-pet-chat.mjs dataset review saturday-companionship
+node scripts/desk-pet-chat.mjs dataset driver saturday-companionship
+node scripts/desk-pet-chat.mjs eval prepare --case saturday-companionship --card <card.md> [--run-id <id>]
+node scripts/desk-pet-chat.mjs eval start --run-id <id>
+node scripts/desk-pet-chat.mjs eval status --run-id <id>
+node scripts/desk-pet-chat.mjs eval stop --run-id <id>
 ```
 
+`dataset` 命令只读 `test/ideal-traces/suites/`，不启动 app、不调用模型。当前只有
+`daily-companionship/saturday-companionship` 一条 silver/pending 候选（27 条用户消息 + 2 个 host 步骤、
+3 个会话、21 条探针，其中 9 条 critical；覆盖 8 个题型），其他套件为空占位。
+数据集为 schema v3：fixture 声明 `loading`（`direct-seed` 直接写隔离数据根 / `real-chain` 走真实导入），
+`fixed` 时钟要求每个 driver 步骤带升序 `at`，每条探针带 `questionType` 与 1–5 的 `difficulty`，
+case 的 `questionTypes` 必须等于探针题型并集；探针观察窗口限定在 driver 步骤，避免 fixture 预置的助手消息污染。
+题型注册表是 [`desk-pet-chat/question-types.json`](desk-pet-chat/question-types.json)，共 7 个家族、24 个题型，
+每个产品分类至少被一个题型覆盖。`review` 给人看完整候选、题型与评审权威、装载方式、难度分布与审批差异；`driver` 只输出
+`schemaVersion`／`caseId`／`revision`／`specHash`／`userRole`／`driver`，不含题型、probes、oracle、检查点、证据或评分。
+代理只能起草 silver；gold 必须由用户针对当前 `specHash` 的真实会话消息审批，代理不得代填审批或把框架通过当成用例审批。
+authoring Skill 会先列候选、询问要审哪条，再把审阅卡贴到聊天区；W1–W2 没有评分与审批写入，数据集校验通过不产生质量结论。
+W2 的 `eval` 命令只做隔离启动、所有权核验与 direct-seed 装载：运行根固定在 `test/.tmp/sim-eval-<id>`，
+要求显式 `--card`，不读真实 CONFIG；`stop` 只写 `stop.request`。真实启动、ready 核验、非法路径失败、跨进程单实例与停止后退出已于 2026-10-25 验收；`.instance.lock` 按设计保留但锁已释放。固定时钟未注入，跨天间隔仍属未验证；相关 56 条测试已在验收轮运行通过。
+结构化探针的正式判分走 API judge；`humanizer.*` 与拟人化质量只由用户本人判定，coding agent 只能给建议，
+不能产生 pass/fail 或 gold。自动化遇到 human 权威探针必须停在 `pending`。
+
 测试分类的唯一真相源是 [`desk-pet-chat/categories.json`](desk-pet-chat/categories.json)；
+题型与家族的真相源是 [`desk-pet-chat/question-types.json`](desk-pet-chat/question-types.json)。
 不带 `--run` 打印步骤与证据，带 `--run` 只跑可自动化的组件类别，聊天/plan/tools 由 Claude 驱动。
 轮数与分类都由调用方显式指定，不设默认上限。拟人化默认开启来测：先用 `humanize status`
 确认，不是 `true` 就 `humanize on`，收尾按原值恢复；评分与 trace 判据见 skill 的「拟人化检测」。

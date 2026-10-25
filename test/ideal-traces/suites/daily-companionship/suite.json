@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 3,
+  "suiteId": "daily-companionship",
+  "revision": 1,
+  "purpose": "development",
+  "title": "日常陪伴、运动纠正与跨会话回忆",
+  "caseIds": ["saturday-companionship"]
+}

@@ -48,6 +48,11 @@
 //   trial 身份 / attestation，用通道里的 Node 与入口拉起 test/e2e Scene runner；
 //   完成协议是「结果文件 + 进程退出码」（见本文件 E2E 节）。release 构建不编译
 //   该模式与 e2e_options / e2e_complete / e2e_trace —— 测试命令不进入产品能力。
+// - 聊天评测隔离模式（仅 debug 构建）：`DESKPET_SIM_EVAL=1` +
+//   `DESKPET_SIM_EVAL_RUN_DIR=<workspace>/test/.tmp/sim-eval-*` 时，数据根固定为
+//   运行根下的 `data/`，合成 CONFIG 必须由启动器预先写入。拿到该数据根的单实例锁
+//   后原子写 `ready.json`（宿主拥有运行根的证据），并监听 `stop.request` 走与托盘
+//   退出相同的统一退出序列。路径细节与校验见 `paths::sim_eval`。
 
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
@@ -68,12 +73,12 @@ use native_host::host::native_ports::{
     ExitOnceHook, NativeAssetScope, NativeFileDialog, NativeLifecycle,
 };
 use native_host::host::supervisor::{NodeSupervisor, ShutdownReport, SupervisorConfig};
-use native_host::host::{AssetScopePort, EventSink, FileDialogPort, WindowId, WindowPort};
+use native_host::host::{AssetScopePort, EventSink, FileDialogPort, LifecyclePort, WindowId, WindowPort};
 use native_host::ipc::bridge::{CommandDispatcher, DispatchContext};
 use native_host::ipc::protocol::LaunchInfo;
 use native_host::logger;
 use native_host::monitor::MonitorState;
-use native_host::paths::{AppPaths, HostEnvironment};
+use native_host::paths::{sim_eval, AppPaths, HostEnvironment};
 use native_host::ui::{self, HostExitHook, MainThreadQueue, ServiceRequest, UiHandle};
 use native_host::{rust_error, rust_info, rust_warn};
 
@@ -121,6 +126,15 @@ fn main() {
     logger::init_from_env();
     #[cfg(debug_assertions)]
     {
+        // E2E 分支早于 AppPaths::init：互斥检查必须先于分派，否则两种隔离入口并用时
+        // 会落进 E2E 通道校验，错误原因被掩盖。
+        if let Err(error) = native_host::paths::ensure_isolation_modes_exclusive(
+            native_host::paths::is_e2e(),
+            native_host::paths::sim_eval::is_sim_eval(),
+        ) {
+            rust_error!("宿主启动失败 [{}] {}", error.code(), error);
+            std::process::exit(70);
+        }
         // E2E 隔离模式：启动器经私有测试通道驱动（DESKPET_E2E=1 + DESKPET_E2E_CHANNEL）。
         // release 构建不编译本分支，也不编译 run_e2e 及其命令面。
         if native_host::paths::is_e2e() {
@@ -150,6 +164,19 @@ fn main() {
 }
 
 fn run(mode: Mode) -> AppResult<i32> {
+    if cfg!(debug_assertions) && sim_eval::is_sim_eval() && !matches!(&mode, Mode::Service) {
+        return Err(AppError::Config("sim-eval 仅支持服务模式（不支持 --smoke）".into()));
+    }
+    // 评测隔离根先校验一次（AppPaths 内还会再验）：非法路径要在建日志/建库之前失败。
+    let sim_eval_run = if cfg!(debug_assertions)
+        && matches!(&mode, Mode::Service)
+        && sim_eval::is_sim_eval()
+    {
+        Some(sim_eval::run_dir(&workspace_root())?)
+    } else {
+        None
+    };
+
     // §4.3 第 1 步：路径与日志。AppPaths 是数据根唯一决定点；debug/release 分支
     // 都在 paths 模块里，这里只提供宿主环境（解析见下方各函数）。
     let env = host_environment()?;
@@ -187,6 +214,34 @@ fn run(mode: Mode) -> AppResult<i32> {
             }
         }
     }
+
+    // sim-eval：锁到手才写 ready —— 它证明本进程拥有这个运行根。写入失败直接失败，
+    // 启动器不会把别的进程/别的数据根当成这次评测的宿主。
+    let sim_eval_ready = if let Some(run) = sim_eval_run.as_ref() {
+        let ready = sim_eval::SimEvalReady {
+            schema_version: sim_eval::READY_SCHEMA_VERSION,
+            generation: random_hex(16)?,
+            pid: std::process::id(),
+            run_dir: run.clone(),
+            data_root: paths.data_root.clone(),
+            control_dir: sim_eval::control_dir(&paths.data_root),
+            runtime_mode: paths.runtime_mode.to_string(),
+            started_at: chrono::Local::now().to_rfc3339(),
+        };
+        sim_eval::write_ready(run, &ready)?;
+        rust_info!(
+            "sim-eval ready: {} (pid={}, generation={})",
+            sim_eval::ready_path(run).display(),
+            ready.pid,
+            ready.generation
+        );
+        Some(sim_eval::ReadyGuard::new(run))
+    } else {
+        None
+    };
+    let sim_eval_ready_path = sim_eval_ready
+        .as_ref()
+        .map(|guard| guard.path().to_path_buf());
 
     // W10b 更新域装配（幂等）：解析嵌入的更新元数据、推导安装布局、执行启动恢复
     // （把上次中断的替换收口：回滚到上一完整版本 / 补记完成）。失败只留痕、不阻断
@@ -256,6 +311,7 @@ fn run(mode: Mode) -> AppResult<i32> {
         supervisor: supervisor.clone(),
         mcp: mcp_pool.clone(),
         bash: bash_pool.clone(),
+        sim_eval_ready: sim_eval_ready_path,
     })));
 
     // W4 端口实现：资源授权表（启动时把 profiles 根整目录授权）、
@@ -274,6 +330,18 @@ fn run(mode: Mode) -> AppResult<i32> {
     });
     let dialogs = Arc::new(NativeFileDialog::new(ui_handle.clone()));
     let lifecycle = Arc::new(NativeLifecycle::new(ui_handle.clone(), exit_once.clone()));
+    // sim-eval 的停止契约：启动器只写 `stop.request`，宿主自己走统一退出序列
+    // （回收 MCP/Bash、等 Node flush），不用信号强杀。
+    if let Some(run) = sim_eval_run.as_ref() {
+        let lifecycle_for_stop = lifecycle.clone();
+        sim_eval::spawn_stop_watcher(
+            run.clone(),
+            Box::new(move || {
+                rust_info!("sim-eval 收到 stop.request，开始统一退出序列");
+                lifecycle_for_stop.exit(0);
+            }),
+        );
+    }
     native_host::ui::settings::updates::install(ui_handle.clone(), lifecycle.clone());
     let windows: Arc<dyn WindowPort> = Arc::new(ui_handle.clone());
     // 观察总闸的唯一实例：命令面（set_monitor_enabled / 观察资格）与 monitor 工作线程
@@ -455,10 +523,20 @@ struct ServiceExitHook {
     supervisor: Arc<NodeSupervisor>,
     mcp: Arc<McpPool>,
     bash: Arc<BashPool>,
+    /// sim-eval：退出序列一旦开始，就不再对外宣称「本进程拥有运行根」。
+    /// 平台退出走 `process::exit` 时 Drop 不会执行，所以这里显式移除。
+    sim_eval_ready: Option<PathBuf>,
 }
 
 impl HostExitHook for ServiceExitHook {
     fn run(&self) {
+        if let Some(path) = &self.sim_eval_ready {
+            if let Err(error) = std::fs::remove_file(path) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    rust_warn!("移除 sim-eval ready 失败 {}: {error}", path.display());
+                }
+            }
+        }
         // ⓪ 粘贴草稿回滚（执行契约 Part 4.3「粘了没发的当场回滚」）：对当前待发送区
         //    执行丢弃语义 —— 粘贴入口的托管草稿删文件，用户自有文件不动；失败只留痕，
         //    不阻塞退出。挂点依据：两端 quit() 都先 `run_exit_once()`（本 hook）再
@@ -966,6 +1044,7 @@ fn run_e2e() -> AppResult<i32> {
         supervisor: supervisor.clone(),
         mcp: mcp_pool.clone(),
         bash: bash_pool.clone(),
+        sim_eval_ready: None,
     })));
     let assets = Arc::new(NativeAssetScope::new());
     assets

@@ -248,8 +248,20 @@ export async function readPiSessionSummary(metadata: JsonlSessionMetadata): Prom
 
 /** 新建会话并写入展示名；句柄保留在缓存中，等待切换为活跃会话或运行内核使用。 */
 export async function createPiSession(name: string): Promise<PiSessionSummary> {
+  return createSession({}, name)
+}
+
+/**
+ * 以指定 id 新建会话（评测装载器要保留 fixture 声明的会话身份）。
+ * id 冲突由仓库拒绝；调用方负责先做幂等核对，不在这里静默复用已有会话。
+ */
+export async function createPiSessionWithId(id: string, name: string): Promise<PiSessionSummary> {
+  return createSession({ id }, name)
+}
+
+async function createSession(options: { id?: string } | {}, name: string): Promise<PiSessionSummary> {
   const repo = await getPiSessionRepo()
-  const session = await repo.create({}, BACKGROUND_CONTEXT)
+  const session = await repo.create(options, BACKGROUND_CONTEXT)
   await session.setName(name, BACKGROUND_CONTEXT)
   openSessions.set(session.metadata.id, Promise.resolve(session))
   const summary = await readSummary(session, session.metadata)

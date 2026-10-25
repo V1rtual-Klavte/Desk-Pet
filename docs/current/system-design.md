@@ -30,7 +30,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 | scheduler | 内部固定槽、周期样本、任务执行与产物账本；复用 MemoryStore 连接 | [scheduler/](../../crates/native-host/src/scheduler/) |
 | proactive | 主动链状态（与记忆同库同连接）：schema、store 与宏生成的命令面 | [proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)、[proactive/commands.rs](../../crates/native-host/src/proactive/commands.rs) |
 | commands | transport 无关的命令域：Bash 策略与执行池、文件/进程/桌面/系统工具、工具许可、MCP 进程桥、会话文件、人格/Profile/资源/Skill 文件、聊天图片准入、截图与观察、字体、日志、光标 | [commands/](../../crates/native-host/src/commands/) |
-| paths | AppPaths（数据根与各域目录的唯一决定点）、路径安全（允许根/凭据/记忆库保护）、种子与恢复 | [paths/mod.rs](../../crates/native-host/src/paths/mod.rs)、[paths/security.rs](../../crates/native-host/src/paths/security.rs)、[paths/seeding.rs](../../crates/native-host/src/paths/seeding.rs) |
+| paths | AppPaths（数据根与各域目录的唯一决定点）、路径安全（允许根/凭据/记忆库保护）、种子与恢复、debug 聊天评测隔离选根 | [paths/mod.rs](../../crates/native-host/src/paths/mod.rs)、[paths/security.rs](../../crates/native-host/src/paths/security.rs)、[paths/seeding.rs](../../crates/native-host/src/paths/seeding.rs)、[paths/sim_eval.rs](../../crates/native-host/src/paths/sim_eval.rs) |
 | update | 应用内更新：`update.json` 校验链（验签/平台架构/完整组件集/版本更高）、staging、独立 helper 替换安装 | [update/mod.rs](../../crates/native-host/src/update/mod.rs) |
 | single_instance | 单实例守卫（2026-10-06）：同一数据根只允许一个宿主（`{data_root}/.instance.lock` 的 OS 独占锁，macOS `O_EXLOCK` / Windows 独占共享打开）；后启动者经 `main::run` 早期检查拒绝，弹窗提示后退出 | [single_instance.rs](../../crates/native-host/src/single_instance.rs) |
 | audio | 宿主音效接口（`AudioPort` 与平台实现位）；当前未接线，`None` 时只记日志、不伪造播放成功 | [audio/mod.rs](../../crates/native-host/src/audio/mod.rs) |
@@ -53,7 +53,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 | scheduler | 单计时器的作业注册、期限、单飞、取消排空；内部槽的宿主协议 | [scheduler/](../../src/services/scheduler/) |
 | user-tasks | 用户任务定义与日历、验证、确认、持久授权、复杂工作及交付；正文仍在 proactive_tasks | [user-tasks/](../../src/services/user-tasks/) |
 | behavior | 独立派生域：采集窗口心跳、分段、日聚合、质量与时机指标 | [behavior/](../../src/services/behavior/) |
-| evaluation（测试宿主） | trace 缓冲/ACK/证据审阅、真实记忆质量跑批与性能采样；不拥有产品运行状态 | [test/trace/](../../test/trace/)、[test/memory-quality/](../../test/memory-quality/)、[trace-observer.ts](../../test/host/trace-observer.ts)、[e2e_trace.rs](../../crates/native-host/src/e2e_trace.rs)、[memory/benchmark.rs](../../crates/native-host/src/memory/benchmark.rs) |
+| evaluation（测试宿主） | trace 缓冲/ACK/证据审阅、聊天评测隔离运行上下文与 direct-seed 装载、真实记忆质量跑批与性能采样；不拥有产品运行状态 | [test/trace/](../../test/trace/)、[test/memory-quality/](../../test/memory-quality/)、[sim/](../../src/services/sim/)、[run-context.ts](../../src/services/sim/run-context.ts)、[direct-seed.ts](../../src/services/sim/direct-seed.ts)、[trace-observer.ts](../../test/host/trace-observer.ts)、[e2e_trace.rs](../../crates/native-host/src/e2e_trace.rs)、[memory/benchmark.rs](../../crates/native-host/src/memory/benchmark.rs) |
 | session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | humanizer | 引擎拟人协议、沉默护栏、提交后逐泡揭示（只存瞬态进度） | [humanizer/](../../src/services/humanizer/) |
 | native-ui | Node ↔ 原生宿主数据流：状态推送（快捷键/字体/主题/舞台/聊天列/图片预览/摆位尺寸/自动呼出/音效/顶栏文本/揭示进度/权限确认）、宿主请求应答（设置读写、编辑器 I/O、聊天与会话意图、决策动作、管理面）、会话投影帧组装的唯一入口 | [native-ui/](../../src/services/native-ui/)、[session-projection.ts](../../src/services/native-ui/session-projection.ts)、[host-requests.ts](../../src/services/native-ui/host-requests.ts) |
