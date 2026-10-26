@@ -9,7 +9,8 @@
 // - E2E（test/e2e/native-main.ts）把解析结果写进隔离副本；
 // - sim-eval（./eval-overrides）在完整产品初始化时读取 stage 到隔离数据根的同名文件。
 //
-// 解析结果只用于隔离副本内的 setOverrides 与 judge 传参；凭据与真实配置不受影响。
+// 解析结果只用于隔离副本内的 setOverrides 与记忆基准的 judge 传参；聊天评测的 judge
+// 是外部 coding agent，运行器不读取该字段。凭据与真实配置不受影响。
 
 export interface EvalModelsFile {
   underTest?: { provider?: string | null; model?: string | null; endpoint?: string | null; apiKey?: string | null; reviewMaxTokens?: number | null } | null

@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { load as parseYaml } from "js-yaml"
 import { describe, expect, it } from "vitest"
-import { loadDataset } from "../../sim/desk-pet-chat/dataset.mjs"
+import { datasetInputHash, loadDataset } from "../../sim/desk-pet-chat/dataset.mjs"
 // @ts-expect-error TS7016 —— Node 侧 ESM 工具没有声明文件，运行期形状由断言钉住。
 import { buildSyntheticConfig } from "../../host/native/synthetic-config.mjs"
 import { importUserCard, safeCardFileName as productSafeCardFileName } from "@/services/personality/loader"
@@ -427,9 +427,9 @@ describe("证据 id 与采集生命周期回执", () => {
 
 describe("数据集输入哈希与请求模型身份", () => {
   it("哈希覆盖用例、fixture 与套件，忽略读取路径等运行期字段", () => {
-    const base = runner.datasetInputHash(dataset, entry)
+    const base = datasetInputHash(dataset, entry)
     expect(base).toMatch(/^sha256:[0-9a-f]{64}$/)
-    expect(runner.datasetInputHash({
+    expect(datasetInputHash({
       ...dataset,
       repoRoot: join(tmpdir(), "elsewhere"),
       categoriesPath: "elsewhere.json",
@@ -441,17 +441,17 @@ describe("数据集输入哈希与请求模型身份", () => {
     const caseCopy = JSON.parse(JSON.stringify(dataset))
     const caseEntry = caseCopy.cases.find((candidate: any) => candidate.caseId === entry.caseId)
     caseEntry.case.driver[0].text = `${caseEntry.case.driver[0].text}（被改写）`
-    expect(runner.datasetInputHash(caseCopy, caseEntry)).not.toBe(base)
+    expect(datasetInputHash(caseCopy, caseEntry)).not.toBe(base)
 
     const fixtureCopy = JSON.parse(JSON.stringify(dataset))
     const fixtureEntry = fixtureCopy.cases.find((candidate: any) => candidate.caseId === entry.caseId)
     fixtureEntry.fixture.initialMemory[0].content = `${fixtureEntry.fixture.initialMemory[0].content}（被改写）`
-    expect(runner.datasetInputHash(fixtureCopy, fixtureEntry)).not.toBe(base)
+    expect(datasetInputHash(fixtureCopy, fixtureEntry)).not.toBe(base)
 
     const suiteCopy = JSON.parse(JSON.stringify(dataset))
     const suite = suiteCopy.suites.find((candidate: any) => candidate.suiteId === entry.suiteId)
     suite.purpose = `${suite.purpose}（被改写）`
-    expect(runner.datasetInputHash(suiteCopy, suiteCopy.cases.find((candidate: any) => candidate.caseId === entry.caseId))).not.toBe(base)
+    expect(datasetInputHash(suiteCopy, suiteCopy.cases.find((candidate: any) => candidate.caseId === entry.caseId))).not.toBe(base)
   })
 
   it("实际响应模型只认主聊天请求，忽略后台链路与失败请求", () => {

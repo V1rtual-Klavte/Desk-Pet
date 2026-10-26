@@ -73,6 +73,18 @@ async function runDomainBootstrap(): Promise<void> {
   // 给每次调用加一次 set_log_config 下行请求与噪声。
   applyLogLevel()
 
+  // ── 1a. 固定时钟（只对 sim-eval 生效）──
+  // 必须早于 direct-seed（fixture 时间与观察时钟要对齐）与任何领域时间消费者；
+  // 只覆盖本进程 Date，Rust 调度器与 OS 时间戳仍是真实时间。
+  if (isSimEvalRequested()) {
+    const { getSimEvalRunContext } = await import("@/services/sim/run-context")
+    const { installSimClock } = await import("@/services/sim/clock")
+    const context = await getSimEvalRunContext()
+    if (!context) throw new Error("sim-eval 已开启但没有运行上下文")
+    const clock = installSimClock(context.clock)
+    log.info(`1a/12 固定时钟就绪: ${clock.base} (${clock.timezone})`)
+  }
+
   // ── 1b. 测试侧模型覆盖（只对 sim-eval 生效）──
   // 必须在任何模型消费者（记忆 dreaming、主动、会话）之前写入隔离副本 CONFIG；
   // 解析入口与 E2E 共用 src/services/sim/eval-models.ts，凭据只经本地测试文件与环境变量。

@@ -1,6 +1,6 @@
 ---
 name: desk-pet-chat
-description: 通过真实 app 的 dev 控制通道和 V1rtual-Desk-Pet 桌宠自然聊天，并对聊天记录做自由定性评测（coding agent 评审）。用户说“和桌宠聊天”“聊桌宠”“desk pet chat”“跑一下陪伴闭环”“测拟人化/像不像人”“自由评测聊天”时使用。结构化用例的编写与审批用 desk-pet-eval-authoring，结构化执行与 API judge 判分用 desk-pet-eval-runner。
+description: 通过真实 app 的 dev 控制通道和 V1rtual-Desk-Pet 桌宠自然聊天，并对聊天记录做自由定性评测（coding agent 评审）。用户说“和桌宠聊天”“聊桌宠”“desk pet chat”“跑一下陪伴闭环”“测拟人化/像不像人”“自由评测聊天”时使用。结构化用例的编写与审批用 desk-pet-eval-authoring，结构化执行、独立 judge 判分与报告用 desk-pet-eval-runner。
 ---
 
 # 和桌宠聊天（真实链路）
@@ -491,15 +491,15 @@ node scripts/desk-pet-chat.mjs suite observation,tasks --run --rounds 3
 本 Skill 的评测对象是自由聊天和最终定性结果。用户要求“自由评测”“看看聊得像不像”时，可以按下面的边界给判断：
 
 - 可以评：自然度、接话、人格一致、信息完整性、是否答非所问、长期体验等可由聊天记录支撑的结论。
-- 不可以评：结构化用例的探针成败、gold 批准、没有证据的内部状态。结构化探针走 runner 的确定性检查与异构 API judge；coding agent 的结论不能替代它。
+- 不可以评：结构化用例的探针成败、gold 批准、没有证据的内部状态。结构化探针走 runner 冻结的判分包与独立 coding-agent judge；本 Skill 的自由评述不能替代它。
 - 结论必须引用具体回复或报告字段；缺证据写未知，不按风格分补产品失败。
 - 报告里分开写“自由定性结论”和“结构化探针结果（未运行／由 runner 提供）”。
 
 ## 结构化评测
 
-结构化用例不在这里驱动或判分：写题、审阅与用户审批见 [`desk-pet-eval-authoring`](../desk-pet-eval-authoring/SKILL.md)，冻结规格、执行、确定性检查与异构 API judge 见 [`desk-pet-eval-runner`](../desk-pet-eval-runner/SKILL.md)。本 Skill 只负责真实聊天和上面的自由定性评测；不要代替 runner 判探针，也不要代填 gold 审批。
+结构化用例不在这里驱动或判分：写题、审阅与用户审批见 [`desk-pet-eval-authoring`](../desk-pet-eval-authoring/SKILL.md)，冻结规格、执行、判分包与独立 judge 裁决见 [`desk-pet-eval-runner`](../desk-pet-eval-runner/SKILL.md)。本 Skill 只负责真实聊天和上面的自由定性评测；不要代替 runner 判探针，也不要代填 gold 审批。
 
-如果用户只是让你按某条用例自然扮演用户，使用 authoring 输出的 `dataset driver`，只读 `userRole` + `driver`，不要先看 `dataset review`。driver 里的 `at` 只是评测方的固定时钟标签，不代表真实时间已经推进；不要自行等待或伪造跨天间隔。
+如果用户只是让你按某条用例自然扮演用户，使用 authoring 输出的 `dataset driver`，只读 `userRole` + `driver`，不要先看 `dataset review`。driver 里的 `at` 会由评测运行器推进 Node 域固定时钟，不触发真实等待，也不代表 Rust／OS 时间或真实日程已经推进；不要自行等待或伪造跨天间隔。
 
 ## 边界
 

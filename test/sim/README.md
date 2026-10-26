@@ -6,8 +6,8 @@
 
 与桌宠聊天时先读 [`desk-pet-chat/SKILL.md`](desk-pet-chat/SKILL.md)。评测数据集另有两个 Skill：
 写题与用户审批见 [`desk-pet-eval-authoring/SKILL.md`](desk-pet-eval-authoring/SKILL.md)，
-结构化执行、API judge 判分与报告见 [`desk-pet-eval-runner/SKILL.md`](desk-pet-eval-runner/SKILL.md)。
-三者共用同一份数据集与 CLI 规则；W1–W2 已落数据集、题型、审阅、银标候选、debug 隔离起停与 direct-seed 装载（W2 已验收 2026-10-25）；W3 测试侧 `evidence.mjs`／`report.mjs`、产品侧 trace 采集与跨会话取证、运行器封存接线已于 2026-10-25 验收，聊天驱动和判分仍未实施。
+结构化执行、判分包冻结、裁决回填与报告见 [`desk-pet-eval-runner/SKILL.md`](desk-pet-eval-runner/SKILL.md)。
+三者共用同一份数据集与 CLI 规则；W1–W3 已落数据集、题型、审阅、银标候选、debug 隔离起停、direct-seed 装载、证据封存与采集（W2／W3 已验收 2026-10-25）；W4 的独立 coding-agent judge 判分、可选抽查与同源报告已实现并通过快层反例验收（2026-10-25），真实 judge 未运行；W5 的授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收；真实模型／judge／Skill 与用户关口未执行。
 
 ## 启动
 
@@ -78,27 +78,45 @@ node scripts/desk-pet-chat.mjs dataset list
 node scripts/desk-pet-chat.mjs dataset types
 node scripts/desk-pet-chat.mjs dataset review saturday-companionship
 node scripts/desk-pet-chat.mjs dataset driver saturday-companionship
-node scripts/desk-pet-chat.mjs eval prepare --case saturday-companionship --card <card.md> [--run-id <id>]
+node scripts/desk-pet-chat.mjs eval prepare --case saturday-companionship --card <card.md> --authorization <auth.json> [--run-id <id>] [--baseline <evalRunId>]
+node scripts/desk-pet-chat.mjs eval prepare --repair-of <runId> [--run-id <id>]
 node scripts/desk-pet-chat.mjs eval start --run-id <id>
+node scripts/desk-pet-chat.mjs eval drive --run-id <id>
 node scripts/desk-pet-chat.mjs eval status --run-id <id>
+node scripts/desk-pet-chat.mjs eval finish --run-id <id> [--interrupted --reason <text>]
+node scripts/desk-pet-chat.mjs eval compare --run-id <id> [--baseline <evalRunId>] [--json]
+node scripts/desk-pet-chat.mjs eval holdout --case saturday-companionship [--json]
+node scripts/desk-pet-chat.mjs eval judge prepare --run-id <id> [--attempt-id <id>] [--json]
+node scripts/desk-pet-chat.mjs eval judge apply --run-id <id> --verdicts <file.json> [--json]
+node scripts/desk-pet-chat.mjs eval review show --run-id <id> [--attempt-id <id>] [--json]
+node scripts/desk-pet-chat.mjs eval review spotcheck --run-id <id> --checks <file.json> [--reviewer-name <name>] [--notes <text>] [--json]
+node scripts/desk-pet-chat.mjs eval report --run-id <id> [--json]
 node scripts/desk-pet-chat.mjs eval stop --run-id <id>
 ```
 
 `dataset` 命令只读 `test/ideal-traces/suites/`，不启动 app、不调用模型。当前只有
 `daily-companionship/saturday-companionship` 一条 silver/pending 候选（27 条用户消息 + 2 个 host 步骤、
-3 个会话、21 条探针，其中 9 条 critical；覆盖 8 个题型），其他套件为空占位。
-数据集为 schema v3：fixture 声明 `loading`（`direct-seed` 直接写隔离数据根 / `real-chain` 走真实导入），
+3 个会话、23 条探针，其中 11 条 critical；覆盖 8 个题型；难度 L1 4／L2 5／L3 6／L4 6／L5 2），
+其他套件为空占位。
+数据集为 schema v4：fixture 声明 `loading`（`direct-seed` 直接写隔离数据根 / `real-chain` 走真实导入），
 `fixed` 时钟要求每个 driver 步骤带升序 `at`，每条探针带 `questionType` 与 1–5 的 `difficulty`，
+每条探针声明 `rubric`，内容词表、频率、时间关系、主语别名与跨会话来源只在 `expectation` 声明一次，rubric 注册表只保留通用判据；
 case 的 `questionTypes` 必须等于探针题型并集；探针观察窗口限定在 driver 步骤，避免 fixture 预置的助手消息污染。
 题型注册表是 [`desk-pet-chat/question-types.json`](desk-pet-chat/question-types.json)，共 7 个家族、24 个题型，
-每个产品分类至少被一个题型覆盖。`review` 给人看完整候选、题型与评审权威、装载方式、难度分布与审批差异；`driver` 只输出
+每个产品分类至少被一个题型覆盖。`review` 给人看完整候选、题型与判分方式、装载方式、难度分布与审批差异；`driver` 只输出
 `schemaVersion`／`caseId`／`revision`／`specHash`／`userRole`／`driver`，不含题型、probes、oracle、检查点、证据或评分。
 代理只能起草 silver；gold 必须由用户针对当前 `specHash` 的真实会话消息审批，代理不得代填审批或把框架通过当成用例审批。
-authoring Skill 会先列候选、询问要审哪条，再把审阅卡贴到聊天区；W1–W2 没有评分与审批写入，数据集校验通过不产生质量结论。
-W2 的 `eval` 命令只做隔离启动、所有权核验与 direct-seed 装载：运行根固定在 `test/.tmp/sim-eval-<id>`，
-要求显式 `--card`，不读真实 CONFIG；`stop` 只写 `stop.request`。真实启动、ready 核验、非法路径失败、跨进程单实例与停止后退出已于 2026-10-25 验收；`.instance.lock` 按设计保留但锁已释放。固定时钟未注入，跨天间隔仍属未验证；相关 56 条测试已在验收轮运行通过。
-结构化探针的正式判分走 API judge；`humanizer.*` 与拟人化质量只由用户本人判定，coding agent 只能给建议，
-不能产生 pass/fail 或 gold。自动化遇到 human 权威探针必须停在 `pending`。
+authoring Skill 会先列候选、询问要审哪条，再把审阅卡贴到聊天区；W1–W5 没有 gold 审批写入，数据集校验通过不产生质量结论。
+W2–W3 的 `eval` 命令做隔离启动、所有权核验、direct-seed 装载、采集与封存：运行根固定在 `test/.tmp/sim-eval-<id>`，
+要求显式 `--card`，不读真实 CONFIG；`finish` 收口采集并封存，`stop` 只写 `stop.request`。真实启动、ready 核验、非法路径失败、跨进程单实例与停止后退出已于 2026-10-25 验收；`.instance.lock` 按设计保留但锁已释放。该轮 56 条测试已运行通过；固定时钟当时未注入。
+W4 的 `judge prepare` 只对已封存完整证据冻结判分包（含 rubric、驱动、证据引用与判分说明），交给独立 coding-agent judge 逐条裁决；`judge apply` 只校验回填裁决并追加 `grades/`，缺项、重复、未知规则、证据引用无效、判分者与被测模型同源或 packet 哈希不符都会硬失败。runner 不调用模型 API、不读取 judge 凭据。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞也不改写判分。`report` 从同一证据重建四层报告。W4 快层 `聊天评分关口.test.ts` 已运行通过（2026-10-25），仍未发起真实模型／judge 调用。
+全部探针（含 `humanizer.*` 与拟人化质量规则）统一由独立 coding-agent judge 判定；用户抽查只用于核对，
+不会产生或改写 pass/fail，也不能替代 case 的 gold 审批。
+W5 的 `prepare` 冻结 `--authorization`（用例、用途、模型／数据范围、trial 与修复预算、holdout 一致性）和 `clock.json`；
+`start` 核验时钟一致，`drive` 按驱动包逐步推进并持久化进度，中断后从同一进度续跑、不重放未知副作用，调用前复核授权指纹与请求模型。
+`compare` 只在固定条件一致时对照 baseline 与候选，漂移条件逐项列出；`holdout` 只报告留出使用，两者都不产生质量结论。
+修复用 `--repair-of` 新建 attempt，沿用原 Case 哈希、Card、Profile 与时钟并保留旧失败。W5 已于 2026-10-26 集中验收；
+真实 app／模型 Skill 运行仍需当次授权，固定时钟只推进 Node 域，Rust／OS 时间仍是真实时间。
 
 测试分类的唯一真相源是 [`desk-pet-chat/categories.json`](desk-pet-chat/categories.json)；
 题型与家族的真相源是 [`desk-pet-chat/question-types.json`](desk-pet-chat/question-types.json)。

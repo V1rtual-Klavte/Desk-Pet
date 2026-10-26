@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  ORACLE_CHECKER_SPECS,
+  PROBE_EXPECTATION_KIND_VALUES,
+  QUALITY_RUBRIC_VALUES,
+  RUBRIC_SPECS,
   applyReviewDecisions,
   buildDriverPackage,
   buildReviewPackage,
@@ -86,7 +88,7 @@ function writeSuite(root: string, suiteId: string, caseSpec: any, fixture: any, 
   writeFileSync(
     join(suiteDir, "suite.json"),
     JSON.stringify({
-      schemaVersion: 3,
+      schemaVersion: 4,
       suiteId,
       revision: 1,
       purpose,
@@ -105,17 +107,17 @@ function writeSuite(root: string, suiteId: string, caseSpec: any, fixture: any, 
 }
 
 describe("聊天评测数据集规范", () => {
-  it("真实数据集为 schema v3，题型注册表覆盖全部分类，未审批候选只能是 silver", () => {
+  it("真实数据集为 schema v4，题型注册表覆盖全部分类，未审批候选只能是 silver", () => {
     const dataset = loadDataset();
     expect(dataset.errors).toEqual([]);
-    expect(dataset.schemaVersion).toBe(3);
+    expect(dataset.schemaVersion).toBe(4);
     expect(dataset.suites.map((suite) => suite.suiteId)).toEqual(["daily-companionship"]);
-    expect(dataset.suites[0]!.schemaVersion).toBe(3);
+    expect(dataset.suites[0]!.schemaVersion).toBe(4);
     expect(dataset.cases).toHaveLength(1);
     expect(dataset.cases[0]!.caseId).toBe("saturday-companionship");
     expect(dataset.cases[0]!.suiteId).toBe("daily-companionship");
-    expect(dataset.cases[0]!.case.schemaVersion).toBe(3);
-    expect(dataset.cases[0]!.fixture.schemaVersion).toBe(3);
+    expect(dataset.cases[0]!.case.schemaVersion).toBe(4);
+    expect(dataset.cases[0]!.fixture.schemaVersion).toBe(4);
     expect(dataset.cases[0]!.case.categories).toEqual(["chat", "memory", "session", "humanizer"]);
     expect(dataset.cases[0]!.case.questionTypes).toEqual([
       "correction",
@@ -220,9 +222,10 @@ describe("聊天评测数据集规范", () => {
 
     const ask = entry.case.driver.find((step) => step.id === "ask-history");
     expect(ask?.kind).toBe("message");
-    if (!ask || ask.kind !== "message") throw new Error("ask-history 必须是消息步骤");
+    const askText = ask?.kind === "message" ? ask.text : "";
+    expect(askText.length).toBeGreaterThan(0);
     for (const leaked of ["一周", "经常", "骑车", "跑得老勤"]) {
-      expect(ask.text).not.toContain(leaked);
+      expect(askText).not.toContain(leaked);
     }
 
     const seeded = entry.fixture.initialMemory.map((memory) => memory.content).join("\n");
@@ -306,19 +309,19 @@ describe("聊天评测数据集规范", () => {
 
     const entry = loadDataset().cases[0]!;
     const review = buildReviewPackage(entry);
-    expect(review.difficultyCounts).toEqual({ 1: 4, 2: 4, 3: 5, 4: 6, 5: 2 });
-    expect(formatReviewPackage(review)).toContain("难度分布：L1 4 · L2 4 · L3 5 · L4 6 · L5 2");
+    expect(review.difficultyCounts).toEqual({ 1: 4, 2: 5, 3: 6, 4: 6, 5: 2 });
+    expect(formatReviewPackage(review)).toContain("难度分布：L1 4 · L2 5 · L3 6 · L4 6 · L5 2");
 
     const summary = summarizeDataset(loadDataset());
-    expect(summary.difficultyCounts).toEqual({ 1: 4, 2: 4, 3: 5, 4: 6, 5: 2 });
+    expect(summary.difficultyCounts).toEqual({ 1: 4, 2: 5, 3: 6, 4: 6, 5: 2 });
   });
 
-  it("探针逐题绑定驱动步骤，21 条探针中 9 条关键，全局探针只扫全部助手回复", () => {
+  it("探针逐题绑定驱动步骤，23 条探针中 11 条关键，全局探针只扫全部助手回复", () => {
     const entry = loadDataset().cases[0]!;
     const driverIds = new Set(entry.case.driver.map((step) => step.id));
-    expect(entry.case.probes).toHaveLength(21);
-    expect(entry.case.probes.filter((probe) => probe.critical)).toHaveLength(9);
-    expect(entry.case.probes.filter((probe) => probe.polarity === "required")).toHaveLength(13);
+    expect(entry.case.probes).toHaveLength(23);
+    expect(entry.case.probes.filter((probe) => probe.critical)).toHaveLength(11);
+    expect(entry.case.probes.filter((probe) => probe.polarity === "required")).toHaveLength(15);
     expect(entry.case.probes.filter((probe) => probe.polarity === "forbidden")).toHaveLength(8);
     for (const probe of entry.case.probes) {
       expect(driverIds.has(probe.after)).toBe(true);
@@ -332,6 +335,7 @@ describe("聊天评测数据集规范", () => {
       "p-short-confirmation",
       "p-food-return",
       "p-tired-no-advice",
+      "p-cross-session-provenance",
       "p-cross-session-answer",
       "p-current-frequency",
       "p-history-running",
@@ -342,6 +346,7 @@ describe("聊天评测数据集规范", () => {
       "p-clarify-ack",
       "p-food-choice-recall",
       "p-abstain-food",
+      "p-durable-provenance",
       "p-durable-recall",
       "p-global-service-tone",
       "p-global-meta",
@@ -357,26 +362,22 @@ describe("聊天评测数据集规范", () => {
     expect(entry.case.oracle).not.toHaveProperty("forbidden");
   });
 
-  it("题型分布与评审权威由探针推导，真实用例覆盖八个题型", () => {
+  it("题型分布由探针推导，真实用例覆盖八个题型", () => {
     const entry = loadDataset().cases[0]!;
     const counts: Record<string, number> = {};
-    const authorityCounts: Record<string, number> = { deterministic: 0, "api-judge": 0, human: 0 };
     for (const probe of entry.case.probes) {
       counts[probe.questionType] = (counts[probe.questionType] ?? 0) + 1;
-      const checker = ORACLE_CHECKER_SPECS.find((spec) => spec.id === probe.checker)!;
-      authorityCounts[checker.authority] += 1;
     }
     expect(counts).toEqual({
       temporal: 5,
       correction: 2,
       source: 2,
-      "cross-session": 3,
+      "cross-session": 5,
       "multi-turn": 2,
       adversarial: 2,
       boundary: 1,
       style: 4,
     });
-    expect(authorityCounts).toEqual({ deterministic: 11, "api-judge": 4, human: 6 });
     expect(new Set(entry.case.probes.map((probe) => probe.questionType))).toEqual(
       new Set(entry.case.questionTypes),
     );
@@ -400,36 +401,50 @@ describe("聊天评测数据集规范", () => {
     expect(() => validateCaseSpec(undeclared, { questionTypeIds })).toThrow(/未声明/);
   });
 
-  it("humanizer 语义探针只由用户判定，coding agent 只提供建议", () => {
-    const humanizerSpecs = ORACLE_CHECKER_SPECS.filter((spec) => spec.id.startsWith("humanizer."));
-    expect(humanizerSpecs.length).toBeGreaterThan(0);
-    for (const spec of humanizerSpecs) {
-      expect(spec.authority).toBe("human");
-      expect(spec.assistants).toEqual(["coding-agent"]);
+  it("全部探针共享同一 rubric 注册表，humanizer 不再单独声明人工权威", () => {
+    const entry = loadDataset().cases[0]!;
+    const rubricById = new Map(RUBRIC_SPECS.map((spec) => [spec.id, spec]));
+    for (const probe of entry.case.probes) {
+      expect(rubricById.has(probe.rubric)).toBe(true);
+      expect(probe).not.toHaveProperty("authority");
+      expect(probe).not.toHaveProperty("assistants");
     }
-    for (const spec of ORACLE_CHECKER_SPECS) {
-      if (spec.id.startsWith("humanizer.")) continue;
-      expect(spec.authority).toBe(spec.kind === "semantic" ? "api-judge" : "deterministic");
-      expect(spec.assistants).toEqual([]);
-    }
+    const humanizerProbes = entry.case.probes.filter((probe) => probe.rubric.startsWith("humanizer."));
+    expect(humanizerProbes.map((probe) => probe.rubric)).toEqual([
+      "humanizer.tech-banter",
+      "humanizer.short-confirmation",
+      "humanizer.food-return",
+      "humanizer.no-unsolicited-advice",
+      "humanizer.no-service-tone",
+      "humanizer.no-meta-role",
+    ]);
+    for (const probe of humanizerProbes) expect(rubricById.get(probe.rubric)!.kind).toBe("semantic");
+
+    const probeAuthority = baseCase();
+    probeAuthority.probes[0].authority = "human";
+    expect(() => validateCaseSpec(probeAuthority)).toThrow(/未登记字段：authority/);
   });
 
-  it("拟人化评分必须声明 human 权威，并保留 coding-agent 建议位", () => {
-    const missingAuthority = baseCase();
-    delete missingAuthority.quality.authority;
-    expect(() => validateCaseSpec(missingAuthority)).toThrow(/缺少字段：authority/);
+  it("拟人化质量评分只绑定 rubric 与版本，不声明权威或建议位", () => {
+    const entry = loadDataset().cases[0]!;
+    expect(QUALITY_RUBRIC_VALUES).toContain(entry.case.quality.rubric);
+    expect(Object.keys(entry.case.quality).sort()).toEqual(["rubric", "rubricVersion"]);
 
-    const wrongAuthority = baseCase();
-    wrongAuthority.quality.authority = "api-judge";
-    expect(() => validateCaseSpec(wrongAuthority)).toThrow(/human/);
+    const missingVersion = baseCase();
+    delete missingVersion.quality.rubricVersion;
+    expect(() => validateCaseSpec(missingVersion)).toThrow(/缺少字段：rubricVersion/);
 
-    const missingAssistant = baseCase();
-    missingAssistant.quality.assistants = [];
-    expect(() => validateCaseSpec(missingAssistant)).toThrow(/coding-agent/);
+    const unknownRubric = baseCase();
+    unknownRubric.quality.rubric = "humanizer-v2";
+    expect(() => validateCaseSpec(unknownRubric)).toThrow(/humanizer-six-dimensions/);
 
-    const unknownAssistant = baseCase();
-    unknownAssistant.quality.assistants = ["chat-agent"];
-    expect(() => validateCaseSpec(unknownAssistant)).toThrow(/未登记值/);
+    const legacyAuthority = baseCase();
+    legacyAuthority.quality.authority = "human";
+    expect(() => validateCaseSpec(legacyAuthority)).toThrow(/未登记字段：authority/);
+
+    const legacyAssistants = baseCase();
+    legacyAssistants.quality.assistants = ["coding-agent"];
+    expect(() => validateCaseSpec(legacyAssistants)).toThrow(/未登记字段：assistants/);
   });
 
   it("题型注册表必须覆盖全部分类，且只能引用已登记分类", () => {
@@ -458,14 +473,14 @@ describe("聊天评测数据集规范", () => {
     );
   });
 
-  it("探针必须绑定驱动步骤、已登记 checker 与已登记证据", () => {
+  it("探针必须绑定驱动步骤、已登记 rubric 与已登记证据", () => {
     const unknownStep = baseCase();
     unknownStep.probes[0].after = "not-a-step";
     expect(() => validateCaseSpec(unknownStep)).toThrow(/未指向驱动步骤/);
 
-    const unknownChecker = baseCase();
-    unknownChecker.probes[0].checker = "answer.not-registered";
-    expect(() => validateCaseSpec(unknownChecker)).toThrow(/未登记/);
+    const unknownRubric = baseCase();
+    unknownRubric.probes[0].rubric = "answer.not-registered";
+    expect(() => validateCaseSpec(unknownRubric)).toThrow(/未登记/);
 
     const unknownWindow = baseCase();
     unknownWindow.probes[0].window = "later";
@@ -480,7 +495,7 @@ describe("聊天评测数据集规范", () => {
     expect(() => validateCaseSpec(nonBooleanCritical)).toThrow(/critical/);
   });
 
-  it("探针 id 唯一，关键 required 不能为空，同一 checker 不能既要求又禁止", () => {
+  it("探针 id 唯一，关键 required 不能为空，同一 rubric 不能既要求又禁止", () => {
     const duplicate = baseCase();
     duplicate.probes[1].id = duplicate.probes[0].id;
     expect(() => validateCaseSpec(duplicate)).toThrow(/重复 id/);
@@ -514,12 +529,146 @@ describe("聊天评测数据集规范", () => {
 
   it("last-assistant 探针只能跟在用户消息步骤之后", () => {
     const caseSpec = baseCase();
-    const probe = caseSpec.probes.find((item: any) => item.id === "p-memory-source");
-    probe.window = "last-assistant";
-    expect(() => validateCaseSpec(caseSpec)).not.toThrow();
-
+    const probe = caseSpec.probes.find((item: any) => item.id === "p-current-frequency");
+    expect(probe.window).toBe("last-assistant");
     probe.after = "new-session-b";
     expect(() => validateCaseSpec(caseSpec)).toThrow(/last-assistant/);
+  });
+
+  it("检查器窗口固定：状态来源探针用 state，跨会话结构探针用 last-assistant", () => {
+    const stateWindow = baseCase();
+    const memoryProbe = stateWindow.probes.find((item: any) => item.id === "p-memory-source");
+    memoryProbe.window = "last-assistant";
+    expect(() => validateCaseSpec(stateWindow)).toThrow(/必须是 state/);
+
+    const provenanceWindow = baseCase();
+    const provenanceProbe = provenanceWindow.probes.find(
+      (item: any) => item.id === "p-cross-session-provenance",
+    );
+    provenanceProbe.window = "all-assistant";
+    expect(() => validateCaseSpec(provenanceWindow)).toThrow(/必须是 last-assistant/);
+  });
+
+  it("声明式 expectation 缺失或多出时硬失败，不会静默退回通用词表", () => {
+    const missingFact = baseCase();
+    delete missingFact.probes.find((item: any) => item.id === "p-current-frequency").expectation;
+    expect(() => validateCaseSpec(missingFact)).toThrow(/expectation 必填/);
+
+    const missingSubjects = baseCase();
+    delete missingSubjects.probes.find((item: any) => item.id === "p-memory-source").expectation;
+    expect(() => validateCaseSpec(missingSubjects)).toThrow(/expectation 必填/);
+
+    const unexpected = baseCase();
+    unexpected.probes.find((item: any) => item.id === "p-tech-banter").expectation = {
+      subjects: [{ label: "跑", aliases: [] }],
+    };
+    expect(() => validateCaseSpec(unexpected)).toThrow(/不适用/);
+
+    const unknownShape = baseCase();
+    unknownShape.probes.find((item: any) => item.id === "p-current-frequency").expectation = {
+      fact: {
+        kind: "frequency",
+        subject: { label: "跑步", aliases: [] },
+        frequency: "once-weekly",
+        temporal: "current",
+        extra: true,
+      },
+    };
+    expect(() => validateCaseSpec(unknownShape)).toThrow(/未登记字段：extra/);
+  });
+
+  it("expectation 的频率、时间与别名必须使用登记值且不得重复", () => {
+    const badFrequency = baseCase();
+    badFrequency.probes.find((item: any) => item.id === "p-current-frequency").expectation.fact.frequency =
+      "weekly";
+    expect(() => validateCaseSpec(badFrequency)).toThrow(/once-weekly/);
+
+    const badTemporal = baseCase();
+    badTemporal.probes.find((item: any) => item.id === "p-current-frequency").expectation.fact.temporal =
+      "future";
+    expect(() => validateCaseSpec(badTemporal)).toThrow(/current/);
+
+    const aliasEqualsLabel = baseCase();
+    aliasEqualsLabel.probes.find((item: any) => item.id === "p-current-frequency").expectation.fact.subject = {
+      label: "跑步",
+      aliases: ["跑步"],
+    };
+    expect(() => validateCaseSpec(aliasEqualsLabel)).toThrow(/不能重复 label/);
+
+    const duplicateAliases = baseCase();
+    duplicateAliases.probes.find((item: any) => item.id === "p-current-frequency").expectation.fact.subject = {
+      label: "跑步",
+      aliases: ["跑", "跑"],
+    };
+    expect(() => validateCaseSpec(duplicateAliases)).toThrow(/含重复值/);
+
+    const crossSubjectDuplicate = baseCase();
+    const subjectsProbe = crossSubjectDuplicate.probes.find((item: any) => item.id === "p-memory-source");
+    subjectsProbe.expectation.subjects.push({ label: "锻炼", aliases: ["运动"] });
+    expect(() => validateCaseSpec(crossSubjectDuplicate)).toThrow(/跨主语重复别名/);
+  });
+
+  it("跨会话 expectation 的来源步骤必须先于探针，且探针之前已有新建会话", () => {
+    const laterSource = baseCase();
+    laterSource.probes.find((item: any) => item.id === "p-cross-session-answer").expectation.sourceStep =
+      "summary";
+    expect(() => validateCaseSpec(laterSource)).toThrow(/必须早于探针步骤/);
+
+    const hostSource = baseCase();
+    hostSource.probes.find((item: any) => item.id === "p-cross-session-provenance").expectation.sourceStep =
+      "new-session-b";
+    expect(() => validateCaseSpec(hostSource)).toThrow(/必须指向驱动消息步骤/);
+
+    const beforeNewSession = baseCase();
+    const earlyProbe = beforeNewSession.probes.find(
+      (item: any) => item.id === "p-cross-session-provenance",
+    );
+    earlyProbe.after = "sleep";
+    expect(() => validateCaseSpec(beforeNewSession)).toThrow(/chat_new_session/);
+  });
+
+  it("跨会话内容探针必须与同一 after 的结构探针配对", () => {
+    const orphan = baseCase();
+    orphan.probes.find((item: any) => item.id === "p-cross-session-answer").after = "food-recall";
+    expect(() => validateCaseSpec(orphan)).toThrow(/缺少同一 after 的结构探针/);
+  });
+
+  it("时间范围禁止项必须声明主语、频率与时间", () => {
+    const badFrequency = baseCase();
+    badFrequency.probes.find((item: any) => item.id === "p-no-temporal-swap").expectation.forbidden[0].frequency =
+      "always";
+    expect(() => validateCaseSpec(badFrequency)).toThrow(/once-weekly/);
+
+    const missingTemporal = baseCase();
+    delete missingTemporal.probes.find((item: any) => item.id === "p-no-temporal-swap").expectation.forbidden[0]
+      .temporal;
+    expect(() => validateCaseSpec(missingTemporal)).toThrow(/缺少字段：temporal/);
+
+    const emptyForbidden = baseCase();
+    emptyForbidden.probes.find((item: any) => item.id === "p-no-temporal-swap").expectation.forbidden = [];
+    expect(() => validateCaseSpec(emptyForbidden)).toThrow(/非空数组/);
+  });
+
+  it("每个 rubric 都声明 expectation 类型，内容由 case 单点声明而非 rubric 词表", () => {
+    for (const spec of RUBRIC_SPECS) {
+      expect(PROBE_EXPECTATION_KIND_VALUES).toContain(spec.expectation);
+    }
+    const expectationById = Object.fromEntries(
+      RUBRIC_SPECS.map((spec) => [spec.id, spec.expectation]),
+    );
+    expect(expectationById["answer.fact-recall"]).toBe("fact");
+    expect(expectationById["answer.cross-session-recall"]).toBe("cross-session");
+    expect(expectationById["answer.temporal-scope"]).toBe("temporal-scope");
+    expect(expectationById["memory-source.correction-entry"]).toBe("subjects");
+    expect(expectationById["memory-source.no-fixture-as-update"]).toBe("subjects");
+    expect(expectationById["session.answer-in-new-session"]).toBe("session-source");
+    expect(expectationById["chat.correction-acknowledged"]).toBe("none");
+    expect(expectationById["humanizer.tech-banter"]).toBe("none");
+    expect(expectationById["reply.no-oracle-leak"]).toBe("none");
+    for (const spec of RUBRIC_SPECS) {
+      expect(Object.keys(spec).sort()).toEqual(["description", "expectation", "id", "kind"]);
+    }
+    expect(RUBRIC_SPECS.map((spec) => spec.id)).not.toContain("answer.current-frequency");
   });
 
   it("当前 schema 的 oracle 只保留允许替代，不再接受旧 required/forbidden", () => {
@@ -587,6 +736,12 @@ describe("聊天评测数据集规范", () => {
     changedProbeCritical.probes[0].critical = false;
     const changedProbeDifficulty = baseCase();
     changedProbeDifficulty.probes[0].difficulty = 5;
+    const changedExpectation = baseCase();
+    changedExpectation.probes.find((probe: any) => probe.id === "p-current-frequency").expectation.fact.frequency =
+      "frequent";
+    const changedAlias = baseCase();
+    changedAlias.probes.find((probe: any) => probe.id === "p-no-cycling-swap").expectation.forbidden[0].subject.aliases
+      .push("单车通勤");
     const changedCheckpoint = baseCase();
     changedCheckpoint.checkpoints[1].note = "改过的检查点说明";
     const changedQuestionTypes = baseCase();
@@ -603,6 +758,8 @@ describe("聊天评测数据集规范", () => {
       ["oracleHash", makeEntry(changedProbe)],
       ["oracleHash", makeEntry(changedProbeCritical)],
       ["oracleHash", makeEntry(changedProbeDifficulty)],
+      ["oracleHash", makeEntry(changedExpectation)],
+      ["oracleHash", makeEntry(changedAlias)],
       ["oracleHash", makeEntry(changedCheckpoint)],
       ["contentHash", makeEntry(changedQuestionTypes)],
       ["oracleHash", makeEntry(changedProbeQuestionType)],
@@ -716,7 +873,9 @@ describe("聊天评测数据集规范", () => {
     expect(driverPackage).not.toHaveProperty("questionTypes");
     const driverJson = JSON.stringify(driverPackage);
     expect(driverJson).not.toContain("p-correction-ack");
-    expect(driverJson).not.toContain("answer.current-frequency");
+    expect(driverJson).not.toContain("answer.fact-recall");
+    expect(driverJson).not.toContain("once-weekly");
+    expect(driverJson).not.toContain("expectation");
     expect(driverJson).not.toContain("questionType");
     expect(driverJson).not.toMatch(/probe|oracle|fixture|checkpoint|评测|评分/i);
   });
@@ -737,16 +896,18 @@ describe("聊天评测数据集规范", () => {
     expect(review.trustBoundary.excludedFromDriver).toContain("oracle");
     expect(review.trustBoundary.excludedFromDriver).toContain("questionTypes");
     expect(review.questionTypes).toEqual(entry.case.questionTypes);
-    expect(review.candidate.probes).toHaveLength(21);
+    expect(review.candidate.probes).toHaveLength(23);
     expect(review.candidate.oracle.allowedAlternatives.length).toBeGreaterThan(0);
 
     const markdown = formatReviewPackage(review);
     expect(markdown).toContain("信任边界");
-    expect(markdown).toContain("题型与评审权威");
-    expect(markdown).toContain("human 权威只由用户本人判定");
-    expect(markdown).toContain("评审权威：human");
+    expect(markdown).toContain("题型与判分");
+    expect(markdown).toContain("全部探针与质量规则由独立 coding-agent judge 判定；用户抽查可选，不阻塞");
+    expect(markdown).toContain("humanizer-six-dimensions v1");
     expect(markdown).toContain("探针");
     expect(markdown).toContain("p-current-frequency");
+    expect(markdown).toContain("answer.fact-recall");
+    expect(markdown).toContain("期望 事实：跑步");
     expect(markdown).toContain("critical");
     expect(markdown).toContain("contentHash：批准");
   });
@@ -756,8 +917,8 @@ describe("聊天评测数据集规范", () => {
     expect(summary.caseCount).toBe(1);
     expect(summary.goldCount).toBe(0);
     expect(summary.silverCount).toBe(1);
-    expect(summary.probeCount).toBe(21);
-    expect(summary.criticalProbeCount).toBe(9);
+    expect(summary.probeCount).toBe(23);
+    expect(summary.criticalProbeCount).toBe(11);
     expect(summary.categoryCounts.memory).toBe(1);
     expect(summary.categoryCounts.session).toBe(1);
     expect(summary.categoryCounts.chat).toBe(1);
@@ -766,7 +927,7 @@ describe("聊天评测数据集规范", () => {
       temporal: 5,
       correction: 2,
       source: 2,
-      "cross-session": 3,
+      "cross-session": 5,
       "multi-turn": 2,
       adversarial: 2,
       boundary: 1,
@@ -776,9 +937,8 @@ describe("聊天评测数据集规范", () => {
     expect(summary.caseQuestionTypeCounts.temporal).toBe(1);
     expect(summary.caseQuestionTypeCounts.style).toBe(1);
     expect(summary.caseQuestionTypeCounts.open).toBe(0);
-    expect(summary.authorityCounts).toEqual({ deterministic: 11, "api-judge": 4, human: 6 });
-    expect(summary.suites[0]!.probeCount).toBe(21);
-    expect(summary.suites[0]!.criticalProbeCount).toBe(9);
+    expect(summary.suites[0]!.probeCount).toBe(23);
+    expect(summary.suites[0]!.criticalProbeCount).toBe(11);
   });
 
   it("规范化哈希与对象键顺序无关", () => {

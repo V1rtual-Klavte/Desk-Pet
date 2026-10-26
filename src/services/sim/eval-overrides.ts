@@ -9,7 +9,8 @@
 //
 // 覆盖只落在 `<workspace>/test/.tmp/sim-eval-*/data/settings/CONFIG.yaml`：
 // 不读真实开发配置，不回写真实数据根；日志只报告是否配置了 endpoint/apiKey，
-// 绝不回显凭据值。judge 模型由执行器在调用 API judge 时自行消费，不进入宿主配置。
+// 绝不回显凭据值。judge 模型字段供记忆基准等独立评测使用；聊天评测的 judge 是
+// 外部 coding agent，运行器不读取 judge 凭据，也不调用模型 API。
 
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"

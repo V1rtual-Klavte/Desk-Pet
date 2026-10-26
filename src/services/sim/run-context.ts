@@ -12,6 +12,8 @@
 import { readFile, realpath } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { getRuntimeMode, runtimePath } from "@/services/paths"
+import { readSimClockFile, SIM_CLOCK_FILE } from "./clock"
+import type { SimClockFile } from "./clock"
 
 export const SIM_EVAL_ENV = "DESKPET_SIM_EVAL"
 export const SIM_EVAL_RUN_DIR_ENV = "DESKPET_SIM_EVAL_RUN_DIR"
@@ -37,6 +39,8 @@ export interface SimEvalRunContext {
   controlDir: string
   seedPath: string
   seedReportPath: string
+  clockPath: string
+  clock: SimClockFile
   generation: string
   hostPid: number
   ready: SimEvalReadyFile
@@ -128,6 +132,9 @@ async function loadSimEvalRunContext(): Promise<SimEvalRunContext> {
     controlDir: ready.controlDir,
     seedPath: join(runDir, SIM_EVAL_SEED_FILE),
     seedReportPath: join(runDir, SIM_EVAL_SEED_REPORT_FILE),
+    clockPath: join(runDir, SIM_CLOCK_FILE),
+    // 评测运行必须有固定时钟：没有时钟就没有可复现的跨天/间隔判定，宁可启动失败。
+    clock: await readSimClockFile(join(runDir, SIM_CLOCK_FILE)),
     generation: ready.generation,
     hostPid: ready.pid,
     ready,

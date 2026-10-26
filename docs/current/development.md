@@ -48,9 +48,9 @@ dev 与 release 的路径区分：
 | 资源根 | `<仓库>/packaging/dist/`（`DEV_RESOURCE_SUBDIR`；node / harness / defaults 与打包闭包同形） | macOS：`.app/Contents/Resources/`；Windows：安装目录（与可执行文件同目录） |
 | runtime_mode | `development` | `production` |
 | E2E | `DESKPET_E2E=1` 且 `DESKPET_E2E_CHANNEL` 指向私有通道时走 `test/.tmp/e2e-*` 隔离根；E2E 分支仅 debug 编译 | 不编译 E2E 分支 |
-| 聊天评测隔离 | `DESKPET_SIM_EVAL=1` + `DESKPET_SIM_EVAL_RUN_DIR=<仓库>/test/.tmp/sim-eval-*` 时数据根固定为 `<run>/data`；只接受 `test/.tmp` 的直接子目录和 `sim-eval-` 前缀，拒绝与 E2E 并用 | 不编译该分支 |
+| 聊天评测隔离 | `DESKPET_SIM_EVAL=1` + `DESKPET_SIM_EVAL_RUN_DIR=<仓库>/test/.tmp/sim-eval-*` 时数据根固定为 `<run>/data`，并在 Node 引导早期按 `<run>/clock.json` 安装 Node 域固定时钟；只接受 `test/.tmp` 的直接子目录和 `sim-eval-` 前缀，拒绝与 E2E 并用 | 不编译该分支 |
 
-聊天评测隔离入口由 [scripts/sim-eval-run.mjs](../../scripts/sim-eval-run.mjs) 的 `eval prepare|start|status|finish|stop` 使用：宿主在取得数据根单实例锁后写 `ready.json`，Node 侧核对父进程、路径同源与 `runtimeMode: development` 后才装载 fixture；`start` 建 attempt 并开始 trace 采集，`finish` 收口采集并封存，采集状态可用 [desk-pet-chat.mjs](../../scripts/desk-pet-chat.mjs) 的 `capture status|sessions` 核对。它不是面向用户的启动方式，也不改变正常 dev 数据根。
+聊天评测隔离入口由 [scripts/sim-eval-run.mjs](../../scripts/sim-eval-run.mjs) 的 `eval prepare|start|drive|status|finish|compare|holdout|judge prepare|judge apply|review show|review spotcheck|report|stop` 使用：`prepare` 冻结授权与时钟，宿主在取得数据根单实例锁后写 `ready.json`，Node 侧核对父进程、路径同源与 `runtimeMode: development` 后才装载 fixture；`start` 核验时钟并建 attempt 开始 trace 采集，`drive` 按驱动包逐步推进并持久化进度、中断后从同一进度续跑，`finish` 收口采集并封存，`compare` 只在固定条件一致时对照 baseline 与候选，`holdout` 只报告留出使用，`judge prepare` 只对已封存完整证据冻结判分包，`judge apply` 校验独立 coding-agent judge 的裁决并追加判分，`review spotcheck` 记录用户可选的抽查意见（不改变判分），`report` 从同一证据重建四层报告；采集状态可用 [desk-pet-chat.mjs](../../scripts/desk-pet-chat.mjs) 的 `capture status|sessions` 核对。W4 判分／可选抽查／同源报告已实现并通过快层反例验收（2026-10-25），但未发起真实 judge 调用；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收。它不是面向用户的启动方式，也不改变正常 dev 数据根。
 
 ### 打包与发布
 

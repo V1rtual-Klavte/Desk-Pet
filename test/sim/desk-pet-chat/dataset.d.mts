@@ -16,15 +16,21 @@ export type DriverHostMethod =
 export type CheckpointWait = "assistant_message" | "memory_extraction_end" | "session_created" | "host_readback";
 export type EvidenceKind = "session_entry" | "memory_before_after" | "trace_event" | "host_readback" | "artifact";
 export type QualityRubric = "humanizer-six-dimensions";
-export type Calibration = "uncalibrated" | "calibrated";
 export type ReviewRole = "user";
 export type FeedbackSourceKind = "session_message";
 export type ReviewDecision = "approved" | "rejected";
 export type OracleCheckKind = "result" | "path" | "source" | "temporal" | "delivery" | "semantic";
 export type ProbeWindow = "last-assistant" | "state" | "all-assistant";
 export type ProbePolarity = "required" | "forbidden";
-export type ReviewAuthority = "deterministic" | "api-judge" | "human";
-export type ReviewAssistant = "coding-agent";
+export type ProbeFrequency = "once-weekly" | "frequent" | "thrice-weekly" | "frequent-or-thrice-weekly";
+export type ProbeTemporal = "current" | "past";
+export type ProbeExpectationKind =
+  | "none"
+  | "fact"
+  | "cross-session"
+  | "temporal-scope"
+  | "subjects"
+  | "session-source";
 export type CaseTier = "gold" | "silver";
 export type CaseLabelStatus = "approved" | "rejected" | "stale" | "pending";
 
@@ -48,15 +54,14 @@ export interface QuestionTypeRegistryInput {
   questionTypes: QuestionTypeSpec[];
 }
 
-export interface OracleCheckerSpec {
+export interface RubricSpec {
   readonly id: string;
   readonly kind: OracleCheckKind;
+  readonly expectation: ProbeExpectationKind;
   readonly description: string;
-  readonly authority: ReviewAuthority;
-  readonly assistants: readonly ReviewAssistant[];
 }
 
-export const DATASET_SCHEMA_VERSION: 3;
+export const DATASET_SCHEMA_VERSION: 4;
 export const QUESTION_TYPES_SCHEMA_VERSION: 1;
 export const DEFAULT_DATASET_ROOT: string;
 export const DEFAULT_CATEGORIES_PATH: string;
@@ -74,16 +79,69 @@ export const DRIVER_HOST_METHOD_VALUES: readonly DriverHostMethod[];
 export const CHECKPOINT_WAIT_VALUES: readonly CheckpointWait[];
 export const EVIDENCE_KIND_VALUES: readonly EvidenceKind[];
 export const QUALITY_RUBRIC_VALUES: readonly QualityRubric[];
-export const CALIBRATION_VALUES: readonly Calibration[];
 export const REVIEW_ROLE_VALUES: readonly ReviewRole[];
 export const FEEDBACK_SOURCE_VALUES: readonly FeedbackSourceKind[];
 export const DECISION_VALUES: readonly ReviewDecision[];
 export const ORACLE_CHECK_KIND_VALUES: readonly OracleCheckKind[];
 export const PROBE_WINDOW_VALUES: readonly ProbeWindow[];
 export const PROBE_POLARITY_VALUES: readonly ProbePolarity[];
-export const REVIEW_AUTHORITY_VALUES: readonly ReviewAuthority[];
-export const REVIEW_ASSISTANT_VALUES: readonly ReviewAssistant[];
-export const ORACLE_CHECKER_SPECS: readonly OracleCheckerSpec[];
+export const PROBE_FREQUENCY_VALUES: readonly ProbeFrequency[];
+export const PROBE_TEMPORAL_VALUES: readonly ProbeTemporal[];
+export const PROBE_EXPECTATION_KIND_VALUES: readonly ProbeExpectationKind[];
+export const RUBRIC_SPECS: readonly RubricSpec[];
+
+export interface SubjectSpec {
+  label: string;
+  aliases: string[];
+}
+
+export interface FrequencyFactSpec {
+  kind: "frequency";
+  subject: SubjectSpec;
+  frequency: ProbeFrequency;
+  temporal: ProbeTemporal;
+}
+
+export interface ChoiceFactSpec {
+  kind: "choice";
+  value: string;
+  aliases: string[];
+}
+
+export type FactSpec = FrequencyFactSpec | ChoiceFactSpec;
+
+export interface FactRecallExpectation {
+  fact: FactSpec;
+}
+
+export interface CrossSessionExpectation {
+  sourceStep: string;
+  requiredFacts: FactSpec[];
+  anyOfFacts?: FactSpec[];
+}
+
+export interface TemporalScopeExpectation {
+  forbidden: Array<{
+    subject: SubjectSpec;
+    frequency: ProbeFrequency;
+    temporal: ProbeTemporal;
+  }>;
+}
+
+export interface MemorySubjectsExpectation {
+  subjects: SubjectSpec[];
+}
+
+export interface SessionSourceExpectation {
+  sourceStep: string;
+}
+
+export type ProbeExpectation =
+  | FactRecallExpectation
+  | CrossSessionExpectation
+  | TemporalScopeExpectation
+  | MemorySubjectsExpectation
+  | SessionSourceExpectation;
 
 export class DatasetError extends Error {
   code: string;
@@ -142,13 +200,14 @@ export interface ProbeSpec {
   id: string;
   after: string;
   window: ProbeWindow;
-  checker: string;
+  rubric: string;
   questionType: string;
   polarity: ProbePolarity;
   critical: boolean;
   difficulty: ProbeDifficulty;
   description: string;
   evidence?: string[];
+  expectation?: ProbeExpectation;
 }
 
 export interface OracleSpec {
@@ -171,9 +230,6 @@ export interface EvidenceSpec {
 export interface QualitySpec {
   rubric: QualityRubric;
   rubricVersion: number;
-  calibration: Calibration;
-  authority: ReviewAuthority;
-  assistants: ReviewAssistant[];
 }
 
 export interface GovernanceSpec {
@@ -183,7 +239,7 @@ export interface GovernanceSpec {
 }
 
 export interface CaseSpec {
-  schemaVersion: 3;
+  schemaVersion: 4;
   caseId: string;
   revision: number;
   familyId: string;
@@ -238,7 +294,7 @@ export interface FixtureLoading {
 }
 
 export interface FixtureSpec {
-  schemaVersion: 3;
+  schemaVersion: 4;
   fixtureId: string;
   card: string;
   profile: string;
@@ -284,7 +340,7 @@ export interface ReviewFeedbackSource {
 }
 
 export interface ApprovalRecord {
-  schemaVersion: 3;
+  schemaVersion: 4;
   approvalId: string;
   caseId: string;
   suiteId: string;
@@ -323,7 +379,7 @@ export interface DatasetIssue {
 }
 
 export interface SuiteSpec {
-  schemaVersion: 3;
+  schemaVersion: 4;
   suiteId: string;
   revision: number;
   purpose: DatasetPurpose;
@@ -341,7 +397,7 @@ export interface CategoryInput {
 }
 
 export interface Dataset {
-  schemaVersion: 3;
+  schemaVersion: 4;
   repoRoot: string;
   root: string;
   categoriesPath: string | null;
@@ -366,7 +422,7 @@ export interface LoadDatasetOptions {
 }
 
 export interface DriverPackage {
-  schemaVersion: 3;
+  schemaVersion: 4;
   caseId: string;
   revision: number;
   specHash: string;
@@ -387,7 +443,7 @@ export interface ReviewApprovalSummary {
 }
 
 export interface ReviewPackage {
-  schemaVersion: 3;
+  schemaVersion: 4;
   suiteId: string;
   caseId: string;
   revision: number;
@@ -444,7 +500,6 @@ export interface DatasetSummary {
   categoryCounts: Record<string, number>;
   questionTypeCounts: Record<string, number>;
   caseQuestionTypeCounts: Record<string, number>;
-  authorityCounts: Record<ReviewAuthority, number>;
   difficultyCounts: Record<`${ProbeDifficulty}`, number>;
   suites: Array<{
     suiteId: string;
@@ -460,6 +515,7 @@ export interface DatasetSummary {
 export function stableStringify(value: unknown): string;
 export function hashCanonical(value: unknown): string;
 export function computeCaseBinding(caseSpec: CaseSpec, fixture: FixtureSpec): CaseBinding;
+export function datasetInputHash(dataset: Dataset, entry: Pick<CaseEntry, "suiteId" | "case" | "fixture">): string;
 export function resolveCaseLabel(binding: CaseBinding, approvals: readonly ApprovalRecord[]): CaseLabel;
 export function validateCaseSpec(
   spec: unknown,
@@ -475,5 +531,6 @@ export function applyReviewDecisions(input: ApplyReviewDecisionsInput): ApplyRev
 export function buildDriverPackage(entry: CaseEntry): DriverPackage;
 export function buildReviewPackage(entry: CaseEntry, approvals?: readonly ApprovalRecord[]): ReviewPackage;
 export function formatReviewPackage(review: ReviewPackage): string;
+export function formatExpectation(expectation: ProbeExpectation | null | undefined): string;
 export function summarizeDataset(dataset: Dataset): DatasetSummary;
 export function loadDataset(options?: LoadDatasetOptions): Dataset;

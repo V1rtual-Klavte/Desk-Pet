@@ -15,11 +15,13 @@ import { inspectTraceEvidence } from "../../../scripts/trace-evidence.mjs";
 export const CHAT_EVIDENCE_SCHEMA_VERSION = 1;
 export const CHAT_RUN_SCHEMA_VERSION = 1;
 export const CHAT_ATTEMPT_SCHEMA_VERSION = 1;
+/** 判分语义与聚合规则的版本；改动判定口径必须递增，旧判分继续绑定旧版本。 */
+export const CHAT_GRADER_VERSION = "chat-grader@3";
 export const CHAT_RETENTION_MAX_GROUPS = 5;
 export const CHAT_RETENTION_MAX_BYTES = 200 * 1024 * 1024;
 export const CHAT_RUN_PHASES = Object.freeze([
   "preparing", "awaiting_gold_review", "ready", "running", "collecting", "grading",
-  "awaiting_result_review", "repairing", "completed", "blocked", "cancelled",
+  "awaiting_judge", "repairing", "completed", "blocked", "cancelled",
 ]);
 export const DIALOGUE_ORIGINS = Object.freeze(["fixture", "driver", "assistant"]);
 export const ATTEMPT_OUTCOMES = Object.freeze(["completed", "failed", "interrupted"]);
@@ -401,7 +403,7 @@ export function copyArtifact({ attemptDir, name, sourcePath }) {
   return writeArtifact({ attemptDir, name, bytes: readFileSync(sourcePath) });
 }
 
-function readDialogue(path, expectedSessions) {
+function readDialogueRecords(path) {
   const issues = [];
   const messages = [];
   if (!existsSync(path)) return { issues: ["dialogue.jsonl 缺失"], messages, sessions: [] };
@@ -429,9 +431,15 @@ function readDialogue(path, expectedSessions) {
     messages.push(record);
   }
   const sessions = [...new Set(messages.map((message) => message.sessionId))].filter(Boolean);
-  for (const sessionId of expectedSessions) if (!sessions.includes(sessionId)) issues.push(`声明的会话未被收集：${sessionId}`);
-  for (const sessionId of sessions) if (!expectedSessions.includes(sessionId)) issues.push(`收集到未声明会话：${sessionId}`);
   return { issues, messages, sessions };
+}
+
+function readDialogue(path, expectedSessions) {
+  const result = readDialogueRecords(path);
+  const issues = [...result.issues];
+  for (const sessionId of expectedSessions) if (!result.sessions.includes(sessionId)) issues.push(`声明的会话未被收集：${sessionId}`);
+  for (const sessionId of result.sessions) if (!expectedSessions.includes(sessionId)) issues.push(`收集到未声明会话：${sessionId}`);
+  return { ...result, issues };
 }
 
 function collectArtifacts(attemptDir) {
@@ -459,11 +467,12 @@ function collectArtifacts(attemptDir) {
   return { issues, files };
 }
 
-function scanTraceChunks(path) {
-  if (!existsSync(path)) return { chunkCount: 0, complete: false, droppedCount: 0 };
+function readTraceChunks(path) {
+  if (!existsSync(path)) return { chunkCount: 0, complete: false, droppedCount: 0, events: [] };
   let chunkCount = 0;
   let complete = false;
   let droppedCount = 0;
+  const events = [];
   for (const line of readFileSync(path, "utf8").split("\n")) {
     if (!line.trim()) continue;
     try {
@@ -472,10 +481,32 @@ function scanTraceChunks(path) {
         chunkCount += 1;
         droppedCount += Number.isSafeInteger(parsed.chunk.droppedCount) ? parsed.chunk.droppedCount : 0;
         if (parsed.chunk.boundary?.kind === "complete") complete = true;
+        if (Array.isArray(parsed.chunk.events)) {
+          for (const record of parsed.chunk.events) {
+            if (isRecord(record) && isRecord(record.event)) events.push(record);
+          }
+        }
       }
     } catch { /* 损坏行由 inspectTraceEvidence 统一报告 */ }
   }
+  return { chunkCount, complete, droppedCount, events };
+}
+
+function scanTraceChunks(path) {
+  const { chunkCount, complete, droppedCount } = readTraceChunks(path);
   return { chunkCount, complete, droppedCount };
+}
+
+/** 报告视图：对话与 trace 共用封存时的同一套解析，不另写第二套时间线读取器。 */
+export function readAttemptTimeline(attemptDir) {
+  const dialogue = readDialogueRecords(join(attemptDir, DIALOGUE_FILE));
+  const trace = readTraceChunks(join(attemptDir, TRACE_FILE));
+  return {
+    messages: dialogue.messages,
+    dialogueIssues: dialogue.issues,
+    events: trace.events,
+    trace: { chunkCount: trace.chunkCount, complete: trace.complete, droppedCount: trace.droppedCount },
+  };
 }
 
 export async function sealChatAttempt({
@@ -650,7 +681,7 @@ export function appendGrade({ attemptDir, gradeId, createdAt, rubricVersion, gra
   assertTimestamp(createdAt, "createdAt");
   if (typeof rubricVersion !== "string" || !rubricVersion) fail("grade.rubric", "rubricVersion 必填");
   if (typeof graderVersion !== "string" || !graderVersion) fail("grade.grader", "graderVersion 必填");
-  if (!["deterministic", "api-judge", "human"].includes(authority)) fail("grade.authority", `未知判分权威：${String(authority)}`);
+  if (authority !== "coding-agent-judge") fail("grade.authority", `未知判分权威：${String(authority)}`);
   if (!Array.isArray(checks)) fail("grade.checks", "checks 必须是数组");
   assertRecord(summary, "summary");
   const verified = assertSealedForDecision(attemptDir);
@@ -672,25 +703,102 @@ export function appendGrade({ attemptDir, gradeId, createdAt, rubricVersion, gra
   return record;
 }
 
-export function appendReview({ attemptDir, reviewId, createdAt, reviewer, verdict, notes = "", evidenceRefs = [], decisions = [] }) {
+const REVIEW_DECISION_VALUES = new Set(["pass", "fail", "inconclusive", "not_applicable"]);
+const REVIEW_AGREEMENT_VALUES = new Set(["agree", "disagree"]);
+
+function referenceList(value, label) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((ref) => typeof ref !== "string" || !ref.trim())) {
+    fail("review.refs", `${label} 必须是非空字符串数组`);
+  }
+  return [...value];
+}
+
+function normalizeReviewRules(rules) {
+  if (rules === undefined) return [];
+  if (!Array.isArray(rules)) fail("review.rules", "rules 必须是数组");
+  const seen = new Set();
+  return rules.map((rule, index) => {
+    assertRecord(rule, `rules[${index}]`);
+    if (typeof rule.ruleId !== "string" || !rule.ruleId.trim()) fail("review.rule-id", `rules[${index}].ruleId 必填`);
+    if (seen.has(rule.ruleId)) fail("review.rule-duplicate", `规则重复：${rule.ruleId}`);
+    seen.add(rule.ruleId);
+    if (!REVIEW_DECISION_VALUES.has(rule.verdict)) fail("review.rule-verdict", `规则 ${rule.ruleId} 的裁决非法：${String(rule.verdict)}`);
+    if (rule.reason !== undefined && typeof rule.reason !== "string") fail("review.rule-reason", `规则 ${rule.ruleId} 的 reason 必须是字符串`);
+    if (rule.verdict === "not_applicable" && !(rule.reason ?? "").trim()) {
+      fail("review.rule-na-reason", `规则 ${rule.ruleId} 判 not_applicable 必须写明原因`);
+    }
+    if (rule.agreement !== undefined && !REVIEW_AGREEMENT_VALUES.has(rule.agreement)) {
+      fail("review.rule-agreement", `规则 ${rule.ruleId} 的 agreement 非法：${String(rule.agreement)}`);
+    }
+    return {
+      ruleId: rule.ruleId.trim(),
+      verdict: rule.verdict,
+      reason: (rule.reason ?? "").trim(),
+      evidenceRefs: referenceList(rule.evidenceRefs, `规则 ${rule.ruleId} 的 evidenceRefs`),
+      ...(rule.agreement ? { agreement: rule.agreement } : {}),
+    };
+  });
+}
+
+function normalizeReviewBinding(binding) {
+  if (binding === undefined || binding === null) return null;
+  assertRecord(binding, "binding");
+  return {
+    manifestSha256: assertHash(binding.manifestSha256, "binding.manifestSha256"),
+    datasetHash: assertHash(binding.datasetHash, "binding.datasetHash"),
+    specHash: assertHash(binding.specHash, "binding.specHash"),
+    oracleHash: assertHash(binding.oracleHash, "binding.oracleHash"),
+  };
+}
+
+function normalizeReviewVersions(versions) {
+  if (versions === undefined || versions === null) return null;
+  assertRecord(versions, "versions");
+  if (typeof versions.graderVersion !== "string" || !versions.graderVersion) fail("review.versions", "versions.graderVersion 必填");
+  if (!Array.isArray(versions.rubricVersions) || versions.rubricVersions.some((item) => typeof item !== "string" || !item)) {
+    fail("review.versions", "versions.rubricVersions 必须是字符串数组");
+  }
+  return { graderVersion: versions.graderVersion, rubricVersions: [...versions.rubricVersions] };
+}
+
+export function appendReview({
+  attemptDir, reviewId, createdAt, reviewer, verdict, notes = "", evidenceRefs = [],
+  rules, binding, versions, kind = "spot-check", gradeId,
+}) {
   safeRecordId(reviewId, "reviewId");
   assertTimestamp(createdAt, "createdAt");
   assertRecord(reviewer, "reviewer");
   if (reviewer.role !== "user") fail("review.authority", "人工裁决只能由用户本人记录");
   if (typeof reviewer.name !== "string" || !reviewer.name) fail("review.reviewer", "reviewer.name 必填");
   if (!["pass", "fail", "inconclusive"].includes(verdict)) fail("review.verdict", `未知裁决：${String(verdict)}`);
+  if (kind !== "spot-check") fail("review.kind", `未知复核类型：${String(kind)}`);
+  if (gradeId !== undefined && (typeof gradeId !== "string" || !gradeId.trim())) {
+    fail("review.grade", "review.gradeId 必须是非空字符串");
+  }
+  if (typeof notes !== "string") fail("review.notes", "notes 必须是字符串");
+  const normalizedRules = normalizeReviewRules(rules);
+  const normalizedBinding = normalizeReviewBinding(binding);
+  const normalizedVersions = normalizeReviewVersions(versions);
   const verified = assertSealedForDecision(attemptDir);
+  if (normalizedBinding && normalizedBinding.manifestSha256 !== verified.manifestSha256) {
+    fail("review.binding", "裁决绑定的 manifest 与当前封存证据不一致");
+  }
   if (verdict === "pass" && verified.status !== "complete") fail("review.inconclusive", "证据不完整，不能给出通过裁决");
   const record = {
     schemaVersion: CHAT_EVIDENCE_SCHEMA_VERSION,
     reviewId,
+    kind,
     attemptManifestSha256: verified.manifestSha256,
     createdAt,
     reviewer: { role: "user", name: reviewer.name },
     verdict,
     notes,
-    evidenceRefs,
-    decisions,
+    evidenceRefs: referenceList(evidenceRefs, "evidenceRefs"),
+    rules: normalizedRules,
+    ...(gradeId ? { gradeId } : {}),
+    ...(normalizedBinding ? { binding: normalizedBinding } : {}),
+    ...(normalizedVersions ? { versions: normalizedVersions } : {}),
   };
   const path = join(attemptDir, "reviews", `${reviewId}.json`);
   if (existsSync(path)) fail("review.duplicate", `裁决版本已存在，不覆盖：${reviewId}`);

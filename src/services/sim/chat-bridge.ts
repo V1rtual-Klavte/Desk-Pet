@@ -17,7 +17,7 @@ import { laneMessageText } from "@/services/engine/runtime"
 import { choiceState, resolveChoice } from "@/services/engine/choice-confirmation"
 import { planConfirmState, resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine/plan-confirmation"
 import { confirmState, resolvePermissionConfirm } from "@/services/safety"
-import { debug } from "@/services/debug"
+import { debug, usageGrandTotal } from "@/services/debug"
 import { getRuntimeMode, runtimePath } from "@/services/paths"
 import { getLatestWindowObservation, getRecentWindowObservations } from "@/services/window"
 import { dispatchHostRequest } from "@/services/native-ui/host-requests"
@@ -27,7 +27,9 @@ import { runObservationBatchNow, getUnderstandingSnapshotAsync } from "@/service
 import { queryUserTasks } from "@/services/user-tasks"
 import { query as proactiveQuery } from "@/services/proactive"
 import type { UnderstandingSnapshot } from "@/services/observation"
-import { runDreamingSweep, memoryList, memoryStatus } from "@/services/agent/memory"
+import {
+  runDreamingSweep, memoryJobList, memoryList, memoryStatus, pendingMemorySourceCount,
+} from "@/services/agent/memory"
 import type { MemoryItem, MemoryStatusSnapshot } from "@/services/agent/memory"
 import { tick } from "@/services/proactive"
 import { localDayKey } from "@/services/proactive/time"
@@ -40,6 +42,7 @@ import type { SimCaptureManager } from "./capture"
 import { writeSimFiles } from "./report"
 import { getSimEvalRunContext } from "./run-context"
 import { getDirectSeedReport } from "./direct-seed"
+import { getSimClockSnapshot, setSimClockBase } from "./clock"
 
 const log = createLogger("SimChat")
 const POLL_MS = 500
@@ -61,6 +64,10 @@ type SimChatCommand =
   | { id?: string; type: "confirm"; decision?: "allow_once" | "allow_session" | "deny" }
   /** 当前上下文与用量快照（debug 读模型，不触发模型调用）。 */
   | { id?: string; type: "context" }
+  /** 推进固定时钟基准（评测驱动按用例步骤调用）；reason 只用于证据。 */
+  | { id?: string; type: "clock"; at: string; reason?: string }
+  /** 记忆抽取水位（驱动检查点用：待抽取来源 + 活动作业；不触发模型调用）。 */
+  | { id?: string; type: "memory_state" }
   /** 最近窗口观察（诊断用，不触发模型调用）。 */
   | { id?: string; type: "window" }
   /** 会话列表（多会话测试用）。 */
@@ -240,7 +247,7 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
           transcript.push({ role: "user", text })
           if (reply) transcript.push({ role: "assistant", text: reply })
           await emit({
-            id, type: "message", reply, outcome: result.outcome, toolCalls: result.toolCalls,
+            id, type: "message", sessionId, reply, outcome: result.outcome, toolCalls: result.toolCalls,
             ...(result.failure ? { failure: result.failure } : {}),
             ...(reply ? {} : { note: result.outcome === "failed" ? "回合未进入 Provider，详见 failure" : "回复未在控制通道内取得，请查看会话正文" }),
           })
@@ -301,6 +308,31 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
             lastContextUsage: debug.lastContextUsage,
             contextMaxTokens: debug.contextMaxTokens,
             usage: debug.usage,
+            usageTotal: usageGrandTotal(),
+          } })
+          return
+        }
+        case "clock": {
+          const clock = setSimClockBase(command.at, command.reason ?? "driver")
+          await emit({ id, type: "clock", clock })
+          return
+        }
+        case "memory_state": {
+          // 只读水位：排队/运行/暂停的作业都算「抽取未结束」，驱动检查点等到三者归零。
+          const [status, pendingSources, jobs] = await Promise.all([
+            memoryStatus(),
+            pendingMemorySourceCount(),
+            memoryJobList(100),
+          ])
+          const activeJobs = jobs
+            .filter(job => job.status === "queued" || job.status === "running" || job.status === "paused")
+            .map(job => ({ id: job.id, phase: job.phase, status: job.status, updatedAt: job.updatedAt }))
+          await emit({ id, type: "memory_state", result: {
+            revision: status.revision,
+            itemCount: status.itemCount,
+            candidateCount: status.candidateCount,
+            pendingSources,
+            activeJobs,
           } })
           return
         }
@@ -496,6 +528,7 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
       generation: evalContext.generation,
       hostPid: evalContext.hostPid,
       runDir: evalContext.runDir,
+      clock: getSimClockSnapshot(),
       seed: {
         fixtureId: seed.fixtureId,
         fixtureHash: seed.fixtureHash,

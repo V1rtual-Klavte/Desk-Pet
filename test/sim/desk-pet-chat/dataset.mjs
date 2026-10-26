@@ -9,7 +9,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
  * 驱动包只含 userRole + driver；探针、检查点、证据与评分不能进入驱动包。
  */
 
-export const DATASET_SCHEMA_VERSION = 3;
+export const DATASET_SCHEMA_VERSION = 4;
 export const QUESTION_TYPES_SCHEMA_VERSION = 1;
 export const DEFAULT_DATASET_ROOT = "test/ideal-traces";
 export const DEFAULT_CATEGORIES_PATH = "test/sim/desk-pet-chat/categories.json";
@@ -45,60 +45,58 @@ export const EVIDENCE_KIND_VALUES = Object.freeze([
   "artifact",
 ]);
 export const QUALITY_RUBRIC_VALUES = Object.freeze(["humanizer-six-dimensions"]);
-export const CALIBRATION_VALUES = Object.freeze(["uncalibrated", "calibrated"]);
 export const REVIEW_ROLE_VALUES = Object.freeze(["user"]);
 export const FEEDBACK_SOURCE_VALUES = Object.freeze(["session_message"]);
 export const DECISION_VALUES = Object.freeze(["approved", "rejected"]);
 export const ORACLE_CHECK_KIND_VALUES = Object.freeze(["result", "path", "source", "temporal", "delivery", "semantic"]);
 export const PROBE_WINDOW_VALUES = Object.freeze(["last-assistant", "state", "all-assistant"]);
 export const PROBE_POLARITY_VALUES = Object.freeze(["required", "forbidden"]);
-export const REVIEW_AUTHORITY_VALUES = Object.freeze(["deterministic", "api-judge", "human"]);
-export const REVIEW_ASSISTANT_VALUES = Object.freeze(["coding-agent"]);
-
-function deriveCheckerAuthority(id, kind) {
-  if (kind !== "semantic") return "deterministic";
-  return id.startsWith("humanizer.") ? "human" : "api-judge";
-}
-
-function deriveCheckerAssistants(id, kind) {
-  return kind === "semantic" && id.startsWith("humanizer.") ? ["coding-agent"] : [];
-}
-
-const CHECKER_DEFINITIONS = Object.freeze([
-  { id: "answer.current-frequency", kind: "result", description: "回答当前运动频率" },
-  { id: "answer.history-running", kind: "result", description: "回答实习前经常跑步" },
-  { id: "answer.history-cycling", kind: "result", description: "回答实习前还经常骑车" },
-  { id: "answer.food-choice-recall", kind: "result", description: "回答用户当时选了酸奶" },
-  { id: "answer.corrects-false-premise", kind: "semantic", description: "用户给出与已知事实冲突的前提时纠正前提，不顺着错误前提回答" },
-  { id: "answer.no-fabrication", kind: "semantic", description: "编造未被记录或无法确认的事情" },
-  { id: "memory-source.correction-entry", kind: "source", description: "纠正事实来自本轮用户消息" },
-  { id: "session.cross-session-answer", kind: "path", description: "新会话能引用纠正后的事实" },
-  { id: "chat.correction-acknowledged", kind: "semantic", description: "接住纠正的新事实，不否认、不复述旧结论" },
-  { id: "humanizer.casual-tone", kind: "semantic", description: "语气自然、口语化，符合角色" },
-  { id: "humanizer.tech-banter", kind: "semantic", description: "接技术梗时口语化，不讲课、不装懂" },
-  { id: "humanizer.short-confirmation", kind: "semantic", description: "对短确认只作同档短回应，不追加新话题" },
-  { id: "humanizer.food-return", kind: "semantic", description: "用自足的口语接住返场，不索取回应" },
-  { id: "answer.no-temporal-swap", kind: "temporal", description: "把实习前与当前的频率对调" },
-  { id: "answer.no-cycling-temporal-swap", kind: "temporal", description: "把以前经常骑车说成现在仍常骑" },
-  { id: "memory-source.no-fixture-as-update", kind: "source", description: "把 fixture 初始记忆当作本轮用户更新" },
-  { id: "humanizer.no-service-tone", kind: "semantic", description: "出现助手腔、服务腔或未被请求的总结式建议" },
-  { id: "humanizer.no-meta-role", kind: "semantic", description: "打破角色说自己是程序、AI 或模型" },
-  { id: "humanizer.no-self-explanation", kind: "semantic", description: "解释自己的玩笑或刚说过的话" },
-  { id: "humanizer.no-unsolicited-advice", kind: "semantic", description: "主动给建议、说教或催促" },
-  { id: "driver.no-oracle-leak", kind: "delivery", description: "驱动过程泄露探针、评分或 fixture 信息" },
+export const PROBE_FREQUENCY_VALUES = Object.freeze([
+  "once-weekly",
+  "frequent",
+  "thrice-weekly",
+  "frequent-or-thrice-weekly",
+]);
+export const PROBE_TEMPORAL_VALUES = Object.freeze(["current", "past"]);
+export const PROBE_EXPECTATION_KIND_VALUES = Object.freeze([
+  "none",
+  "fact",
+  "cross-session",
+  "temporal-scope",
+  "subjects",
+  "session-source",
 ]);
 
-export const ORACLE_CHECKER_SPECS = Object.freeze(
-  CHECKER_DEFINITIONS.map((checker) =>
-    Object.freeze({
-      ...checker,
-      authority: deriveCheckerAuthority(checker.id, checker.kind),
-      assistants: Object.freeze(deriveCheckerAssistants(checker.id, checker.kind)),
-    }),
-  ),
-);
+const RUBRIC_DEFINITIONS = Object.freeze([
+  { id: "answer.fact-recall", kind: "semantic", expectation: "fact", description: "回答包含探针声明的事实（主语、频率或选择）" },
+  { id: "answer.cross-session-recall", kind: "semantic", expectation: "cross-session", description: "新会话回答满足必需的跨会话事实，并至少满足一项允许的历史事实" },
+  { id: "answer.corrects-false-premise", kind: "semantic", expectation: "none", description: "用户给出与已知事实冲突的前提时纠正前提，不顺着错误前提回答" },
+  { id: "answer.no-fabrication", kind: "semantic", expectation: "none", description: "编造未被记录或无法确认的事情" },
+  { id: "answer.temporal-scope", kind: "temporal", expectation: "temporal-scope", description: "在指定时间范围内出现探针禁止的事实，构成相对时序错误" },
+  { id: "memory-source.correction-entry", kind: "source", expectation: "subjects", description: "纠正事实来自本轮用户消息，且记忆主语匹配声明" },
+  { id: "memory-source.no-fixture-as-update", kind: "source", expectation: "subjects", description: "把 fixture 初始记忆当作本轮用户更新" },
+  { id: "session.answer-in-new-session", kind: "path", expectation: "session-source", description: "回答发生在驱动新建的会话，且与事实来源会话不同" },
+  { id: "chat.correction-acknowledged", kind: "semantic", expectation: "none", description: "接住纠正的新事实，不否认、不复述旧结论" },
+  { id: "humanizer.casual-tone", kind: "semantic", expectation: "none", description: "语气自然、口语化，符合角色" },
+  { id: "humanizer.tech-banter", kind: "semantic", expectation: "none", description: "接技术梗时口语化，不讲课、不装懂" },
+  { id: "humanizer.short-confirmation", kind: "semantic", expectation: "none", description: "对短确认只作同档短回应，不追加新话题" },
+  { id: "humanizer.food-return", kind: "semantic", expectation: "none", description: "用自足的口语接住返场，不索取回应" },
+  { id: "humanizer.no-service-tone", kind: "semantic", expectation: "none", description: "出现助手腔、服务腔或未被请求的总结式建议" },
+  { id: "humanizer.no-meta-role", kind: "semantic", expectation: "none", description: "打破角色说自己是程序、AI 或模型" },
+  { id: "humanizer.no-self-explanation", kind: "semantic", expectation: "none", description: "解释自己的玩笑或刚说过的话" },
+  { id: "humanizer.no-unsolicited-advice", kind: "semantic", expectation: "none", description: "主动给建议、说教或催促" },
+  { id: "reply.no-oracle-leak", kind: "delivery", expectation: "none", description: "回复中泄露探针、评分、fixture 或评测内部信息" },
+]);
 
-const ORACLE_CHECKER_MAP = new Map(ORACLE_CHECKER_SPECS.map((checker) => [checker.id, checker]));
+export const RUBRIC_SPECS = Object.freeze(RUBRIC_DEFINITIONS.map((rubric) => Object.freeze({ ...rubric })));
+
+const RUBRIC_MAP = new Map(RUBRIC_SPECS.map((rubric) => [rubric.id, rubric]));
+const RUBRIC_WINDOW_PINS = new Map([
+  ["session.answer-in-new-session", "last-assistant"],
+  ["answer.cross-session-recall", "last-assistant"],
+  ["memory-source.correction-entry", "state"],
+  ["memory-source.no-fixture-as-update", "state"],
+]);
 const CASE_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const APPROVAL_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -230,6 +228,9 @@ function scanEmbeddedLabels(value, path, label) {
   if (!isRecord(value)) return;
   for (const [key, nested] of Object.entries(value)) {
     const nestedPath = path ? `${path}.${key}` : key;
+    // expectation 子树由 validateExpectation 逐字段精确校验，允许使用 subject.label 表达主语；
+    // 其余任何位置仍禁止内嵌审批或分级字段。
+    if (key === "expectation") continue;
     if (FORBIDDEN_EMBEDDED_KEYS.has(key)) {
       throw new DatasetError(
         "case.embedded-label",
@@ -332,12 +333,187 @@ function normalizeQuestionTypes(input, categoryIds) {
   return { families, questionTypes };
 }
 
-function validateProbe(probe, label, driverById, evidenceIds, questionTypeIds) {
+function assertSubject(value, label) {
+  assertExactKeys(value, label, ["label", "aliases"]);
+  assertNonEmptyString(value.label, `${label}.label`);
+  assertStringArray(value.aliases, `${label}.aliases`, { allowEmpty: true, unique: true });
+  for (const alias of value.aliases) {
+    if (alias === value.label) {
+      throw new DatasetError("schema.expectation-alias", `${label}.aliases 不能重复 label：${alias}`);
+    }
+  }
+  return value;
+}
+
+function assertFrequency(value, label) {
+  return assertEnum(value, PROBE_FREQUENCY_VALUES, label);
+}
+
+function assertTemporal(value, label) {
+  return assertEnum(value, PROBE_TEMPORAL_VALUES, label);
+}
+
+function assertFact(value, label) {
+  assertRecord(value, label);
+  assertEnum(value.kind, ["frequency", "choice"], `${label}.kind`);
+  if (value.kind === "frequency") {
+    assertExactKeys(value, label, ["kind", "subject", "frequency", "temporal"]);
+    assertSubject(value.subject, `${label}.subject`);
+    assertFrequency(value.frequency, `${label}.frequency`);
+    assertTemporal(value.temporal, `${label}.temporal`);
+    return value;
+  }
+  assertExactKeys(value, label, ["kind", "value", "aliases"]);
+  assertNonEmptyString(value.value, `${label}.value`);
+  assertStringArray(value.aliases, `${label}.aliases`, { allowEmpty: true, unique: true });
+  for (const alias of value.aliases) {
+    if (alias === value.value) {
+      throw new DatasetError("schema.expectation-alias", `${label}.aliases 不能重复 value：${alias}`);
+    }
+  }
+  return value;
+}
+
+function assertFactArray(value, label, { allowEmpty = false } = {}) {
+  if (!Array.isArray(value)) throw new DatasetError("schema.invalid", `${label} 必须是数组`);
+  if (!allowEmpty && value.length === 0) throw new DatasetError("schema.invalid", `${label} 不能为空`);
+  value.forEach((fact, index) => assertFact(fact, `${label}[${index}]`));
+  return value;
+}
+
+function assertSubjectList(value, label) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new DatasetError("schema.invalid", `${label} 必须是非空数组`);
+  }
+  const seen = new Set();
+  value.forEach((subject, index) => {
+    assertSubject(subject, `${label}[${index}]`);
+    for (const term of [subject.label, ...subject.aliases]) {
+      if (seen.has(term)) {
+        throw new DatasetError("schema.expectation-alias", `${label} 含跨主语重复别名：${term}`);
+      }
+      seen.add(term);
+    }
+  });
+  return value;
+}
+
+function assertSourceStep({ sourceStep, label, driverById, driverIndexById, afterStepId }) {
+  assertNonEmptyString(sourceStep, label);
+  const step = driverById.get(sourceStep);
+  if (!step || step.kind !== "message") {
+    throw new DatasetError("case.expectation-source", `${label} 必须指向驱动消息步骤：${String(sourceStep)}`);
+  }
+  const sourceIndex = driverIndexById.get(sourceStep);
+  const afterIndex = driverIndexById.get(afterStepId);
+  if (!(sourceIndex < afterIndex)) {
+    throw new DatasetError("case.expectation-order", `${label} 必须早于探针步骤：${sourceStep} / ${afterStepId}`);
+  }
+  return sourceStep;
+}
+
+function assertNewSessionBefore({ driver, driverIndexById, afterStepId, label }) {
+  const afterIndex = driverIndexById.get(afterStepId);
+  const found = driver.some((step, index) => (
+    index < afterIndex && step.kind === "host" && step.method === "chat_new_session"
+  ));
+  if (!found) {
+    throw new DatasetError(
+      "case.expectation-session",
+      `${label} 之前必须有 chat_new_session 驱动步骤：${afterStepId}`,
+    );
+  }
+}
+
+function validateExpectation({ probe, rubric, driver, driverById, driverIndexById, label }) {
+  if (rubric.expectation === "none") {
+    if (probe.expectation !== undefined) {
+      throw new DatasetError(
+        "schema.expectation-unexpected",
+        `${label}.expectation 不适用于 ${rubric.id}：该规则不接受声明式期望`,
+      );
+    }
+    return null;
+  }
+  if (probe.expectation === undefined) {
+    throw new DatasetError(
+      "schema.expectation-missing",
+      `${label}.expectation 必填：${rubric.id} 需要声明主语、频率或时间关系`,
+    );
+  }
+  const expectationLabel = `${label}.expectation`;
+  assertRecord(probe.expectation, expectationLabel);
+  if (rubric.expectation === "fact") {
+    assertExactKeys(probe.expectation, expectationLabel, ["fact"]);
+    assertFact(probe.expectation.fact, `${expectationLabel}.fact`);
+    return probe.expectation;
+  }
+  if (rubric.expectation === "cross-session") {
+    assertExactKeys(probe.expectation, expectationLabel, ["sourceStep", "requiredFacts"], ["anyOfFacts"]);
+    assertSourceStep({
+      sourceStep: probe.expectation.sourceStep,
+      label: `${expectationLabel}.sourceStep`,
+      driverById,
+      driverIndexById,
+      afterStepId: probe.after,
+    });
+    assertFactArray(probe.expectation.requiredFacts, `${expectationLabel}.requiredFacts`);
+    if (probe.expectation.anyOfFacts !== undefined) {
+      assertFactArray(probe.expectation.anyOfFacts, `${expectationLabel}.anyOfFacts`);
+    }
+    assertNewSessionBefore({
+      driver,
+      driverIndexById,
+      afterStepId: probe.after,
+      label: expectationLabel,
+    });
+    return probe.expectation;
+  }
+  if (rubric.expectation === "temporal-scope") {
+    assertExactKeys(probe.expectation, expectationLabel, ["forbidden"]);
+    if (!Array.isArray(probe.expectation.forbidden) || probe.expectation.forbidden.length === 0) {
+      throw new DatasetError("schema.invalid", `${expectationLabel}.forbidden 必须是非空数组`);
+    }
+    probe.expectation.forbidden.forEach((rule, index) => {
+      const ruleLabel = `${expectationLabel}.forbidden[${index}]`;
+      assertExactKeys(rule, ruleLabel, ["subject", "frequency", "temporal"]);
+      assertSubject(rule.subject, `${ruleLabel}.subject`);
+      assertFrequency(rule.frequency, `${ruleLabel}.frequency`);
+      assertTemporal(rule.temporal, `${ruleLabel}.temporal`);
+    });
+    return probe.expectation;
+  }
+  if (rubric.expectation === "subjects") {
+    assertExactKeys(probe.expectation, expectationLabel, ["subjects"]);
+    assertSubjectList(probe.expectation.subjects, `${expectationLabel}.subjects`);
+    return probe.expectation;
+  }
+  if (rubric.expectation === "session-source") {
+    assertExactKeys(probe.expectation, expectationLabel, ["sourceStep"]);
+    assertSourceStep({
+      sourceStep: probe.expectation.sourceStep,
+      label: `${expectationLabel}.sourceStep`,
+      driverById,
+      driverIndexById,
+      afterStepId: probe.after,
+    });
+    assertNewSessionBefore({
+      driver,
+      driverIndexById,
+      afterStepId: probe.after,
+      label: expectationLabel,
+    });
+    return probe.expectation;
+  }
+  throw new DatasetError("schema.expectation-kind", `${label}.expectation 类型未实现：${String(rubric.expectation)}`);
+}
+
+function validateProbe(probe, label, driver, driverById, driverIndexById, evidenceIds, questionTypeIds) {
   assertExactKeys(
     probe,
     label,
-    ["id", "after", "window", "checker", "questionType", "polarity", "critical", "difficulty", "description"],
-    ["evidence"],
+    ["id", "after", "window", "rubric", "questionType", "polarity", "critical", "difficulty", "description"],
+    ["evidence", "expectation"],
   );
   assertPattern(probe.id, CASE_ID_PATTERN, `${label}.id`);
   assertNonEmptyString(probe.after, `${label}.after`);
@@ -346,9 +522,16 @@ function validateProbe(probe, label, driverById, evidenceIds, questionTypeIds) {
     throw new DatasetError("schema.invalid", `${label}.after 未指向驱动步骤：${String(probe.after)}`);
   }
   assertEnum(probe.window, PROBE_WINDOW_VALUES, `${label}.window`);
-  const checker = ORACLE_CHECKER_MAP.get(probe.checker);
-  if (!checker) {
-    throw new DatasetError("case.oracle-unknown-checker", `${label}.checker 未登记：${String(probe.checker)}`);
+  const rubric = RUBRIC_MAP.get(probe.rubric);
+  if (!rubric) {
+    throw new DatasetError("case.oracle-unknown-rubric", `${label}.rubric 未登记：${String(probe.rubric)}`);
+  }
+  validateExpectation({ probe, rubric, driver, driverById, driverIndexById, label });
+  if (RUBRIC_WINDOW_PINS.has(rubric.id) && probe.window !== RUBRIC_WINDOW_PINS.get(rubric.id)) {
+    throw new DatasetError(
+      "case.rubric-window",
+      `${label}.window 必须是 ${RUBRIC_WINDOW_PINS.get(rubric.id)}：${rubric.id}`,
+    );
   }
   assertPattern(probe.questionType, CASE_ID_PATTERN, `${label}.questionType`);
   if (questionTypeIds !== undefined && !questionTypeIds.has(probe.questionType)) {
@@ -382,7 +565,7 @@ function validateProbe(probe, label, driverById, evidenceIds, questionTypeIds) {
       }
     }
   }
-  return checker;
+  return rubric;
 }
 
 function validateDriverStep(step, label) {
@@ -435,6 +618,18 @@ export function computeCaseBinding(caseSpec, fixture) {
   });
   const specHash = hashCanonical({ contentHash, fixtureHash, driverHash, oracleHash });
   return { contentHash, fixtureHash, driverHash, oracleHash, specHash };
+}
+
+/** 数据集输入哈希覆盖分类、题型注册表、套件、用例与 fixture，忽略读取路径等运行期噪声。 */
+export function datasetInputHash(dataset, entry) {
+  return hashCanonical({
+    schemaVersion: dataset.schemaVersion,
+    categories: dataset.categories,
+    questionTypes: { families: dataset.questionTypeFamilies, questionTypes: dataset.questionTypes },
+    suite: dataset.suites.find(suite => suite.suiteId === entry.suiteId) ?? null,
+    case: entry.case,
+    fixture: entry.fixture,
+  });
 }
 
 function approvalMatches(binding, approval) {
@@ -674,15 +869,17 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
     throw new DatasetError("schema.invalid", `${label}.probes 必须是非空数组`);
   }
   const driverById = new Map(spec.driver.map((step) => [step.id, step]));
+  const driverIndexById = new Map(spec.driver.map((step, index) => [step.id, index]));
   const probeIds = new Set();
-  const checkerPolarities = new Map();
-  const requiredKinds = [];
+  const rubricPolarities = new Map();
   let criticalRequired = 0;
   spec.probes.forEach((probe, index) => {
-    const checker = validateProbe(
+    const rubric = validateProbe(
       probe,
       `${label}.probes[${index}]`,
+      spec.driver,
       driverById,
+      driverIndexById,
       evidenceIds,
       knownQuestionTypes,
     );
@@ -690,13 +887,10 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
       throw new DatasetError("schema.invalid", `${label}.probes 含重复 id：${probe.id}`);
     }
     probeIds.add(probe.id);
-    const polarities = checkerPolarities.get(checker.id) ?? new Set();
+    const polarities = rubricPolarities.get(rubric.id) ?? new Set();
     polarities.add(probe.polarity);
-    checkerPolarities.set(checker.id, polarities);
-    if (probe.polarity === "required") {
-      requiredKinds.push(checker.kind);
-      if (probe.critical) criticalRequired += 1;
-    }
+    rubricPolarities.set(rubric.id, polarities);
+    if (probe.polarity === "required" && probe.critical) criticalRequired += 1;
   });
   const declaredQuestionTypes = new Set(spec.questionTypes);
   const probeQuestionTypes = new Set(spec.probes.map((probe) => probe.questionType));
@@ -718,63 +912,32 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
       `${label}.probes 至少需要一个 critical 的 required 探针`,
     );
   }
-  if (!requiredKinds.some((kind) => kind !== "semantic")) {
-    throw new DatasetError(
-      "case.oracle-nondeterministic",
-      `${label}.probes 至少需要一个非 semantic 的 required 确定性探针`,
-    );
-  }
-  for (const [checkerId, polarities] of checkerPolarities) {
+  for (const [rubricId, polarities] of rubricPolarities) {
     if (polarities.size > 1) {
       throw new DatasetError(
         "case.probe-contradiction",
-        `${label}.probes 对同一 checker 同时要求并禁止：${checkerId}`,
+        `${label}.probes 对同一 rubric 同时要求并禁止：${rubricId}`,
+      );
+    }
+  }
+  const provenanceSteps = new Set(
+    spec.probes
+      .filter((probe) => probe.rubric === "session.answer-in-new-session")
+      .map((probe) => probe.after),
+  );
+  for (const probe of spec.probes) {
+    if (probe.rubric !== "answer.cross-session-recall") continue;
+    if (!provenanceSteps.has(probe.after)) {
+      throw new DatasetError(
+        "case.cross-session-provenance",
+        `${label}.probes 跨会话内容探针 ${probe.id} 缺少同一 after 的结构探针：${probe.after}`,
       );
     }
   }
 
-  assertExactKeys(spec.quality, `${label}.quality`, [
-    "rubric",
-    "rubricVersion",
-    "calibration",
-    "authority",
-    "assistants",
-  ]);
+  assertExactKeys(spec.quality, `${label}.quality`, ["rubric", "rubricVersion"]);
   assertEnum(spec.quality.rubric, QUALITY_RUBRIC_VALUES, `${label}.quality.rubric`);
   assertPositiveInteger(spec.quality.rubricVersion, `${label}.quality.rubricVersion`);
-  assertEnum(spec.quality.calibration, CALIBRATION_VALUES, `${label}.quality.calibration`);
-  assertEnum(spec.quality.authority, REVIEW_AUTHORITY_VALUES, `${label}.quality.authority`);
-  assertStringArray(spec.quality.assistants, `${label}.quality.assistants`, { allowEmpty: true, unique: true });
-  assertSubset(spec.quality.assistants, REVIEW_ASSISTANT_VALUES, `${label}.quality.assistants`);
-  if (spec.quality.authority !== "human" && spec.quality.assistants.length > 0) {
-    throw new DatasetError(
-      "case.quality-assistants",
-      `${label}.quality.assistants 只在 human 权威下使用：${spec.quality.assistants.join(", ")}`,
-    );
-  }
-  if (spec.quality.rubric === "humanizer-six-dimensions") {
-    if (spec.quality.authority !== "human") {
-      throw new DatasetError(
-        "case.quality-authority",
-        `${label}.quality.authority 必须是 human：拟人化评分只由用户本人判定`,
-      );
-    }
-    if (!spec.quality.assistants.includes("coding-agent")) {
-      throw new DatasetError(
-        "case.quality-assistants",
-        `${label}.quality.assistants 必须包含 coding-agent：可提供建议，但不产生 pass/fail`,
-      );
-    }
-  }
-  const humanProbes = spec.probes.filter(
-    (probe) => ORACLE_CHECKER_MAP.get(probe.checker)?.authority === "human",
-  );
-  if (humanProbes.length > 0 && spec.quality.authority !== "human") {
-    throw new DatasetError(
-      "case.quality-authority",
-      `${label}.quality.authority 必须是 human：用例含 human 权威探针（${humanProbes.map((probe) => probe.id).join(", ")}）`,
-    );
-  }
 
   assertExactKeys(spec.governance, `${label}.governance`, ["purpose", "unresolvedPoints", "notes"]);
   assertEnum(spec.governance.purpose, PURPOSE_VALUES, `${label}.governance.purpose`);
@@ -1228,24 +1391,53 @@ const STATUS_LABELS = {
 
 function tallyProbeAxes(probes) {
   const questionTypeCounts = new Map();
-  const authorityCounts = new Map();
   const difficultyCounts = new Map(PROBE_DIFFICULTY_LEVELS.map((level) => [level, 0]));
   for (const probe of probes) {
     questionTypeCounts.set(probe.questionType, (questionTypeCounts.get(probe.questionType) ?? 0) + 1);
-    const authority = ORACLE_CHECKER_MAP.get(probe.checker)?.authority ?? "unknown";
-    authorityCounts.set(authority, (authorityCounts.get(authority) ?? 0) + 1);
     difficultyCounts.set(probe.difficulty, (difficultyCounts.get(probe.difficulty) ?? 0) + 1);
   }
-  return { questionTypeCounts, authorityCounts, difficultyCounts };
+  return { questionTypeCounts, difficultyCounts };
+}
+
+function formatSubject(subject) {
+  return subject.aliases.length > 0 ? `${subject.label}（别名：${subject.aliases.join("、")}）` : subject.label;
+}
+
+function formatFact(fact) {
+  if (fact.kind === "choice") {
+    return `选择「${fact.value}」${fact.aliases.length > 0 ? `（别名：${fact.aliases.join("、")}）` : ""}`;
+  }
+  return `${formatSubject(fact.subject)} · ${fact.frequency} · ${fact.temporal}`;
+}
+
+/** 把探针的声明式 expectation 渲染成审阅可读文本，与检查器实现解耦。 */
+export function formatExpectation(expectation) {
+  if (!expectation) return "";
+  if (expectation.fact) return `事实：${formatFact(expectation.fact)}`;
+  if (expectation.sourceStep && expectation.requiredFacts) {
+    const anyOf = expectation.anyOfFacts?.length
+      ? `；任一：${expectation.anyOfFacts.map(formatFact).join(" / ")}`
+      : "";
+    return `跨会话：来源步骤 ${expectation.sourceStep}；必需：${expectation.requiredFacts.map(formatFact).join("；")}${anyOf}`;
+  }
+  if (expectation.forbidden) {
+    return `禁止：${expectation.forbidden.map(formatFact).join("；")}`;
+  }
+  if (expectation.subjects) {
+    return `主语：${expectation.subjects.map(formatSubject).join("、")}`;
+  }
+  if (expectation.sourceStep) return `来源步骤：${expectation.sourceStep}`;
+  return "";
 }
 
 function formatProbe(probe) {
-  const checker = ORACLE_CHECKER_MAP.get(probe.checker);
+  const rubric = RUBRIC_MAP.get(probe.rubric);
   const critical = probe.critical ? "critical" : "non-critical";
   const evidence = probe.evidence?.length ? `；证据：${probe.evidence.join("、")}` : "";
   const description = probe.description.replace(/[。；;]\s*$/, "");
-  const assistants = checker?.assistants?.length ? `；建议 ${checker.assistants.join("、")}` : "";
-  return `- ${probe.id}（${critical} · ${probe.polarity} · ${probe.window} @ ${probe.after} · 题型 ${probe.questionType} · 难度 L${probe.difficulty}）${probe.checker} [${checker?.kind ?? "unknown"} · ${checker?.authority ?? "unknown"}${assistants}]：${description}${evidence}`;
+  const expectation = formatExpectation(probe.expectation);
+  const expectationText = expectation ? `；期望 ${expectation}` : "";
+  return `- ${probe.id}（${critical} · ${probe.polarity} · ${probe.window} @ ${probe.after} · 题型 ${probe.questionType} · 难度 L${probe.difficulty}）${probe.rubric} [${rubric?.kind ?? "unknown"}]：${description}${expectationText}${evidence}`;
 }
 
 export function formatReviewPackage(review) {
@@ -1274,8 +1466,8 @@ export function formatReviewPackage(review) {
   lines.push(`- 时间模式：${review.candidate.precondition.time.mode}`);
   lines.push(`- 宿主能力：${review.candidate.precondition.hostCapabilities.join("、")}`);
   lines.push("");
-  const { questionTypeCounts, authorityCounts, difficultyCounts } = tallyProbeAxes(review.candidate.probes);
-  lines.push("## 题型与评审权威");
+  const { questionTypeCounts, difficultyCounts } = tallyProbeAxes(review.candidate.probes);
+  lines.push("## 题型与判分");
   lines.push("");
   lines.push(`- 用例题型（${review.candidate.questionTypes.length}）：${review.candidate.questionTypes.join("、")}`);
   lines.push(
@@ -1288,16 +1480,7 @@ export function formatReviewPackage(review) {
       (level) => `L${level} ${difficultyCounts.get(level) ?? 0}`,
     ).join(" · ")}`,
   );
-  lines.push(
-    `- 评审权威：${REVIEW_AUTHORITY_VALUES.map(
-      (authority) => `${authority} ${authorityCounts.get(authority) ?? 0}`,
-    ).join(" · ")}`,
-  );
-  if ((authorityCounts.get("human") ?? 0) > 0) {
-    lines.push(
-      "- human 权威只由用户本人判定；coding agent 只能提供建议，不产生 pass/fail 或 gold。自动化运行遇到 human 探针应停在 pending。",
-    );
-  }
+  lines.push("- 判分：全部探针与质量规则由独立 coding-agent judge 判定；用户抽查可选，不阻塞。");
   lines.push("");
   lines.push("## 用户角色");
   lines.push("");
@@ -1355,12 +1538,9 @@ export function formatReviewPackage(review) {
   lines.push("## 质量评分");
   lines.push("");
   lines.push(
-    `- ${review.candidate.quality.rubric} v${review.candidate.quality.rubricVersion}，校准状态：${review.candidate.quality.calibration}`,
+    `- ${review.candidate.quality.rubric} v${review.candidate.quality.rubricVersion}`,
   );
-  const qualityAssistants = review.candidate.quality.assistants.length > 0
-    ? `（assistants：${review.candidate.quality.assistants.join("、")}；仅建议，不产生 pass/fail）`
-    : "";
-  lines.push(`- 评审权威：${review.candidate.quality.authority}${qualityAssistants}`);
+  lines.push("- 判分方式：由独立 coding-agent judge 按当前 rubric 判定；用户抽查仅用于核对，不改写判分。");
   lines.push("");
   lines.push("## 未解决点");
   lines.push("");
@@ -1406,7 +1586,6 @@ export function summarizeDataset(dataset) {
     : [];
   const questionTypeCounts = Object.fromEntries(questionTypeIds.map((id) => [id, 0]));
   const caseQuestionTypeCounts = Object.fromEntries(questionTypeIds.map((id) => [id, 0]));
-  const authorityCounts = Object.fromEntries(REVIEW_AUTHORITY_VALUES.map((authority) => [authority, 0]));
   const difficultyCounts = Object.fromEntries(PROBE_DIFFICULTY_LEVELS.map((level) => [String(level), 0]));
   const statusCounts = { approved: 0, rejected: 0, stale: 0, pending: 0 };
   const suiteCounts = new Map(
@@ -1442,8 +1621,6 @@ export function summarizeDataset(dataset) {
     const criticalProbes = probes.filter((probe) => probe.critical).length;
     for (const probe of probes) {
       questionTypeCounts[probe.questionType] = (questionTypeCounts[probe.questionType] ?? 0) + 1;
-      const authority = ORACLE_CHECKER_MAP.get(probe.checker)?.authority;
-      if (authority) authorityCounts[authority] = (authorityCounts[authority] ?? 0) + 1;
       difficultyCounts[String(probe.difficulty)] = (difficultyCounts[String(probe.difficulty)] ?? 0) + 1;
     }
     probeCount += probes.length;
@@ -1469,7 +1646,6 @@ export function summarizeDataset(dataset) {
     categoryCounts,
     questionTypeCounts,
     caseQuestionTypeCounts,
-    authorityCounts,
     difficultyCounts,
     suites: [...suiteCounts.values()],
   };

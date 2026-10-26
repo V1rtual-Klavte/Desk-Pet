@@ -28,6 +28,7 @@ import { formatError } from "@/services/error"
 import { buildDirectSeedPlan } from "./direct-seed-plan"
 import type { DirectSeedPlan } from "./direct-seed-plan"
 import { getSimEvalRunContext } from "./run-context"
+import { getSimClockBaseMs } from "./clock"
 
 const log = createLogger("SimSeed")
 const LEASE_OWNER = "memory-dreaming"
@@ -83,6 +84,12 @@ export async function seedDirectFixture(): Promise<DirectSeedReport | null> {
     throw new Error(`sim-eval 缺少可读的 seed.json（${context.seedPath}）：${formatError(error)}`)
   }
   const plan = buildDirectSeedPlan(raw)
+  // fixture.clock 是评估时刻；固定时钟必须与它同源，否则装载的历史与「现在」会错位。
+  const clockBase = getSimClockBaseMs()
+  if (clockBase === null) throw new Error("sim-eval direct-seed 前固定时钟未安装")
+  if (clockBase !== plan.clockMs) {
+    throw new Error(`fixture.clock 与 clock.json 基准不一致：fixture=${plan.clockMs}，clock=${clockBase}`)
+  }
   await assertFreshRoot()
   assertActiveCard(plan)
 

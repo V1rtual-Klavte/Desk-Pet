@@ -30,7 +30,7 @@ function seed(overrides: Record<string, any> = {}): any {
   }
 }
 
-function expectInvalid(raw: unknown, pattern: RegExp): void {
+function assertInvalid(raw: unknown, pattern: RegExp): void {
   expect(() => buildDirectSeedPlan(raw)).toThrow(pattern)
 }
 
@@ -87,53 +87,53 @@ describe("direct-seed 装载计划", () => {
 
     const defaultMismatch = seed()
     defaultMismatch.profile.activeId = "profile2"
-    expectInvalid(defaultMismatch, /fixture\.profile=default/)
+    assertInvalid(defaultMismatch, /fixture\.profile=default/)
 
     const namedNull = seed()
     namedNull.fixture.profile = "profile2"
     namedNull.profile.activeId = null
-    expectInvalid(namedNull, /必须为 null/)
+    assertInvalid(namedNull, /必须为 null/)
   })
 
   it("消息时间必须非递减，固定时钟不得早于最后一条消息（相等允许）", () => {
     const regression = seed()
     regression.fixture.initialSession.messages[2].at = "2026-10-24T08:59:00+08:00"
-    expectInvalid(regression, /时间倒退/)
+    assertInvalid(regression, /时间倒退/)
 
     const lastAt = fixture.initialSession.messages[fixture.initialSession.messages.length - 1]!.at
     expect(() => buildDirectSeedPlan(seed({ fixture: { ...cloneFixture(), clock: lastAt } }))).not.toThrow()
 
     const earlyClock = seed()
     earlyClock.fixture.clock = "2026-10-24T11:24:00+08:00"
-    expectInvalid(earlyClock, /早于最后一条/)
+    assertInvalid(earlyClock, /早于最后一条/)
   })
 
   it("记忆只接受用户口述，来源必须是初始会话里的用户消息", () => {
     const assistantOrigin = seed()
     assistantOrigin.fixture.initialMemory[0].origin = "assistant"
-    expectInvalid(assistantOrigin, /只装载用户口述事实/)
+    assertInvalid(assistantOrigin, /只装载用户口述事实/)
 
     const otherSession = seed()
     otherSession.fixture.initialMemory[0].source.sessionId = "another-session"
-    expectInvalid(otherSession, /来源会话不是初始会话/)
+    assertInvalid(otherSession, /来源会话不是初始会话/)
 
     const assistantMessage = seed()
     assistantMessage.fixture.initialMemory[0].source.messageId = "fixture-msg-assistant-name"
-    expectInvalid(assistantMessage, /只能以用户消息为来源/)
+    assertInvalid(assistantMessage, /只能以用户消息为来源/)
 
     const missingMessage = seed()
     missingMessage.fixture.initialMemory[0].source.messageId = "fixture-msg-missing"
-    expectInvalid(missingMessage, /引用了不存在的消息/)
+    assertInvalid(missingMessage, /引用了不存在的消息/)
   })
 
   it("记忆有效期必须严格正区间；validUntil 为空表示长期有效", () => {
     const zeroLength = seed()
     zeroLength.fixture.initialMemory[0].validUntil = zeroLength.fixture.initialMemory[0].validFrom
-    expectInvalid(zeroLength, /validUntil 必须晚于 validFrom/)
+    assertInvalid(zeroLength, /validUntil 必须晚于 validFrom/)
 
     const backwards = seed()
     backwards.fixture.initialMemory[0].validUntil = "2026-10-24T08:00:00+08:00"
-    expectInvalid(backwards, /validUntil 必须晚于 validFrom/)
+    assertInvalid(backwards, /validUntil 必须晚于 validFrom/)
 
     const openEnded = seed()
     openEnded.fixture.initialMemory[0].validUntil = null
@@ -143,33 +143,33 @@ describe("direct-seed 装载计划", () => {
   it("重复的消息 id / 记忆 id 会被拒绝", () => {
     const duplicateMessage = seed()
     duplicateMessage.fixture.initialSession.messages[1].id = duplicateMessage.fixture.initialSession.messages[0].id
-    expectInvalid(duplicateMessage, /消息 id 重复/)
+    assertInvalid(duplicateMessage, /消息 id 重复/)
 
     const duplicateMemory = seed()
     duplicateMemory.fixture.initialMemory[1].id = duplicateMemory.fixture.initialMemory[0].id
-    expectInvalid(duplicateMemory, /记忆 id 重复/)
+    assertInvalid(duplicateMemory, /记忆 id 重复/)
   })
 
   it("Card 名称、fixtureId、schemaVersion 与装载模式必须自洽", () => {
-    expectInvalid(seed({ card: { name: "别的卡", activeId: "xiaoxue" } }), /fixture\.card 与 seed\.json\.card\.name 不一致/)
-    expectInvalid(seed({ fixtureId: "another-fixture" }), /fixture\.fixtureId 与 seed\.json 不一致/)
+    assertInvalid(seed({ card: { name: "别的卡", activeId: "xiaoxue" } }), /fixture\.card 与 seed\.json\.card\.name 不一致/)
+    assertInvalid(seed({ fixtureId: "another-fixture" }), /fixture\.fixtureId 与 seed\.json 不一致/)
 
     const oldFixture = seed()
     oldFixture.fixture.schemaVersion = 2
-    expectInvalid(oldFixture, /fixture schemaVersion=2/)
+    assertInvalid(oldFixture, /fixture schemaVersion=2/)
 
     const oldSeed = seed()
     oldSeed.schemaVersion = 2
-    expectInvalid(oldSeed, /seed\.json schemaVersion=2/)
+    assertInvalid(oldSeed, /seed\.json schemaVersion=2/)
 
     const badHash = seed()
     badHash.fixtureHash = "sha256:not-a-hash"
-    expectInvalid(badHash, /不是 sha256:<hex>/)
+    assertInvalid(badHash, /不是 sha256:<hex>/)
 
     const realChain = seed()
     realChain.fixture.loading.mode = "real-chain"
-    expectInvalid(realChain, /loading\.mode 必须是 direct-seed/)
+    assertInvalid(realChain, /loading\.mode 必须是 direct-seed/)
 
-    expectInvalid(seed({ card: { name: "本体卡-小雪", activeId: "" } }), /seed\.json\.card\.activeId/)
+    assertInvalid(seed({ card: { name: "本体卡-小雪", activeId: "" } }), /seed\.json\.card\.activeId/)
   })
 })

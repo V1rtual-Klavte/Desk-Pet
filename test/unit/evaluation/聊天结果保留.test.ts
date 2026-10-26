@@ -56,7 +56,7 @@ describe("聊天结果保留", () => {
 
   it("待审和活跃组受保护，保护优先于五回上限", () => {
     const reportsDir = makeRoot();
-    makeRun(reportsDir, "run-1", "awaiting_result_review");
+    makeRun(reportsDir, "run-1", "awaiting_judge");
     makeRun(reportsDir, "run-2");
     makeRun(reportsDir, "run-3");
 

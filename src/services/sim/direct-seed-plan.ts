@@ -12,7 +12,7 @@
 // - 消息时间戳必须非递减，固定时钟不得早于最后一条 fixture 消息 —— 历史先于评估时刻。
 
 export const DIRECT_SEED_FILE_SCHEMA_VERSION = 1
-export const DIRECT_SEED_FIXTURE_SCHEMA_VERSION = 3
+export const DIRECT_SEED_FIXTURE_SCHEMA_VERSION = 4
 
 const MESSAGE_ROLES = ["user", "assistant"] as const
 const MEMORY_KINDS = ["fact", "preference", "episode", "working"] as const

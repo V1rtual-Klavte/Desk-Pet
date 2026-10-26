@@ -143,7 +143,7 @@ describe("聊天证据完整性", () => {
     const before = statSync(dialoguePath).mtimeMs;
     appendGrade({
       attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
-      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "coding-agent-judge",
       checks: [], summary: { note: "format check only" },
     });
     appendReview({
@@ -154,7 +154,7 @@ describe("聊天证据完整性", () => {
     expect(readChatWorkflow(runDir).attempts).toHaveLength(1);
     expect(() => appendGrade({
       attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
-      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "coding-agent-judge",
       checks: [], summary: {},
     })).toThrow(/不覆盖/);
   });
@@ -171,7 +171,7 @@ describe("聊天证据完整性", () => {
     expect(attempt.issues.join("\n")).toContain("声明的会话未被收集：session-2");
     expect(() => appendGrade({
       attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
-      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "coding-agent-judge",
       checks: [], summary: {},
     })).toThrow(/证据不完整/);
     expect(() => appendReview({
@@ -296,7 +296,7 @@ describe("聊天证据完整性", () => {
     expect(verification.issues.join("\n")).toContain("哈希不匹配");
     expect(() => appendGrade({
       attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
-      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "coding-agent-judge",
       checks: [], summary: {},
     })).toThrow(/封存证据不可信/);
     expect(() => appendReview({
@@ -337,7 +337,7 @@ describe("聊天证据完整性", () => {
     const attempt = await makeCompleteAttempt(runDir);
     appendGrade({
       attemptDir: attempt.attemptDir, gradeId: "grade-1", createdAt: SEALED,
-      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "deterministic",
+      rubricVersion: "rubric-1", graderVersion: "grader-1", authority: "coding-agent-judge",
       checks: [], summary: {},
     });
     appendReview({

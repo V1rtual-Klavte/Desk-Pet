@@ -99,6 +99,10 @@
 // 观察；了解批次落盘后事件驱动触发一次派生整理。主动机会/回执/规划/投影链本身不消费摘要
 // 正文（只经了解层快照与派生记忆），pr-* 逐点核对实现点未变，未修订覆盖点，仅按当前源码
 // 刷新 sourceHash。
+// 2026-10-25 聊天评测固定时钟批次（本批刷新）：sourceFiles 中 `src/services/init.ts` 的
+// 领域引导新增 sim-eval 专用分支 —— 在测试模型覆盖与 direct-seed 之前安装 Node 域固定时钟；
+// 只在 `DESKPET_SIM_EVAL=1` 且运行上下文合法时启用，正常 dev/release 引导顺序与行为不变。
+// pr-01..pr-17 不涉及该分支，覆盖点未修订，sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-18 analyze -> generate（仅编辑，未执行）：用户工具替换为 schedule_query/change；
@@ -308,7 +312,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "20618fbf7fbfcc37724508be789e82df5c768788749a2120cd972d3ee1413ccc",
+  module:"proactive",sourceHash: "90b55b68c04b52a9b4db4e0ab3ab0c7c5b54329663d05db7917413573292c185",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

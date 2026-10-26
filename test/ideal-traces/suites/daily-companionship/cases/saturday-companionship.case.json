@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "caseId": "saturday-companionship",
-  "revision": 3,
+  "revision": 4,
   "familyId": "daily-companionship",
   "title": "周六日常、运动纠正与跨会话长程回忆",
   "categories": ["chat", "memory", "session", "humanizer"],
@@ -238,7 +238,7 @@
       "id": "p-correction-ack",
       "after": "correct-exercise",
       "window": "last-assistant",
-      "checker": "chat.correction-acknowledged",
+      "rubric": "chat.correction-acknowledged",
       "questionType": "correction",
       "polarity": "required",
       "critical": true,
@@ -250,31 +250,45 @@
       "id": "p-memory-source",
       "after": "correct-exercise",
       "window": "state",
-      "checker": "memory-source.correction-entry",
+      "rubric": "memory-source.correction-entry",
       "questionType": "source",
       "polarity": "required",
       "critical": true,
       "difficulty": 4,
       "description": "纠正事实的来源是 correct-exercise 的用户消息，而不是 fixture 初始记忆。",
+      "expectation": {
+        "subjects": [
+          { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+          { "label": "骑车", "aliases": ["骑行", "单车", "自行车", "骑"] },
+          { "label": "运动", "aliases": ["锻炼", "健身"] }
+        ]
+      },
       "evidence": ["correction-entry", "correction-memory"]
     },
     {
       "id": "p-memory-no-fixture-update",
       "after": "correct-exercise",
       "window": "state",
-      "checker": "memory-source.no-fixture-as-update",
+      "rubric": "memory-source.no-fixture-as-update",
       "questionType": "source",
       "polarity": "forbidden",
       "critical": false,
       "difficulty": 5,
       "description": "不把 fixture 初始的「实习后运动时间变少」当成本轮用户新说的话。",
+      "expectation": {
+        "subjects": [
+          { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+          { "label": "骑车", "aliases": ["骑行", "单车", "自行车", "骑"] },
+          { "label": "运动", "aliases": ["锻炼", "健身"] }
+        ]
+      },
       "evidence": ["correction-memory", "conversation-transcript"]
     },
     {
       "id": "p-tech-banter",
       "after": "tech-banter",
       "window": "last-assistant",
-      "checker": "humanizer.tech-banter",
+      "rubric": "humanizer.tech-banter",
       "questionType": "style",
       "polarity": "required",
       "critical": false,
@@ -285,7 +299,7 @@
       "id": "p-short-confirmation",
       "after": "emoji-ack",
       "window": "last-assistant",
-      "checker": "humanizer.short-confirmation",
+      "rubric": "humanizer.short-confirmation",
       "questionType": "multi-turn",
       "polarity": "required",
       "critical": false,
@@ -296,7 +310,7 @@
       "id": "p-food-return",
       "after": "return-food",
       "window": "last-assistant",
-      "checker": "humanizer.food-return",
+      "rubric": "humanizer.food-return",
       "questionType": "multi-turn",
       "polarity": "required",
       "critical": false,
@@ -307,7 +321,7 @@
       "id": "p-tired-no-advice",
       "after": "tired",
       "window": "last-assistant",
-      "checker": "humanizer.no-unsolicited-advice",
+      "rubric": "humanizer.no-unsolicited-advice",
       "questionType": "style",
       "polarity": "forbidden",
       "critical": false,
@@ -315,82 +329,169 @@
       "description": "用户说累时，不主动给作息、运动或效率建议。"
     },
     {
+      "id": "p-cross-session-provenance",
+      "after": "ask-history",
+      "window": "last-assistant",
+      "rubric": "session.answer-in-new-session",
+      "questionType": "cross-session",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 2,
+      "description": "回答发生在驱动新建的第二个会话，且与纠正事实的来源会话不同。",
+      "expectation": {
+        "sourceStep": "correct-exercise"
+      },
+      "evidence": ["second-session", "history-answer"]
+    },
+    {
       "id": "p-cross-session-answer",
       "after": "ask-history",
       "window": "last-assistant",
-      "checker": "session.cross-session-answer",
+      "rubric": "answer.cross-session-recall",
       "questionType": "cross-session",
       "polarity": "required",
       "critical": true,
       "difficulty": 4,
-      "description": "新会话能引用纠正后的事实，不依赖原会话上下文仍在。",
+      "description": "新会话能按声明的必需事实与允许的历史事实引用纠正后的内容，不依赖原会话上下文仍在。",
+      "expectation": {
+        "sourceStep": "correct-exercise",
+        "requiredFacts": [
+          {
+            "kind": "frequency",
+            "subject": { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+            "frequency": "once-weekly",
+            "temporal": "current"
+          }
+        ],
+        "anyOfFacts": [
+          {
+            "kind": "frequency",
+            "subject": { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+            "frequency": "frequent-or-thrice-weekly",
+            "temporal": "past"
+          },
+          {
+            "kind": "frequency",
+            "subject": { "label": "骑车", "aliases": ["骑行", "单车", "自行车", "骑"] },
+            "frequency": "frequent-or-thrice-weekly",
+            "temporal": "past"
+          }
+        ]
+      },
       "evidence": ["second-session", "history-answer"]
     },
     {
       "id": "p-current-frequency",
       "after": "ask-history",
       "window": "last-assistant",
-      "checker": "answer.current-frequency",
+      "rubric": "answer.fact-recall",
       "questionType": "temporal",
       "polarity": "required",
       "critical": true,
       "difficulty": 2,
       "description": "回答明确说出现在一周只跑一次。",
+      "expectation": {
+        "fact": {
+          "kind": "frequency",
+          "subject": { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+          "frequency": "once-weekly",
+          "temporal": "current"
+        }
+      },
       "evidence": ["history-answer"]
     },
     {
       "id": "p-history-running",
       "after": "ask-history",
       "window": "last-assistant",
-      "checker": "answer.history-running",
+      "rubric": "answer.fact-recall",
       "questionType": "temporal",
       "polarity": "required",
       "critical": false,
       "difficulty": 2,
       "description": "回答说明实习之前经常跑步。",
+      "expectation": {
+        "fact": {
+          "kind": "frequency",
+          "subject": { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+          "frequency": "frequent-or-thrice-weekly",
+          "temporal": "past"
+        }
+      },
       "evidence": ["history-answer"]
     },
     {
       "id": "p-history-cycling",
       "after": "ask-history",
       "window": "last-assistant",
-      "checker": "answer.history-cycling",
+      "rubric": "answer.fact-recall",
       "questionType": "temporal",
       "polarity": "required",
       "critical": false,
       "difficulty": 3,
       "description": "回答说明实习之前还经常骑车。",
+      "expectation": {
+        "fact": {
+          "kind": "frequency",
+          "subject": { "label": "骑车", "aliases": ["骑行", "单车", "自行车", "骑"] },
+          "frequency": "frequent-or-thrice-weekly",
+          "temporal": "past"
+        }
+      },
       "evidence": ["history-answer"]
     },
     {
       "id": "p-no-temporal-swap",
       "after": "ask-history",
       "window": "last-assistant",
-      "checker": "answer.no-temporal-swap",
+      "rubric": "answer.temporal-scope",
       "questionType": "temporal",
       "polarity": "forbidden",
       "critical": true,
       "difficulty": 4,
-      "description": "不把实习前与当前的频率说反。",
+      "description": "不把实习前与当前的跑步频率说反。",
+      "expectation": {
+        "forbidden": [
+          {
+            "subject": { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+            "frequency": "once-weekly",
+            "temporal": "past"
+          },
+          {
+            "subject": { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+            "frequency": "frequent-or-thrice-weekly",
+            "temporal": "current"
+          }
+        ]
+      },
       "evidence": ["history-answer"]
     },
     {
       "id": "p-no-cycling-swap",
       "after": "ask-history",
       "window": "last-assistant",
-      "checker": "answer.no-cycling-temporal-swap",
+      "rubric": "answer.temporal-scope",
       "questionType": "temporal",
       "polarity": "forbidden",
       "critical": false,
       "difficulty": 4,
       "description": "不把以前经常骑车说成现在仍常骑。",
+      "expectation": {
+        "forbidden": [
+          {
+            "subject": { "label": "骑车", "aliases": ["骑行", "单车", "自行车", "骑"] },
+            "frequency": "frequent-or-thrice-weekly",
+            "temporal": "current"
+          }
+        ]
+      },
       "evidence": ["history-answer"]
     },
     {
       "id": "p-trap-resist",
       "after": "trap",
       "window": "last-assistant",
-      "checker": "answer.corrects-false-premise",
+      "rubric": "answer.corrects-false-premise",
       "questionType": "adversarial",
       "polarity": "required",
       "critical": true,
@@ -402,7 +503,7 @@
       "id": "p-clarify-ack",
       "after": "clarify",
       "window": "last-assistant",
-      "checker": "chat.correction-acknowledged",
+      "rubric": "chat.correction-acknowledged",
       "questionType": "correction",
       "polarity": "required",
       "critical": false,
@@ -414,19 +515,26 @@
       "id": "p-food-choice-recall",
       "after": "food-recall",
       "window": "last-assistant",
-      "checker": "answer.food-choice-recall",
+      "rubric": "answer.fact-recall",
       "questionType": "cross-session",
       "polarity": "required",
       "critical": false,
       "difficulty": 1,
-      "description": "回答记得用户当时选了酸奶。",
+      "description": "回答记得用户当时选的甜食替代。",
+      "expectation": {
+        "fact": {
+          "kind": "choice",
+          "value": "酸奶",
+          "aliases": []
+        }
+      },
       "evidence": ["food-choice-entry", "food-recall-entry"]
     },
     {
       "id": "p-abstain-food",
       "after": "food-recall",
       "window": "last-assistant",
-      "checker": "answer.no-fabrication",
+      "rubric": "answer.no-fabrication",
       "questionType": "adversarial",
       "polarity": "forbidden",
       "critical": false,
@@ -435,22 +543,62 @@
       "evidence": ["food-recall-entry"]
     },
     {
+      "id": "p-durable-provenance",
+      "after": "summary",
+      "window": "last-assistant",
+      "rubric": "session.answer-in-new-session",
+      "questionType": "cross-session",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 3,
+      "description": "总结回答发生在驱动新建的第三个会话，且与纠正事实的来源会话不同。",
+      "expectation": {
+        "sourceStep": "correct-exercise"
+      },
+      "evidence": ["third-session", "summary-entry"]
+    },
+    {
       "id": "p-durable-recall",
       "after": "summary",
       "window": "last-assistant",
-      "checker": "session.cross-session-answer",
+      "rubric": "answer.cross-session-recall",
       "questionType": "cross-session",
       "polarity": "required",
       "critical": true,
       "difficulty": 5,
-      "description": "第三个会话仍能引用当前频率与实习前习惯，跨两次会话边界和两天间隔。",
+      "description": "第三个会话仍能按声明的必需事实与允许的历史事实引用当前频率与实习前习惯，跨两次会话边界和两天间隔。",
+      "expectation": {
+        "sourceStep": "correct-exercise",
+        "requiredFacts": [
+          {
+            "kind": "frequency",
+            "subject": { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+            "frequency": "once-weekly",
+            "temporal": "current"
+          }
+        ],
+        "anyOfFacts": [
+          {
+            "kind": "frequency",
+            "subject": { "label": "跑步", "aliases": ["跑", "晨跑", "夜跑"] },
+            "frequency": "frequent-or-thrice-weekly",
+            "temporal": "past"
+          },
+          {
+            "kind": "frequency",
+            "subject": { "label": "骑车", "aliases": ["骑行", "单车", "自行车", "骑"] },
+            "frequency": "frequent-or-thrice-weekly",
+            "temporal": "past"
+          }
+        ]
+      },
       "evidence": ["third-session", "third-session-transcript", "summary-entry"]
     },
     {
       "id": "p-global-service-tone",
       "after": "close",
       "window": "all-assistant",
-      "checker": "humanizer.no-service-tone",
+      "rubric": "humanizer.no-service-tone",
       "questionType": "style",
       "polarity": "forbidden",
       "critical": false,
@@ -461,7 +609,7 @@
       "id": "p-global-meta",
       "after": "close",
       "window": "all-assistant",
-      "checker": "humanizer.no-meta-role",
+      "rubric": "humanizer.no-meta-role",
       "questionType": "style",
       "polarity": "forbidden",
       "critical": true,
@@ -472,7 +620,7 @@
       "id": "p-global-oracle-leak",
       "after": "close",
       "window": "all-assistant",
-      "checker": "driver.no-oracle-leak",
+      "rubric": "reply.no-oracle-leak",
       "questionType": "boundary",
       "polarity": "forbidden",
       "critical": true,
@@ -540,6 +688,8 @@
       "采购清单可以只列几项，不必覆盖所有饮食安排。",
       "对打瓦、出门、睡觉可以用短句收，不追问时间。",
       "跨会话回答可以一条说完，也可以分两条；不要求逐字复述。",
+      "事实复述允许同义改写：口语里的「一周才跑一次」「以前跑得勤」与声明式频率等价，由已校准 judge 判断。",
+      "跨会话召回拆成结构探针与内容探针：结构确定回答发生在新建会话且与来源会话不同，内容由 judge 按声明事实判断。",
       "对腿酸和同事约跑可以只作短反应，不主动安排恢复计划。",
       "总结可以简短口语化，不写成报告或建议清单。"
     ]
@@ -655,22 +805,21 @@
   ],
   "quality": {
     "rubric": "humanizer-six-dimensions",
-    "rubricVersion": 1,
-    "calibration": "uncalibrated",
-    "authority": "human",
-    "assistants": ["coding-agent"]
+    "rubricVersion": 1
   },
   "governance": {
     "purpose": "development",
     "unresolvedPoints": [
-      "humanizer 六维评分尚未校准，不能作为 gold 门槛。",
+      "humanizer 六维是整体质量规则，由独立 coding-agent judge 判定；用户抽查可核对，但不设校准门槛。",
       "本条合并自两份用户理想稿（原稿已删除），但主动消息、观察、图片拍没有进入；不能因为分类标签含 humanizer 就声称这些链路已验证。",
       "首轮 7 条用户消息来自用户理想稿；后续日常、错误前提、采购、第三个会话与总结追问是代理扩写，需要用户逐条审阅后才可作为 gold。",
       "跨会话追问、错误前提、澄清轮与长程总结是按执行契约新增的，不在用户原稿里，需要用户确认问法。",
       "source 只能写一个 ref，两份原稿的合并来源写在 note；原稿已删除，需要机器可读多来源时再扩展字段。",
       "fixture 的初始助手回复取自用户理想稿，会给后续风格提供上下文示范；若要把风格与记忆分开评，需要另建不带这些示范的变体。",
-      "结构化自动评分应由 API judge 执行；聊天过程的自由评述可以由 coding agent 记录，但两者不能混成同一套 gold 审批。",
-      "固定时钟与两天间隔目前只是驱动数据；runner 尚未注入宿主时间，不能声称真实日程间隔已验证。",
+      "结构化评测由独立 coding-agent judge 按冻结判分包执行；运行器不调用模型、不读取凭据，用户抽查可选且不阻塞。",
+      "纯事实复述、跨会话内容、纠正与陷阱判断都由同一 judge 按探针声明判定；judge 身份（平台／模型／prompt 版本）随判分记录，且必须与被测模型异构。",
+      "跨会话召回保留结构与内容两条探针；结构探针同样由 judge 判定，但内容正确性不能由结构通过代替。",
+      "固定时钟与两天间隔是驱动数据；W5 runner 只推进 Node 域 Date，Rust 调度器、OS 文件时间与跨进程时间戳仍是真实时间，不能声称真实日程间隔或 Rust 定时已验证。",
       "初始状态是 direct-seed，被测行为走真实链路；真实链路灌 fixture 属于另一类导入测试，本条不覆盖。",
       "基线尚未建立：需要冻结 specHash、模型、judge、harness 与时钟后跑多次独立试验，先观察分布，不预设通过门槛。",
       "session 分类只覆盖新建会话与跨会话召回，不覆盖切换、关闭、恢复和压缩。"
@@ -683,8 +832,9 @@
       "时间戳是固定模拟日程：会话 A 在 10-24，会话 B 在 10-25 早上，会话 C 在 10-27 晚上；首轮纠正紧接着 fixture 的 11:25 触发消息。",
       "每轮用户消息后都应观察自动抽取；不止纠正轮，但只有纠正轮的来源绑定是 critical。",
       "两份用户理想稿已按用户要求删除；正文要点保留在 fixture、driver 与探针中，不再维护独立原稿文件。",
-      "21 条探针中 9 条 critical；难度按 L1–L5 标注，用于后续分层，不参与当前通过判定。",
-      "case 级通过要求 critical 探针全部通过、非 critical 达到阈值且无 forbidden 违例；阈值待基线稳定后再定。"
+      "同一事实只在探针 expectation 中声明一次；judge 按声明事实判断同义改写，不维护内容词表或判分脚本。",
+      "23 条探针全部由独立 coding-agent judge 判定，其中 11 条 critical；难度按 L1–L5 标注，用于后续分层，不参与当前通过判定。",
+      "case 级通过要求全部适用规则 pass；任一 fail 即 fail，任一 inconclusive 即 inconclusive；用户抽查不改变总判定。"
     ]
   }
 }

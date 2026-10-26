@@ -1,3 +1,5 @@
+import type { Dataset } from "./dataset.mjs";
+
 export interface ChatRetentionPlan {
   blocked: boolean;
   reasons: string[];
@@ -7,8 +9,8 @@ export interface ChatRetentionPlan {
   evictedPaths?: string[];
 }
 
-export function renderChatReport(options: { runDir: string; generatedAt: string }): string;
-export function writeChatReport(options: { runDir: string; generatedAt: string }): { path: string; markdown: string };
+export function renderChatReport(options: { runDir: string; generatedAt: string; dataset?: Dataset | null }): string;
+export function writeChatReport(options: { runDir: string; generatedAt: string; dataset?: Dataset | null }): { path: string; markdown: string };
 export function planChatRetention(options: {
   reportsDir: string;
   maxGroups?: number;

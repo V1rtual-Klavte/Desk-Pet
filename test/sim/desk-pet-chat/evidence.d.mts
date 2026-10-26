@@ -1,6 +1,7 @@
 export const CHAT_EVIDENCE_SCHEMA_VERSION: 1;
 export const CHAT_RUN_SCHEMA_VERSION: 1;
 export const CHAT_ATTEMPT_SCHEMA_VERSION: 1;
+export const CHAT_GRADER_VERSION: string;
 export const CHAT_RETENTION_MAX_GROUPS: 5;
 export const CHAT_RETENTION_MAX_BYTES: number;
 export const CHAT_RUN_PHASES: readonly string[];
@@ -9,7 +10,7 @@ export const ATTEMPT_OUTCOMES: readonly string[];
 
 export type ChatRunPhase =
   | "preparing" | "awaiting_gold_review" | "ready" | "running" | "collecting" | "grading"
-  | "awaiting_result_review" | "repairing" | "completed" | "blocked" | "cancelled";
+  | "awaiting_judge" | "repairing" | "completed" | "blocked" | "cancelled";
 export type DialogueOrigin = "fixture" | "driver" | "assistant";
 export type AttemptOutcome = "completed" | "failed" | "interrupted";
 export type IntegrityStatus = "complete" | "inconclusive" | "unsealed";
@@ -121,6 +122,28 @@ export interface ChatTraceAck {
   persisted: true;
 }
 
+export interface TimelineTraceEvent {
+  seq: number;
+  sceneId?: string;
+  trialId?: string;
+  orphan?: boolean;
+  event: {
+    kind: string;
+    createdAt: number;
+    runId?: string;
+    requestId?: string;
+    turnId?: string;
+    payload?: Record<string, unknown>;
+  };
+}
+
+export interface AttemptTimeline {
+  messages: DialogueRecord[];
+  dialogueIssues: string[];
+  events: TimelineTraceEvent[];
+  trace: { chunkCount: number; complete: boolean; droppedCount: number };
+}
+
 export interface TraceWriter {
   path: string;
   appendChunk(chunk: ChatTraceChunkInput): ChatTraceAck;
@@ -190,7 +213,7 @@ export interface GradeRecord {
   createdAt: string;
   rubricVersion: string;
   graderVersion: string;
-  authority: "deterministic" | "api-judge" | "human";
+  authority: "coding-agent-judge";
   checks: unknown[];
   summary: Record<string, unknown>;
 }
@@ -206,16 +229,40 @@ export interface AppendGradeOptions {
   summary: Record<string, unknown>;
 }
 
+export interface ReviewRuleRecord {
+  ruleId: string;
+  verdict: "pass" | "fail" | "inconclusive" | "not_applicable";
+  reason: string;
+  evidenceRefs: string[];
+  agreement?: "agree" | "disagree";
+}
+
+export interface ReviewEvidenceBinding {
+  manifestSha256: string;
+  datasetHash: string;
+  specHash: string;
+  oracleHash: string;
+}
+
+export interface ReviewRuleVersions {
+  graderVersion: string;
+  rubricVersions: string[];
+}
+
 export interface ReviewRecord {
   schemaVersion: 1;
+  kind: "spot-check";
   reviewId: string;
+  gradeId?: string;
   attemptManifestSha256: string;
   createdAt: string;
   reviewer: { role: "user"; name: string };
   verdict: "pass" | "fail" | "inconclusive";
   notes: string;
-  evidenceRefs: unknown[];
-  decisions: unknown[];
+  evidenceRefs: string[];
+  rules: ReviewRuleRecord[];
+  binding?: ReviewEvidenceBinding;
+  versions?: ReviewRuleVersions;
 }
 
 export interface AppendReviewOptions {
@@ -225,8 +272,12 @@ export interface AppendReviewOptions {
   reviewer: { role: "user"; name: string };
   verdict: ReviewRecord["verdict"];
   notes?: string;
-  evidenceRefs?: unknown[];
-  decisions?: unknown[];
+  evidenceRefs?: string[];
+  rules?: Array<Omit<ReviewRuleRecord, "reason" | "evidenceRefs"> & { reason?: string; evidenceRefs?: string[] }>;
+  binding?: ReviewEvidenceBinding | null;
+  versions?: ReviewRuleVersions | null;
+  kind?: "spot-check";
+  gradeId?: string;
 }
 
 export interface ChatAttemptEvidence {
@@ -294,3 +345,4 @@ export function appendGrade(options: AppendGradeOptions): GradeRecord;
 export function appendReview(options: AppendReviewOptions): ReviewRecord;
 export function listAttemptIds(runDir: string): string[];
 export function readChatRunEvidence(runDir: string): ChatRunEvidence;
+export function readAttemptTimeline(attemptDir: string): AttemptTimeline;

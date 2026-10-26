@@ -17,7 +17,7 @@
  *   node scripts/desk-pet-chat.mjs proactive-state
  *   node scripts/desk-pet-chat.mjs understanding
  *   node scripts/desk-pet-chat.mjs dataset validate|list|types|review|driver ...
- *   node scripts/desk-pet-chat.mjs eval prepare|start|status|finish|stop ...
+ *   node scripts/desk-pet-chat.mjs eval prepare|start|drive|status|finish|compare|holdout|judge|report|review ...
  *   node scripts/desk-pet-chat.mjs capture status|sessions
  *   node scripts/desk-pet-chat.mjs wait <id>
  *   node scripts/desk-pet-chat.mjs ready
@@ -70,7 +70,7 @@ async function waitFor(id, timeoutMs = 300_000) {
   const deadline = now() + timeoutMs;
   while (now() < deadline) {
     const hit = [...events()].reverse().find((event) => event.id === id
-      && ["message", "error", "host", "plan", "choice", "confirm", "context", "window", "sessions", "tasks", "proactive_state", "understanding", "observe", "dream", "proactive", "task", "report", "capture_started", "capture_trial", "capture_sessions", "capture_finished", "capture_status", "stopped"].includes(event.type));
+      && ["message", "error", "host", "plan", "choice", "confirm", "context", "clock", "memory_state", "window", "sessions", "tasks", "proactive_state", "understanding", "observe", "dream", "proactive", "task", "report", "capture_started", "capture_trial", "capture_sessions", "capture_finished", "capture_status", "stopped"].includes(event.type));
     if (hit) return hit;
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
@@ -333,11 +333,6 @@ try {
             console.log(`题型：${usedTypes.map(([id, count]) => `${id} ${count}`).join(" · ")}`);
           }
           console.log(
-            `评审权威：${Object.entries(summary.authorityCounts)
-              .map(([authority, count]) => `${authority} ${count}`)
-              .join(" · ")}`,
-          );
-          console.log(
             `难度：${Object.entries(summary.difficultyCounts)
               .map(([level, count]) => `L${level} ${count}`)
               .join(" · ")}`,
@@ -475,7 +470,7 @@ try {
       break;
     }
     default:
-      console.error("用法：chat <text> | send <text> | cmd <type> [--screenshot] | observe [--screenshot] [--force] | host <method> [json] | humanize on|off|status | choice list|pick N|other|cancel | confirm list|allow|session|deny | context | window | sessions | tasks | proactive-state | understanding | capture status|sessions | plan <mode> | task [json] | dataset validate [suiteId] | dataset list [suiteId] | dataset types | dataset review <caseId> | dataset driver <caseId> | eval prepare|start|status|finish|stop ... | suite <ids> [--rounds N] [--run] | wait <id> | ready | tail [n]");
+      console.error("用法：chat <text> | send <text> | cmd <type> [--screenshot] | observe [--screenshot] [--force] | host <method> [json] | humanize on|off|status | choice list|pick N|other|cancel | confirm list|allow|session|deny | context | window | sessions | tasks | proactive-state | understanding | capture status|sessions | plan <mode> | task [json] | dataset validate [suiteId] | dataset list [suiteId] | dataset types | dataset review <caseId> | dataset driver <caseId> | eval prepare|start|drive|status|finish|compare|holdout|judge|report|review|stop ... | suite <ids> [--rounds N] [--run] | wait <id> | ready | tail [n]");
       process.exitCode = 1;
   }
 } catch (error) {

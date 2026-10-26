@@ -10,7 +10,7 @@
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "approvalId": "approval-<stamp>",
   "caseId": "saturday-companionship",
   "suiteId": "daily-companionship",
@@ -34,4 +34,4 @@
 }
 ```
 
-任一绑定内容变化（含 case 的 `questionTypes`、任一探针的增删改或 `difficulty`、fixture 的 `loading`、driver 的 `at`），旧审批都会变成 stale；需要重新审阅并生成新的 `specHash`。W1–W1.7 没有写审批的命令，审批记录的落盘由用户明确授权的后续动作完成。
+任一绑定内容变化（含 case 的 `questionTypes`、任一探针的增删改或 `difficulty`、fixture 的 `loading`、driver 的 `at`），旧审批都会变成 stale；需要重新审阅并生成新的 `specHash`。W1–W5 没有写审批的命令，审批记录的落盘由用户明确授权的后续动作完成。

@@ -68,6 +68,13 @@ vi.mock("@/services/sim/run-context", () => ({
     controlDir: fixture.controlDir,
     seedPath: join(fixture.runDir, "seed.json"),
     seedReportPath: join(fixture.runDir, "seed-report.json"),
+    clockPath: join(fixture.runDir, "clock.json"),
+    clock: {
+      schemaVersion: 1,
+      base: new Date(0).toISOString(),
+      timezone: "UTC",
+      reason: "test",
+    },
     generation: "gen-test",
     hostPid: process.pid,
     ready: {
