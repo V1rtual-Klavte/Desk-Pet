@@ -4,7 +4,7 @@
 
 只有用户本人针对当前 `specHash` 的真实会话消息审阅后，才能在这里新增审批记录。代理可以起草候选、展示审阅包和差异，但不得代填 `reviewer`、`feedbackSource` 或审批结论，也不得把框架层面的方案通过当成用例审批。
 
-本 case 有 6 条 `human` 权威探针（全部 `humanizer.*` semantic）和 humanizer 质量 rubric；coding agent 只能提供建议，正式裁决与 gold 批准都只能由用户本人给出。
+本 case 的 23 条探针（含 6 条 `humanizer.*` semantic）和 humanizer 质量 rubric 全部由独立 coding-agent judge 判定，没有 `human` 权威分流；用户可以抽查任一规则，gold 批准仍只能由用户本人给出。
 
 审批记录至少包含：
 

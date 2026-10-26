@@ -1451,6 +1451,33 @@ describe("用户抽查不阻塞", () => {
     expect(byRule.get("p-provenance")?.reviewId).toBe(second.reviewId);
     expect(readJudgingRecords(prepared.attemptDir).reviews).toHaveLength(2);
   });
+
+  it("重新判分后旧抽查不并入新判分 [chat-spotcheck-regrade]", async () => {
+    const { world, prepared, applied } = await judgedWorld();
+    recordSpotCheck({
+      attemptDir: prepared.attemptDir,
+      reviewer: USER,
+      checks: [
+        { ruleId: "p-source", verdict: "fail", agreement: "disagree", reason: "旧判分的抽查" },
+      ],
+      now: REVIEWED,
+    });
+    expect(statusFor(world, prepared).spotCheck.status).toBe("checked");
+
+    const regraded = apply(world, prepared, verdictsFor(prepared.packet.packet), { now: LATER });
+    expect(regraded.gradeId).not.toBe(applied.gradeId);
+
+    const status = statusFor(world, prepared);
+    expect(status.spotCheck).toMatchObject({
+      status: "not_checked",
+      checked: 0,
+      total: 10,
+      agreements: 0,
+      disagreements: 0,
+    });
+    // 旧抽查仍是历史证据，只是不再算到最新判分头上。
+    expect(readJudgingRecords(prepared.attemptDir).reviews).toHaveLength(1);
+  });
 });
 
 describe("同源报告四层", () => {

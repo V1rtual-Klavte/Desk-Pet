@@ -1,3 +1,6 @@
+// 2026-10-26 聊天评测消息绑定（本批刷新）：sourceFiles 中 engine/harness/delivery.ts 新增
+// readRequestResponse（按 requestId 取证回复，首次 run 的 fromTipId=null 按会话开头处理）；
+// readContextEpoch 与压缩换代口径未变。mm-* 覆盖点未修订，仅按当前源码刷新 sourceHash。
 // 2026-10-24 契约覆盖复核批次（analyze 定向）：sourceFiles 补入
 // `src/services/agent/memory/ref.ts` —— mm-76 的 id@version 拆解行为真正定义在这里，
 // 此前只列了导出它的 memory/index.ts。mm-76 的覆盖描述与三个 caseId 未变，其余 mm-* 未修订；
@@ -437,7 +440,7 @@ export const memoryContract: ModuleContract = {
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
   // 2026-10-18 列项答案补全批次：新增 enumeration-answer.ts，runtime afterResponse 补全并与结算同源；reader 抽取器来源上限与最终证据对齐到 32、按 8 条分批合并、类别/问句片段具体性过滤、完整口味组合保留、最长项目吸收短片段、去空格变体去重；人物归属留在 LoCoMo 适配器（memory-bench mb-12），产品不解析 speaker 头；mm-73/mm-74/mm-75 覆盖，刷新。
   // 2026-10-24 引用溯源：会话原文引用同落 chunk 0，按 (sessionId, entryId) 去重后写入 quoteRefs；mm-79/mm-80/mm-81 覆盖，刷新。
-  sourceHash: "90d217ffc349e3413c73c1d184b2eba908eb8bebe17d0e8a572f67a8d6fd6c74",
+  sourceHash: "d8af19e35488a9098c89dbb9c27bbf14c9d6e04830da44865eb2e6fba160c1b7",
   coverage: [
     { id: "mm-54", feature: "需求与真实空间驱动召回预算", description: "两层自动共用本次请求实际headroom，由共享total裁决；无手动分层额度或查询参数，不按固定比例/倍率/填充下限/绝对封顶分配，主动core为0，总量不越正常输入目标", why: "真实可用空间与相关证据需求决定装配上限，旧配置不能压低自动额度", layer: "unit", depth: "deep", scenarios: ["memory-recall-layered-budget", "memory-selector-output-budget"] },
     { id: "mm-55", feature: "真实请求空间接线", description: "transform完成正文和工具投影后按实际headroom召回，预留新增消息结构成本；正文增长使provider预算同步下降，超过旧1000-token上限的完整事实仍可到达请求；trace与候选端沿用同一预算；宿主阅读规程进入system，原始引用仍在custom消息且不升级为指令；静态规程声明默认自然日期及显式机器格式/年份/相对量边界，接线断言核对system消费，表达质量另由固定证据与真模型专项观测，不以fake回复证明", why: "静态比例或构造期估算不能反映本次Provider请求的真实空间", layer: "integration", depth: "deep", scenarios: ["memory-recall-layered-runtime", "trace-memory-reading-guide-in-request"] },

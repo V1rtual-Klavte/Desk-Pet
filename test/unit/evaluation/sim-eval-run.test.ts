@@ -337,6 +337,54 @@ describe("控制通道日志读取", () => {
   })
 })
 
+describe("驱动消息回执身份", () => {
+  const operation = {
+    operationId: "op-1",
+    caseId: "case-a",
+    stepId: "say",
+    trialId: "trial-1",
+    sessionId: "session-1",
+    generation: "gen-1",
+  }
+  const receipt = {
+    type: "message",
+    operation,
+    requestId: "op-1",
+    sessionId: "session-1",
+    reply: "你好",
+    outcome: "succeeded",
+    toolCalls: [],
+  }
+
+  it("回执原样绑定本次 operation、trial、会话与代际", () => {
+    expect(runner.validateMessageReceipt(receipt, operation)).toMatchObject({
+      sessionId: "session-1",
+      reply: "你好",
+      outcome: "succeeded",
+      requestId: "op-1",
+      operation,
+    })
+  })
+
+  it("错组回执、缺身份或会话不一致直接失败", () => {
+    expect(() => runner.validateMessageReceipt(
+      { ...receipt, operation: { ...operation, generation: "gen-old" } }, operation,
+    )).toThrow(/generation/)
+    expect(() => runner.validateMessageReceipt(
+      { ...receipt, operation: { ...operation, operationId: "op-other" } }, operation,
+    )).toThrow(/operationId/)
+    expect(() => runner.validateMessageReceipt(
+      { ...receipt, requestId: "op-other" }, operation,
+    )).toThrow(/requestId/)
+    expect(() => runner.validateMessageReceipt(
+      { ...receipt, sessionId: "session-2" }, operation,
+    )).toThrow(/sessionId/)
+    expect(() => runner.validateMessageReceipt(
+      { ...receipt, operation: undefined }, operation,
+    )).toThrow(/请求身份/)
+  })
+})
+
 describe("证据 id 与采集生命周期回执", () => {
   const attemptDir = join(tmpdir(), "desk-pet-repo", "test", "reports", "chat", "chat-w3b", "attempts", "0001")
   const expected = { evaluationRunId: "chat-w3b", attemptId: "0001", attemptDir }

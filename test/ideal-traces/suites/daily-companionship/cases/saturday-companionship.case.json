@@ -1,7 +1,7 @@
 {
   "schemaVersion": 4,
   "caseId": "saturday-companionship",
-  "revision": 4,
+  "revision": 5,
   "familyId": "daily-companionship",
   "title": "周六日常、运动纠正与跨会话长程回忆",
   "categories": ["chat", "memory", "session", "humanizer"],
@@ -62,55 +62,55 @@
       "id": "correct-exercise",
       "kind": "message",
       "text": "放屁  虽然我现在一周只跑一次  实习之前我跑得老勤了  还经常骑车呢",
-      "at": "2026-10-24T11:31:00+08:00"
+      "at": "2026-10-24T12:59:00+08:00"
     },
     {
       "id": "tech-banter",
       "kind": "message",
       "text": "哈哈雀氏 核心出装hashmap concurrenthashmap 1.8之前的区别",
-      "at": "2026-10-24T11:34:00+08:00"
+      "at": "2026-10-24T13:04:00+08:00"
     },
     {
       "id": "emoji-ack",
       "kind": "message",
       "text": "🐂",
-      "at": "2026-10-24T11:35:00+08:00"
+      "at": "2026-10-24T13:05:00+08:00"
     },
     {
       "id": "leave-to-play",
       "kind": "message",
       "text": "先刷会视频打瓦",
-      "at": "2026-10-24T11:36:00+08:00"
+      "at": "2026-10-24T13:06:00+08:00"
     },
     {
       "id": "confirm",
       "kind": "message",
       "text": "包的",
-      "at": "2026-10-24T11:37:00+08:00"
+      "at": "2026-10-24T13:07:00+08:00"
     },
     {
       "id": "return-food",
       "kind": "message",
       "text": "觅食觅食",
-      "at": "2026-10-24T12:20:00+08:00"
+      "at": "2026-10-24T14:50:00+08:00"
     },
     {
       "id": "food-craving",
       "kind": "message",
       "text": "想吃点甜的 但是吃不得 热量太高了",
-      "at": "2026-10-24T12:21:00+08:00"
+      "at": "2026-10-24T14:51:00+08:00"
     },
     {
       "id": "food-choice",
       "kind": "message",
       "text": "那你说吃啥",
-      "at": "2026-10-24T12:22:00+08:00"
+      "at": "2026-10-24T14:52:00+08:00"
     },
     {
       "id": "food-decision",
       "kind": "message",
       "text": "行 那就酸奶吧",
-      "at": "2026-10-24T12:23:00+08:00"
+      "at": "2026-10-24T14:59:00+08:00"
     },
     {
       "id": "evening-work",
@@ -639,7 +639,13 @@
       "id": "correction-processed",
       "after": "correct-exercise",
       "wait": "memory_extraction_end",
-      "note": "等到自动记忆抽取结束；本条不手动触发 sweep。"
+      "note": "等到本步之后的自动记忆抽取以新作业收口；空闲水位不算完成，本条不手动触发 sweep。"
+    },
+    {
+      "id": "food-processed",
+      "after": "food-decision",
+      "wait": "memory_extraction_end",
+      "note": "食物选择抽取收口后才进入次日新会话；本条不手动触发 sweep。"
     },
     {
       "id": "second-session-created",

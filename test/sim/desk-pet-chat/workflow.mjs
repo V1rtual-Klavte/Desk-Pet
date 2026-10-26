@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   DATASET_SCHEMA_VERSION,
   DRIVER_HOST_METHOD_VALUES,
@@ -61,6 +62,10 @@ export const TARGET_CONDITION_FIELDS = Object.freeze([
 const CASE_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+const MESSAGE_OPERATION_FIELDS = Object.freeze([
+  "operationId", "caseId", "trialId", "sessionId", "generation", "stepId",
+]);
+const MEMORY_JOB_TERMINAL_STATUSES = Object.freeze(["completed", "failed", "cancelled"]);
 const SECRET_KEY_PATTERN = /^(?:apiKey|api_key|accessToken|access_token|refreshToken|refresh_token|secret|password|credential|authorization)$/i;
 
 export class WorkflowError extends Error {
@@ -572,7 +577,43 @@ function assertPackageMatches(progress, driverPackage) {
   }
 }
 
-function stepResultFor(step, response) {
+/** 回执必须原样绑定本步 operation、trial、会话与宿主代际；缺项或错组不得当作请求结果。 */
+function messageReceiptFor(step, response, operation) {
+  const receipt = response.operation;
+  if (!isRecord(receipt)) fail("driver.receipt", `消息步骤 ${step.id} 的回执缺少请求身份`);
+  for (const field of MESSAGE_OPERATION_FIELDS) {
+    if (typeof receipt[field] !== "string" || receipt[field].trim() === "") {
+      fail("driver.receipt", `消息步骤 ${step.id} 的回执缺少 ${field}`);
+    }
+  }
+  for (const field of ["operationId", "caseId", "stepId"]) {
+    if (receipt[field] !== operation[field]) {
+      fail("driver.receipt", `消息步骤 ${step.id} 的回执的 operation 与本步不一致（${field}）`);
+    }
+  }
+  if (response.requestId !== receipt.operationId) {
+    fail("driver.receipt", `消息步骤 ${step.id} 的 requestId 与 operation 不一致`);
+  }
+  if (receipt.sessionId !== response.sessionId) {
+    fail("driver.receipt", `消息步骤 ${step.id} 的回执会话与响应会话不一致`);
+  }
+  return {
+    operation: {
+      operationId: receipt.operationId,
+      caseId: receipt.caseId,
+      trialId: receipt.trialId,
+      sessionId: receipt.sessionId,
+      generation: receipt.generation,
+      stepId: receipt.stepId,
+    },
+    requestId: response.requestId,
+    ...(typeof response.assistantEntryId === "string" && response.assistantEntryId.trim()
+      ? { assistantEntryId: response.assistantEntryId } : {}),
+    ...(isRecord(response.delivery) ? { delivery: structuredClone(response.delivery) } : {}),
+  };
+}
+
+function stepResultFor(step, response, operation) {
   if (step.kind === "message") {
     if (!isRecord(response)) fail("driver.transport", `消息步骤 ${step.id} 没有返回回执`);
     const reply = typeof response.reply === "string" ? response.reply : "";
@@ -586,6 +627,7 @@ function stepResultFor(step, response) {
       outcome: response.outcome,
       reply,
       toolCalls: Array.isArray(response.toolCalls) ? response.toolCalls.length : 0,
+      ...messageReceiptFor(step, response, operation),
     };
   }
   if (!isRecord(response) || response.method !== step.method) {
@@ -626,33 +668,74 @@ async function executeHostStep(step, transport) {
   return response;
 }
 
-async function waitForMemoryExtractionEnd({ transport, now, sleep, deadlineMs, pollMs, stableMs }) {
+function readMemorySnapshot(state) {
+  if (!isRecord(state)) fail("driver.memory", "memory_state 回执不是对象");
+  const pendingSources = Number(state.pendingSources);
+  const activeJobs = Array.isArray(state.activeJobs) ? state.activeJobs.length : Number.NaN;
+  if (!Number.isSafeInteger(pendingSources) || !Number.isSafeInteger(activeJobs)) {
+    fail("driver.memory", "memory_state 缺少 pendingSources/activeJobs 计数");
+  }
+  if (!Array.isArray(state.jobs)) fail("driver.memory", "memory_state 缺少 jobs 作业列表");
+  const jobs = state.jobs.map(job => {
+    if (!isRecord(job) || typeof job.id !== "string" || job.id.trim() === "" || typeof job.status !== "string") {
+      fail("driver.memory", "memory_state 的作业条目缺少 id/status");
+    }
+    return { id: job.id, status: job.status };
+  });
+  return { pendingSources, activeJobs, jobs };
+}
+
+/** 消息等副作用之前抓取作业基线；只有基线之外的作业才算本轮真正发生的抽取。 */
+async function captureMemoryBaseline(transport) {
+  const snapshot = readMemorySnapshot(await transport.memoryState());
+  return { jobIds: snapshot.jobs.map(job => job.id) };
+}
+
+async function waitForMemoryExtractionEnd({ transport, now, sleep, deadlineMs, pollMs, stableMs, baseline }) {
   const deadline = now() + deadlineMs;
+  const knownJobIds = new Set(baseline.jobIds);
   const observations = [];
+  const seenNewJobs = new Map();
   let stableSince = null;
   while (now() < deadline) {
-    const state = await transport.memoryState();
-    if (!isRecord(state)) fail("driver.memory", "memory_state 回执不是对象");
-    const pendingSources = Number(state.pendingSources);
-    const activeJobs = Array.isArray(state.activeJobs) ? state.activeJobs.length : Number.NaN;
-    if (!Number.isSafeInteger(pendingSources) || !Number.isSafeInteger(activeJobs)) {
-      fail("driver.memory", "memory_state 缺少 pendingSources/activeJobs 计数");
-    }
-    observations.push({ at: new Date(now()).toISOString(), pendingSources, activeJobs });
-    if (pendingSources === 0 && activeJobs === 0) {
+    const state = readMemorySnapshot(await transport.memoryState());
+    const newJobs = state.jobs.filter(job => !knownJobIds.has(job.id));
+    for (const job of newJobs) seenNewJobs.set(job.id, job.status);
+    const unfinishedNewJobs = [...seenNewJobs.values()].filter(status => !MEMORY_JOB_TERMINAL_STATUSES.includes(status));
+    observations.push({
+      at: new Date(now()).toISOString(),
+      pendingSources: state.pendingSources,
+      activeJobs: state.activeJobs,
+      newJobs: newJobs.map(job => `${job.id}:${job.status}`),
+    });
+    // 空水位本身不证明抽取发生过：必须看到基线之后的新作业收口，且水位保持归零。
+    if (seenNewJobs.size > 0 && unfinishedNewJobs.length === 0
+      && state.pendingSources === 0 && state.activeJobs === 0) {
       stableSince ??= now();
       if (now() - stableSince >= stableMs) {
-        return { status: "satisfied", detail: `pendingSources=0 activeJobs=0（${observations.length} 次观察）`, observations };
+        const summary = [...seenNewJobs].map(([id, status]) => `${id}:${status}`).join("、");
+        return {
+          status: "satisfied",
+          detail: `新抽取作业 ${summary}；pendingSources=0 activeJobs=0（${observations.length} 次观察）`,
+          observations,
+        };
       }
     } else {
       stableSince = null;
     }
     await sleep(pollMs);
   }
-  return { status: "timeout", detail: `等待自动记忆抽取结束超时（${observations.length} 次观察）`, observations };
+  const reason = seenNewJobs.size === 0
+    ? "没有发现新抽取作业"
+    : `新抽取作业 ${[...seenNewJobs].map(([id, status]) => `${id}:${status}`).join("、")} 未在期限内收口或水位未归零`;
+  return {
+    status: "timeout",
+    detail: `等待自动记忆抽取结束超时：${reason}（${observations.length} 次观察）`,
+    observations,
+  };
 }
 
-async function satisfyCheckpoint({ checkpoint, record, transport, now, sleep, memoryWait }) {
+async function satisfyCheckpoint({ checkpoint, record, transport, now, sleep, memoryWait, memoryBaseline }) {
   const observedAt = new Date(now()).toISOString();
   if (checkpoint.wait === "assistant_message") {
     if (record.result?.kind !== "message") {
@@ -676,7 +759,8 @@ async function satisfyCheckpoint({ checkpoint, record, transport, now, sleep, me
     }
     return { id: checkpoint.id, wait: checkpoint.wait, status: "satisfied", observedAt, detail: "宿主回执已读回" };
   }
-  const result = await waitForMemoryExtractionEnd({ transport, now, sleep, ...memoryWait });
+  if (!memoryBaseline) fail("driver.memory", `检查点 ${checkpoint.id} 缺少抽取基线`);
+  const result = await waitForMemoryExtractionEnd({ transport, now, sleep, ...memoryWait, baseline: memoryBaseline });
   return { id: checkpoint.id, wait: checkpoint.wait, status: result.status, observedAt, detail: result.detail };
 }
 
@@ -692,7 +776,7 @@ export async function executeDriver({
   onProgress = () => {},
   now = () => Date.now(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  memoryWait = { deadlineMs: 120_000, pollMs: 500, stableMs: 1_000 },
+  memoryWait = { deadlineMs: 300_000, pollMs: 500, stableMs: 1_000 },
 }) {
   const pkg = validateDriverPackage(driverPackage);
   validateSyncPoints(syncPoints);
@@ -727,6 +811,10 @@ export async function executeDriver({
     if (Date.parse(clock.base) !== Date.parse(step.at)) {
       fail("driver.clock", `固定时钟没有推进到步骤时间：步骤 ${step.id} 要求 ${step.at}，实际 ${clock.base}`);
     }
+    // 基线必须在副作用之前：之后出现的作业才可能是本步触发的抽取。
+    const memoryBaseline = syncPoints.some((point) => point.after === step.id && point.wait === "memory_extraction_end")
+      ? await captureMemoryBaseline(transport)
+      : null;
     const startedAt = new Date(now()).toISOString();
     progress.inFlight = { index, stepId: step.id, kind: step.kind, at: step.at, startedAt };
     progress.updatedAt = startedAt;
@@ -734,13 +822,16 @@ export async function executeDriver({
     // 先落 inFlight 再发副作用：崩溃后下一步只能核对现场，不能重放。
     await onProgress(progress);
 
+    const operation = step.kind === "message"
+      ? { operationId: `op-${randomUUID()}`, caseId: progress.caseId, stepId: step.id }
+      : null;
     let response;
     let record;
     try {
       response = step.kind === "message"
-        ? await transport.message(step.text)
+        ? await transport.message(step.text, operation)
         : await executeHostStep(step, transport);
-      const result = stepResultFor(step, response);
+      const result = stepResultFor(step, response, operation);
       if (step.kind === "message" && (response.outcome === "failed" || result.reply.trim() === "")) {
         const reason = response.failure
           ? `回合失败：${response.failure.kind ?? "unknown"}${response.failure.message ? ` / ${response.failure.message}` : ""}`
@@ -756,15 +847,7 @@ export async function executeDriver({
         startedAt,
         completedAt: new Date(now()).toISOString(),
         clock: { base: clock.base, now: clock.now, timezone: clock.timezone },
-        result: result.kind === "message"
-          ? {
-              kind: "message",
-              sessionId: result.sessionId,
-              outcome: result.outcome,
-              reply: result.reply,
-              toolCalls: result.toolCalls,
-            }
-          : result,
+        result,
         checkpoints: [],
       };
     } catch (error) {
@@ -801,7 +884,7 @@ export async function executeDriver({
 
     const points = syncPoints.filter((point) => point.after === step.id);
     for (const checkpoint of points) {
-      const check = await satisfyCheckpoint({ checkpoint, record, transport, now, sleep, memoryWait });
+      const check = await satisfyCheckpoint({ checkpoint, record, transport, now, sleep, memoryWait, memoryBaseline });
       record.checkpoints.push(check);
       if (check.status !== "satisfied") {
         progress.status = "blocked";
@@ -858,6 +941,8 @@ export function conditionsFromRun({ run, manifest, judgePromptVersion = null }) 
   const attemptCases = Array.isArray(manifest?.expectedTrials)
     ? [...new Set(manifest.expectedTrials.map((trial) => trial?.caseId).filter(Boolean))].sort()
     : [];
+  // 实际模型由封存时写在 manifest 顶层；identity.models 只是运行前的请求快照。
+  const sealedModels = manifest?.models;
   return {
     caseIds: attemptCases.length ? attemptCases : [...(run.scope?.caseIds ?? [])].sort(),
     suiteIds: [...(run.scope?.suiteIds ?? [])].sort(),
@@ -866,8 +951,8 @@ export function conditionsFromRun({ run, manifest, judgePromptVersion = null }) 
     fixtureHash: identity?.inputs?.fixtureHash ?? null,
     driverHash: identity?.inputs?.driverHash ?? null,
     oracleHash: identity?.inputs?.oracleHash ?? null,
-    requestedModel: identity?.models?.requested ?? null,
-    actualModel: identity?.models?.actual ?? null,
+    requestedModel: sealedModels?.requested ?? null,
+    actualModel: sealedModels?.actual ?? null,
     hostMode: identity?.host?.mode ?? null,
     hostCapabilities: [...(identity?.host?.capabilities ?? [])].sort(),
     platform: identity?.platform ? `${identity.platform.os}/${identity.platform.arch}` : null,

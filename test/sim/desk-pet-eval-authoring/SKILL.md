@@ -49,7 +49,7 @@ test/ideal-traces/
 | 装载与时钟 | `fixture.loading` 选 `direct-seed`（只预置初始状态）或 `real-chain`（不 seed 会话/记忆）；`fixed` 时钟每个 driver 步骤带升序 `at`，case 起点不早于 `fixture.clock` |
 | 用户角色包 | 用户知道的事实、目的、语气与允许动作；不得含隐藏探针、内部状态结果或背诵答案 |
 | driver | 按顺序的用户消息与 host 步骤；`fixed` 模式下每步带 `at`；自然分支、追问应答、停止条件 |
-| 检查点 | 可判定的事件或状态边界＋有限等待；不用固定 sleep 代替完成证据 |
+| 检查点 | 可判定的事件或状态边界＋有限等待；不用固定 sleep 代替完成证据。`memory_extraction_end` 要求本步之后出现新的抽取作业并收口，空闲水位不算结束 |
 | probes | 逐条绑定 `after` 驱动步骤，写清窗口、极性、critical、`rubric`、`questionType`、`difficulty`、描述与证据 |
 | oracle | 只放允许替代表达；不再使用 case 级 `required` / `forbidden` |
 | 路径约束 | 必要先后、禁止副作用、合法工具替代；不锁死每一步工具序列 |
@@ -107,7 +107,7 @@ test/ideal-traces/
 
 - 初始数据与待测动作分开：可以 seed 旧印象，不能 seed 纠正结果后声称纠错成功。
 - `direct-seed` 只预置初始会话、记忆和资源；纠正、自动抽取、跨会话召回必须由真实消息触发。`real-chain` 是另一类导入用例，不得和本 case 的初始状态混写。
-- `fixed` 时钟由 runner 写入 `clock.json`，只在宿主 Node 引导早期推进 Node 域 `Date`；Rust 调度器、OS 文件时间与跨进程时间戳仍是真实时间。可以声明 Node 域“过了几天”，不能声称真实日程间隔、Rust 定时或真实自动抽取时序已经验证。
+- `fixed` 时钟由 runner 写入 `clock.json`，只在宿主 Node 引导早期推进 Node 域 `Date`；Rust 调度器、OS 文件时间与跨进程时间戳仍是真实时间。可以声明 Node 域“过了几天”，不能声称真实日程间隔、Rust 定时或真实自动抽取时序已经验证。自动抽取要等调度器真实节拍命中抽槽并完成模型调用，驱动消息时间需落在抽槽窗口内；`memory_extraction_end` 以基线之后的新作业收口为准，不能靠空闲 `0/0` 通过。
 - 探针窗口限定 driver 步骤，fixture 预置的助手消息不进入 `last-assistant` 或 `all-assistant` 判定。
 - 通过正常产品入口建立的事实保留真实提交消息与来源；直接 seed 的初始状态明确标记 fixture。
 - 每个 trial 重建持久化身份、会话、任务、许可、消耗配额与时间域，不依赖前一 trial 的状态。
@@ -122,7 +122,7 @@ test/ideal-traces/
   → 起草 case、合成 fixture、写 driver
   → 逐条写 probes 与证据引用
   → dataset validate 自查格式、引用、重复与反例
-  → 银标试跑（另用 runner；W3 隔离采集与封存已验收，W4 judge 判分与可选抽查已实现并通过快层反例验收；W5 授权、固定时钟、驱动、续跑、对照与修复已于 2026-10-26 集中验收；真实 judge 与真实模型未运行）
+  → 银标试跑（另用 runner；W3 隔离采集与封存已验收，W4 judge 判分与可选抽查已实现并通过快层反例验收；W5 授权、固定时钟、驱动、续跑、对照与修复已于 2026-10-26 集中验收；真实 judge 与真实模型已跑过一次银标，结果 fail，尚未形成基线或 gold）
   → 用户审阅并修改预期
   → 冻结 gold 版本
 ```
@@ -149,7 +149,7 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 2. 用户选定后跑 `dataset review <caseId>`，把输出**原样贴在聊天区**；至少能看到来源、fixture、题型与判分方式、驱动步骤、检查点、探针、证据、未解决点与 `specHash`。
 3. 请用户按三类决定回复：**批准当前版本 / 修改具体条目 / 暂缓**。修改意见落到 case 或 fixture，改完提升 `revision`，重新展示新的 `specHash`。装载方式、难度分布与固定时钟也属于审阅内容；不只口头说“改好了”。
 4. 保留用户原话、`caseId` 与 `specHash`，作为后续写入审批的候选来源。不要把“框架可以”“测试全绿”或代理判断当成用户批准，也不要代填 `reviewer`、`feedbackSource` 或 `decision`。
-5. W1–W5 仍没有写 gold 审批文件的命令；`eval review spotcheck` 只记录用户对某次运行证据的抽查意见，不改变 case 的 silver/gold，也不改变自动判分。用户在聊天里批准后，当前 case 仍是 silver / pending；不要手写 approval JSON。
+5. 当前仍没有写 gold 审批文件的命令；`eval review spotcheck` 只记录用户对某次运行证据的抽查意见，不改变 case 的 silver/gold，也不改变自动判分。用户在聊天里批准后，当前 case 仍是 silver / pending；不要手写 approval JSON。
 6. 看过审阅包的代理不得再驱动同一个 case。驱动要换独立会话／代理，只读 `dataset driver`，避免探针与 oracle 视野污染。
 
 ## 金标与信任边界

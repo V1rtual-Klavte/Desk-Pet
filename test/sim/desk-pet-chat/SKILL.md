@@ -497,7 +497,7 @@ node scripts/desk-pet-chat.mjs suite observation,tasks --run --rounds 3
 
 ## 结构化评测
 
-结构化用例不在这里驱动或判分：写题、审阅与用户审批见 [`desk-pet-eval-authoring`](../desk-pet-eval-authoring/SKILL.md)，冻结规格、执行、判分包与独立 judge 裁决见 [`desk-pet-eval-runner`](../desk-pet-eval-runner/SKILL.md)。本 Skill 只负责真实聊天和上面的自由定性评测；不要代替 runner 判探针，也不要代填 gold 审批。
+结构化用例不在这里驱动或判分：写题、审阅与用户审批见 [`desk-pet-eval-authoring`](../desk-pet-eval-authoring/SKILL.md)，冻结规格、执行、判分包与独立 judge 裁决见 [`desk-pet-eval-runner`](../desk-pet-eval-runner/SKILL.md)。本 Skill 只负责真实聊天和上面的自由定性评测；不要代替 runner 判探针，也不要代填 gold 审批。评测运行器占用控制通道采集时（`DESKPET_SIM_EVAL`），消息必须携带 `eval drive` 的操作身份；手动写入的 `chat` 消息会被拒绝，不要用它补评测步骤。
 
 如果用户只是让你按某条用例自然扮演用户，使用 authoring 输出的 `dataset driver`，只读 `userRole` + `driver`，不要先看 `dataset review`。driver 里的 `at` 会由评测运行器推进 Node 域固定时钟，不触发真实等待，也不代表 Rust／OS 时间或真实日程已经推进；不要自行等待或伪造跨天间隔。
 

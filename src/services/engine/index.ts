@@ -118,6 +118,7 @@ export {
   isSessionBusy,
   listQueuedInputs,
   listRecoveredPlans,
+  readRequestResponse,
   resumePlan,
   runPiAgentTurn,
   takePausedInputs,

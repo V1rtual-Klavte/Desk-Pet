@@ -20,7 +20,7 @@
 | 契约 | 模块行为覆盖门禁（sourceHash + caseId 三层记账） | README「Contract 与 sourceHash」；`test/contracts/` | 预检 attestation；caseids-*.json |
 | trace 证据 | 运行线路完整落盘、完整性核对、理想稿审阅 | README「Trace、记忆质量与性能门禁」；`test:trace-review` | `test/reports/traces/trace-bundle-*`（bench / quality 在各自子目录的 `traces/`） |
 | 理想稿 | 用户手写的旧格式 `.ideal.md`"期望线路"，审阅对照基准（只由用户写，正文原样保留） | [ideal-traces/README.md](ideal-traces/README.md) | 审阅 JSON（与报告配对、连带淘汰） |
-| 结构化聊天评测数据集 | 可执行聊天用例池：代理起草 silver，用户按当前哈希审批 gold；题型是探针的认知维度；全部探针由独立 coding-agent judge 判定，用户抽查可选；驱动包与题型／探针／oracle 隔离；写题、运行与聊天由三个 Skill 分工；W2 起可在 `test/.tmp/sim-eval-<id>` 隔离开 debug 宿主并装载 fixture，W3 采集与封存已验收（2026-10-25）；W4 判分／同源报告已实现并通过快层反例验收（2026-10-25），真实 judge 未运行；W5 授权、Node 域固定时钟、驱动／续跑／预算／同源对照与修复已于 2026-10-26 集中验收（真实模型／judge／Skill 与用户关口未执行） | [ideal-traces/README.md](ideal-traces/README.md)；`node scripts/desk-pet-chat.mjs dataset validate\|list\|types\|review\|driver`、`eval prepare\|start\|drive\|status\|finish\|compare\|holdout\|judge prepare\|judge apply\|review show\|review spotcheck\|report\|stop`、`capture status\|sessions` | `suites/<suiteId>/` 下的 `suite.json` / `cases/` / `fixtures/` / `approvals/`（当前仅 `daily-companionship/saturday-companionship` 为 silver/pending，23 条探针、11 条 critical、8 种题型；其他套件空占位）；封存证据在 `test/reports/chat/<evaluationRunId>/` |
+| 结构化聊天评测数据集 | 可执行聊天用例池：代理起草 silver，用户按当前哈希审批 gold；题型是探针的认知维度；全部探针由独立 coding-agent judge 判定，用户抽查可选；驱动包与题型／探针／oracle 隔离；写题、运行与聊天由三个 Skill 分工；W2 起可在 `test/.tmp/sim-eval-<id>` 隔离开 debug 宿主并装载 fixture，W3 采集与封存已验收（2026-10-25）；W4 判分／同源报告已实现并通过快层反例验收（2026-10-25）；W5 授权、Node 域固定时钟、驱动／续跑／预算／同源对照与修复已于 2026-10-26 集中验收，并经授权完成一次真实银标运行（`silver-20261026c`，fail；真实 Skill 与用户关口未执行） | [ideal-traces/README.md](ideal-traces/README.md)；`node scripts/desk-pet-chat.mjs dataset validate\|list\|types\|review\|driver`、`eval prepare\|start\|drive\|status\|finish\|compare\|holdout\|judge prepare\|judge apply\|review show\|review spotcheck\|report\|stop`、`capture status\|sessions` | `suites/<suiteId>/` 下的 `suite.json` / `cases/` / `fixtures/` / `approvals/`（当前仅 `daily-companionship/saturday-companionship` 为 silver/pending，23 条探针、11 条 critical、8 种题型；其他套件空占位）；封存证据在 `test/reports/chat/<evaluationRunId>/` |
 | 外部记忆基准（权威对照） | 质量主口径：LongMemEval（官方模板）/ MemoryBank cn / LoCoMo（异构 LLM judge 语义正确率，不用官方 F1；按消耗分层跑，不进 CI／发布门禁）；LoCoMo 固定真人角色适配与统一任务规则、LongMemEval oracle 的 privileged reader control 均显式标记非产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
 | 记忆质量（自建兜底） | 兜底冒烟与治理语义回归：外部集未覆盖的来源/scope 反例、纠正、遗忘、称呼/偏好（真实 Provider，烧 token） | README 记忆质量段；`test:memory-quality` | 报告 + review/scored 包（组保留） |
 | 记忆性能 | release 存储 + debug IPC 的资源账（1k/10k 库、P95） | README 性能段；`test:memory-performance` | `test/reports/performance/`（3 份滚动） |
@@ -75,8 +75,9 @@
 - **聊天评测数据集**：结构化用例的 gold 只能由用户针对当前 `specHash` 的真实会话消息审批；
   代理只能起草 silver，不得代填审批，也不得把 actual 输出当 oracle。驱动包只含
   `schemaVersion` / `caseId` / `revision` / `specHash` / `userRole` / `driver`；
-  题型、probes／oracle／检查点／证据／评分不得进入驱动。一条消息可以挂多条 probe，case 分按 critical 探针、
-  非 critical 阈值与 forbidden 违例计算，不按消息条数算；不设用户消息轮数上限。题型是探针的认知维度，
+  题型、probes／oracle／检查点／证据／评分不得进入驱动。一条消息可以挂多条 probe；case 判定要求证据完整、
+  执行完成、全部适用规则均为 `pass`（任一 `fail` 判失败，任一非 `pass` 判 inconclusive），`critical` 只用于
+  报告分层，不按消息条数算；不设用户消息轮数上限。题型是探针的认知维度，
   case 声明的 `questionTypes` 必须恰好等于探针题型的并集。每条探针只声明 `rubric` 与可选的声明式
   `expectation`；内容词表、频率、时间关系、主语别名与跨会话来源在 `expectation` 声明一次，rubric
   注册表只保留通用判据，不复制单个 case 的产品规则。全部探针与 humanizer 质量规则统一由独立
@@ -86,7 +87,9 @@
   `fixed` 时钟要求每个 driver 步骤带升序 `at`，runner 写入 `clock.json` 并在 Node 引导早期推进 Node 域 `Date`
   （Rust／OS 时间不推进）；`difficulty` 只用于报告分层，不改变通过判定；探针窗口限定 driver 步骤。
   W1–W5 已接数据集、证据、独立 judge 判分、同源报告与授权／驱动／同条件对照／修复；W4 快层反例已运行通过
-  （2026-10-25），真实 judge 未运行；W5 已于 2026-10-26 集中验收，CE 映射见执行契约；真实 Skill／模型运行与 CI 门禁仍未收口。
+  （2026-10-25）；W5 已于 2026-10-26 集中验收，CE 映射见执行契约，并经用户授权跑过一次真实银标
+  （`silver-20261026c`，fail）。每个消息步骤必须带唯一 drive 操作身份，回执按 `requestId` 绑定同一请求的
+  run 分支；采集期间手动写控制通道的消息会被拒绝。真实 Skill 自主运行、用户关口与 CI 门禁仍未收口。
 - **产物边界**：测试产物一律在 `test/` 下，不落仓库外；保留单元是「组」（报告与审阅/评分卫星连带淘汰、临时根按已知前缀 + 年龄回收），查看方式与口径见 README「报告在哪、怎么看」；L4 的 Node runner bundle 在 `test/.tmp/native-host-e2e/`（每次运行重建，不进保留链）；
   memory-bench 外部判分导出/回填使用 `<stamp>.json.hypotheses-<report-hash>.jsonl`、
   `<stamp>.json.verdicts-judge-<judge-hash>-<verdict-log-hash>.jsonl` 与

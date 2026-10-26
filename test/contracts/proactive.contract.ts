@@ -1,4 +1,8 @@
 // ==========================================
+// 2026-10-26 聊天评测消息绑定（本批刷新）：sourceFiles 中 engine/harness/delivery.ts 新增
+// readRequestResponse（按 requestId 取证回复，首次 run 的 fromTipId=null 按会话开头处理）；
+// 主动表达投递与回执路径未变。pr-* 覆盖点未修订，仅按当前源码刷新 sourceHash。
+// ==========================================
 // 2026-10-24 对话治理故障矩阵批次（analyze→generate）：新增 L3 pr-28（崩溃对账与证据绑定）、
 // pr-29（取消矩阵）与 pr-30（命令面故障与恢复），补《未完成工作与已知缺口》§5.1 的
 // 「JSONL/SQLite 故障注入、崩溃对账、插话/停止/会话与 Card 切换」。本轮只补测试与
@@ -312,7 +316,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "90b55b68c04b52a9b4db4e0ab3ab0c7c5b54329663d05db7917413573292c185",
+  module:"proactive",sourceHash: "765bf4c7941a1f9d9794fff15ad20ea00d8218707af5df16f24e73497b830c59",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

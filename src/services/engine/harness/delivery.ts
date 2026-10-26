@@ -115,6 +115,58 @@ export async function readActiveAttemptEvidence(
   return undefined
 }
 
+export interface RequestResponseEvidence {
+  requestId: string
+  operationId: string
+  userEntryId: string
+  assistantEntryId: string
+  text: string
+  timestamp: number
+}
+
+/**
+ * 按请求身份取绑定回复：携带该 requestId 的 user 条目必须落在一次 run 的
+ * `(fromTipId, tipId)` 分支区间内，该 run 的 tip 才是这条请求的回复。
+ * 查不到就返回 undefined，绝不退化成「最后一条助手消息」。
+ */
+export async function readRequestResponse(
+  sessionId: string,
+  requestId: string,
+): Promise<RequestResponseEvidence | undefined> {
+  const session = await acquirePiSession(sessionId)
+  const entries = await session.findEntries({ order: "asc" }, TODO_CONTEXT)
+  const user = entries.find(entry => entry.type === "message" && entry.message.role === "user"
+    && messageRequestId(entry.message as { deskpetEventId?: unknown }) === requestId)
+  if (!user) return undefined
+  const userIndex = entries.findIndex(entry => entry.id === user.id)
+  if (userIndex < 0) return undefined
+  const operations = await session.scanValues(operationResult(""), TODO_CONTEXT)
+  for (const stored of operations) {
+    const terminal = stored.value
+    if (terminal.kind !== "run" || terminal.status !== "completed" || !terminal.tipId) continue
+    // 新会话的第一次 run 没有前驱 tip（fromTipId=null），区间从会话开头算起。
+    const fromIndex = terminal.fromTipId === null
+      ? -1 : entries.findIndex(entry => entry.id === terminal.fromTipId)
+    if (terminal.fromTipId !== null && fromIndex < 0) continue
+    const tipIndex = entries.findIndex(entry => entry.id === terminal.tipId)
+    if (tipIndex < 0 || !(fromIndex < userIndex && userIndex < tipIndex)) continue
+    const assistant = entries[tipIndex]
+    if (!assistant || assistant.type !== "message" || assistant.message.role !== "assistant"
+      || assistant.message.stopReason === "error" || assistant.message.stopReason === "aborted") continue
+    const text = contentText(assistant.message.content).trim()
+    if (!text) continue
+    return {
+      requestId,
+      operationId: terminal.operationId,
+      userEntryId: user.id,
+      assistantEntryId: assistant.id,
+      text,
+      timestamp: typeof assistant.message.timestamp === "number" ? assistant.message.timestamp : assistant.timestamp,
+    }
+  }
+  return undefined
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
 }

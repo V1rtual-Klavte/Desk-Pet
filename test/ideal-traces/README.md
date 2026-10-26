@@ -203,7 +203,7 @@ node scripts/desk-pet-chat.mjs eval report --run-id <id> [--json]
 node scripts/desk-pet-chat.mjs eval stop --run-id <id>
 ```
 
-`prepare` 在 `test/.tmp/sim-eval-<id>/` 建隔离根，写入合成 CONFIG、Card、`seed.json`、`clock.json` 与授权；Card 必须由调用方显式给出，不读取真实配置或用户 Card；`--authorization` 冻结用例、用途、模型／数据范围、trial／修复预算与 holdout 一致性。`start` 只接受 debug 构建，核对时钟一致后拉起带 `DESKPET_SIM_EVAL=1` 的宿主，并核对 `ready.json`、控制通道 ready 与 `seed-report` 的所有权/装载一致；`drive` 按驱动包逐步推进并持久化进度，中断后从同一进度续跑、不重放未知副作用；`finish` 收口采集、封存 attempt 并生成同源报告，可标记中断及原因；`compare` 只在固定条件一致时对照 baseline 与候选，`holdout` 只报告留出使用；`prepare --repair-of` 新建沿用原 Case 哈希／Card／Profile／时钟的修复 attempt 并保留旧失败；`stop` 只写 `stop.request`，由宿主走产品退出序列并移除 ready，以进程退出且 ready 消失为停止条件；`.instance.lock` 文件按设计保留，锁由 OS 在退出时释放。`judge prepare` 只对已封存完整证据冻结判分包（规则、驱动与证据引用、判分说明），`judge apply` 只校验独立 coding-agent judge 回填的裁决并追加判分；runner 不调用模型 API、不读取 judge 凭据，判分者与被测模型同源时直接拒绝。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞、不改写判分；`report` 从同一证据重建四层报告。W2 已于 2026-10-25 验收（隔离启动、ready/装载、非法路径、跨进程单实例、E2E 互斥、真实数据根未变），证据保留在 `test/.tmp/sim-eval-w2-accept-*`；W3 证据／采集／封存已于 2026-10-25 验收；W4 已实施并通过快层反例验收（2026-10-25），但未发起真实模型／judge 调用；W5 已实现授权、Node 域固定时钟、驱动／续跑、同条件对照与修复，并于 2026-10-26 集中验收。固定时钟只推进 Node 域 `Date`，Rust 调度器与 OS 时间仍是真实时间。
+`prepare` 在 `test/.tmp/sim-eval-<id>/` 建隔离根，写入合成 CONFIG、Card、`seed.json`、`clock.json` 与授权；Card 必须由调用方显式给出，不读取真实配置或用户 Card；`--authorization` 冻结用例、用途、模型／数据范围、trial／修复预算与 holdout 一致性。`start` 只接受 debug 构建，核对时钟一致后拉起带 `DESKPET_SIM_EVAL=1` 的宿主，并核对 `ready.json`、控制通道 ready 与 `seed-report` 的所有权/装载一致；`drive` 按驱动包逐步推进并持久化进度，中断后从同一进度续跑、不重放未知副作用；`finish` 收口采集、封存 attempt 并生成同源报告，可标记中断及原因；`compare` 只在固定条件一致时对照 baseline 与候选，`holdout` 只报告留出使用；`prepare --repair-of` 新建沿用原 Case 哈希／Card／Profile／时钟的修复 attempt 并保留旧失败；`stop` 只写 `stop.request`，由宿主走产品退出序列并移除 ready，以进程退出且 ready 消失为停止条件；`.instance.lock` 文件按设计保留，锁由 OS 在退出时释放。`judge prepare` 只对已封存完整证据冻结判分包（规则、驱动与证据引用、判分说明），`judge apply` 只校验独立 coding-agent judge 回填的裁决并追加判分；runner 不调用模型 API、不读取 judge 凭据，判分者与被测模型同源时直接拒绝。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞、不改写判分；`report` 从同一证据重建四层报告。W2 已于 2026-10-25 验收（隔离启动、ready/装载、非法路径、跨进程单实例、E2E 互斥、真实数据根未变），证据保留在 `test/.tmp/sim-eval-w2-accept-*`；W3 证据／采集／封存已于 2026-10-25 验收；W4 已实施并通过快层反例验收（2026-10-25），2026-10-26 已跑过一次真实银标（结果 fail）；W5 已实现授权、Node 域固定时钟、驱动／续跑、同条件对照与修复，并于 2026-10-26 集中验收。固定时钟只推进 Node 域 `Date`，Rust 调度器与 OS 时间仍是真实时间。
 
 ### Skill 分工
 
@@ -211,38 +211,38 @@ node scripts/desk-pet-chat.mjs eval stop --run-id <id>
 
 - [`desk-pet-chat`](../sim/desk-pet-chat/SKILL.md)：自然聊天、驱动真实产品、自由评述与最终定性复核；不产出结构化探针的正式通过。
 - [`desk-pet-eval-authoring`](../sim/desk-pet-eval-authoring/SKILL.md)：写 case / fixture / probe，展示审阅包，收集用户审批；只做候选与审批，不自动评分。
-- [`desk-pet-eval-runner`](../sim/desk-pet-eval-runner/SKILL.md)：结构化运行、判分包冻结、独立 judge 裁决回填与同源报告；W2–W5 已有隔离起停、装载、证据封存、独立 judge 判分、同源报告、授权、Node 域固定时钟、驱动／续跑与同条件对照，集中验收与真实 Skill 运行待 W6。
+- [`desk-pet-eval-runner`](../sim/desk-pet-eval-runner/SKILL.md)：结构化运行、判分包冻结、独立 judge 裁决回填与同源报告；W2–W5 已有隔离起停、装载、证据封存、独立 judge 判分、同源报告、授权、Node 域固定时钟、驱动／续跑与同条件对照；W6 集中验收已完成，真实 Skill 自主运行与用户关口待执行。
 
 审阅入口在 authoring Skill：用户说「审阅评测用例」或「看看待审 case」后，Skill 先跑 `dataset list` 列出候选，询问要审哪条，再把 `dataset review <caseId>` 的审阅卡原样贴在聊天区，按批准 / 修改 / 暂缓收集决定。
 
 看过审阅包的代理不得再驱动同一个 case；驱动必须换独立会话，只使用 `dataset driver`。
-W1–W5 仍没有写 gold 审批文件的命令；`eval review spotcheck` 只记录用户对某次运行证据的抽查，不改变 case 的 silver/gold。聊天里的批准不会自动变成 gold，也不会生成 approval JSON。
+当前仍没有写 gold 审批文件的命令；`eval review spotcheck` 只记录用户对某次运行证据的抽查，不改变 case 的 silver/gold。聊天里的批准不会自动变成 gold，也不会生成 approval JSON。
 
 ### 规模与样本量
 
 - 不设用户消息条数上限，也不要求凑固定轮数；长日常、干扰信息和跨会话优先，但每条消息都要服务于至少一个探针或必要上下文。
 - 以 probe 为单位设计样本量：先让一个长 case 跑通，再按失败模式扩 case；case 数量不凑固定条数。
-- 每个 probe 独立判分；case 级结论按 critical 全过、非 critical 阈值和无 forbidden 违例计算。
+- 每个 probe 独立判分；case 级结论要求证据完整、执行完成、全部适用规则均为 `pass`，任一 `fail` 判失败、任一非 `pass` 判 inconclusive；`critical` 只用于报告分层。
 - 可靠性用重复 trial 的 `pass^k` 观测，保留所有失败尝试，不挑最好一次。
 
 ### W1–W5 边界
 
 - schema v4 已实现格式、题型引用、逐探针哈希、审批结构与金/银计算，探针内容词表统一放在 `expectation`；聊天驱动由 W5 的 `eval drive` 提供。
-- W2 已实现 debug 隔离根、宿主 ready 与所有权核验、受控起停和 direct-seed 装载器；装载走产品真实 API，桌面隔离的集中验收仍待 W6。
+- W2 已实现 debug 隔离根、宿主 ready 与所有权核验、受控起停和 direct-seed 装载器；装载走产品真实 API，W6 已覆盖隔离启动与装载验收，真实 app 用户操作仍待验证。
 - W3 已实现产品 trace 采集、跨会话取证、事务性封存、同源报告与五回保留，并已在 2026-10-25 验收。
-- W4 已实现判分包冻结、独立 coding-agent judge 裁决回填、可选用户抽查与四层同源报告；快层反例已运行通过（2026-10-25），真实 judge 调用与集中验收未完成。
-- W5 已实现授权冻结、Node 域固定时钟、驱动进度与续跑、预算复核、同条件对照、holdout 记录与修复 attempt，并于 2026-10-26 集中验收；真实模型／judge／Skill 与用户关口未执行。
+- W4 已实现判分包冻结、独立 coding-agent judge 裁决回填、可选用户抽查与四层同源报告；快层反例已运行通过（2026-10-25）。2026-10-26 经用户授权完成一次真实银标运行 `silver-20261026c`（被测 `deepseek-flash`、judge `deepseek-v4-pro`）：全链跑通，总判定 fail（3 条必需 + 2 条禁止规则 fail，1 条 critical inconclusive）；该结果不改变 silver/pending，也不构成质量或 gold 结论。
+- W5 已实现授权冻结、Node 域固定时钟、驱动进度与续跑、预算复核、同条件对照、holdout 记录与修复 attempt，并于 2026-10-26 集中验收；真实模型与 judge 已跑过一次银标，真实 Skill 自主运行与用户关口未执行。
 - 题型注册表固定 7 族、24 型，并强制覆盖全部 16 个产品分类；当前 case 只用到其中 8 型，注册表存在不代表这些题型已有用例。
 - 当前只有 1 条 case、23 条探针（11 条 critical；难度 L1 4／L2 5／L3 6／L4 6／L5 2）；其他套件为空占位，不代表已覆盖对应类别。
 - fixture 为 `direct-seed`，固定时钟只推进 Node 域 `Date`；当前不能据此宣称真实跨天间隔、Rust 定时、自动抽取时序或桌面隔离已经验证。
-- 没有写 gold 审批的命令；W4 的 `review spotcheck` 只记录用户抽查，不改变 case 标签。真实审阅会话的采集与回执写入仍属后续批次。
-- 不是 CI 门禁，`pnpm test` 不跑数据集；W6 集中门禁与 CE-01–CE-20 映射已于 2026-10-26 完成，真实 Skill／模型／judge 运行与 CI 门禁仍未执行。
-- 已写的单元测试在实施期不运行，统一留到验收环节集中执行；W1–W3 曾在验收轮运行结构校验与相关快层，W4 快层已在 2026-10-25 运行通过，W5 已于 2026-10-26 集中验收，都不代表真实 judge 或隔离聊天已经验证。
+- 没有写 gold 审批的命令；W4 的 `review spotcheck` 只记录用户抽查，不改变 case 标签。真实用户审阅会话的审批记录写入仍属后续批次。
+- 不是 CI 门禁，`pnpm test` 不跑数据集；W6 集中门禁与 CE-01–CE-20 映射已于 2026-10-26 完成，真实模型／judge 已跑过一次银标，真实 Skill 自主运行、用户关口与 CI 门禁仍未执行。
+- 已写的单元测试在实施期不运行，统一留到验收环节集中执行；W1–W3 曾在验收轮运行结构校验与相关快层，W4 快层已在 2026-10-25 运行通过，W5 已于 2026-10-26 集中验收；2026-10-26 的真实银标已跑通模型与独立 judge 各一次，但仍不代表真实 Skill 自主聊天、用户关口或质量结论已经验证。
 
 ## 边界（别误解）
 
 - 哈希只证明"这份审阅绑定这份产物"，**不证明 AI 判断正确**；门禁只核对证据完整性、哈希与审阅覆盖，不冒充语义理解。
 - trace 只采结构、数量与已有审计 hash，**正文与工具参数/结果不落 trace**——理想稿的期望不要建立在"trace 里能看到原话"上；要核对正文请回查会话文件。
-- 结构化数据集的 `dataset validate` 只证明格式、引用、题型覆盖、时钟/装载约束和哈希绑定，不证明执行、评分或聊天质量；W2 的隔离起停只证明装载与所有权，W1–W3 的结构与证据校验不产生质量结论；W4 判分在没有真实 judge 运行前只作流程与反例验证，不能当成已验收质量结论。
+- 结构化数据集的 `dataset validate` 只证明格式、引用、题型覆盖、时钟/装载约束和哈希绑定，不证明执行、评分或聊天质量；W2 的隔离起停只证明装载与所有权，W1–W3 的结构与证据校验不产生质量结论；W4 判分已有一次真实银标的流程与裁决记录（fail），但仍不能当成聊天质量或 gold 结论。
 - 独立 coding-agent judge 的结构化裁决与 coding agent 的自由评述是两种证据，不能互相替代，也不能把后者写成 gold 审批。
 - `.ideal.md` 的正文原样保留；不得用结构化用例的运行结果反写或替换用户理想稿。

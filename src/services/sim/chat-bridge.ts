@@ -13,6 +13,8 @@ import { getHostBridge } from "@/services/host"
 import { sendMessage } from "@/services/agent/runner"
 import { getActiveCard } from "@/services/personality"
 import { getActiveSessionId, getSessions, readPiSessionEntriesOnce } from "@/services/session"
+import { describeInputDelivery, readRequestResponse } from "@/services/engine/harness"
+import type { InputDeliveryLookup, RequestResponseEvidence } from "@/services/engine/harness"
 import { laneMessageText } from "@/services/engine/runtime"
 import { choiceState, resolveChoice } from "@/services/engine/choice-confirmation"
 import { planConfirmState, resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine/plan-confirmation"
@@ -43,6 +45,8 @@ import { writeSimFiles } from "./report"
 import { getSimEvalRunContext } from "./run-context"
 import { getDirectSeedReport } from "./direct-seed"
 import { getSimClockSnapshot, setSimClockBase } from "./clock"
+import { assertMessageOperation } from "./message-operation"
+import type { MessageOperation } from "./message-operation"
 
 const log = createLogger("SimChat")
 const POLL_MS = 500
@@ -54,7 +58,7 @@ export interface SimChatMessage {
 }
 
 type SimChatCommand =
-  | { id?: string; type: "message"; text: string; tools?: "auto" | "none"; imagePaths?: string[] }
+  | { id?: string; type: "message"; text: string; tools?: "auto" | "none"; imagePaths?: string[]; operation?: unknown }
   /** 直接走原生 UI 的请求分派面：chat / settings / memory / card / profile / mcp / skill / sound 等。 */
   | { id?: string; type: "host"; method: string; args?: unknown }
   | { id?: string; type: "plan"; mode: "auto" | "stepByStep" | "off" }
@@ -132,6 +136,7 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
   let turnChain = Promise.resolve()
   let stopped = false
   let autoPlanMode: "auto" | "stepByStep" | undefined
+  const seenOperations = new Set<string>()
 
   const emit = async (event: Record<string, unknown>): Promise<void> => {
     await appendFile(outbox, `${JSON.stringify(redactSecrets({ at: Date.now(), ...event }))}\n`)
@@ -235,19 +240,57 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
           if (!text) { await emit({ id, type: "error", error: "消息正文为空" }); return }
           const sessionId = getActiveSessionId()
           if (!sessionId) { await emit({ id, type: "error", error: "当前没有活跃会话" }); return }
+          let operation: MessageOperation | undefined
+          if (capture) {
+            // 评测消息必须带驱动步骤身份：trial 已开始、会话与代际一致，且同一身份不重放。
+            operation = assertMessageOperation(command.operation, {
+              generation: evalContext!.generation,
+              sessionId,
+              trials: capture.status()?.trace?.trials ?? [],
+            })
+            if (seenOperations.has(operation.operationId)) {
+              await emit({ id, type: "error", error: `操作身份重复：${operation.operationId}` })
+              return
+            }
+            seenOperations.add(operation.operationId)
+          } else if (command.operation !== undefined) {
+            await emit({ id, type: "error", error: "非评测运行不接受消息操作身份" })
+            return
+          }
+          const requestId = operation?.operationId ?? crypto.randomUUID()
           // 直接走真实入口：忙碌时由 sendMessage 自己取消主动运行或按配置投递，
           // 不在这里预先等空闲（等待会挡住用户输入打断主动表达的产品语义）。
-          const previousAssistant = latestAssistantId(await readPiSessionEntriesOnce(sessionId).catch(() => []))
           const result = await sendMessage(text, {
+            requestId,
             ...(command.tools === "none" ? { toolMode: "none" as const } : {}),
             ...(command.imagePaths?.length ? { imagePaths: command.imagePaths } : {}),
           })
           let reply = result.reply.trim()
-          if (!reply && result.outcome === "queued") reply = await waitForAssistant(sessionId, previousAssistant)
+          let replyBinding: "direct" | "request-response" = "direct"
+          let assistantEntryId: string | undefined
+          if (!reply && result.outcome === "queued") {
+            // 投递回执只证明入队；回复必须按 requestId 找到同一条请求的 run 分支。
+            const evidence = await waitForRequestResponse(sessionId, requestId)
+            if (evidence) {
+              reply = evidence.text
+              assistantEntryId = evidence.assistantEntryId
+              replyBinding = "request-response"
+            }
+          }
+          let delivery: InputDeliveryLookup
+          try {
+            delivery = await describeInputDelivery(sessionId, requestId)
+          } catch (error) {
+            delivery = { ok: false, error: formatError(error) }
+          }
           transcript.push({ role: "user", text })
           if (reply) transcript.push({ role: "assistant", text: reply })
           await emit({
-            id, type: "message", sessionId, reply, outcome: result.outcome, toolCalls: result.toolCalls,
+            id, type: "message", sessionId, requestId, reply, outcome: result.outcome, toolCalls: result.toolCalls,
+            ...(operation ? { operation } : {}),
+            ...(assistantEntryId ? { assistantEntryId } : {}),
+            replyBinding,
+            delivery,
             ...(result.failure ? { failure: result.failure } : {}),
             ...(reply ? {} : { note: result.outcome === "failed" ? "回合未进入 Provider，详见 failure" : "回复未在控制通道内取得，请查看会话正文" }),
           })
@@ -318,21 +361,25 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
           return
         }
         case "memory_state": {
-          // 只读水位：排队/运行/暂停的作业都算「抽取未结束」，驱动检查点等到三者归零。
+          // 只读水位：activeJobs 表示抽取未结束；jobs 保留最近作业（含已结束），
+          // 驱动在消息副作用前抓基线，只有基线之外的新作业才证明本轮抽取真的发生过。
           const [status, pendingSources, jobs] = await Promise.all([
             memoryStatus(),
             pendingMemorySourceCount(),
             memoryJobList(100),
           ])
-          const activeJobs = jobs
+          const recentJobs = jobs.map(job => ({
+            id: job.id, phase: job.phase, status: job.status, updatedAt: job.updatedAt,
+          }))
+          const activeJobs = recentJobs
             .filter(job => job.status === "queued" || job.status === "running" || job.status === "paused")
-            .map(job => ({ id: job.id, phase: job.phase, status: job.status, updatedAt: job.updatedAt }))
           await emit({ id, type: "memory_state", result: {
             revision: status.revision,
             itemCount: status.itemCount,
             candidateCount: status.candidateCount,
             pendingSources,
             activeJobs,
+            jobs: recentJobs,
           } })
           return
         }
@@ -543,28 +590,18 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
   return bridge
 }
 
-function latestAssistantId(entries: Awaited<ReturnType<typeof readPiSessionEntriesOnce>>): string | undefined {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]!
-    if (entry.type === "message" && entry.message.role === "assistant") return entry.id
-  }
-  return undefined
-}
-
-/** 忙碌投递时 `sendMessage` 只返回投递回执；回复在运行收尾后才落盘，这里等它出现。 */
-async function waitForAssistant(sessionId: string, previousId: string | undefined): Promise<string> {
+/** 忙碌投递时 `sendMessage` 只返回投递回执；按 requestId 等同一请求的落盘回复。 */
+async function waitForRequestResponse(
+  sessionId: string,
+  requestId: string,
+): Promise<RequestResponseEvidence | undefined> {
   const deadline = Date.now() + REPLY_WAIT_MS
   while (Date.now() < deadline) {
     await sleep(POLL_MS)
-    const entries = await readPiSessionEntriesOnce(sessionId).catch(() => [])
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const entry = entries[index]!
-      if (entry.type !== "message" || entry.message.role !== "assistant" || entry.id === previousId) continue
-      const text = laneMessageText(entry.message).trim()
-      if (text) return text
-    }
+    const evidence = await readRequestResponse(sessionId, requestId)
+    if (evidence) return evidence
   }
-  return ""
+  return undefined
 }
 
 function renderChatMarkdown(report: {

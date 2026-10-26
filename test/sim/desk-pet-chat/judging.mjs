@@ -938,13 +938,18 @@ export function latestJudgeGrade(attemptDir) {
   return latestRecord(readVersionedRecords(attemptDir, "grades").filter((grade) => grade.authority === JUDGE_AUTHORITY));
 }
 
-function latestSpotCheckMap(reviews) {
+/**
+ * 只收绑定当前判分的抽查：重新判分后旧抽查仍是证据，但不能算到新判分头上；
+ * 没有可信判分（gradeId 为空）时任何抽查都不成立。
+ */
+function latestSpotCheckMap(reviews, gradeId) {
   const latest = new Map();
+  if (typeof gradeId !== "string" || gradeId === "") return latest;
   const ordered = [...reviews].sort((left, right) => (
     Date.parse(left.createdAt) - Date.parse(right.createdAt) || String(left.reviewId).localeCompare(String(right.reviewId))
   ));
   for (const review of ordered) {
-    if (review.kind !== "spot-check") continue;
+    if (review.kind !== "spot-check" || review.gradeId !== gradeId) continue;
     for (const rule of review.rules ?? []) {
       if (!isRecord(rule) || typeof rule.ruleId !== "string") continue;
       if (!SPOT_CHECK_AGREEMENTS.includes(rule.agreement)) continue;
@@ -959,8 +964,8 @@ function latestSpotCheckMap(reviews) {
   return latest;
 }
 
-function spotCheckSummary({ checks, reviews }) {
-  const latest = latestSpotCheckMap(reviews);
+function spotCheckSummary({ checks, reviews, gradeId }) {
+  const latest = latestSpotCheckMap(reviews, gradeId);
   const current = checks.map((check) => ({ check, spot: latest.get(check.ruleId) }));
   const checked = current.filter((item) => item.spot);
   const agreements = checked.filter((item) => item.spot.agreement === "agree").length;
@@ -1075,7 +1080,7 @@ export function summarizeAttemptStatus({ caseEntry, context, grades = null, revi
         critical: counts.critical,
       },
     },
-    spotCheck: spotCheckSummary({ checks, reviews }),
+    spotCheck: spotCheckSummary({ checks, reviews, gradeId: grade?.gradeId ?? null }),
     overall,
     gold: caseEntry.label?.tier === "gold",
     label: caseEntry.label ?? null,

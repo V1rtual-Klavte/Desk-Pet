@@ -17,7 +17,7 @@
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
 | Pi 协议与 Harness 接线 | [运行时契约](current/runtime-contract.md) | [工具系统](current/tool-system.md)、目标源码与[未完成总表](plans/active/未完成工作与已知缺口.md) |
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
-| 聊天评测三个 Skill、题型与判分、金银标、可选抽查与修复回归 | [聊天评测闭环执行契约](plans/active/聊天评测闭环执行契约.md)（W1–W3 已落数据、题型、Skill、银标候选、隔离运行器、装载器、证据与封存；W4 判分包／独立 judge／可选抽查／同源报告已实施并通过快层反例验收（2026-10-25），真实 judge 未运行；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收；真实 Skill／模型／judge 与用户关口未执行） | 当前入口见 [聊天 Skill](../test/sim/desk-pet-chat/SKILL.md)、[用例制作 Skill](../test/sim/desk-pet-eval-authoring/SKILL.md)、[运行与判分 Skill](../test/sim/desk-pet-eval-runner/SKILL.md)；进度见[未完成总表](plans/active/未完成工作与已知缺口.md) §12 |
+| 聊天评测三个 Skill、题型与判分、金银标、可选抽查与修复回归 | [聊天评测闭环执行契约](plans/active/聊天评测闭环执行契约.md)（W1–W3 已落数据、题型、Skill、银标候选、隔离运行器、装载器、证据与封存；W4 判分包／独立 judge／可选抽查／同源报告已实施并通过快层反例验收（2026-10-25）；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收，并经授权完成一次真实银标运行（fail）；真实 Skill 自主运行与用户关口未执行） | 当前入口见 [聊天 Skill](../test/sim/desk-pet-chat/SKILL.md)、[用例制作 Skill](../test/sim/desk-pet-eval-authoring/SKILL.md)、[运行与判分 Skill](../test/sim/desk-pet-eval-runner/SKILL.md)；进度见[未完成总表](plans/active/未完成工作与已知缺口.md) §12 |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
 | 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |
 | 主动消息/静默了解/记忆整理的频率档位与锁屏语义 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[运行时数据](current/runtime-data.md)；剩余开放问题见[未完成总表](plans/active/未完成工作与已知缺口.md) §10 |
@@ -50,7 +50,7 @@
 ## 未完成工作
 
 - [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆剩余问题、活人感与整链陪伴的剩余环境验收、已知代码缺口与验证缺口。
-- [聊天评测闭环执行契约](plans/active/聊天评测闭环执行契约.md)：**目标方案，W1–W3 已落数据、题型、Skill、银标候选、隔离运行器、装载器、证据与封存（W2／W3 已验收 2026-10-25）；W4 判分包／独立 judge／可选抽查／同源报告已实施并通过快层反例验收（2026-10-25），真实 judge 未运行；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收；真实 Skill／模型／judge 与用户关口未执行**——合并现有聊天 Skill、直接接口驱动、用户亲审金标与 LLM 银标、因果证据、自动判分与可选抽查、授权修复回归、最近五回运行组保留；实施状态只在总表 §12 维护。
+- [聊天评测闭环执行契约](plans/active/聊天评测闭环执行契约.md)：**目标方案，W1–W3 已落数据、题型、Skill、银标候选、隔离运行器、装载器、证据与封存（W2／W3 已验收 2026-10-25）；W4 判分包／独立 judge／可选抽查／同源报告已实施并通过快层反例验收（2026-10-25）；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收，并经授权完成一次真实银标运行（fail）；真实 Skill 自主运行与用户关口未执行**——合并现有聊天 Skill、直接接口驱动、用户亲审金标与 LLM 银标、因果证据、自动判分与可选抽查、授权修复回归、最近五回运行组保留；实施状态只在总表 §12 维护。
 
 ## 历史入口
 

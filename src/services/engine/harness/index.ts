@@ -39,8 +39,8 @@ export type {
   TurnFailure,
 } from "./runtime"
 
-export { describeInputDelivery, isInputCommitted, readActiveAttemptEvidence, readActiveAttemptAssociations, readContextEpoch } from "./delivery"
-export type { ActiveAttemptEvidence, ContextEpoch, InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage } from "./delivery"
+export { describeInputDelivery, isInputCommitted, readActiveAttemptEvidence, readActiveAttemptAssociations, readContextEpoch, readRequestResponse } from "./delivery"
+export type { ActiveAttemptEvidence, ContextEpoch, InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage, RequestResponseEvidence } from "./delivery"
 
 export { readLastConversationPromptTokens } from "./request-stats"
 

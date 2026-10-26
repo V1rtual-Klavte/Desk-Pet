@@ -7,7 +7,7 @@
 与桌宠聊天时先读 [`desk-pet-chat/SKILL.md`](desk-pet-chat/SKILL.md)。评测数据集另有两个 Skill：
 写题与用户审批见 [`desk-pet-eval-authoring/SKILL.md`](desk-pet-eval-authoring/SKILL.md)，
 结构化执行、判分包冻结、裁决回填与报告见 [`desk-pet-eval-runner/SKILL.md`](desk-pet-eval-runner/SKILL.md)。
-三者共用同一份数据集与 CLI 规则；W1–W3 已落数据集、题型、审阅、银标候选、debug 隔离起停、direct-seed 装载、证据封存与采集（W2／W3 已验收 2026-10-25）；W4 的独立 coding-agent judge 判分、可选抽查与同源报告已实现并通过快层反例验收（2026-10-25），真实 judge 未运行；W5 的授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收；真实模型／judge／Skill 与用户关口未执行。
+三者共用同一份数据集与 CLI 规则；W1–W3 已落数据集、题型、审阅、银标候选、debug 隔离起停、direct-seed 装载、证据封存与采集（W2／W3 已验收 2026-10-25）；W4 的独立 coding-agent judge 判分、可选抽查与同源报告已实现并通过快层反例验收（2026-10-25）；W5 的授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收，并按用户授权完成一次真实银标运行（`silver-20261026c`，fail）；真实 Skill 自主运行与用户关口未执行。
 
 ## 启动
 
@@ -109,7 +109,7 @@ case 的 `questionTypes` 必须等于探针题型并集；探针观察窗口限�
 authoring Skill 会先列候选、询问要审哪条，再把审阅卡贴到聊天区；W1–W5 没有 gold 审批写入，数据集校验通过不产生质量结论。
 W2–W3 的 `eval` 命令做隔离启动、所有权核验、direct-seed 装载、采集与封存：运行根固定在 `test/.tmp/sim-eval-<id>`，
 要求显式 `--card`，不读真实 CONFIG；`finish` 收口采集并封存，`stop` 只写 `stop.request`。真实启动、ready 核验、非法路径失败、跨进程单实例与停止后退出已于 2026-10-25 验收；`.instance.lock` 按设计保留但锁已释放。该轮 56 条测试已运行通过；固定时钟当时未注入。
-W4 的 `judge prepare` 只对已封存完整证据冻结判分包（含 rubric、驱动、证据引用与判分说明），交给独立 coding-agent judge 逐条裁决；`judge apply` 只校验回填裁决并追加 `grades/`，缺项、重复、未知规则、证据引用无效、判分者与被测模型同源或 packet 哈希不符都会硬失败。runner 不调用模型 API、不读取 judge 凭据。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞也不改写判分。`report` 从同一证据重建四层报告。W4 快层 `聊天评分关口.test.ts` 已运行通过（2026-10-25），仍未发起真实模型／judge 调用。
+W4 的 `judge prepare` 只对已封存完整证据冻结判分包（含 rubric、驱动、证据引用与判分说明），交给独立 coding-agent judge 逐条裁决；`judge apply` 只校验回填裁决并追加 `grades/`，缺项、重复、未知规则、证据引用无效、判分者与被测模型同源或 packet 哈希不符都会硬失败。runner 不调用模型 API、不读取 judge 凭据。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞也不改写判分。`report` 从同一证据重建四层报告。W4 快层 `聊天评分关口.test.ts` 已运行通过（2026-10-25）；2026-10-26 的真实银标运行已实际产生判分（judge `deepseek-v4-pro`、被测 `deepseek-flash`，总判定 fail，5 条规则 fail），但一次运行和 silver/pending 标签都不构成质量或 gold 结论。
 全部探针（含 `humanizer.*` 与拟人化质量规则）统一由独立 coding-agent judge 判定；用户抽查只用于核对，
 不会产生或改写 pass/fail，也不能替代 case 的 gold 审批。
 W5 的 `prepare` 冻结 `--authorization`（用例、用途、模型／数据范围、trial 与修复预算、holdout 一致性）和 `clock.json`；

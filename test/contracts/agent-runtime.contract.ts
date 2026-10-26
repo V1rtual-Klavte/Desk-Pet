@@ -1,3 +1,7 @@
+// 2026-10-26 聊天评测消息绑定（本批刷新）：sourceFiles 中 engine/harness/delivery.ts 新增
+// readRequestResponse（按 requestId 在 completed run 的 fromTipId→tipId 区间内取证回复；
+// 首次 run 的 fromTipId=null 按会话开头处理），既有投递证据与运行槽行为未变。
+// ar-* 覆盖点未修订，仅按当前源码刷新 sourceHash。
 // 2026-10-24 契约覆盖复核批次（analyze 定向）：ar-24 订正 task 流判据 —— 当前实现只有
 // 计划/任务步骤上下文（taskReply）走 task，普通聊天里的工具调用不改变 flow（casual）；
 // 原描述「task 流由真实工具调用记录分流」是 2026-10-20 实机修复前的旧口径。同点的
@@ -305,7 +309,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "4399b41569bee49f30b4c0fa6d1553fe2f36fe3fd3c4ad77d15f09054cece64b",
+  sourceHash: "16b5621f6d8f9efcd86a0e1c0d84c73cc224b5057cd2ef69b30acd75e9efae30",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

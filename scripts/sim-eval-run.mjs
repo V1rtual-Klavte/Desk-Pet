@@ -329,6 +329,52 @@ export function validateCaptureFinished(event, expected) {
   return result
 }
 
+const MESSAGE_OPERATION_FIELDS = Object.freeze([
+  "operationId", "caseId", "trialId", "sessionId", "generation", "stepId",
+])
+
+/**
+ * 驱动消息回执必须回显本次请求的完整操作身份：operation 六字段与请求逐项一致，
+ * requestId 与 operationId 同源，响应会话就是 operation 会话。缺任何一项都不能
+ * 把回复记到本步。
+ */
+export function validateMessageReceipt(event, operation) {
+  if (typeof event !== "object" || event === null || event.type !== "message") {
+    throw new Error("控制通道没有返回 message 回执")
+  }
+  const receipt = event.operation
+  if (typeof receipt !== "object" || receipt === null) throw new Error("消息回执缺少请求身份 operation")
+  for (const field of MESSAGE_OPERATION_FIELDS) {
+    if (typeof receipt[field] !== "string" || receipt[field].trim() === "") {
+      throw new Error(`消息回执的 operation 缺少 ${field}`)
+    }
+    if (receipt[field] !== operation?.[field]) {
+      throw new Error(`消息回执的 ${field} 与请求不一致`)
+    }
+  }
+  if (event.requestId !== receipt.operationId) {
+    throw new Error("消息回执的 requestId 与 operation 不一致")
+  }
+  if (event.sessionId !== receipt.sessionId) {
+    throw new Error("消息回执的 sessionId 与 operation 不一致")
+  }
+  if (!["succeeded", "queued", "failed"].includes(event.outcome)) {
+    throw new Error(`消息回执的 outcome 非法：${String(event.outcome)}`)
+  }
+  return {
+    sessionId: receipt.sessionId,
+    reply: typeof event.reply === "string" ? event.reply : "",
+    outcome: event.outcome,
+    toolCalls: Array.isArray(event.toolCalls) ? event.toolCalls : [],
+    requestId: event.requestId,
+    operation: Object.fromEntries(MESSAGE_OPERATION_FIELDS.map(field => [field, receipt[field]])),
+    ...(typeof event.assistantEntryId === "string" && event.assistantEntryId.trim()
+      ? { assistantEntryId: event.assistantEntryId } : {}),
+    ...(event.delivery && typeof event.delivery === "object" ? { delivery: event.delivery } : {}),
+    ...(event.failure ? { failure: event.failure } : {}),
+  }
+}
+
 /** 只认主聊天请求的实际响应模型；后台抽取/主动链路不算本试次的被测模型。 */
 export function extractActualModels(traceText) {
   const models = new Set()
@@ -1250,8 +1296,8 @@ async function start(runId) {
         + ` trials=${state.authorization.budget.trials} repairs=${state.authorization.budget.repairs}`,
       `  control: ${paths.controlDir}`,
       `  drive: node scripts/sim-eval-run.mjs drive --run-id ${runId}`,
-      `  manual chat: DESKPET_SIM_CONTROL=${JSON.stringify(paths.controlDir)} node scripts/desk-pet-chat.mjs chat "<消息>"`
-        + ` ; node scripts/desk-pet-chat.mjs cmd capture_sessions`,
+      `  manual: DESKPET_SIM_CONTROL=${JSON.stringify(paths.controlDir)} node scripts/desk-pet-chat.mjs cmd capture_sessions`
+        + `（评测内的聊天消息只接受 drive 操作身份）`,
       `  finish: node scripts/sim-eval-run.mjs finish --run-id ${runId}`,
       `  stop: node scripts/sim-eval-run.mjs stop --run-id ${runId}`,
     ].join("\n"))
@@ -1279,26 +1325,42 @@ async function waitForStopQuiet(pid, paths, timeoutMs) {
 // ── drive ──
 
 /** 驱动传输层只走控制通道：时钟、消息、会话、宿主方法、上下文用量与记忆水位。 */
-function driverTransport(paths) {
+function driverTransport(paths, identity) {
+  if (typeof identity?.trialId !== "string" || identity.trialId === "") {
+    throw new Error("驱动传输缺少 trialId；不能发送没有试次身份的消息")
+  }
+  if (typeof identity?.generation !== "string" || identity.generation === "") {
+    throw new Error("驱动传输缺少宿主代际；不能发送无法回溯的消息")
+  }
+  let activeSessionId = null
+  const syncSessions = async () => {
+    const event = await sendBridgeCommand(paths, { type: "sessions" }, ["sessions"], 30_000)
+    activeSessionId = typeof event.active === "string" && event.active !== "" ? event.active : null
+    return { active: event.active ?? null, sessions: Array.isArray(event.sessions) ? event.sessions : [] }
+  }
   return {
     async clock(at, reason) {
       const event = await sendBridgeCommand(paths, { type: "clock", at, reason }, ["clock"], 30_000)
       return event.clock
     },
-    async message(text) {
-      const event = await sendBridgeCommand(paths, { type: "message", text }, ["message"], DRIVER_MESSAGE_WAIT_MS)
-      return {
-        sessionId: event.sessionId,
-        reply: typeof event.reply === "string" ? event.reply : "",
-        outcome: event.outcome,
-        toolCalls: Array.isArray(event.toolCalls) ? event.toolCalls : [],
-        ...(event.failure ? { failure: event.failure } : {}),
+    async message(text, operation) {
+      // 活跃会话随宿主步骤变化：每次发送前用上次同步的会话，首次使用先读一次列表。
+      if (!activeSessionId) await syncSessions()
+      if (!activeSessionId) throw new Error("驱动消息没有活跃会话")
+      const expected = {
+        operationId: operation.operationId,
+        caseId: operation.caseId,
+        stepId: operation.stepId,
+        trialId: identity.trialId,
+        sessionId: activeSessionId,
+        generation: identity.generation,
       }
+      const event = await sendBridgeCommand(
+        paths, { type: "message", text, operation: expected }, ["message"], DRIVER_MESSAGE_WAIT_MS,
+      )
+      return validateMessageReceipt(event, expected)
     },
-    async sessions() {
-      const event = await sendBridgeCommand(paths, { type: "sessions" }, ["sessions"], 30_000)
-      return { active: event.active ?? null, sessions: Array.isArray(event.sessions) ? event.sessions : [] }
-    },
+    sessions: syncSessions,
     async host(method, args) {
       const event = await sendBridgeCommand(paths, { type: "host", method, args }, ["host"], CAPTURE_WAIT_MS)
       return { method: event.method, result: event.result ?? null }
@@ -1360,7 +1422,7 @@ async function drive(runId) {
       progress,
       driverPackage,
       syncPoints: state.syncPoints,
-      transport: driverTransport(paths),
+      transport: driverTransport(paths, { trialId: chat.trialId, generation: state.generation }),
       onProgress: persist,
     })
     const final = await persist()

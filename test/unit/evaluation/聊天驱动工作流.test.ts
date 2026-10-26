@@ -17,6 +17,7 @@ import type {
   Authorization,
   DriverProgress,
   DriverTransport,
+  MessageOperationRef,
 } from "../../sim/desk-pet-chat/workflow.mjs"
 import {
   AUTHORIZATION_SCHEMA_VERSION,
@@ -117,12 +118,16 @@ function manualTime(start = Date.parse("2026-10-24T09:00:00.000+08:00")) {
   }
 }
 
+const TRIAL_ID = "trial-test"
+const GENERATION = "generation-test"
+
 interface FakeTransportState {
   active: string
   sessions: string[]
   messages: string[]
   hostCalls: string[]
   clockTimes: string[]
+  operations: MessageOperationRef[]
 }
 
 function fakeTransport(overrides: Partial<DriverTransport> & { state?: FakeTransportState } = {}) {
@@ -132,19 +137,23 @@ function fakeTransport(overrides: Partial<DriverTransport> & { state?: FakeTrans
     messages: [],
     hostCalls: [],
     clockTimes: [],
+    operations: [],
   }
   const transport: DriverTransport & { state: FakeTransportState } = {
     clock: async (at) => {
       state.clockTimes.push(at)
       return { base: at, now: at, timezone: "Etc/GMT-8" }
     },
-    message: async (text) => {
+    message: async (text, operation) => {
       state.messages.push(text)
+      state.operations.push(operation)
       return {
         sessionId: state.active,
         reply: `回复：${text}`,
         outcome: "succeeded",
         toolCalls: [],
+        operation: { ...operation, trialId: TRIAL_ID, sessionId: state.active, generation: GENERATION },
+        requestId: operation.operationId,
       }
     },
     sessions: async () => ({
@@ -162,7 +171,7 @@ function fakeTransport(overrides: Partial<DriverTransport> & { state?: FakeTrans
       return { method, result: { ok: true } }
     },
     context: async () => ({ context: { usageTotal: { calls: 2, reported: 2, total: 120 } } }),
-    memoryState: async () => ({ pendingSources: 0, activeJobs: [] }),
+    memoryState: async () => ({ pendingSources: 0, activeJobs: [], jobs: [] }),
     ...overrides,
     state,
   }
@@ -377,7 +386,20 @@ describe("驱动执行", () => {
     const pkg = driverPackage()
     const progress = progressFor(pkg)
     const time = manualTime()
-    const transport = fakeTransport()
+    // 第一次 memoryState 是消息前的基线；之后才出现本次抽取作业。
+    let memoryReads = 0
+    const transport = fakeTransport({
+      memoryState: async () => {
+        memoryReads += 1
+        return {
+          pendingSources: 0,
+          activeJobs: [],
+          jobs: memoryReads === 1
+            ? []
+            : [{ id: "job-extract", phase: "review", status: "completed", updatedAt: 1 }],
+        }
+      },
+    })
     const syncPoints: CheckpointSpec[] = [
       { id: "new-session", after: "open", wait: "session_created" },
       { id: "reply", after: "say", wait: "assistant_message" },
@@ -415,6 +437,104 @@ describe("驱动执行", () => {
     expect(progress.usage.tokensUnknown).toBe(false)
   })
 
+  it("消息步骤携带唯一操作身份，回执回存会话与代际 [chat-driver-operation]", async () => {
+    const pkg = driverPackage([
+      { id: "say-1", kind: "message", text: "一", at: AT_1 },
+      { id: "say-2", kind: "message", text: "二", at: AT_2 },
+    ])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    const transport = fakeTransport()
+
+    await executeDriver({ progress, driverPackage: pkg, transport, now: time.now, sleep: time.sleep })
+
+    expect(transport.state.operations.map(operation => [operation.caseId, operation.stepId])).toEqual([
+      [CASE_ID, "say-1"],
+      [CASE_ID, "say-2"],
+    ])
+    expect(transport.state.operations[0]?.operationId).toMatch(/^op-/)
+    expect(transport.state.operations[0]?.operationId)
+      .not.toBe(transport.state.operations[1]?.operationId)
+    expect(progress.steps[0]?.result).toMatchObject({
+      kind: "message",
+      sessionId: "fixture-session",
+      requestId: transport.state.operations[0]?.operationId,
+      operation: {
+        operationId: transport.state.operations[0]?.operationId,
+        caseId: CASE_ID,
+        stepId: "say-1",
+        trialId: TRIAL_ID,
+        sessionId: "fixture-session",
+        generation: GENERATION,
+      },
+    })
+    expect(progress.steps[1]?.result).toMatchObject({
+      requestId: transport.state.operations[1]?.operationId,
+      operation: { stepId: "say-2", sessionId: "fixture-session" },
+    })
+  })
+
+  it("回执的 operation 与本步不一致时阻塞，不把回复记到本步", async () => {
+    const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    const transport = fakeTransport({
+      message: async (text, operation) => ({
+        sessionId: "fixture-session",
+        reply: `回复：${text}`,
+        outcome: "succeeded",
+        toolCalls: [],
+        operation: {
+          ...operation,
+          operationId: "op-other",
+          trialId: TRIAL_ID,
+          sessionId: "fixture-session",
+          generation: GENERATION,
+        },
+        requestId: operation.operationId,
+      }),
+    })
+
+    await expect(executeDriver({
+      progress,
+      driverPackage: pkg,
+      transport,
+      now: time.now,
+      sleep: time.sleep,
+    })).rejects.toThrow(/回执的 operation 与本步不一致/)
+
+    expect(progress.status).toBe("blocked")
+    expect(progress.steps[0]).toMatchObject({ id: "say", status: "failed" })
+    expect(progress.steps[0]?.result?.reply).toBeUndefined()
+    expect(progress.usage.messages).toBe(1)
+  })
+
+  it("缺少请求身份的回执不被当作请求结果", async () => {
+    const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    const transport = fakeTransport({
+      message: async () => ({
+        sessionId: "fixture-session",
+        reply: "最后一条助手消息",
+        outcome: "succeeded",
+        toolCalls: [],
+      }),
+    })
+
+    await expect(executeDriver({
+      progress,
+      driverPackage: pkg,
+      transport,
+      now: time.now,
+      sleep: time.sleep,
+    })).rejects.toThrow(/缺少请求身份/)
+
+    expect(progress.status).toBe("blocked")
+    expect(progress.steps[0]?.status).toBe("failed")
+    expect(progress.steps[0]?.result?.reply).toBeUndefined()
+  })
+
   it("消息预算到界时在下一步副作用前阻塞 [chat-driver-budget]", async () => {
     const pkg = driverPackage([
       { id: "say-1", kind: "message", text: "一", at: AT_1 },
@@ -445,10 +565,13 @@ describe("驱动执行", () => {
     const progress = progressFor(pkg)
     const time = manualTime()
     const transport = fakeTransport({
-      message: async () => ({
+      message: async (text, operation) => ({
         sessionId: "fixture-session",
         reply: "",
         outcome: "failed",
+        toolCalls: [],
+        operation: { ...operation, trialId: TRIAL_ID, sessionId: "fixture-session", generation: GENERATION },
+        requestId: operation.operationId,
         failure: { kind: "provider", message: "连接失败" },
       }),
     })
@@ -509,12 +632,105 @@ describe("驱动执行", () => {
     expect(driverSummary(progress).usage.tokensUnknown).toBe(true)
   })
 
+  it("没有新抽取作业时不得用空水位判定结束 [chat-driver-memory-baseline]", async () => {
+    const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    // 基线前后都是同一批已结束作业：0/0 只说明此刻空闲，不证明本轮抽取发生过。
+    const transport = fakeTransport({
+      memoryState: async () => ({
+        pendingSources: 0,
+        activeJobs: [],
+        jobs: [{ id: "job-existing", phase: "review", status: "completed", updatedAt: 0 }],
+      }),
+    })
+
+    await expect(executeDriver({
+      progress,
+      driverPackage: pkg,
+      syncPoints: [{ id: "extraction", after: "say", wait: "memory_extraction_end" }],
+      transport,
+      now: time.now,
+      sleep: time.sleep,
+      memoryWait: { deadlineMs: 60, pollMs: 10, stableMs: 10 },
+    })).rejects.toThrow(/没有发现新抽取作业/)
+
+    expect(progress.status).toBe("blocked")
+    expect(progress.blocked?.code).toBe("checkpoint.timeout")
+    expect(progress.steps[0]?.checkpoints?.[0]?.status).toBe("timeout")
+  })
+
+  it("基线之后的新抽取作业结束后检查点才满足 [chat-driver-memory-new-job]", async () => {
+    const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    const states = [
+      { pendingSources: 0, activeJobs: [], jobs: [] },
+      { pendingSources: 0, activeJobs: [{ id: "job-new" }], jobs: [{ id: "job-new", phase: "review", status: "running", updatedAt: 1 }] },
+      { pendingSources: 0, activeJobs: [], jobs: [{ id: "job-new", phase: "review", status: "completed", updatedAt: 2 }] },
+      { pendingSources: 0, activeJobs: [], jobs: [{ id: "job-new", phase: "review", status: "completed", updatedAt: 2 }] },
+    ]
+    let memoryReads = 0
+    const transport = fakeTransport({
+      memoryState: async () => states[Math.min(memoryReads++, states.length - 1)]!,
+    })
+
+    await executeDriver({
+      progress,
+      driverPackage: pkg,
+      syncPoints: [{ id: "extraction", after: "say", wait: "memory_extraction_end" }],
+      transport,
+      now: time.now,
+      sleep: time.sleep,
+      memoryWait: { deadlineMs: 1_000, pollMs: 10, stableMs: 10 },
+    })
+
+    const check = progress.steps[0]?.checkpoints?.[0]
+    expect(check?.status).toBe("satisfied")
+    expect(check?.detail).toContain("job-new")
+    expect(check?.detail).toContain("completed")
+  })
+
+  it("新抽取作业以取消收口时仍视为抽取结束 [chat-driver-memory-cancelled]", async () => {
+    const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    let memoryReads = 0
+    const transport = fakeTransport({
+      memoryState: async () => {
+        memoryReads += 1
+        return {
+          pendingSources: 0,
+          activeJobs: [],
+          jobs: memoryReads === 1
+            ? []
+            : [{ id: "job-cancelled", phase: "review", status: "cancelled", updatedAt: 1 }],
+        }
+      },
+    })
+
+    await executeDriver({
+      progress,
+      driverPackage: pkg,
+      syncPoints: [{ id: "extraction", after: "say", wait: "memory_extraction_end" }],
+      transport,
+      now: time.now,
+      sleep: time.sleep,
+      memoryWait: { deadlineMs: 1_000, pollMs: 10, stableMs: 10 },
+    })
+
+    const check = progress.steps[0]?.checkpoints?.[0]
+    expect(check?.status).toBe("satisfied")
+    expect(check?.detail).toContain("job-cancelled")
+    expect(check?.detail).toContain("cancelled")
+  })
+
   it("记忆抽取水位一直不归零时检查点超时阻塞", async () => {
     const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
     const progress = progressFor(pkg)
     const time = manualTime()
     const transport = fakeTransport({
-      memoryState: async () => ({ pendingSources: 1, activeJobs: [] }),
+      memoryState: async () => ({ pendingSources: 1, activeJobs: [], jobs: [] }),
     })
 
     await expect(executeDriver({
@@ -551,14 +767,15 @@ describe("驱动结果与同条件对照", () => {
     expect(driverOutcome(progress).reason).toContain("open")
   })
 
-  it("对照条件优先取 attempt 实际覆盖的用例，缺失身份记 null", () => {
+  it("对照条件优先取 attempt 实际覆盖的用例，实际模型只信封存顶层 models", () => {
     const conditions = conditionsFromRun({
       run: { scope: { caseIds: ["run-case"], suiteIds: ["suite-a"] } },
       manifest: {
         expectedTrials: [{ caseId: "b-case" }, { caseId: "a-case" }],
+        models: { requested: "provider/model-a", actual: "provider/model-a-actual" },
         identity: {
           inputs: { specHash: HASH, contentHash: HASH_B, fixtureHash: HASH, driverHash: HASH_B, oracleHash: HASH },
-          models: { requested: "provider/model-a", actual: "provider/model-a" },
+          models: { requested: "provider/model-a" },
           host: { mode: "full-desktop", capabilities: ["session", "chat"] },
           platform: { os: "darwin", arch: "arm64" },
           runtime: { version: "22.22.3" },
@@ -569,6 +786,8 @@ describe("驱动结果与同条件对照", () => {
     })
     expect(conditions.caseIds).toEqual(["a-case", "b-case"])
     expect(conditions.suiteIds).toEqual(["suite-a"])
+    expect(conditions.requestedModel).toBe("provider/model-a")
+    expect(conditions.actualModel).toBe("provider/model-a-actual")
     expect(conditions.hostCapabilities).toEqual(["chat", "session"])
     expect(conditions.platform).toBe("darwin/arm64")
     expect(conditions.judgePromptVersion).toBe("judge@1")
@@ -577,6 +796,14 @@ describe("驱动结果与同条件对照", () => {
     expect(empty.specHash).toBeNull()
     expect(empty.actualModel).toBeNull()
     expect(empty.caseIds).toEqual([])
+
+    // 只有封存时写下的顶层 models 才算实际模型；identity 里的同名键不是证据。
+    const unsealed = conditionsFromRun({
+      run: { scope: { caseIds: [CASE_ID] } },
+      manifest: { identity: { models: { requested: "provider/model-a", actual: "provider/echo" } } },
+    })
+    expect(unsealed.requestedModel).toBeNull()
+    expect(unsealed.actualModel).toBeNull()
   })
 
   it("固定条件不一致或缺失即不可比；代码/Card/配置变化只记录 [chat-run-conditions]", () => {

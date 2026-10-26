@@ -13,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { initChat, resetAgentRuntimeForTest, sendMessage } from "@/services/agent/runner"
 import { flushConfig, getAllOverrides, setOverrides } from "@/services/config"
 import { usageGrandTotal } from "@/services/debug"
+import { readRequestResponse } from "@/services/engine/harness"
 import { initPaths } from "@/services/paths"
 import { getActiveCard } from "@/services/personality/registry"
 import {
@@ -79,6 +80,7 @@ const SUITE_ID = "w5-loop"
 const TRIAL_ID = "trial-w5-1"
 const FIXTURE_ID = "w5-loop-fixture"
 const RUN_ID = "w5-loop-run"
+const GENERATION = "generation-w5-loop"
 const CLOCK_BASE = "2026-10-24T10:00:00.000+08:00"
 const M1_TEXT = "今天下班路上看到一只橘猫蹲在店门口"
 const M2_TEXT = "刚才说的那只橘猫，你还记得它在哪吗"
@@ -430,15 +432,20 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       await recorder.beginTrial(CASE_ID, TRIAL_ID)
       trialStarted = true
 
+      const driverOperations: Array<{ operationId: string; caseId: string; stepId: string }> = []
       const transport = {
         clock: async (at: string, reason?: string) => setSimClockBase(at, reason),
-        message: async (text: string) => {
-          const result = await sendMessage(text)
+        message: async (text: string, operation: { operationId: string; caseId: string; stepId: string }) => {
+          driverOperations.push(operation)
+          const result = await sendMessage(text, { requestId: operation.operationId })
+          const sessionId = getActiveSessionId()
           return {
-            sessionId: getActiveSessionId(),
+            sessionId,
             outcome: result.outcome,
             reply: result.reply,
             toolCalls: result.toolCalls,
+            operation: { ...operation, trialId: TRIAL_ID, sessionId, generation: GENERATION },
+            requestId: operation.operationId,
           }
         },
         sessions: async () => ({
@@ -453,7 +460,7 @@ describe("聊天评测闭环（L3 合成用例）", () => {
           return unsupportedHostStep(method)
         },
         context: async () => ({ context: { usageTotal: usageGrandTotal() } }),
-        memoryState: async () => ({ pendingSources: 0, activeJobs: [] }),
+        memoryState: async () => ({ pendingSources: 0, activeJobs: [], jobs: [] }),
       }
 
       // 第一次执行在 m1 之后中断：进度已落盘、副作用不重放，续跑只做 h1 与 m2。
@@ -510,6 +517,31 @@ describe("聊天评测闭环（L3 合成用例）", () => {
 
       const sessionAfter = getActiveSessionId()
       expect(sessionAfter).not.toBe(sessionBefore)
+
+      expect(driverOperations.map(operation => operation.stepId)).toEqual(["m1", "m2"])
+      expect(new Set(driverOperations.map(operation => operation.operationId)).size).toBe(2)
+      expect(resumed.steps[0]?.result).toMatchObject({
+        requestId: driverOperations[0]?.operationId,
+        operation: {
+          caseId: CASE_ID,
+          stepId: "m1",
+          trialId: TRIAL_ID,
+          sessionId: sessionBefore,
+          generation: GENERATION,
+        },
+      })
+      // 回复按请求身份与 operation 分支绑定：前一条请求不能拿到最后一条助手消息。
+      expect(await readRequestResponse(sessionBefore, driverOperations[0]!.operationId)).toMatchObject({
+        requestId: driverOperations[0]?.operationId,
+        text: REPLY_M1,
+        userEntryId: expect.any(String),
+        assistantEntryId: expect.any(String),
+      })
+      expect(await readRequestResponse(sessionAfter, driverOperations[1]!.operationId)).toMatchObject({
+        requestId: driverOperations[1]?.operationId,
+        text: REPLY_M2,
+      })
+      expect(await readRequestResponse(sessionAfter, driverOperations[0]!.operationId)).toBeUndefined()
 
       await new Promise(resolve => setTimeout(resolve, 25))
       await recorder.endTrial(CASE_ID, TRIAL_ID)

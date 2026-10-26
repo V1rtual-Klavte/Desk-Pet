@@ -238,6 +238,7 @@ describe("聊天评测数据集规范", () => {
     expect(entry.case.checkpoints.map((checkpoint) => checkpoint.after)).toEqual([
       "correct-exercise",
       "correct-exercise",
+      "food-decision",
       "new-session-b",
       "ask-history",
       "trap",

@@ -1,3 +1,6 @@
+// 2026-10-26 聊天评测消息绑定（本批刷新）：sourceFiles 中 engine/harness/index.ts 新增
+// readRequestResponse 与 RequestResponseEvidence 导出；观察层行为未变。
+// ob-* 覆盖点未修订，仅按当前源码刷新 sourceHash。
 // 2026-10-24 契约覆盖复核批次（analyze 定向）：① sourceFiles 补入
 // `src/services/observation/quality.ts` —— ob-12 的「纯否定结论不算了解」真正定义在这里
 // （store 的写入与快照两侧都调用它），此前只列了消费它的 store.ts；② ob-12 的截图判据
@@ -340,7 +343,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "0423808b39c01235a9b486eb585cf4faf26e22a2bda3b7c6c76d1b5dddd14452",
+  sourceHash: "9d78e5cc80678bbe1e71616a1e8ad27acb3b8ce57d1b6dd1ef596af3c558f879",
   coverage: [
     {
       id: "ob-01",

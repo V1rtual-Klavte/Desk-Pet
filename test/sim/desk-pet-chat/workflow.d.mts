@@ -114,9 +114,21 @@ export interface DriverSummary {
   };
 }
 
+export interface MessageOperationRef {
+  operationId: string;
+  caseId: string;
+  stepId: string;
+}
+
+export interface MessageOperationReceipt extends MessageOperationRef {
+  trialId: string;
+  sessionId: string;
+  generation: string;
+}
+
 export interface DriverTransport {
   clock(at: string, reason?: string): Promise<DriverClock>;
-  message(text: string): Promise<Record<string, unknown>>;
+  message(text: string, operation: MessageOperationRef): Promise<Record<string, unknown>>;
   sessions(): Promise<Record<string, unknown>>;
   host(method: string, args?: Record<string, unknown>): Promise<Record<string, unknown>>;
   context(): Promise<Record<string, unknown>>;
