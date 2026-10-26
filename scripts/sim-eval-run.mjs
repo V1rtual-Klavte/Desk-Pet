@@ -1813,7 +1813,7 @@ function judgePrepare(runId, options) {
   const nextAction = `把判分包交给独立 coding-agent judge${underTest ? `（不得使用被测模型 ${underTest}）` : ""}逐条裁决，回填 verdicts JSON 后运行 judge apply --run-id ${runId} --verdicts <file.json>`
   setPhaseForRun(state, {
     phase: "awaiting_judge",
-    pendingDecision: { kind: "judge_verdicts", packetId: prepared.packet.packet.packetId, packetPath },
+    pendingDecision: { kind: "judge_verdicts", packetId: prepared.packet.packetId, packetPath },
     nextAction,
     at: now,
   })
@@ -1826,7 +1826,7 @@ function judgePrepare(runId, options) {
     console.log(JSON.stringify({
       runId,
       attemptId,
-      packetId: prepared.packet.packet.packetId,
+      packetId: prepared.packet.packetId,
       packetPath,
       packetSha256: prepared.packetSha256,
       skippedRules: prepared.skippedRules,
