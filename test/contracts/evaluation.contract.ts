@@ -1,3 +1,7 @@
+// 2026-10-27 判分权威溯源修复：judging.mjs 新增 coding-agent 平台白名单（claude-code／codex／qoder），
+// judge apply 拒绝 API 客户端回填；authority 判定还要求平台在册，历史 deepseek-api 判分不再算权威；
+// report 的判分身份句按判分记录生成。eval-11 补 chat-judge-authority／chat-judge-authority-history。
+// sourceHash 按当前源码复算。
 // 2026-10-24 整理取消窗口批次（定向复核）：sourceFiles 中 agent/memory/dreaming.ts 仅在
 // 模型返回与批次 checkpoint 之后重核取消信号；评测的 trace、计分、导出、判分与保留路径
 // 未改，eval-01..09 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -125,7 +129,7 @@
 // 装载摘要、direct-seed-plan／direct-seed 产品入口装载、sim-eval-run 起停脚本、desk-pet-chat
 // eval 入口）。本机已通过 W2 相关 L2、tsc/cargo check、Rust 单测与真实隔离起停（含非法路径、
 // 跨进程单实例、E2E 互斥与停止后锁释放）；eval-01..09 未修订覆盖点，sourceHash 按当前源码复算。
-// 固定时钟、跨天间隔、聊天驱动、证据/评分与正式报告仍未实现，不能由本次隔离起停验收替代。
+// 本批只验收隔离起停与装载；固定时钟、聊天驱动、证据／评分与正式报告由后续 W3–W6 批次实现。
 // 2026-10-25 W3 采集封存验收（本批刷新）：纯 trace 从 test/trace/evidence.ts 迁入
 // src/services/sim/trace-chunk.ts（E2E 观察器同步 import，原文件删除）；新增 capture.ts 的
 // 跨会话取证与 trace-recorder 的 trial 归属／有界分块；sim-eval-run 与 chat-bridge 增加采集
@@ -139,8 +143,8 @@
 // direct-seed-plan 的 fixture schema 版本随数据集升到 4（装载器只接受当前 fixture 格式）。
 // 验收轮已运行 W4 快层、完整 unit、tsc／cargo check、Rust 单测与测试规则扫描，并修复判分包返回
 // 结构的消费者取错字段（CLI 与快层测试把嵌套 packet.packetId 当顶层使用）。eval-01..09 未修订覆盖点：
-// 聊天判分／抽查／同源报告当时尚无对应 coverage caseId，完整 analyze／audit 留待 W6；真实 judge 已在
-// 银标运行（silver-20261026c）中执行一次；W4 验收时固定时钟与聊天驱动仍未接。sourceHash 按当前源码复算。
+// 聊天判分／抽查／同源报告的 coverage caseId 与固定时钟／聊天驱动由后续 W5／W6 批次补齐（eval-10–eval-12）。
+// sourceHash 按当前源码复算。
 // 2026-10-26 W5 请求/回执绑定与抽查换代（本批刷新）：新增
 // src/services/sim/message-operation.ts（消息操作身份的零依赖校验），chat-bridge 在评测运行内
 // 要求每条消息携带驱动 operation、按 requestId 复用输入身份，并只按 readRequestResponse
@@ -152,34 +156,60 @@
 // cancelled）且 pendingSources／activeJobs 归零稳定后才满足，空闲 0/0 不再通过。chat-bridge 的
 // memory_state 回执补 jobs 列表；用例把纠正与食物选择对齐抽槽并新增 food-processed 检查点。
 // eval-10 补基线、新作业与取消三组反例；sourceHash 按当前源码复算。
-// 2026-10-25 W5 闭环与 W6 Contract 覆盖（本批实施，待集中验收）：新增固定时钟
+// 2026-10-26 W5 闭环与 W6 Contract 覆盖（本批刷新）：新增固定时钟
 // src/services/sim/clock.ts、chat-bridge 的 clock／memory_state 命令与运行器
 // drive／compare／holdout／--repair-of 编排（test/sim/desk-pet-chat/workflow.mjs）；
 // src/services/init.ts 在 sim-eval 引导早期安装 Node 域固定时钟（Rust 调度与 OS 时间戳不推进）。
 // 新增 eval-10（工作流／授权／同条件对照）、eval-11（判分包／独立 judge／可选抽查）与
-// eval-12（fake Provider 配合真实 loop 的闭环）；W5 快层与 L3 测试已在 2026-10-26 验收轮运行，
-// 验收中发现授权凭据字段被形状校验抢先归类为 schema.invalid，已改为先查凭据再校验形状。
-// CE-01..20 已在执行契约 W6 验收记录中逐项映射；真实模型／judge 已跑一次银标（fail），真实 Skill 自主运行与用户关口仍未执行。
+// eval-12（fake Provider 配合真实 loop 的闭环）；验收中发现授权凭据字段被形状校验抢先归类为
+// schema.invalid，已改为先查凭据再校验形状。CE-01..20 映射与集中验收记录见执行契约 W6；
+// 当前完成度与剩余项只看 docs/plans/active/未完成工作与已知缺口.md §12。
+// 2026-10-26 gold 审批写入（本批刷新）：dataset.mjs 新增 writeApprovalRecords（先校验目标套件、
+// 用例归属与目标文件再由 wx 写入，拒绝覆盖已有审批），desk-pet-chat.mjs 新增 dataset approve
+// 子命令（只接受用户给出的真实会话来源，写后回读标签）。评测计分、导出、判分与保留路径未改，
+// eval-01..12 未修订覆盖点，sourceHash 按当前源码复算。
+// 2026-10-27 CE-08 手工触发（本批刷新）：新增 src/services/sim/manual-trigger.ts，把主动 tick 与
+// 任务投递封装为组件入口（manualPath=sim-component），dataset 白名单登记 sim_proactive_tick／
+// sim_task_deliver；chat-bridge 的 host 命令按注册表走手工入口，trace-context-map 支持按 sessionId
+// 显式绑定，使 proactive 事件不再成为 orphan；sim-eval-run 对手工方法使用消息级超时，report 在
+// 驱动包含手工触发时注明组件路径。eval-04 补会话绑定场景，eval-10 补手工触发场景，eval-11 补报告
+// 说明场景；真实手工触发链路尚未在隔离宿主执行，验收状态只记 L2。sourceHash 按当前源码复算。
+// 2026-10-27 多 trial 批量与 pass^k（本批刷新）：evidence.mjs 新增 trials.json 冻结计划
+// （planTrialBatch 计划总数含已有 attempt，运行前冻结 trialIds，失败或不完整试次继续占位不替换），
+// 并在建 attempt 时拒绝计划外 trialId 与重放；sim-eval-run 新增 batch 串行编排（子运行 id 由
+// evaluationRunId 确定性派生、batch.json 记录槽位、drive 失败按中断封存后继续），start 时校验
+// 计划绑定；新增 aggregate.mjs 按计划槽位聚合（critical pass^k、非 critical 只展示分布，
+// 缺 trial／证据不完整／未判分／judge 身份不一致／无证据引用都保持 inconclusive）；report 先给
+// 聚合矩阵再逐 attempt 展开。eval-10 补计划冻结、批量入口与多 trial 报告场景。sourceHash 按当前源码复算。
+// 2026-10-27 W2 关停证据与故障救援（本批刷新）：宿主退出序列在 flush 之后写 run 根 exit.json
+// （pid、exitedAt、Node flush 真实结果、interrupted／forcedKill），原子替换、无临时残片；
+// sim-eval-run 的 stop 校验 exit.json 绑定本次宿主并核对 flush／强杀／中断，缺失或不干净都报问题，
+// finish 把关停问题写进摘要与退出码；宿主没走完退出序列时新增 rescue：宿主仍活着拒绝，只把
+// manifest.json.pending 按 interrupted 封存（缺对话、缺 trace 封口、缺 exit.json 进 issues，
+// 结果保持 inconclusive），sealedAt 落盘后 repair 可继续。harness flushForShutdown 增加 sim 采集
+// 关停（未走 finish 的 trace 先按中断封口）与调度器有界停止结果（未收敛作业进 flush detail）；
+// eval-10 补 exit 记录／关停核对／救援与救援守卫场景，sourceFiles 增列 src/harness/main.ts。
+// sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-10 记忆断点修复定向核对：本域既有消费者与分派语义未变；新增受控会话读取及请求内guide由memory契约持有，生成协议仅增命令/规范排版。
 export const evaluationContract: ModuleContract = {
   module: "evaluation",
-  sourceFiles: ["test/host/standard-setup.ts", "vite.config.ts", "src/services/engine/runtime/trace.ts", "src/services/agent/memory/reading-errors.ts", "src/services/agent/memory/provider.ts", "src/services/agent/memory/dreaming.ts", "crates/native-host/src/e2e_trace.rs", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/host/dispatch.rs", "test/host/trace-observer.ts", "src/services/sim/trace-chunk.ts", "src/services/sim/trace-recorder.ts", "src/services/sim/capture.ts", "scripts/report-retention.mjs", "scripts/trace-evidence.mjs", "scripts/contract-layers.mjs", "scripts/e2e-test.mjs", "scripts/check-contract-hashes.mjs", "test/memory-quality/dataset.mjs", "test/memory-quality/index.mjs", "test/memory-quality/live-adapter.ts", "scripts/memory-quality-review.mjs", "scripts/memory-performance.mjs", "src/services/sim/eval-models.ts", "src/services/sim/eval-overrides.ts", "src/services/sim/run-context.ts", "src/services/sim/clock.ts", "src/services/sim/chat-bridge.ts", "src/services/sim/message-operation.ts", "src/services/sim/direct-seed-plan.ts", "src/services/sim/direct-seed.ts", "src/services/init.ts", "crates/native-host/src/paths/sim_eval.rs", "crates/native-host/src/main.rs", "scripts/sim-eval-run.mjs", "scripts/desk-pet-chat.mjs", "test/sim/desk-pet-chat/dataset.mjs", "test/sim/desk-pet-chat/evidence.mjs", "test/sim/desk-pet-chat/judging.mjs", "test/sim/desk-pet-chat/report.mjs", "test/sim/desk-pet-chat/workflow.mjs", "test/sim/desk-pet-chat/categories.json", "test/sim/desk-pet-chat/question-types.json", "test/eval-models.json", "test/e2e/memory-performance.ts", "test/host/performance.ts", "test/e2e/native-main.ts", "test/e2e/scene-runner.ts"],
+  sourceFiles: ["test/host/standard-setup.ts", "vite.config.ts", "src/services/engine/runtime/trace.ts", "src/services/agent/memory/reading-errors.ts", "src/services/agent/memory/provider.ts", "src/services/agent/memory/dreaming.ts", "crates/native-host/src/e2e_trace.rs", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/host/dispatch.rs", "test/host/trace-observer.ts", "src/services/sim/trace-chunk.ts", "src/services/sim/trace-recorder.ts", "src/services/sim/capture.ts", "scripts/report-retention.mjs", "scripts/trace-evidence.mjs", "scripts/contract-layers.mjs", "scripts/e2e-test.mjs", "scripts/check-contract-hashes.mjs", "test/memory-quality/dataset.mjs", "test/memory-quality/index.mjs", "test/memory-quality/live-adapter.ts", "scripts/memory-quality-review.mjs", "scripts/memory-performance.mjs", "src/services/sim/eval-models.ts", "src/services/sim/eval-overrides.ts", "src/services/sim/run-context.ts", "src/services/sim/clock.ts", "src/services/sim/chat-bridge.ts", "src/services/sim/manual-trigger.ts", "src/services/sim/message-operation.ts", "src/services/sim/direct-seed-plan.ts", "src/services/sim/direct-seed.ts", "src/services/init.ts", "src/harness/main.ts", "crates/native-host/src/paths/sim_eval.rs", "crates/native-host/src/main.rs", "scripts/sim-eval-run.mjs", "scripts/desk-pet-chat.mjs", "test/sim/desk-pet-chat/dataset.mjs", "test/sim/desk-pet-chat/evidence.mjs", "test/sim/desk-pet-chat/aggregate.mjs", "test/sim/desk-pet-chat/judging.mjs", "test/sim/desk-pet-chat/report.mjs", "test/sim/desk-pet-chat/workflow.mjs", "test/sim/desk-pet-chat/categories.json", "test/sim/desk-pet-chat/question-types.json", "test/eval-models.json", "test/e2e/memory-performance.ts", "test/host/performance.ts", "test/e2e/native-main.ts", "test/e2e/scene-runner.ts"],
   // 2026-10-18 列项答案补全批次：评测口径未变，仅共享 runtime/trace 增加列项补全计数；定向复核后刷新。
-  sourceHash: "9307f332af3cbef578b45ff54824ac73d13339e3d33809f46e089a0d34d3cc71",
+  sourceHash: "512e945434dd9fa7e0b363e5f8f29b12b09d7bd8b98fb5ecb200a45d8f419fa4",
   coverage: [
     {"id": "eval-01", "feature": "生产 trace 提交线路", "description": "真实 sendMessage 经过 Rust IPC：输入、host/Pi关联、Provider span、首文本生成与 JSONL assistant entry commit 一致；消息结束不冒充提交或UI首显", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "e2e", "depth": "deep", "scenarios": ["trace-production-commit"]},
     {"id": "eval-02", "feature": "惰性与隔离观测", "description": "无订阅者不计算payload；listener异常隔离、event冻结、spread context共享单调序号；阅读状态/合法来源ID及固定错误计数（含缺失/非法语义核对表）可见，核对条件只登记有界哈希、状态与引用数，核对条件正文/引文/查询和任意错误键被过滤；正文与工具参数结果不进入允许字段，主动/行为事件只保留结构字段（应用身份、标题与任务正文被白名单挡下）", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-lazy-off", "trace-listener-isolation", "trace-sequence-redaction", "trace-preview", "trace-scope-candidates", "trace-memory-rendered-schema", "trace-memory-reading-schema", "trace-proactive-behavior-schema"]},
     {"id": "eval-03", "feature": "提交与记忆准入证据", "description": "真实 loop 和 JSONL 条目支持 commit 身份；注入自定义MemoryProvider，在真正Provider请求内核对预算淘汰结果和 rendered sourceIds", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "integration", "depth": "deep", "scenarios": ["trace-entry-commit", "trace-memory-rendered"]},
-    {"id": "eval-04", "feature": "来源与有界缓冲", "description": "迟到事件保持最初trial归属；未知任务为orphan；有界映射淘汰；缓冲数/字节上限、序号缺口、drop及待ACK精确重试可见；单块字节预算切分（前缀出块、剩余留存、单条超预算独占一块、drop随批首块带走并清零）", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-context-origin", "trace-bounded-ack", "trace-context-bound", "trace-chunk-byte-split", "trace-chunk-oversize-event", "trace-chunk-empty-boundary", "trace-chunk-drop-carry"]},
+    {"id": "eval-04", "feature": "来源与有界缓冲", "description": "迟到事件保持最初trial归属；未知任务为orphan；有界映射淘汰；显式会话绑定让无runId／requestId的事件按sessionId归到当前trial，未绑定会话仍为orphan；缓冲数/字节上限、序号缺口、drop及待ACK精确重试可见；单块字节预算切分（前缀出块、剩余留存、单条超预算独占一块、drop随批首块带走并清零）", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-context-origin", "trace-bounded-ack", "trace-context-bound", "trace-context-session", "trace-chunk-byte-split", "trace-chunk-oversize-event", "trace-chunk-empty-boundary", "trace-chunk-drop-carry"]},
     {"id": "eval-05", "feature": "用户理想与独立审阅门禁", "description": "用户任意文本理想稿不自动生成；缺审阅pending；哈希、完整性、边界、全部trial及orphan引用核验；失配/drop/半行/完整终态后追加不能通过；静默trial可用真实边界引用", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-review-pending", "trace-review-stale", "trace-review-hash-bound"]},
     {"id": "eval-06", "feature": "成组证据保留", "description": "保留单元是组：同一场的 json/html 与审阅/评分卫星连带（字节计入、孤儿卫星清除）、trace bundle 含 .pending 残片整组淘汰、performance 池同口径；最近3场且总200MiB且最新一组恒留；caseid/flaky产物保留", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-bundle-retention", "report-retention-group-key", "report-retention-newest-three", "report-retention-newest-kept-over-budget", "report-retention-satellite-share-fate", "report-retention-json-html-pair", "report-retention-scored-satellite-pair", "report-retention-unmanaged-kept", "report-retention-orphan-sweep"]},
     {"id": "eval-07", "feature": "质量评测集与指标", "description": "80题5capability和来源/scope/时间标注验证；无记忆的候选指标不可冒充0；未独立评分的answer/extraction为未知；配对成本与按case聚合的收益区间", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["mq-dataset-80-balanced", "mq-dataset-required-gold", "mq-score-no-memory-null"]},
     {"id": "eval-08", "feature": "质量配对与审阅约束", "description": "三trial五策略+独立提取；cell矩阵完整、fresh generation与fixture指纹守卫；提交失败/中断失败；模型输出失败保留且不终止其他对照，三次连续基础设施失败中止；gold双人审计、独立校准judge盲审绑定整份采集，缺/旧审阅及定向样本不能批准完整质量", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["mq-runner-paired-gate", "mq-model-output-failure", "mq-review-bound-gate"]},
     {"id": "eval-09", "feature": "性能统计", "description": "nearest-rank P95保留长尾；缺样本或非法耗时为null；release 存储与 debug IPC 两类证据范围不混算（真实 UI 渲染延迟不在本口径内：Live 宿主没有聊天窗，不冒充 UI 证据）", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["performance-tail", "performance-missing"]},
-    {"id": "eval-10", "feature": "聊天评测授权、驱动与同条件对照", "description": "授权文件校验用例范围、用途、隔离数据、模型与预算（trials>0、repairs≥0），留出布尔必须等于用途，拒绝重复项与任何凭据字段；请求模型必须在授权范围内，修复序号从 1 开始且不超过授权次数。固定时钟按整小时偏移生成 Etc/GMT∓N，clock.json 的时区与基准偏移一致；驱动包只含 userRole 与 driver 步骤，检查点只接受登记等待类型。驱动进度可往返读取，已完成、已阻塞与有 in-flight 的进度拒绝续跑；按步骤推进时钟、建会话、发消息并等待检查点，消息／分钟／已知 token 预算在下一步副作用前到界阻塞，未知用量记 unknown 不记零。每条消息步骤生成唯一 operationId 并携带 caseId／stepId；评测宿主要在 trial 已开始、会话与宿主代际一致且同一身份不重放时才接收消息，回执必须原样回显 operation（含 trialId／sessionId／generation）且 requestId 与 operationId 同源，错组或缺身份直接阻塞、不把回复记到本步；忙碌投递的回复按 requestId 在会话 run 分支内取证，不回退到最后一条助手消息。`memory_extraction_end` 在消息副作用前抓作业基线，只认基线之外的新抽取作业到达终态（completed／failed／cancelled）且 pendingSources／activeJobs 归零稳定，空闲水位不算结束。驱动完成才判 completed，其余显式 interrupted；同条件比较核对固定字段与目标漂移，留出使用记录包含在途与待审。", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["chat-run-authorization", "chat-driver-progress-resume", "chat-driver-steps", "chat-driver-operation", "chat-driver-budget", "chat-driver-memory-baseline", "chat-driver-memory-new-job", "chat-driver-memory-cancelled", "chat-run-conditions", "chat-run-holdout"]},
-    {"id": "eval-11", "feature": "聊天判分包、独立 judge 裁决与可选抽查", "description": "判分包只在证据完整、执行完成、数据集绑定未漂移且驱动无 oracle 泄漏时冻结，规则覆盖全部探针与质量 rubric，只引用允许的证据，不携带标签或历史判分；未封存、trace 不完整、执行失败或驱动泄露评测内部信息都拒绝。裁决必须覆盖全部规则且无重复未知项，judge 平台／模型／prompt 版本完整并与被测模型异构，证据引用不得越界；判分记录绑定 packet 哈希与规则计数，任一 fail 判失败、存在非 pass 保持 inconclusive、无记录不产生通过。用户抽查只接受真实用户与当前 grade，追加 reviews；一致或不一致都不改变自动判分、不进入聚合。抽查只统计绑定最新判分的记录：重新判分后旧抽查仍是历史证据，但不进入新判分的覆盖与一致性统计。四层报告从同一证据重建结论，证据不完整、未封存或数据集漂移不显示通过。", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["chat-judge-packet-freeze", "chat-judge-verdict-validation", "chat-judge-aggregation", "chat-spotcheck-nonblocking", "chat-spotcheck-regrade", "chat-report-same-source"]},
+    {"id": "eval-10", "feature": "聊天评测授权、驱动与同条件对照", "description": "授权文件校验用例范围、用途、隔离数据、模型与预算（trials>0、repairs≥0），留出布尔必须等于用途，拒绝重复项与任何凭据字段；请求模型必须在授权范围内，修复序号从 1 开始且不超过授权次数。固定时钟按整小时偏移生成 Etc/GMT∓N，clock.json 的时区与基准偏移一致；驱动包只含 userRole 与 driver 步骤，检查点只接受登记等待类型。驱动进度可往返读取，已完成、已阻塞与有 in-flight 的进度拒绝续跑；按步骤推进时钟、建会话、发消息并等待检查点，消息／分钟／已知 token 预算在下一步副作用前到界阻塞，未知用量记 unknown 不记零。每条消息步骤生成唯一 operationId 并携带 caseId／stepId；评测宿主要在 trial 已开始、会话与宿主代际一致且同一身份不重放时才接收消息，回执必须原样回显 operation（含 trialId／sessionId／generation）且 requestId 与 operationId 同源，错组或缺身份直接阻塞、不把回复记到本步；忙碌投递的回复按 requestId 在会话 run 分支内取证，不回退到最后一条助手消息。`memory_extraction_end` 在消息副作用前抓作业基线，只认基线之外的新抽取作业到达终态（completed／failed／cancelled）且 pendingSources／activeJobs 归零稳定，空闲水位不算结束。驱动完成才判 completed，其余显式 interrupted；同条件比较核对固定字段与目标漂移，留出使用记录包含在途与待审。手工触发只接受 sim_proactive_tick／sim_task_deliver：主动 tick 只收取本次调用产生的 proactive 事件，任务投递要求创建与交付完成；回执必须带 manualPath=sim-component，缺路径标记或交付未完成直接阻塞。多 trial 计划在运行前冻结 trialIds、预算与授权指纹，计划总数含已有 attempt；起步时拒绝计划外 trialId 与重放，失败或不完整的试次继续占位、不被替换；batch 串行编排子运行（子运行 id 由评价组确定性派生），drive 失败按中断封存后继续，其余槽位保持未封存占位，不自动判分。宿主退出后在运行根留下 exit.json（pid、Node flush 真实结果、中断／强杀）；stop 只认绑定本次宿主且 flush 完成、非强杀非中断的记录，缺失或不干净都报问题并计入 finish 摘要与退出码；宿主没走完退出序列时 rescue 只把已落盘的草稿按 interrupted 封存（宿主仍活着或 attempt 已封存都拒绝），缺对话、缺 trace 封口、缺 exit.json 写进 issues，结果保持 inconclusive，不冒充完成。", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["chat-run-authorization", "chat-driver-progress-resume", "chat-driver-steps", "chat-driver-operation", "chat-driver-budget", "chat-driver-memory-baseline", "chat-driver-memory-new-job", "chat-driver-memory-cancelled", "chat-driver-manual-triggers", "chat-manual-trigger", "chat-manual-trigger-task", "chat-manual-trigger-registry", "chat-run-conditions", "chat-run-holdout", "chat-trial-plan", "chat-trial-plan-ids", "chat-trial-plan-frozen", "chat-trial-plan-tamper", "chat-trial-plan-evidence", "chat-batch-command", "chat-run-exit-record", "chat-run-exit-flush", "chat-run-rescue", "chat-run-rescue-guard"]},
+    {"id": "eval-11", "feature": "聊天判分包、独立 judge 裁决与可选抽查", "description": "判分包只在证据完整、执行完成、数据集绑定未漂移且驱动无 oracle 泄漏时冻结，规则覆盖全部探针与质量 rubric，只引用允许的证据，不携带标签或历史判分；未封存、trace 不完整、执行失败或驱动泄露评测内部信息都拒绝。裁决必须覆盖全部规则且无重复未知项，judge 平台／模型／prompt 版本完整并与被测模型异构，证据引用不得越界；judge.platform 只接受 coding-agent 执行平台白名单（claude-code／codex／qoder），API 客户端回填直接拒绝；历史判分即使 authority 字段写着 coding-agent-judge，平台不在白名单时也不算权威，报告身份句按判分记录生成。判分记录绑定 packet 哈希与规则计数，任一 fail 判失败、存在非 pass 保持 inconclusive、无记录不产生通过。用户抽查只接受真实用户与当前 grade，追加 reviews；一致或不一致都不改变自动判分、不进入聚合。抽查只统计绑定最新判分的记录：重新判分后旧抽查仍是历史证据，但不进入新判分的覆盖与一致性统计。四层报告从同一证据重建结论，证据不完整、未封存或数据集漂移不显示通过；驱动包含手工触发时报告注明组件入口，不冒充自然受理、调度或实际 UI 显示。多 trial 聚合按冻结计划对齐槽位：critical 规则须全部 trial 通过（pass^k），任一 fail 即 fail；缺 trial、证据不完整、执行未完成、未判分、judge 身份不一致或 pass/fail 无证据引用都保持 inconclusive；非 critical 规则只展示分布，不参与总判定；修复 attempt 不占计划名额。", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["chat-judge-packet-freeze", "chat-judge-verdict-validation", "chat-judge-authority", "chat-judge-authority-history", "chat-judge-aggregation", "chat-spotcheck-nonblocking", "chat-spotcheck-regrade", "chat-report-same-source", "chat-report-manual-trigger", "chat-trial-aggregate", "chat-report-multi-trial"]},
     {"id": "eval-12", "feature": "聊天评测闭环组合流程", "description": "fake Provider 配合真实 initChat／sendMessage／会话 JSONL 与 trace 采集跑通一次闭环：固定时钟只推进 Node 域时间，两轮消息经真实 loop 落盘；驱动在消息步骤后崩溃，从同一进度续跑且不重放已完成步骤；host 新建会话后跨会话采集把驱动与 fixture 来源分开，对话、状态与产物写入 attempt 并通过封存核验；数据集漂移拒绝冻结判分包，驱动文本不泄露 oracle 后冻结判分包；未判分时汇总为 inconclusive、标签保持 silver/pending、抽查显式未抽查，报告从同一证据生成且不产生 grades。Rust 调度与 OS 时间戳不随固定时钟推进。", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "integration", "depth": "deep", "scenarios": ["w5-loop-smoke"]},
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: false },

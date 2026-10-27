@@ -1,6 +1,6 @@
 export { isSimLoopRunning, runSimLoop } from "./loop"
 export type { SimLoopOptions, SimLoopResult, SimRoundLog, SimTaskResult } from "./loop"
-export { isSimChatBridgeRunning, startSimChatBridge } from "./chat-bridge"
+export { isSimChatBridgeRunning, startSimChatBridge, stopSimChatBridge } from "./chat-bridge"
 export type { SimChatBridge, SimChatMessage } from "./chat-bridge"
 export { getSimEvalRunContext, isSimEvalRequested } from "./run-context"
 export type { SimEvalReadyFile, SimEvalRunContext } from "./run-context"

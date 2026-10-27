@@ -32,6 +32,7 @@ export interface TraceEvent {
   createdAt: number
   runId?: string
   requestId?: string
+  sessionId?: string
   turnId?: string
   payload?: Record<string, unknown>
 }
@@ -86,9 +87,11 @@ export class TraceContextMap {
   readonly #maxContexts: number
   readonly #byRun = new Map<string, string>()
   readonly #byRequest = new Map<string, string>()
+  readonly #bySession = new Map<string, string>()
   readonly #contexts = new Map<string, TraceContext>()
   readonly #runKeys = new Map<string, Set<string>>()
   readonly #requestKeys = new Map<string, Set<string>>()
+  readonly #sessionKeys = new Map<string, Set<string>>()
   readonly #order: string[] = []
 
   constructor(options: { maxContexts?: number } = {}) {
@@ -110,9 +113,17 @@ export class TraceContextMap {
     if (event.requestId) this.#bindKey(this.#byRequest, this.#requestKeys, event.requestId, context.tokenId)
   }
 
+  /** 显式把会话绑到采集中的 trial；未绑定的会话事件仍按 orphan 处理。 */
+  bindSession(sessionId: string, context: TraceContext): void {
+    if (typeof sessionId !== "string" || sessionId === "") throw new RangeError("sessionId must be non-empty")
+    this.bind(context)
+    this.#bindKey(this.#bySession, this.#sessionKeys, sessionId, context.tokenId)
+  }
+
   resolve(event: TraceEvent): TraceContext | undefined {
     const token = (event.runId ? this.#byRun.get(event.runId) : undefined)
       ?? (event.requestId ? this.#byRequest.get(event.requestId) : undefined)
+      ?? (event.sessionId ? this.#bySession.get(event.sessionId) : undefined)
     return token ? this.#contexts.get(token) : undefined
   }
 
@@ -139,8 +150,10 @@ export class TraceContextMap {
     if (!context) return
     for (const key of this.#runKeys.get(tokenId) ?? []) if (this.#byRun.get(key) === tokenId) this.#byRun.delete(key)
     for (const key of this.#requestKeys.get(tokenId) ?? []) if (this.#byRequest.get(key) === tokenId) this.#byRequest.delete(key)
+    for (const key of this.#sessionKeys.get(tokenId) ?? []) if (this.#bySession.get(key) === tokenId) this.#bySession.delete(key)
     this.#runKeys.delete(tokenId)
     this.#requestKeys.delete(tokenId)
+    this.#sessionKeys.delete(tokenId)
     this.#contexts.delete(tokenId)
     const index = this.#order.indexOf(tokenId)
     if (index >= 0) this.#order.splice(index, 1)

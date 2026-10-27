@@ -22,7 +22,7 @@
 ## `.ideal.md` 放哪、怎么隔离
 
 - 推荐放本目录，命名约定 `<主题>.ideal.md`；命令接受任意路径，约定只为在 IDE 里一眼区分期望与实际。
-- **与自动产物隔离**：本目录不在 `test/reports/` 下——报告与 trace 的保留策略（最近 5 份）不会碰到它。
+- **与自动产物隔离**：本目录不在 `test/reports/` 下——报告与 trace 的保留策略（通用报告最近 3 组、聊天评测封存证据最近 5 组）不会碰到它。
 - **与 git 的关系**：`test/reports/` 与 `test/.tmp/` 在 `.gitignore` 中，本目录**不在**——理想稿默认随仓库版本化（它是"期望规格"，像文档一样值得留痕）。
 - **含隐私的理想稿**：移到仓库外任意位置，或自行加 ignore 条目；运行命令时直接传路径即可，目录只是推荐。
 - 实际 trace 在 `test/reports/traces/trace-bundle-*.trace.jsonl`（bundle 组，gitignore；bench / quality 运行在各自子目录的 `traces/`，理想稿审阅只针对门禁 L4 trace）；后缀约定让两者一眼可辨：`.ideal.md` 是期望、`.trace.jsonl` 是实际。
@@ -89,7 +89,7 @@ pnpm run test:trace-review -- test/ideal-traces/xx.ideal.md \
 | 1 | `verdict=fail`（差异已写明） |
 | 2 | `pending` / `inconclusive`：缺理想稿、缺审阅、哈希失配、丢事件、缺 trial 边界、未完成 |
 
-## 结构化聊天评测数据集（W1–W5）
+## 结构化聊天评测数据集
 
 结构、哈希与审批绑定由 [`test/sim/desk-pet-chat/dataset.mjs`](../sim/desk-pet-chat/dataset.mjs) 单一实现；本目录只存放数据。分类 id 复用 [`categories.json`](../sim/desk-pet-chat/categories.json)，题型 id 复用 [`question-types.json`](../sim/desk-pet-chat/question-types.json)。
 
@@ -113,7 +113,7 @@ test/ideal-traces/
     └── tool-and-plan/.gitkeep
 ```
 
-`saturday-companionship` 合并自两份用户理想稿（原稿已删除），由代理起草，当前是 **silver / pending**，不是 gold。fixture 采用 `direct-seed`：只把初始会话和旧记忆写入隔离数据根，纠正、自动记忆抽取与跨会话召回全部由真实消息触发。它用 27 条用户驱动消息加 2 个 host 步骤（两次新会话）串成三个会话，覆盖纠正、技术梗、短确认、云吃、采购、错误前提与长程回忆；23 条探针逐题绑定驱动步骤、观察窗口、题型与难度（correction、source、style、multi-turn、cross-session、temporal、adversarial、boundary 共 8 种），其中 11 条 critical，难度 L1 4／L2 5／L3 6／L4 6／L5 2。时钟固定为 `2026-10-24` 起的三段会话，每个驱动步骤带 `at`。首轮 7 条用户消息来自用户理想稿，其余是代理扩写，必须逐条审阅。空套件目录只有 `.gitkeep`；没有 `suite.json` 就不会进入数据集，也不代表对应类别已经覆盖。一个用例只存一份，`categories` 是多标签；同一 `caseId` 跨套件重复会直接判数据集错误。
+`saturday-companionship` 合并自两份用户理想稿（原稿已删除），由代理起草，当前是 **silver / pending**，不是 gold。fixture 采用 `direct-seed`：只把初始会话和旧记忆写入隔离数据根，纠正、自动记忆抽取与跨会话召回全部由真实消息触发。它用多轮用户驱动消息与 host 新会话步骤串成三个会话，覆盖纠正、技术梗、短确认、云吃、采购、错误前提与长程回忆；探针逐题绑定驱动步骤、观察窗口、题型与难度，当前数量与分布以 `dataset list`／`dataset review` 输出为准。时钟固定为 `2026-10-24` 起的三段会话，每个驱动步骤带 `at`。首轮 7 条用户消息来自用户理想稿，其余是代理扩写，必须逐条审阅。空套件目录只有 `.gitkeep`；没有 `suite.json` 就不会进入数据集，也不代表对应类别已经覆盖。一个用例只存一份，`categories` 是多标签；同一 `caseId` 跨套件重复会直接判数据集错误。
 
 ### 标签与审批
 
@@ -121,7 +121,8 @@ test/ideal-traces/
 - 只有用户本人针对当前 `specHash` 的真实会话消息审批，才是 gold。
 - 审批绑定 `contentHash` / `fixtureHash` / `driverHash` / `oracleHash` 与聚合 `specHash`；任一变化都会让旧审批变成 stale。审批历史保留，不覆盖、不删除。
 - 框架层面的方案通过、代理起草、测试全绿、口头同意都不能转成用例审批；代理不得代填 `reviewer`、`feedbackSource` 或审批结论。
-- 审批必须带 `reviewer.role = "user"` 与真实 `session_message` 来源（`sessionId` / `messageId` / `quote`）。工具只校验结构和哈希，不证明审批人身份或消息真实存在；这一信任边界由审阅流程保证。
+- 审批必须带 `reviewer.role = "user"` 与真实 `session_message` 来源（`sessionId` / `messageId` / `quote`）。唯一写入口是 `dataset approve`；它只接受用户本人给出的决定、姓名、真实会话／消息 id 与原文，校验套件归属与哈希并拒绝覆盖，但不证明审批人身份或消息真实存在；这一信任边界由审阅流程保证。
+- `dataset approve` 成功后必须用 `dataset list` 回读：批准应显示 `gold/approved`，驳回应显示 `silver/rejected`；没有回读成功就不算写入完成。代理不得手写 approval JSON 或换字段重试。
 
 ### 内容规则
 
@@ -136,7 +137,7 @@ test/ideal-traces/
 - `fixed` 时钟要求每个驱动步骤带升序 `at`，case 起点不得早于 `fixture.clock`；W5 runner 写入 `clock.json` 并在 Node 引导早期推进 Node 域 `Date`，Rust／OS 时间不推进，因此不证明真实日程间隔或 Rust 定时行为。
 - `difficulty` 是 1–5 的整数，只用于报告分层与覆盖观察，不改变 probe 或 case 的通过判定。
 - 探针窗口限定 driver 步骤（`last-assistant` 只匹配 driver 消息步骤），fixture 预置的助手消息不能进入风格或泄漏判定。
-- 记忆纠正后的自动抽取由真实消息触发；手动 `memory_dreaming_sweep` 不能证明定时 dreaming 调度，当前 case 不依赖手动 sweep。
+- 记忆纠正后的自动抽取由真实消息触发；手动 `memory_dreaming_sweep` 不能证明定时 dreaming 调度，当前 case 不依赖手动 sweep。评测 driver 的 `sim_proactive_tick`／`sim_task_deliver` 同样只是组件入口：只证明主动 tick 与任务投递可以被调用，不证明自然受理、调度或实际 UI 显示。
 
 ### 题型与判分
 
@@ -180,11 +181,15 @@ node scripts/desk-pet-chat.mjs dataset list
 node scripts/desk-pet-chat.mjs dataset types
 node scripts/desk-pet-chat.mjs dataset review saturday-companionship
 node scripts/desk-pet-chat.mjs dataset driver saturday-companionship
+node scripts/desk-pet-chat.mjs dataset approve saturday-companionship \
+  --reviewer-name <用户姓名> \
+  --session-id <真实会话 id> --message-id <真实用户消息 id> \
+  --quote <用户原话> [--decision approved|rejected] [--notes <原因>] [--json]
 ```
 
-这些命令只读数据集，不启动 app、不调用模型。`validate` 输出结构校验、题型分布与难度分布；`types` 输出题型注册表、覆盖分类与当前探针／用例计数；`review` 输出给人审阅的完整候选、装载方式、题型与判分方式、难度分布、绑定哈希与旧审批差异；`driver` 输出隔离后的驱动包，不含题型与探针。
+前五个命令只读数据集，不启动 app、不调用模型。`validate` 输出结构校验、题型分布与难度分布；`types` 输出题型注册表、覆盖分类与当前探针／用例计数；`review` 输出给人审阅的完整候选、装载方式、题型与判分方式、难度分布、绑定哈希与旧审批差异；`driver` 输出隔离后的驱动包，不含题型与探针。`approve` 是唯一写审批入口：写入 `approvals/`、拒绝覆盖，并回读 `gold/approved` 或 `silver/rejected`；只接受用户本人给出的来源字段，代理不得代填。
 
-W2–W5 的运行器提供隔离起停、证据封存、判分包冻结、裁决回填、同源报告、Node 域固定时钟与驱动进度：
+评测运行器提供隔离起停、证据封存、判分包冻结、裁决回填、同源报告、Node 域固定时钟与驱动进度：
 
 ```bash
 node scripts/desk-pet-chat.mjs eval prepare --case saturday-companionship --card <card.md> --authorization <auth.json> [--run-id <id>] [--baseline <evalRunId>]
@@ -201,9 +206,10 @@ node scripts/desk-pet-chat.mjs eval review show --run-id <id> [--attempt-id <id>
 node scripts/desk-pet-chat.mjs eval review spotcheck --run-id <id> --checks <file.json> [--reviewer-name <name>] [--notes <text>] [--json]
 node scripts/desk-pet-chat.mjs eval report --run-id <id> [--json]
 node scripts/desk-pet-chat.mjs eval stop --run-id <id>
+node scripts/desk-pet-chat.mjs eval rescue --run-id <id> [--reason <text>]
 ```
 
-`prepare` 在 `test/.tmp/sim-eval-<id>/` 建隔离根，写入合成 CONFIG、Card、`seed.json`、`clock.json` 与授权；Card 必须由调用方显式给出，不读取真实配置或用户 Card；`--authorization` 冻结用例、用途、模型／数据范围、trial／修复预算与 holdout 一致性。`start` 只接受 debug 构建，核对时钟一致后拉起带 `DESKPET_SIM_EVAL=1` 的宿主，并核对 `ready.json`、控制通道 ready 与 `seed-report` 的所有权/装载一致；`drive` 按驱动包逐步推进并持久化进度，中断后从同一进度续跑、不重放未知副作用；`finish` 收口采集、封存 attempt 并生成同源报告，可标记中断及原因；`compare` 只在固定条件一致时对照 baseline 与候选，`holdout` 只报告留出使用；`prepare --repair-of` 新建沿用原 Case 哈希／Card／Profile／时钟的修复 attempt 并保留旧失败；`stop` 只写 `stop.request`，由宿主走产品退出序列并移除 ready，以进程退出且 ready 消失为停止条件；`.instance.lock` 文件按设计保留，锁由 OS 在退出时释放。`judge prepare` 只对已封存完整证据冻结判分包（规则、驱动与证据引用、判分说明），`judge apply` 只校验独立 coding-agent judge 回填的裁决并追加判分；runner 不调用模型 API、不读取 judge 凭据，判分者与被测模型同源时直接拒绝。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞、不改写判分；`report` 从同一证据重建四层报告。W2 已于 2026-10-25 验收（隔离启动、ready/装载、非法路径、跨进程单实例、E2E 互斥、真实数据根未变），证据保留在 `test/.tmp/sim-eval-w2-accept-*`；W3 证据／采集／封存已于 2026-10-25 验收；W4 已实施并通过快层反例验收（2026-10-25），2026-10-26 已跑过一次真实银标（结果 fail）；W5 已实现授权、Node 域固定时钟、驱动／续跑、同条件对照与修复，并于 2026-10-26 集中验收。固定时钟只推进 Node 域 `Date`，Rust 调度器与 OS 时间仍是真实时间。
+`prepare` 在 `test/.tmp/sim-eval-<id>/` 建隔离根，写入合成 CONFIG、Card、`seed.json`、`clock.json` 与授权；Card 必须由调用方显式给出，不读取真实配置或用户 Card；`--authorization` 冻结用例、用途、模型／数据范围、trial／修复预算与 holdout 一致性。`start` 只接受 debug 构建，核对时钟一致后拉起带 `DESKPET_SIM_EVAL=1` 的宿主，并核对 `ready.json`、控制通道 ready 与 `seed-report` 的所有权/装载一致；`drive` 按驱动包逐步推进并持久化进度，中断后从同一进度续跑、不重放未知副作用；`finish` 收口采集、封存 attempt 并生成同源报告，可标记中断及原因；`compare` 只在固定条件一致时对照 baseline 与候选，`holdout` 只报告留出使用；`prepare --repair-of` 新建沿用原 Case 哈希／Card／Profile／时钟的修复 attempt 并保留旧失败；`stop` 只写 `stop.request`，由宿主走产品退出序列并移除 ready，以进程退出且 ready 消失为停止条件，并核对宿主留下的 `exit.json`（flush、强杀、中断）；宿主没走完退出序列时 `rescue` 把已落盘草稿按中断封存（保持 inconclusive，不冒充完成）；`.instance.lock` 文件按设计保留，锁由 OS 在退出时释放。`judge prepare` 只对已封存完整证据冻结判分包（规则、驱动与证据引用、判分说明），`judge apply` 只校验独立 coding-agent judge 回填的裁决并追加判分；runner 不调用模型 API、不读取 judge 凭据，判分者与被测模型同源时直接拒绝。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞、不改写判分；`report` 从同一证据重建四层报告。固定时钟只推进 Node 域 `Date`，Rust 调度器与 OS 时间仍是真实时间。当前完成度与剩余项见[未完成工作与已知缺口 §12](../../docs/plans/active/未完成工作与已知缺口.md)。
 
 ### Skill 分工
 
@@ -211,12 +217,12 @@ node scripts/desk-pet-chat.mjs eval stop --run-id <id>
 
 - [`desk-pet-chat`](../sim/desk-pet-chat/SKILL.md)：自然聊天、驱动真实产品、自由评述与最终定性复核；不产出结构化探针的正式通过。
 - [`desk-pet-eval-authoring`](../sim/desk-pet-eval-authoring/SKILL.md)：写 case / fixture / probe，展示审阅包，收集用户审批；只做候选与审批，不自动评分。
-- [`desk-pet-eval-runner`](../sim/desk-pet-eval-runner/SKILL.md)：结构化运行、判分包冻结、独立 judge 裁决回填与同源报告；W2–W5 已有隔离起停、装载、证据封存、独立 judge 判分、同源报告、授权、Node 域固定时钟、驱动／续跑与同条件对照；W6 集中验收已完成，真实 Skill 自主运行与用户关口待执行。
+- [`desk-pet-eval-runner`](../sim/desk-pet-eval-runner/SKILL.md)：结构化运行、判分包冻结、独立 judge 裁决回填与同源报告；隔离起停、装载、证据封存、授权、Node 域固定时钟、驱动／续跑与同条件对照均由它承接。
 
 审阅入口在 authoring Skill：用户说「审阅评测用例」或「看看待审 case」后，Skill 先跑 `dataset list` 列出候选，询问要审哪条，再把 `dataset review <caseId>` 的审阅卡原样贴在聊天区，按批准 / 修改 / 暂缓收集决定。
 
 看过审阅包的代理不得再驱动同一个 case；驱动必须换独立会话，只使用 `dataset driver`。
-当前仍没有写 gold 审批文件的命令；`eval review spotcheck` 只记录用户对某次运行证据的抽查，不改变 case 的 silver/gold。聊天里的批准不会自动变成 gold，也不会生成 approval JSON。
+写 gold 的唯一命令是 `dataset approve`：只在用户明确批准并提供真实会话／消息 id 与原文后执行，成功后用 `dataset list` 回读 `gold/approved`。`eval review spotcheck` 只记录用户对某次运行证据的抽查，不改变 case 的 silver/gold；代理不得代填审批或手写 approval JSON。
 
 ### 规模与样本量
 
@@ -225,24 +231,19 @@ node scripts/desk-pet-chat.mjs eval stop --run-id <id>
 - 每个 probe 独立判分；case 级结论要求证据完整、执行完成、全部适用规则均为 `pass`，任一 `fail` 判失败、任一非 `pass` 判 inconclusive；`critical` 只用于报告分层。
 - 可靠性用重复 trial 的 `pass^k` 观测，保留所有失败尝试，不挑最好一次。
 
-### W1–W5 边界
+### 当前状态与边界
 
-- schema v4 已实现格式、题型引用、逐探针哈希、审批结构与金/银计算，探针内容词表统一放在 `expectation`；聊天驱动由 W5 的 `eval drive` 提供。
-- W2 已实现 debug 隔离根、宿主 ready 与所有权核验、受控起停和 direct-seed 装载器；装载走产品真实 API，W6 已覆盖隔离启动与装载验收，真实 app 用户操作仍待验证。
-- W3 已实现产品 trace 采集、跨会话取证、事务性封存、同源报告与五回保留，并已在 2026-10-25 验收。
-- W4 已实现判分包冻结、独立 coding-agent judge 裁决回填、可选用户抽查与四层同源报告；快层反例已运行通过（2026-10-25）。2026-10-26 经用户授权完成一次真实银标运行 `silver-20261026c`（被测 `deepseek-flash`、judge `deepseek-v4-pro`）：全链跑通，总判定 fail（3 条必需 + 2 条禁止规则 fail，1 条 critical inconclusive）；该结果不改变 silver/pending，也不构成质量或 gold 结论。
-- W5 已实现授权冻结、Node 域固定时钟、驱动进度与续跑、预算复核、同条件对照、holdout 记录与修复 attempt，并于 2026-10-26 集中验收；真实模型与 judge 已跑过一次银标，真实 Skill 自主运行与用户关口未执行。
-- 题型注册表固定 7 族、24 型，并强制覆盖全部 16 个产品分类；当前 case 只用到其中 8 型，注册表存在不代表这些题型已有用例。
-- 当前只有 1 条 case、23 条探针（11 条 critical；难度 L1 4／L2 5／L3 6／L4 6／L5 2）；其他套件为空占位，不代表已覆盖对应类别。
-- fixture 为 `direct-seed`，固定时钟只推进 Node 域 `Date`；当前不能据此宣称真实跨天间隔、Rust 定时、自动抽取时序或桌面隔离已经验证。
-- 没有写 gold 审批的命令；W4 的 `review spotcheck` 只记录用户抽查，不改变 case 标签。真实用户审阅会话的审批记录写入仍属后续批次。
-- 不是 CI 门禁，`pnpm test` 不跑数据集；W6 集中门禁与 CE-01–CE-20 映射已于 2026-10-26 完成，真实模型／judge 已跑过一次银标，真实 Skill 自主运行、用户关口与 CI 门禁仍未执行。
-- 已写的单元测试在实施期不运行，统一留到验收环节集中执行；W1–W3 曾在验收轮运行结构校验与相关快层，W4 快层已在 2026-10-25 运行通过，W5 已于 2026-10-26 集中验收；2026-10-26 的真实银标已跑通模型与独立 judge 各一次，但仍不代表真实 Skill 自主聊天、用户关口或质量结论已经验证。
+当前候选、最近运行与剩余验收项统一见[未完成工作与已知缺口 §12](../../docs/plans/active/未完成工作与已知缺口.md)；实施批次与历史验收证据见[聊天评测闭环执行契约（归档）](../../docs/history/implementation/聊天评测闭环执行契约-2026-10-26归档.md)。
+
+- `dataset validate` 只证明格式、引用、题型覆盖、时钟／装载约束和哈希绑定，不证明执行、评分或聊天质量。
+- 没有写 gold 的旁路：唯一入口 `dataset approve` 仍要求用户本人给出的真实来源，代理不得代填；`eval review spotcheck` 只记录用户抽查，不改变 case 标签。
+- 不是 CI 门禁，`pnpm test` 不跑数据集。
+- `fixed` 时钟只推进 Node 域 `Date`；不能据此宣称真实跨天间隔、Rust 定时、自动抽取时序或桌面隔离已经验证。
 
 ## 边界（别误解）
 
 - 哈希只证明"这份审阅绑定这份产物"，**不证明 AI 判断正确**；门禁只核对证据完整性、哈希与审阅覆盖，不冒充语义理解。
 - trace 只采结构、数量与已有审计 hash，**正文与工具参数/结果不落 trace**——理想稿的期望不要建立在"trace 里能看到原话"上；要核对正文请回查会话文件。
-- 结构化数据集的 `dataset validate` 只证明格式、引用、题型覆盖、时钟/装载约束和哈希绑定，不证明执行、评分或聊天质量；W2 的隔离起停只证明装载与所有权，W1–W3 的结构与证据校验不产生质量结论；W4 判分已有一次真实银标的流程与裁决记录（fail），但仍不能当成聊天质量或 gold 结论。
+- 结构化数据集的 `dataset validate` 只证明格式、引用、题型覆盖、时钟/装载约束和哈希绑定，不证明执行、评分或聊天质量；隔离起停只证明装载与所有权；作废判分与运行记录不能当成聊天质量或 gold 结论。
 - 独立 coding-agent judge 的结构化裁决与 coding agent 的自由评述是两种证据，不能互相替代，也不能把后者写成 gold 审批。
 - `.ideal.md` 的正文原样保留；不得用结构化用例的运行结果反写或替换用户理想稿。

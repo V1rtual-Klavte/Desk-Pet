@@ -749,6 +749,93 @@ describe("驱动执行", () => {
   })
 })
 
+describe("手工触发", () => {
+  it("接受主动 tick 与任务投递步骤并保留组件路径回执 [chat-driver-manual-triggers]", async () => {
+    const pkg = driverPackage([
+      { id: "proactive", kind: "host", method: "sim_proactive_tick", at: AT_1 },
+      { id: "task", kind: "host", method: "sim_task_deliver", args: { kind: "reminder", text: "起来走走" }, at: AT_2 },
+    ])
+    expect(pkg.driver.map(step => step.kind === "host" ? step.method : step.kind))
+      .toEqual(["sim_proactive_tick", "sim_task_deliver"])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    const transport = fakeTransport({
+      host: async (method) => {
+        if (method === "sim_proactive_tick") {
+          return {
+            method,
+            result: {
+              manualPath: "sim-component",
+              trigger: "proactive_tick",
+              events: [{ kind: "proactive_tick", payload: { status: "scanned" } }],
+            },
+          }
+        }
+        return {
+          method,
+          result: {
+            manualPath: "sim-component",
+            trigger: "task_delivery",
+            task: { taskId: "task-1", created: true, delivered: true },
+          },
+        }
+      },
+    })
+
+    const summary = await executeDriver({ progress, driverPackage: pkg, transport, now: time.now, sleep: time.sleep })
+
+    expect(summary.status).toBe("completed")
+    expect(progress.steps[0]?.result).toMatchObject({
+      result: { manualPath: "sim-component", trigger: "proactive_tick" },
+    })
+    expect(progress.steps[1]?.result).toMatchObject({
+      result: {
+        manualPath: "sim-component",
+        trigger: "task_delivery",
+        task: { taskId: "task-1", created: true, delivered: true },
+      },
+    })
+  })
+
+  it("任务未交付或主动回执缺触发标记时阻塞", async () => {
+    const taskPackage = driverPackage([
+      { id: "task", kind: "host", method: "sim_task_deliver", args: { text: "起来走走" }, at: AT_1 },
+    ])
+    const taskProgress = progressFor(taskPackage)
+    const time = manualTime()
+    await expect(executeDriver({
+      progress: taskProgress,
+      driverPackage: taskPackage,
+      transport: fakeTransport({
+        host: async (method) => ({
+          method,
+          result: {
+            manualPath: "sim-component",
+            trigger: "task_delivery",
+            task: { taskId: "task-1", created: true, delivered: false },
+          },
+        }),
+      }),
+      now: time.now,
+      sleep: time.sleep,
+    })).rejects.toMatchObject({ code: "driver.task" })
+    expect(taskProgress.blocked?.code).toBe("driver.task")
+
+    const proactivePackage = driverPackage([{ id: "proactive", kind: "host", method: "sim_proactive_tick", at: AT_1 }])
+    const proactiveProgress = progressFor(proactivePackage)
+    await expect(executeDriver({
+      progress: proactiveProgress,
+      driverPackage: proactivePackage,
+      transport: fakeTransport({
+        host: async (method) => ({ method, result: { manualPath: "sim-component", trigger: "skipped" } }),
+      }),
+      now: manualTime().now,
+      sleep: manualTime().sleep,
+    })).rejects.toMatchObject({ code: "driver.proactive" })
+    expect(proactiveProgress.blocked?.code).toBe("driver.proactive")
+  })
+})
+
 describe("驱动结果与同条件对照", () => {
   it("只有驱动完成才是 completed，其余都显式 interrupted", () => {
     const progress = progressFor(driverPackage())

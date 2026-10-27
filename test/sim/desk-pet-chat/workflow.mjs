@@ -665,6 +665,21 @@ async function executeHostStep(step, transport) {
       fail("driver.args", `chat_slash_command 的 args.command 必须以 / 开头（步骤 ${step.id}）`);
     }
   }
+  // 手工触发必须证明走的是组件入口：缺路径标记或交付未完成的回执不能算作本步成功。
+  if (step.method === "sim_proactive_tick") {
+    const result = isRecord(response) && isRecord(response.result) ? response.result : null;
+    if (!result || result.manualPath !== "sim-component" || result.trigger !== "proactive_tick") {
+      fail("driver.proactive", `sim_proactive_tick 回执缺少组件路径或 trigger=proactive_tick（步骤 ${step.id}）`);
+    }
+  }
+  if (step.method === "sim_task_deliver") {
+    const result = isRecord(response) && isRecord(response.result) ? response.result : null;
+    const task = result && isRecord(result.task) ? result.task : null;
+    if (!result || result.manualPath !== "sim-component" || !task
+      || task.created !== true || task.delivered !== true) {
+      fail("driver.task", `sim_task_deliver 必须在组件路径完成创建与交付（步骤 ${step.id}）`);
+    }
+  }
   return response;
 }
 

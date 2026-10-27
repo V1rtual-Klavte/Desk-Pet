@@ -36,7 +36,8 @@ import type { MemoryItem, MemoryStatusSnapshot } from "@/services/agent/memory"
 import { tick } from "@/services/proactive"
 import { localDayKey } from "@/services/proactive/time"
 import { activeOwner, pickRecentWindow, seedAndDeliverTask } from "./loop"
-import type { SimTaskResult } from "./loop"
+import { isManualTriggerHostMethod, runManualTrigger } from "./manual-trigger"
+import type { ManualTriggerDeps } from "./manual-trigger"
 import { createSimTraceRecorder } from "./trace-recorder"
 import type { SimCaptureTrialSpec, SimTraceSummary } from "./trace-recorder"
 import { createSimCaptureManager, summarizeCaptureResult } from "./capture"
@@ -110,6 +111,14 @@ export function isSimChatBridgeRunning(): boolean {
   return active !== undefined
 }
 
+/** 宿主退出序列：未封口的采集按中断收口，trace 封口后才放行进程退出。 */
+export async function stopSimChatBridge(): Promise<void> {
+  const bridge = active
+  if (!bridge) return
+  active = undefined
+  await bridge.stop()
+}
+
 export async function startSimChatBridge(): Promise<SimChatBridge> {
   if (getRuntimeMode() !== "development") throw new Error("聊天控制通道仅在开发模式可用")
   if (active) return active
@@ -137,6 +146,19 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
   let stopped = false
   let autoPlanMode: "auto" | "stepByStep" | undefined
   const seenOperations = new Set<string>()
+  const manualTriggerDeps: ManualTriggerDeps = {
+    now: Date.now,
+    tick,
+    readEvents: () => recorder.events,
+    deliverTask: input => seedAndDeliverTask(activeOwner(), input),
+  }
+  // 只绑定会话，不把没有会话身份的后台事件借用当前 trial；手工触发的 proactive 事件
+  // 才能凭 sessionId 归到正在采集的试次。
+  const bindActiveSession = (): void => {
+    if (!capture) return
+    const sessionId = getActiveSessionId()
+    if (sessionId) recorder.bindSession(sessionId)
+  }
 
   const emit = async (event: Record<string, unknown>): Promise<void> => {
     await appendFile(outbox, `${JSON.stringify(redactSecrets({ at: Date.now(), ...event }))}\n`)
@@ -240,6 +262,7 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
           if (!text) { await emit({ id, type: "error", error: "消息正文为空" }); return }
           const sessionId = getActiveSessionId()
           if (!sessionId) { await emit({ id, type: "error", error: "当前没有活跃会话" }); return }
+          if (capture) recorder.bindSession(sessionId)
           let operation: MessageOperation | undefined
           if (capture) {
             // 评测消息必须带驱动步骤身份：trial 已开始、会话与代际一致，且同一身份不重放。
@@ -297,7 +320,12 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
           return
         }
         case "host": {
-          const result = await dispatchHostRequest(command.method, command.args ?? {})
+          const manual = isManualTriggerHostMethod(command.method)
+          if (manual) bindActiveSession()
+          const result = manual
+            ? await runManualTrigger(command.method, command.args ?? {}, manualTriggerDeps)
+            : await dispatchHostRequest(command.method, command.args ?? {})
+          bindActiveSession()
           await emit({ id, type: "host", method: command.method, result })
           return
         }
@@ -435,22 +463,17 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
           return
         }
         case "proactive": {
-          const before = recorder.events.length
-          await tick(Date.now())
-          const events = recorder.events.slice(before)
-            .filter(event => event.kind.startsWith("proactive_"))
-            .map(event => ({ kind: event.kind, payload: event.payload }))
-          await emit({ id, type: "proactive", events })
+          const result = await runManualTrigger("sim_proactive_tick", {}, manualTriggerDeps)
+          await emit({ id, type: "proactive", events: result.events })
           return
         }
         case "task": {
-          const owner = activeOwner()
-          const result: SimTaskResult = await seedAndDeliverTask(owner, {
+          const result = await runManualTrigger("sim_task_deliver", {
             ...(command.kind ? { kind: command.kind } : {}),
             ...(command.text ? { text: command.text } : {}),
             ...(command.work ? { work: command.work } : {}),
-          })
-          await emit({ id, type: "task", result })
+          }, manualTriggerDeps)
+          await emit({ id, type: "task", result: result.task })
           return
         }
         case "report": {
@@ -475,6 +498,7 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
         case "capture_begin": {
           if (!capture) throw new Error("当前不是 sim-eval 隔离运行，不能开始试次")
           await capture.beginTrial(command.caseId, command.trialId)
+          bindActiveSession()
           await emit({ id, type: "capture_trial", phase: "begin", caseId: command.caseId, trialId: command.trialId })
           return
         }

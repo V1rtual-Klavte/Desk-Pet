@@ -2,18 +2,19 @@
 
 当前没有审批记录，`saturday-companionship` 是 **silver / pending**。
 
-只有用户本人针对当前 `specHash` 的真实会话消息审阅后，才能在这里新增审批记录。代理可以起草候选、展示审阅包和差异，但不得代填 `reviewer`、`feedbackSource` 或审批结论，也不得把框架层面的方案通过当成用例审批。
+只有用户本人针对当前 `specHash` 的真实会话消息审阅后，才能在这里新增审批记录。唯一写入方式是 `node scripts/desk-pet-chat.mjs dataset approve ...`；代理可以起草候选、展示审阅包和差异，但不得代填 `reviewer`、`feedbackSource` 或审批结论，也不得把框架层面的方案通过当成用例审批。
 
-本 case 的 23 条探针（含 6 条 `humanizer.*` semantic）和 humanizer 质量 rubric 全部由独立 coding-agent judge 判定，没有 `human` 权威分流；用户可以抽查任一规则，gold 批准仍只能由用户本人给出。
+本 case 的全部探针（含 `humanizer.*` semantic）和 humanizer 质量 rubric 全部由独立 coding-agent judge 判定，没有 `human` 权威分流；用户可以抽查任一规则，gold 批准仍只能由用户本人给出。
 
 审批记录至少包含：
 
 ```json
 {
   "schemaVersion": 4,
-  "approvalId": "approval-<stamp>",
+  "approvalId": "approval-<caseId>-<YYYYMMDDhhmmss>-<specHash 前 8 位>",
   "caseId": "saturday-companionship",
   "suiteId": "daily-companionship",
+  "revision": 5,
   "decision": "approved",
   "reviewer": { "role": "user", "name": "<用户名>" },
   "feedbackSource": {
@@ -34,4 +35,4 @@
 }
 ```
 
-任一绑定内容变化（含 case 的 `questionTypes`、任一探针的增删改或 `difficulty`、fixture 的 `loading`、driver 的 `at`），旧审批都会变成 stale；需要重新审阅并生成新的 `specHash`。W1–W5 没有写审批的命令，审批记录的落盘由用户明确授权的后续动作完成。
+任一绑定内容变化（含 case 的 `questionTypes`、任一探针的增删改或 `difficulty`、fixture 的 `loading`、driver 的 `at`），旧审批都会变成 stale；需要重新审阅并生成新的 `specHash`。`dataset approve` 是唯一写入口：它校验结构与套件归属、拒绝覆盖，并在成功后回读 `gold/approved`；不要手写 approval JSON，也不要在命令报错后换字段重试。

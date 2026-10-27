@@ -24,6 +24,8 @@ export const VERDICTS_SCHEMA_VERSION = 1;
 export const JUDGE_PROMPT_VERSION = "chat-judge@3";
 export const JUDGE_RUBRIC_VERSION = JUDGE_PROMPT_VERSION;
 export const JUDGE_AUTHORITY = "coding-agent-judge";
+/** 只有这些执行平台的回填才算 coding-agent 权威；API 客户端跑同样的 prompt 也不算。 */
+export const CODING_AGENT_PLATFORMS = Object.freeze(["claude-code", "codex", "qoder"]);
 export const AGGREGATION_RULE = "judge-all-rules";
 
 export const CHECK_STATUSES = Object.freeze(["pass", "fail", "inconclusive", "not_applicable"]);
@@ -647,6 +649,19 @@ export function prepareJudgePacket({ runDir, attemptDir, dataset, caseEntry, now
   };
 }
 
+export function isCodingAgentPlatform(value) {
+  return CODING_AGENT_PLATFORMS.includes(String(value ?? "").trim().toLowerCase());
+}
+
+/**
+ * 旧版本把任何回填都写成 JUDGE_AUTHORITY，单看 authority 会把 API 判分洗成独立 judge；
+ * 权威必须同时满足平台在白名单内。
+ */
+export function isAuthoritativeGrade(grade) {
+  return grade?.authority === JUDGE_AUTHORITY
+    && isCodingAgentPlatform(grade?.summary?.judge?.platform);
+}
+
 function normalizeModelName(value) {
   return String(value ?? "")
     .trim()
@@ -706,6 +721,12 @@ export function validateJudgeVerdicts({ packet, verdicts }) {
   }
   if (verdicts.judge.promptVersion !== packet.versions.judgePromptVersion) {
     fail("judge.prompt", `judge.promptVersion 必须是 ${packet.versions.judgePromptVersion}`);
+  }
+  if (!isCodingAgentPlatform(verdicts.judge.platform)) {
+    fail(
+      "judge.platform",
+      `judge.platform 必须是 coding-agent 执行平台（${CODING_AGENT_PLATFORMS.join(" / ")}）：${verdicts.judge.platform}`,
+    );
   }
   assertHeterogeneousJudge({ packet, judgeModel: verdicts.judge.model });
   if (!Array.isArray(verdicts.verdicts) || verdicts.verdicts.length === 0) {
@@ -935,7 +956,7 @@ export function readJudgingRecords(attemptDir) {
 }
 
 export function latestJudgeGrade(attemptDir) {
-  return latestRecord(readVersionedRecords(attemptDir, "grades").filter((grade) => grade.authority === JUDGE_AUTHORITY));
+  return latestRecord(readVersionedRecords(attemptDir, "grades").filter(isAuthoritativeGrade));
 }
 
 /**
@@ -1012,7 +1033,7 @@ function overallFromChecks({ checks, evidenceStatus, executionStatus }) {
 
 export function summarizeAttemptStatus({ caseEntry, context, grades = null, reviews = [] }) {
   const gradeRecords = grades ?? readVersionedRecords(context.attemptDir, "grades");
-  const grade = latestRecord(gradeRecords.filter((record) => record.authority === JUDGE_AUTHORITY));
+  const grade = latestRecord(gradeRecords.filter(isAuthoritativeGrade));
   const byRule = new Map((grade?.checks ?? []).map((check) => [check.ruleId, check]));
   const checks = caseEntry.case.probes.map((probe) => {
     const check = byRule.get(probe.id);

@@ -20,7 +20,7 @@
 | 契约 | 模块行为覆盖门禁（sourceHash + caseId 三层记账） | README「Contract 与 sourceHash」；`test/contracts/` | 预检 attestation；caseids-*.json |
 | trace 证据 | 运行线路完整落盘、完整性核对、理想稿审阅 | README「Trace、记忆质量与性能门禁」；`test:trace-review` | `test/reports/traces/trace-bundle-*`（bench / quality 在各自子目录的 `traces/`） |
 | 理想稿 | 用户手写的旧格式 `.ideal.md`"期望线路"，审阅对照基准（只由用户写，正文原样保留） | [ideal-traces/README.md](ideal-traces/README.md) | 审阅 JSON（与报告配对、连带淘汰） |
-| 结构化聊天评测数据集 | 可执行聊天用例池：代理起草 silver，用户按当前哈希审批 gold；题型是探针的认知维度；全部探针由独立 coding-agent judge 判定，用户抽查可选；驱动包与题型／探针／oracle 隔离；写题、运行与聊天由三个 Skill 分工；W2 起可在 `test/.tmp/sim-eval-<id>` 隔离开 debug 宿主并装载 fixture，W3 采集与封存已验收（2026-10-25）；W4 判分／同源报告已实现并通过快层反例验收（2026-10-25）；W5 授权、Node 域固定时钟、驱动／续跑／预算／同源对照与修复已于 2026-10-26 集中验收，并经授权完成一次真实银标运行（`silver-20261026c`，fail；真实 Skill 与用户关口未执行） | [ideal-traces/README.md](ideal-traces/README.md)；`node scripts/desk-pet-chat.mjs dataset validate\|list\|types\|review\|driver`、`eval prepare\|start\|drive\|status\|finish\|compare\|holdout\|judge prepare\|judge apply\|review show\|review spotcheck\|report\|stop`、`capture status\|sessions` | `suites/<suiteId>/` 下的 `suite.json` / `cases/` / `fixtures/` / `approvals/`（当前仅 `daily-companionship/saturday-companionship` 为 silver/pending，23 条探针、11 条 critical、8 种题型；其他套件空占位）；封存证据在 `test/reports/chat/<evaluationRunId>/` |
+| 结构化聊天评测数据集 | 可执行聊天用例池：代理起草 silver，用户按当前哈希审批 gold；题型是探针的认知维度；全部探针由独立 coding-agent judge 判定，用户抽查可选；驱动包与题型／探针／oracle 隔离；写题、运行与聊天由三个 Skill 分工；隔离运行根在 `test/.tmp/sim-eval-<id>`，封存证据在 `test/reports/chat/<evaluationRunId>/` | [ideal-traces/README.md](ideal-traces/README.md)、[sim/README.md](sim/README.md)；`node scripts/desk-pet-chat.mjs dataset …` / `eval …` / `capture …` | `suites/<suiteId>/` 下的 `suite.json` / `cases/` / `fixtures/` / `approvals/`；当前候选、最近运行与剩余验收项见[未完成总表 §12](../docs/plans/active/未完成工作与已知缺口.md) |
 | 外部记忆基准（权威对照） | 质量主口径：LongMemEval（官方模板）/ MemoryBank cn / LoCoMo（异构 LLM judge 语义正确率，不用官方 F1；按消耗分层跑，不进 CI／发布门禁）；LoCoMo 固定真人角色适配与统一任务规则、LongMemEval oracle 的 privileged reader control 均显式标记非产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
 | 记忆质量（自建兜底） | 兜底冒烟与治理语义回归：外部集未覆盖的来源/scope 反例、纠正、遗忘、称呼/偏好（真实 Provider，烧 token） | README 记忆质量段；`test:memory-quality` | 报告 + review/scored 包（组保留） |
 | 记忆性能 | release 存储 + debug IPC 的资源账（1k/10k 库、P95） | README 性能段；`test:memory-performance` | `test/reports/performance/`（3 份滚动） |
@@ -32,7 +32,7 @@
 | 你要查 | 去哪 |
 |---|---|
 | 测试跑哪个被测模型 | 默认继承隔离副本的**合成 CONFIG**（随仓 `CONFIG.yaml` 模板 + `test/host/native/fixtures/config-overrides.yaml` 覆盖；不复制真实 `CONFIG-DEV.yaml`，不含凭据）；可在 [eval-models.json](eval-models.json)、本地 `test/eval-models.local.json`（凭据/临时覆盖；已 gitignore）或环境变量 `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_PROVIDER` 覆盖（凭据只经后两者写进隔离副本） |
-| judge 模型与异构纪律 | `--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > 两层模型配置文件（[eval-models.json](eval-models.json) 与本地 `eval-models.local.json`）的 `judge.model`（当前 deepseek-v4-pro；2026-10-13 起显式使用可服务的异构模型，不再依赖会被静默映射的请求名）；judge 继承测试侧网关的 endpoint/apiKey；**必须不同于被测模型**，同模型在开跑前报错 |
+| judge 模型与异构纪律 | **基准／质量 API judge**：`--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > 两层模型配置文件（[eval-models.json](eval-models.json) 与本地 `eval-models.local.json`）的 `judge.model`（当前 deepseek-v4-pro；显式使用可服务的异构模型，不依赖会被静默映射的请求名）；继承测试侧网关的 endpoint/apiKey；**必须不同于被测模型**，同模型在开跑前报错。**聊天评测 judge**：用户指定的独立 coding-agent 会话（Claude Code／Codex／Qoder 等），与被测模型异构，只读冻结判分包；runner 不调用模型 API、不读取 judge 凭据 |
 | 上游评测数据怎么装、装到哪 | [memory-bench/README.md](memory-bench/README.md)：prepare 命令、`--data-dir` / `DESKPET_BENCH_DATA_DIR`、revision + SHA-256 锁定清单（`upstream-lock.json`） |
 | 报告与证据在哪、怎么淘汰 | README「报告在哪、怎么看」（组保留：最近 3 场 + 200 MiB；bench / quality 分目录各自淘汰） |
 | 评分口径与门槛 | README「Trace、记忆质量与性能门禁」+ [memory-bench/README.md](memory-bench/README.md)（judge 模板、语义正确率口径）；剩余质量问题的完成条件见[未完成总表 §3](../docs/plans/active/未完成工作与已知缺口.md) |
@@ -73,7 +73,9 @@
   judge 必须异构于被测模型，不许被测模型自评；上游数据不进仓库（`upstream-lock.json` 锁定
   revision + SHA-256，数据装到 data-dir）。
 - **聊天评测数据集**：结构化用例的 gold 只能由用户针对当前 `specHash` 的真实会话消息审批；
-  代理只能起草 silver，不得代填审批，也不得把 actual 输出当 oracle。驱动包只含
+  代理只能起草 silver，不得代填审批，也不得把 actual 输出当 oracle。唯一写入口是 `dataset approve`：
+  代理只能在用户明确给出决定、姓名、真实会话／消息 id 与原文后执行，成功后必须回读 `gold/approved`；
+  审批文件拒绝覆盖，命令不证明审批人身份或消息真实存在。驱动包只含
   `schemaVersion` / `caseId` / `revision` / `specHash` / `userRole` / `driver`；
   题型、probes／oracle／检查点／证据／评分不得进入驱动。一条消息可以挂多条 probe；case 判定要求证据完整、
   执行完成、全部适用规则均为 `pass`（任一 `fail` 判失败，任一非 `pass` 判 inconclusive），`critical` 只用于
@@ -86,10 +88,10 @@
   `direct-seed` 只预置初始状态，待测行为仍走真实链路；`real-chain` 不得同时 seed 会话或记忆。
   `fixed` 时钟要求每个 driver 步骤带升序 `at`，runner 写入 `clock.json` 并在 Node 引导早期推进 Node 域 `Date`
   （Rust／OS 时间不推进）；`difficulty` 只用于报告分层，不改变通过判定；探针窗口限定 driver 步骤。
-  W1–W5 已接数据集、证据、独立 judge 判分、同源报告与授权／驱动／同条件对照／修复；W4 快层反例已运行通过
-  （2026-10-25）；W5 已于 2026-10-26 集中验收，CE 映射见执行契约，并经用户授权跑过一次真实银标
-  （`silver-20261026c`，fail）。每个消息步骤必须带唯一 drive 操作身份，回执按 `requestId` 绑定同一请求的
-  run 分支；采集期间手动写控制通道的消息会被拒绝。真实 Skill 自主运行、用户关口与 CI 门禁仍未收口。
+  每个消息步骤必须带唯一 drive 操作身份，回执按 `requestId` 绑定同一请求的 run 分支；
+  采集期间手动写控制通道的消息会被拒绝。当前候选、最近运行与剩余验收项见
+  [未完成总表 §12](../docs/plans/active/未完成工作与已知缺口.md)，实施批次与历史验收证据见
+  [聊天评测闭环执行契约（归档）](../docs/history/implementation/聊天评测闭环执行契约-2026-10-26归档.md)。
 - **产物边界**：测试产物一律在 `test/` 下，不落仓库外；保留单元是「组」（报告与审阅/评分卫星连带淘汰、临时根按已知前缀 + 年龄回收），查看方式与口径见 README「报告在哪、怎么看」；L4 的 Node runner bundle 在 `test/.tmp/native-host-e2e/`（每次运行重建，不进保留链）；
   memory-bench 外部判分导出/回填使用 `<stamp>.json.hypotheses-<report-hash>.jsonl`、
   `<stamp>.json.verdicts-judge-<judge-hash>-<verdict-log-hash>.jsonl` 与

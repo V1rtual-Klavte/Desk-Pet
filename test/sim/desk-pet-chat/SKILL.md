@@ -1,14 +1,16 @@
 ---
 name: desk-pet-chat
-description: 通过真实 app 的 dev 控制通道和 V1rtual-Desk-Pet 桌宠自然聊天，并对聊天记录做自由定性评测（coding agent 评审）。用户说“和桌宠聊天”“聊桌宠”“desk pet chat”“跑一下陪伴闭环”“测拟人化/像不像人”“自由评测聊天”时使用。结构化用例的编写与审批用 desk-pet-eval-authoring，结构化执行、独立 judge 判分与报告用 desk-pet-eval-runner。
+description: Use when 用户要和 V1rtual-Desk-Pet 桌宠自然聊天、自由定性评测聊天或拟人化，或说“跑一下陪伴闭环”“desk pet chat”。结构化用例编写与审批用 desk-pet-eval-authoring；结构化执行与判分用 desk-pet-eval-runner。
 ---
 
 # 和桌宠聊天（真实链路）
 
 ## 这是什么
 
-不是用户模拟器，也不是 E2E 测试。你（Claude Code）直接把消息写进控制通道，桌宠走真实
+不是用户模拟器，也不是 E2E 测试。你（coding agent）直接把消息写进控制通道，桌宠走真实
 `sendMessage` / 记忆召回 / 普通聊天链回复。你读回复，再像真人一样接话。
+
+本 Skill 只做自然聊天与自由定性评测。结构化评测的 driver、探针与 judge 由 runner 冻结和执行；runner 的 `eval drive` 虽然会真实启动 app 与模型，但消息来自冻结 driver，不是这里的自主聊天。两种运行不能互相冒充，也不能用聊天报告替代探针判分。
 
 ## 启动
 
@@ -84,7 +86,7 @@ app 启动后，控制通道会往 outbox 写一条 `{"type":"ready",...}`。之
 ```json
 {"id":"h1","type":"host","method":"settings_read","args":{}}
 {"id":"h2","type":"host","method":"chat_stop","args":{}}
-{"id":"h3","type":"host","method":"chat_slash_command","args":{"text":"/compact"}}
+{"id":"h3","type":"host","method":"chat_slash_command","args":{"command":"/compact"}}
 {"id":"h4","type":"host","method":"memory_overview","args":{}}
 {"id":"h5","type":"host","method":"memory_item_change","args":{...}}
 {"id":"h6","type":"host","method":"silent_understanding_run_now","args":{}}
@@ -474,7 +476,7 @@ node scripts/desk-pet-chat.mjs suite observation --run --rounds 2
 
 不带 `--run` 只打印该类别的步骤与证据；带 `--run` 会按 `--rounds` 重复执行 `autoCommands`
 （只覆盖能自动跑的组件，如 observe/dream/proactive/task/report）。`chat`、`plan`、`tools` 等
-仍由 Claude 按步骤对话驱动，轮数同样服从用户指定的数字。
+仍由 coding agent 按步骤对话驱动，轮数同样服从用户指定的数字。
 
 ### 组合一起测
 
@@ -497,7 +499,7 @@ node scripts/desk-pet-chat.mjs suite observation,tasks --run --rounds 3
 
 ## 结构化评测
 
-结构化用例不在这里驱动或判分：写题、审阅与用户审批见 [`desk-pet-eval-authoring`](../desk-pet-eval-authoring/SKILL.md)，冻结规格、执行、判分包与独立 judge 裁决见 [`desk-pet-eval-runner`](../desk-pet-eval-runner/SKILL.md)。本 Skill 只负责真实聊天和上面的自由定性评测；不要代替 runner 判探针，也不要代填 gold 审批。评测运行器占用控制通道采集时（`DESKPET_SIM_EVAL`），消息必须携带 `eval drive` 的操作身份；手动写入的 `chat` 消息会被拒绝，不要用它补评测步骤。
+结构化用例不在这里驱动或判分：写题、审阅与用户审批见 [`desk-pet-eval-authoring`](../desk-pet-eval-authoring/SKILL.md)，冻结规格、执行、判分包与独立 judge 裁决见 [`desk-pet-eval-runner`](../desk-pet-eval-runner/SKILL.md)。本 Skill 只负责真实聊天和上面的自由定性评测；不要代替 runner 判探针，也不要代填 gold 审批。评测运行器占用控制通道采集时（`DESKPET_SIM_EVAL`），消息必须携带 `eval drive` 的操作身份；手动写入的 `chat` 消息会被拒绝，不要用它补评测步骤。驱动中的 `sim_proactive_tick`／`sim_task_deliver` 是组件入口的手工触发，不是自然聊天或 UI 操作；自由聊天不能用它冒充主动受理或任务送达。
 
 如果用户只是让你按某条用例自然扮演用户，使用 authoring 输出的 `dataset driver`，只读 `userRole` + `driver`，不要先看 `dataset review`。driver 里的 `at` 会由评测运行器推进 Node 域固定时钟，不触发真实等待，也不代表 Rust／OS 时间或真实日程已经推进；不要自行等待或伪造跨天间隔。
 

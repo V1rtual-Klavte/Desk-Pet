@@ -67,8 +67,9 @@
   `judgmentRevision`，逐题原始判分保留在 `outcomes[].judgment` 可逐条审计；引用数字时以修订后的统计为准。
 - **数据许可**：LoCoMo 为非商用（CC BY-NC 4.0），其归档不得用于商业用途；许可原文与署名见
   `test/memory-bench/licenses/`。
-- **本目录受 `.gitignore` 约束**（`test/reports/` 被排除），属**本地留存**；若需随仓库分发，
-  须先与维护者确认许可与体积。
+- **本目录是 `.gitignore` 的显式例外**（`test/reports/*` 被排除，但 `!test/reports/bench/final/`
+  逐级放行）：用户认定后的终态结果随仓库版本化，供对外引用；滚动报告仍在 `bench/` 根下按组淘汰。
+  新增条目前须确认许可与体积，遵守上方数据许可。
 
 ## 维护约定
 

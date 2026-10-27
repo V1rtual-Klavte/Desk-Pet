@@ -90,6 +90,8 @@ export interface SimTraceRecorder {
   stop: () => void
   summary: () => SimTraceSummary
   startCapture: (options: SimCaptureStartOptions) => Promise<void>
+  /** 只把显式绑定的会话作为后台事件兜底归属；未绑定的会话事件仍是 orphan。 */
+  bindSession: (sessionId: string) => void
   beginTrial: (caseId: string, trialId: string) => Promise<void>
   endTrial: (caseId: string, trialId: string, options?: { status?: "completed" | "failed"; error?: string }) => Promise<void>
   finishCapture: (options?: SimCaptureFinishOptions) => Promise<SimTraceCaptureResult>
@@ -275,6 +277,13 @@ export function createSimTraceRecorder(options: SimTraceRecorderOptions = {}): S
     return capture
   }
 
+  function bindSession(sessionId: string): void {
+    const state = capture
+    if (!state || state.finished || !state.active) return
+    if (typeof sessionId !== "string" || sessionId === "") return
+    contexts.bindSession(sessionId, state.active)
+  }
+
   async function beginTrial(caseId: string, trialId: string): Promise<void> {
     const state = requireCapture()
     if (state.active) {
@@ -445,6 +454,7 @@ export function createSimTraceRecorder(options: SimTraceRecorderOptions = {}): S
     stop,
     summary,
     startCapture,
+    bindSession,
     beginTrial,
     endTrial,
     finishCapture,

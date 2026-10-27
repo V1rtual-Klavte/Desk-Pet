@@ -15,6 +15,7 @@ import { inspectTraceEvidence } from "../../../scripts/trace-evidence.mjs";
 export const CHAT_EVIDENCE_SCHEMA_VERSION = 1;
 export const CHAT_RUN_SCHEMA_VERSION = 1;
 export const CHAT_ATTEMPT_SCHEMA_VERSION = 1;
+export const CHAT_TRIAL_PLAN_SCHEMA_VERSION = 1;
 /** 判分语义与聚合规则的版本；改动判定口径必须递增，旧判分继续绑定旧版本。 */
 export const CHAT_GRADER_VERSION = "chat-grader@3";
 export const CHAT_RETENTION_MAX_GROUPS = 5;
@@ -36,6 +37,7 @@ const DIALOGUE_FILE = "dialogue.jsonl";
 const TRACE_FILE = "trace.jsonl";
 const MANIFEST_FILE = "manifest.json";
 const MANIFEST_PENDING = "manifest.json.pending";
+export const TRIAL_PLAN_FILE = "trials.json";
 const READ_ONLY_ENTRIES = new Set([DIALOGUE_FILE, TRACE_FILE, TRACE_MANIFEST, MANIFEST_FILE]);
 
 export class ChatEvidenceError extends Error {
@@ -197,6 +199,117 @@ export function readChatWorkflow(runDir) {
   const workflow = readJsonFile(path);
   if (workflow.schemaVersion !== CHAT_EVIDENCE_SCHEMA_VERSION) fail("workflow.schema", `不支持的 workflow schema：${workflow.schemaVersion}`);
   return workflow;
+}
+
+const TRIAL_PLAN_KEYS = [
+  "schemaVersion", "evaluationRunId", "caseId", "plannedTrials", "trialIds",
+  "budgetTrials", "authorizationFingerprint", "createdAt",
+];
+
+function normalizeTrialPlan(raw, runDir) {
+  assertRecord(raw, "trialPlan");
+  const missing = TRIAL_PLAN_KEYS.filter((key) => !Object.prototype.hasOwnProperty.call(raw, key));
+  if (missing.length) fail("plan.invalid", `trialPlan 缺少字段：${missing.join(", ")}`);
+  const extra = Object.keys(raw).filter((key) => !TRIAL_PLAN_KEYS.includes(key));
+  if (extra.length) fail("plan.invalid", `trialPlan 含未知字段：${extra.join(", ")}`);
+  if (raw.schemaVersion !== CHAT_TRIAL_PLAN_SCHEMA_VERSION) {
+    fail("plan.schema", `不支持的 trial plan schema：${String(raw.schemaVersion)}`);
+  }
+  const run = readChatRun(runDir);
+  if (raw.evaluationRunId !== run.evaluationRunId) {
+    fail("plan.run", `trialPlan.evaluationRunId=${String(raw.evaluationRunId)} 与运行组 ${run.evaluationRunId} 不一致`);
+  }
+  assertId(raw.caseId, "trialPlan.caseId");
+  if (!Number.isInteger(raw.plannedTrials) || raw.plannedTrials < 1) {
+    fail("plan.trials", "trialPlan.plannedTrials 必须是正整数");
+  }
+  if (!Array.isArray(raw.trialIds) || raw.trialIds.length !== raw.plannedTrials) {
+    fail("plan.trials", "trialPlan.trialIds 数量必须等于 plannedTrials");
+  }
+  const trialIds = raw.trialIds.map((trialId, index) => assertId(trialId, `trialPlan.trialIds[${index}]`));
+  if (new Set(trialIds).size !== trialIds.length) fail("plan.trials", "trialPlan.trialIds 不能重复");
+  if (!Number.isInteger(raw.budgetTrials) || raw.budgetTrials < 1) {
+    fail("plan.budget", "trialPlan.budgetTrials 必须是正整数");
+  }
+  if (raw.plannedTrials > raw.budgetTrials) {
+    fail("plan.budget", `trialPlan.plannedTrials=${raw.plannedTrials} 超过授权预算 trials=${raw.budgetTrials}`);
+  }
+  assertHash(raw.authorizationFingerprint, "trialPlan.authorizationFingerprint");
+  assertTimestamp(raw.createdAt, "trialPlan.createdAt");
+  return {
+    schemaVersion: CHAT_TRIAL_PLAN_SCHEMA_VERSION,
+    evaluationRunId: raw.evaluationRunId,
+    caseId: raw.caseId,
+    plannedTrials: raw.plannedTrials,
+    trialIds,
+    budgetTrials: raw.budgetTrials,
+    authorizationFingerprint: raw.authorizationFingerprint,
+    createdAt: raw.createdAt,
+  };
+}
+
+export function readTrialPlan(runDir) {
+  const path = join(runDir, TRIAL_PLAN_FILE);
+  if (!existsSync(path)) return null;
+  return normalizeTrialPlan(readJsonFile(path), runDir);
+}
+
+function assertSameTrialPlan(existing, candidate) {
+  for (const key of [
+    "schemaVersion", "evaluationRunId", "caseId", "plannedTrials",
+    "budgetTrials", "authorizationFingerprint",
+  ]) {
+    if (existing[key] !== candidate[key]) {
+      fail("plan.frozen", `trial 计划已冻结：${key}=${String(existing[key])}，不能改为 ${String(candidate[key])}`);
+    }
+  }
+  if (JSON.stringify(existing.trialIds) !== JSON.stringify(candidate.trialIds)) {
+    fail("plan.frozen", "trial 计划已冻结：trialIds 不能改写");
+  }
+  return existing;
+}
+
+/**
+ * 运行组级 trial 计划只在首次批量编排时写入；之后调用必须与冻结内容一致。
+ * 计划固定每个 trial 的身份，失败或不完整的 trial 继续占位，不允许用新 trial 替换。
+ */
+export function ensureTrialPlan({
+  runDir, evaluationRunId, caseId, trialIds, budgetTrials, authorizationFingerprint, createdAt,
+}) {
+  assertId(evaluationRunId, "evaluationRunId");
+  assertId(caseId, "caseId");
+  assertHash(authorizationFingerprint, "authorizationFingerprint");
+  assertTimestamp(createdAt, "createdAt");
+  if (!Array.isArray(trialIds) || trialIds.length === 0) fail("plan.trials", "trialIds 不能为空");
+  const normalizedTrialIds = trialIds.map((trialId, index) => assertId(trialId, `trialIds[${index}]`));
+  if (new Set(normalizedTrialIds).size !== normalizedTrialIds.length) fail("plan.trials", "trialIds 不能重复");
+  if (!Number.isInteger(budgetTrials) || budgetTrials < 1) fail("plan.budget", "budgetTrials 必须是正整数");
+  if (normalizedTrialIds.length > budgetTrials) {
+    fail("plan.budget", `计划 ${normalizedTrialIds.length} 个 trial 超过授权预算 trials=${budgetTrials}`);
+  }
+  const run = readChatRun(runDir);
+  if (run.evaluationRunId !== evaluationRunId) {
+    fail("plan.run", `trialPlan.evaluationRunId=${evaluationRunId} 与运行组 ${run.evaluationRunId} 不一致`);
+  }
+  const candidate = {
+    schemaVersion: CHAT_TRIAL_PLAN_SCHEMA_VERSION,
+    evaluationRunId,
+    caseId,
+    plannedTrials: normalizedTrialIds.length,
+    trialIds: normalizedTrialIds,
+    budgetTrials,
+    authorizationFingerprint,
+    createdAt,
+  };
+  const existing = readTrialPlan(runDir);
+  if (existing) return { plan: assertSameTrialPlan(existing, candidate), created: false };
+  try {
+    writeExclusive(join(runDir, TRIAL_PLAN_FILE), candidate);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    return { plan: assertSameTrialPlan(readTrialPlan(runDir), candidate), created: false };
+  }
+  return { plan: candidate, created: true };
 }
 
 export function setChatRunPhase(runDir, { phase, updatedAt, pendingDecision, nextAction }) {
@@ -832,14 +945,20 @@ export function readChatRunEvidence(runDir) {
     const attemptDir = join(runDir, "attempts", attemptId);
     const manifestPath = join(attemptDir, MANIFEST_FILE);
     const manifest = existsSync(manifestPath) ? readJsonFile(manifestPath) : null;
+    const pendingPath = join(attemptDir, MANIFEST_PENDING);
+    const pendingManifest = manifest === null && existsSync(pendingPath) ? readJsonFile(pendingPath) : null;
+    const described = manifest ?? pendingManifest;
     return {
       attemptId,
       attemptDir,
       manifest,
+      pendingManifest,
+      trialId: described?.expectedTrials?.[0]?.trialId ?? null,
+      repair: Boolean(described?.identity?.repair),
       verification: manifest ? verifySealedAttempt(attemptDir) : { status: "unsealed", issues: ["attempt 尚未封存"] },
       grades: readVersionedDir(attemptDir, "grades"),
       reviews: readVersionedDir(attemptDir, "reviews"),
     };
   });
-  return { run, workflow, attempts };
+  return { run, workflow, plan: readTrialPlan(runDir), attempts };
 }

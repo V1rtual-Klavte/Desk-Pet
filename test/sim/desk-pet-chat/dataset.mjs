@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
 /**
  * 结构化聊天评测数据集：候选内容、fixture、驱动、探针与用户审批的绑定关系。
  *
- * gold 只能由用户针对当前 specHash 的审批记录产生，本模块不提供写审批的能力。
+ * gold 只能由用户针对当前 specHash 的审批记录产生；writeApprovalRecords 只校验结构与哈希并写盘，
+ * 不证明审批人身份，也不代替用户判断内容质量。
  * 驱动包只含 userRole + driver；探针、检查点、证据与评分不能进入驱动包。
  */
 
@@ -24,12 +25,15 @@ export const MEMORY_SCOPE_VALUES = Object.freeze(["user", "card", "session"]);
 export const FIXTURE_PREPARATION_VALUES = Object.freeze(["seed_session", "seed_memory", "seed_card", "seed_profile"]);
 export const FIXTURE_LOADING_MODE_VALUES = Object.freeze(["direct-seed", "real-chain"]);
 export const PROBE_DIFFICULTY_LEVELS = Object.freeze([1, 2, 3, 4, 5]);
+/** 评测驱动直接调用组件入口的手工触发，不代表自然受理、调度或实际 UI 显示。 */
+export const MANUAL_TRIGGER_HOST_METHODS = Object.freeze(["sim_proactive_tick", "sim_task_deliver"]);
 export const DRIVER_HOST_METHOD_VALUES = Object.freeze([
   "chat_new_session",
   "chat_switch_session",
   "chat_stop",
   "chat_slash_command",
   "memory_dreaming_sweep",
+  ...MANUAL_TRIGGER_HOST_METHODS,
 ]);
 export const CHECKPOINT_WAIT_VALUES = Object.freeze([
   "assistant_message",
@@ -1304,6 +1308,89 @@ export function applyReviewDecisions({ entries, decisions, reviewer, feedbackSou
     }),
   );
   return { records, errors: [] };
+}
+
+export function writeApprovalRecords({
+  repoRoot = resolve(import.meta.dirname, "../../.."),
+  datasetRoot = DEFAULT_DATASET_ROOT,
+  entries,
+  decisions,
+  reviewer,
+  feedbackSource,
+  reviewedAt,
+}) {
+  const decisionResult = applyReviewDecisions({ entries, decisions, reviewer, feedbackSource, reviewedAt });
+  if (decisionResult.errors.length > 0) {
+    return { records: [], written: [], errors: decisionResult.errors };
+  }
+
+  const root = resolve(repoRoot, datasetRoot);
+  if (!existsSync(root)) {
+    return {
+      records: [],
+      written: [],
+      errors: [issue("dataset.missing-root", `数据集目录不存在：${displayPath(repoRoot, root)}`)],
+    };
+  }
+
+  const errors = [];
+  const suiteDirs = new Map();
+  for (const suitePath of findFiles(root, (name) => name === "suite.json")) {
+    try {
+      const suiteSpec = readJson(suitePath);
+      if (isRecord(suiteSpec) && typeof suiteSpec.suiteId === "string") {
+        suiteDirs.set(suiteSpec.suiteId, {
+          dir: dirname(suitePath),
+          caseIds: Array.isArray(suiteSpec.caseIds) ? suiteSpec.caseIds : [],
+        });
+      }
+    } catch {
+      // 无法解析的 suite 交由 loadDataset 报错，这里不重复记录。
+    }
+  }
+
+  const targets = [];
+  const seen = new Set();
+  for (const record of decisionResult.records) {
+    const suite = suiteDirs.get(record.suiteId);
+    if (!suite) {
+      errors.push(issue("approval.suite-missing", `审批目标套件不在数据集目录：${record.suiteId}`));
+      continue;
+    }
+    if (!suite.caseIds.includes(record.caseId)) {
+      errors.push(issue("approval.case-missing", `套件 ${record.suiteId} 未声明用例：${record.caseId}`));
+      continue;
+    }
+    const filePath = join(suite.dir, "approvals", `${record.approvalId}.json`);
+    if (seen.has(filePath)) {
+      errors.push(issue("approval.duplicate-target", `同一审批目标重复：${record.approvalId}`));
+      continue;
+    }
+    seen.add(filePath);
+    if (existsSync(filePath)) {
+      errors.push(issue("approval.exists", `审批已存在，拒绝覆盖：${displayPath(repoRoot, filePath)}`));
+      continue;
+    }
+    targets.push({ record, filePath });
+  }
+  if (errors.length > 0) return { records: [], written: [], errors };
+
+  const written = [];
+  for (const { record, filePath } of targets) {
+    try {
+      mkdirSync(dirname(filePath), { recursive: true });
+      writeFileSync(filePath, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+      written.push({ approvalId: record.approvalId, path: displayPath(repoRoot, filePath) });
+    } catch (error) {
+      const code = error?.code === "EEXIST" ? "approval.exists" : "approval.write-failed";
+      errors.push(issue(code, `写入审批失败（${record.approvalId}）：${error instanceof Error ? error.message : String(error)}`));
+    }
+  }
+  return {
+    records: errors.length > 0 ? [] : decisionResult.records,
+    written,
+    errors,
+  };
 }
 
 export function buildDriverPackage(entry) {

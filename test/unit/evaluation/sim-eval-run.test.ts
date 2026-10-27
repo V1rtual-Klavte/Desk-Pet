@@ -5,12 +5,14 @@
 // runner.js 是开发脚本（scripts/），导出纯函数供这里钉住：Card 文件名/解析与产品
 // loader 不漂移、CONFIG 覆盖落在正确层级、ready/控制通道/seed-report 的所有权校验
 // 会拒绝错配。真正拉起宿主的 start/stop 由隔离根验收覆盖，不在 L2 里跑。
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { load as parseYaml } from "js-yaml"
 import { describe, expect, it } from "vitest"
 import { datasetInputHash, loadDataset } from "../../sim/desk-pet-chat/dataset.mjs"
+import { beginChatAttempt, createChatRun, readChatWorkflow, setChatRunPhase } from "../../sim/desk-pet-chat/evidence.mjs"
 // @ts-expect-error TS7016 —— Node 侧 ESM 工具没有声明文件，运行期形状由断言钉住。
 import { buildSyntheticConfig } from "../../host/native/synthetic-config.mjs"
 import { importUserCard, safeCardFileName as productSafeCardFileName } from "@/services/personality/loader"
@@ -519,5 +521,115 @@ describe("数据集输入哈希与请求模型身份", () => {
     expect(runner.extractActualModels(`${trace}\n`)).toEqual(["provider/model-a", "provider/model-b"])
     expect(runner.extractActualModels("")).toEqual([])
     expect(runner.extractActualModels('{"chunk":{"events":[{"event":{"kind":"turn_end"}}]}}\n')).toEqual([])
+  })
+})
+
+describe("关停证据与故障救援", () => {
+  const AT = "2026-10-27T09:00:00.000+08:00"
+  const LATER = "2026-10-27T10:00:00.000+08:00"
+  const HASH = `sha256:${"a".repeat(64)}`
+  const cleanExit = {
+    schemaVersion: 1,
+    pid: 4321,
+    exitedAt: LATER,
+    flush: { flushed: true, pending: 0, detail: "关停完成" },
+    interrupted: false,
+    forcedKill: false,
+    detail: "关停完成",
+  }
+
+  it("exit.json 绑定本次宿主 pid 并校验 flush 形状 [chat-run-exit-record]", () => {
+    expect(runner.validateHostExit(cleanExit, { hostPid: 4321 })).toEqual(cleanExit)
+    expect(() => runner.validateHostExit(cleanExit, { hostPid: 999 })).toThrow(/pid/)
+    expect(() => runner.validateHostExit({ ...cleanExit, schemaVersion: 2 }, { hostPid: 4321 })).toThrow(/schema/)
+    expect(() => runner.validateHostExit({ ...cleanExit, exitedAt: "not-a-time" }, { hostPid: 4321 })).toThrow(/exitedAt/)
+    expect(() => runner.validateHostExit({ ...cleanExit, flush: { flushed: "yes", pending: 0 } }, { hostPid: 4321 })).toThrow(/flush/)
+    expect(() => runner.validateHostExit({ ...cleanExit, interrupted: "no" }, { hostPid: 4321 })).toThrow(/interrupted/)
+  })
+
+  it("缺少 exit.json、flush 未完成、中断或强杀都算不干净退出 [chat-run-exit-flush]", () => {
+    expect(runner.hostExitProblems(cleanExit)).toEqual([])
+    expect(runner.hostExitProblems(null).join("；")).toMatch(/exit\.json/)
+    expect(runner.hostExitProblems({ ...cleanExit, flush: null }).join("；")).toMatch(/flush/)
+    expect(runner.hostExitProblems({ ...cleanExit, flush: { flushed: false, pending: 3, detail: "作业未收敛" } }).join("；"))
+      .toMatch(/pending=3.*作业未收敛/)
+    expect(runner.hostExitProblems({ ...cleanExit, interrupted: true }).join("；")).toMatch(/中断/)
+    expect(runner.hostExitProblems({ ...cleanExit, forcedKill: true }).join("；")).toMatch(/强杀/)
+  })
+
+  it("宿主退出后可从同一证据封存中断 attempt，并保留可修复的封存记录 [chat-run-rescue]", async () => {
+    const root = mkdtempSync(join(tmpdir(), "desk-pet-runner-rescue-"))
+    try {
+      const { runDir } = createChatRun({
+        reportsDir: root,
+        evaluationRunId: "rescue-run",
+        createdAt: AT,
+        scope: { suiteIds: ["daily-companionship"], caseIds: [entry.caseId], purpose: "regression", holdout: false },
+        budget: { trials: 1, messages: 10, tokens: 1000, minutes: 10, repairs: 1 },
+      })
+      setChatRunPhase(runDir, { phase: "running", updatedAt: AT })
+      const { attemptDir, attempt } = beginChatAttempt({
+        runDir,
+        identity: {
+          code: { commit: "abc1234", sourceHash: HASH, dirty: false },
+          inputs: { datasetHash: HASH, fixtureHash: HASH, cardHash: HASH, configHash: HASH },
+          tools: { driverVersion: "driver-1", rubricVersion: "rubric-1", graderVersion: "grader-1" },
+          host: { mode: "full-desktop", capabilities: ["chat", "memory", "session"] },
+          platform: { os: "darwin", arch: "arm64" },
+          runtime: { version: "22.22.3" },
+          models: { requested: "provider/model-a" },
+          budget: { trials: 1, messages: 10, tokens: 1000, minutes: 10, repairs: 1 },
+        },
+        expectedTrials: [{ caseId: entry.caseId, trialId: "trial-1" }],
+        expectedSessions: [sessionId],
+        createdAt: AT,
+      })
+      writeFileSync(join(runDir, "ready.json"), "{}\n")
+      const state = {
+        schemaVersion: 1,
+        runId: "rescue-run",
+        caseId: entry.caseId,
+        suiteId: entry.suiteId,
+        status: "running",
+        hostPid: null,
+        chat: {
+          evaluationRunId: "rescue-run",
+          runDir,
+          attemptId: attempt.attemptId,
+          attemptDir,
+          trialId: "trial-1",
+        },
+      }
+
+      const rescued = await runner.rescueRun({ runDir, state, reason: "宿主崩溃", now: LATER })
+      expect(rescued.status).toBe("inconclusive")
+      const manifest = JSON.parse(readFileSync(join(attemptDir, "manifest.json"), "utf8"))
+      expect(manifest.outcome).toBe("interrupted")
+      expect(manifest.integrity.status).toBe("inconclusive")
+      expect(manifest.integrity.issues.join("；")).toMatch(/宿主崩溃/)
+      expect(manifest.integrity.issues.join("；")).toMatch(/dialogue\.jsonl 缺失/)
+      expect(manifest.integrity.issues.join("；")).toMatch(/exit\.json/)
+      expect(readChatWorkflow(runDir).phase).toBe("blocked")
+      expect(existsSync(join(runDir, "report.md"))).toBe(true)
+      const saved = JSON.parse(readFileSync(join(runDir, "runner.json"), "utf8"))
+      expect(saved.status).toBe("rescued")
+      expect(saved.chat.sealedAt).toBe(LATER)
+      expect(saved.chat.integrity.status).toBe("inconclusive")
+
+      await expect(runner.rescueRun({ runDir, state: saved, now: LATER })).rejects.toThrow(/已封存/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("宿主仍在运行或没有 attempt 时拒绝救援 [chat-run-rescue-guard]", async () => {
+    await expect(runner.rescueRun({
+      runDir: join(tmpdir(), "desk-pet-runner-rescue-missing"),
+      state: { runId: "missing", hostPid: process.pid, chat: { attemptDir: join(tmpdir(), "missing-attempt") } },
+    })).rejects.toThrow(/先 stop/)
+    await expect(runner.rescueRun({
+      runDir: join(tmpdir(), "desk-pet-runner-rescue-missing"),
+      state: { runId: "missing", hostPid: null, chat: null },
+    })).rejects.toThrow(/attempt/)
   })
 })

@@ -171,7 +171,7 @@ E2E 宿主（`run_e2e` / `E2eDispatcher`）只跑测试协议与产品命令矩�
 
 有 trace 订阅时，`memory_recall_end` 可附记忆检索的标量诊断（FTS/LIKE、事件时间筛选前后数量、重复事件、JSONL 回读淘汰、查询耗时与冷索引耗时）；未订阅时不执行这组额外统计。诊断不含查询词或原文。外部 memory-bench 报告显示诊断样本数和 recall/query p95，没有诊断样本的计数显示为未知。
 
-**测试侧模型配置**：被测模型默认继承隔离副本的合成 CONFIG（随仓 `CONFIG.yaml` 模板 + `test/host/native/fixtures/config-overrides.yaml` 覆盖，不含凭据；不再复制真实 `CONFIG-DEV.yaml`）；显式覆盖分两层——[test/eval-models.json](eval-models.json)（进 git，**不得含 apiKey**，出现即显式报错）与本地专属 `test/eval-models.local.json`（已 gitignore、不进 git，可含 `underTest.apiKey` / `underTest.endpoint` / `underTest.reviewMaxTokens`（显式压低/调大 Review 输出上限；缺省按模型输出预算自动推导）等字段）。解析优先级：环境变量 `DESKPET_EVAL_PROVIDER` / `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_JUDGE_MODEL` > 本地文件 > 进 git 文件 > 内置默认；bench 的 `--bench-judge-model` 参数仍最高。真实 Provider 凭据只经上述两层环境入口写进隔离副本（`setOverrides` + 原子保存，含 endpoint / apiKey）；judge 继承测试侧网关的 endpoint / apiKey，只换模型。**judge 必须不同于被测模型**（同模型在开跑前报错）。
+**测试侧模型配置**：被测模型默认继承隔离副本的合成 CONFIG（随仓 `CONFIG.yaml` 模板 + `test/host/native/fixtures/config-overrides.yaml` 覆盖，不含凭据；不再复制真实 `CONFIG-DEV.yaml`）；显式覆盖分两层——[test/eval-models.json](eval-models.json)（进 git，**不得含 apiKey**，出现即显式报错）与本地专属 `test/eval-models.local.json`（已 gitignore、不进 git，可含 `underTest.apiKey` / `underTest.endpoint` / `underTest.reviewMaxTokens`（显式压低/调大 Review 输出上限；缺省按模型输出预算自动推导）等字段）。解析优先级：环境变量 `DESKPET_EVAL_PROVIDER` / `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_JUDGE_MODEL` > 本地文件 > 进 git 文件 > 内置默认；bench 的 `--bench-judge-model` 参数仍最高。真实 Provider 凭据只经上述两层环境入口写进隔离副本（`setOverrides` + 原子保存，含 endpoint / apiKey）。外部记忆基准与自建质量集的 API judge 继承测试侧网关的 endpoint / apiKey，只换模型，**必须不同于被测模型**（同模型在开跑前报错）；结构化聊天评测的 judge 不是这条 API 链路，而是用户指定、与被测模型异构的独立 coding-agent 会话，只读冻结判分包，runner 不调用模型也不读取 judge 凭据；`judge.platform` 只接受 `claude-code`／`codex`／`qoder` 白名单，API 客户端回填会被 `judge apply` 拒绝，历史 API 判分即使写着 `authority=coding-agent-judge` 也不作为权威结论。
 
 ```bash
 pnpm run test:e2e -- --module evaluation --repeat 3 --report json
@@ -193,7 +193,7 @@ pnpm run test:memory-performance -- --native-only
 
 Trace 默认 `full`；`light` 省略 payload/snapshot 事件，`off` 只用于性能对照，不能通过线路完整性门禁。事件保留宿主/Pi 的运行映射、request/turn/tool/entry/span 身份、单调序号和时钟域。`message_end` 与真实 `entry_added` 提交分开；首文本生成、流事件投递与实际 UI 显示不同口径。humanizer 的分泡场景已是**服务级**（断言揭示调度与顶栏所有权，不挂载组件、不宣称科学 UI 延迟测量）；组件渲染的实机证据留待原生 UI 测试驱动。只采结构、数量和已有审计 hash，正文与工具参数/结果不落 trace。 `memory_reading_end.checkFingerprints` 最多保留 16 项条件 hash、核对状态和来源计数；hash 只关联规范化后相同的条件文字，不能识别语义改写，原始条件不落 trace。
 
-宿主缓冲有事件数和字节上限；上报前按单块字节预算切分（前缀出块、剩余留存，单事件超预算独占一块，每批以边界块收尾、`complete` 后不再有块），周期与场景边界都落盘；只有 Rust fsync 后的 ACK 才释放待写块。每行是 `{chunk,contentSha256}`，chunk 内有边界、丢弃计数与逐事件 scene/trial；按事件的 sceneId 读取线路，不能把一个物理 chunk 当作只有一个场景。未匹配的迟到事件保留为 orphan。启动器在清理前流式核对 hash、序号、所有预先声明的 trial 和 complete 边界；丢弃/写盘失败不洗成通过。trace bundle（门禁在 `test/reports/traces/`，bench / quality 在各自子目录的 `traces/`）按 trace、manifest、逐 cell 质量 / 外部基准 checkpoint（成员名 `.quality.jsonl` / `.memory-bench.jsonl`）与完整性 sidecar 整组保留最近 3 场且累计不超过 200 MiB（组键覆盖未完成写入的 `.manifest.json.pending` 残片），超过单组限制保留源临时根并失败。正常路径的 bundle 不再包含结果副本（根报告已是同一份字节）；只有中断抢救（`salvageTempTrace`）还带 `result.*` —— 中断时它是唯一留存。
+宿主缓冲有事件数和字节上限；上报前按单块字节预算切分（前缀出块、剩余留存，单事件超预算独占一块，每批以边界块收尾、`complete` 后不再有块），周期与场景边界都落盘；只有 Rust fsync 后的 ACK 才释放待写块。每行是 `{chunk,contentSha256}`，chunk 内有边界、丢弃计数与逐事件 scene/trial；按事件的 sceneId 读取线路，不能把一个物理 chunk 当作只有一个场景。未匹配且未显式绑定会话的迟到事件保留为 orphan；评测采集用会话绑定把无 runId／requestId 的主动事件归到当前 trial，未绑定会话的事件仍不借用当前试次。启动器在清理前流式核对 hash、序号、所有预先声明的 trial 和 complete 边界；丢弃/写盘失败不洗成通过。trace bundle（门禁在 `test/reports/traces/`，bench / quality 在各自子目录的 `traces/`）按 trace、manifest、逐 cell 质量 / 外部基准 checkpoint（成员名 `.quality.jsonl` / `.memory-bench.jsonl`）与完整性 sidecar 整组保留最近 3 场且累计不超过 200 MiB（组键覆盖未完成写入的 `.manifest.json.pending` 残片），超过单组限制保留源临时根并失败。正常路径的 bundle 不再包含结果副本（根报告已是同一份字节）；只有中断抢救（`salvageTempTrace`）还带 `result.*` —— 中断时它是唯一留存。
 
 **记忆质量（自建兜底层）**复用 L4 端到端、真实 `sendMessage` 与 Rust IPC；它是外部权威基准（下段）的兜底冒烟与治理语义回归，质量结论以权威对照为准。80 题是 AI 起草的待审标注集，双人独立审计和 judge 校准未完成前不能通过本层门槛。覆盖称呼/偏好、经历/时效、纠正、遗忘及来源/scope 反例；真实 dreaming 提取单独采集。Provider长度截断等已观测模型输出失败保留为失败cell，继续其他对照；三次连续基础设施失败才中止。失败cell不能判质量通过。对照为无记忆、本地、每次重排、adaptive、gold evidence，每题至少三次随机配对试验。所有质量cell统一撤下模型工具并在结束后恢复，防止无记忆组通过memory_query、文件读取或Bash获取fixture；fixture/治理操作仍走真实Rust IPC。此专项比较MemoryProvider投影，不代表工具搜索能力评测。每个 cell 取消旧运行、清会话、通过受守卫的 Rust 评测命令关闭并重建同一所有者的 SQLite 库；记录 store generation 和规范化 fixture 指纹，禁止沿用上一策略的治理状态。各 cell 共用一次隔离宿主数据根，数据库实例和会话逐 cell 新建，不宣称每个 cell 都启动独立进程。
 
@@ -203,43 +203,25 @@ Trace 默认 `full`；`light` 省略 payload/snapshot 事件，`off` 只用于�
 
 **性能**测 1k/10k 合成库，查询包含短中文、别名/长词、组合条件和无关词，分别逐次记录 query + get_items 和真实 MemoryProvider 端口调用（off重排；绑定实际会话与测试操作来源），报告 P50/P95 与原始样本。10k 的四条代表查询都须热路径 P95≤500ms，任一超标都失败（用户于2026-10-02放宽原50ms目标）。普通L4场景默认等5分钟、显式场景时限优先；整批截止至少30分钟，三trial批为30分钟，质量采集8小时，超时仍失败并保全证据。release Rust 存储和 debug 原生宿主 IPC 分列；连接重开不等于 OS 冷缓存。另记录建库、FTS 重建、发布、备份、磁盘、后台查询争用下的前台真实回合，以及按 idle/运行区间区分的进程树 RSS/CPU 样本。进程树必须覆盖 native-host + 唯一 Node 及其子进程（MCP / Bash 由宿主管理、不留孤儿）；完整产品 RSS、release IPC、二进制增量与原生 UI 延迟仍需相应实机验收，不能由编译进程样本或 debug 结果替代。性能报告位于 `test/reports/performance/`，按与日期戳报告一致的口径淘汰：最近 3 场、累计不超过 200 MiB、最新一份始终保留。
 
-## 结构化聊天评测数据集（W1–W5）
+## 结构化聊天评测数据集
 
 [`test/ideal-traces/`](ideal-traces/README.md) 除旧格式 `*.ideal.md` 外，还承载可执行的结构化聊天用例（`suites/<suiteId>/` 下的 `suite.json` / `cases/` / `fixtures/` / `approvals/`，schema v4）。分类复用 `test/sim/desk-pet-chat/categories.json`，题型复用 `test/sim/desk-pet-chat/question-types.json`，多标签用例在总数里只计一次。case 是可跨会话的场景容器，探针是独立计分的最小断言：每条探针用 `after` 绑定驱动步骤，`window` 取 `last-assistant` / `state` / `all-assistant`，`polarity` 取 `required` / `forbidden`，`critical` 标记 case 级必要条件，`questionType` 标明认知维度，`difficulty`（1–5）用于报告分层且不改变判定；每条探针声明 `rubric`，内容词表、频率、时间关系、主语别名与跨会话来源只在 `expectation` 声明一次，rubric 注册表只保留通用判据。case 的 `questionTypes` 必须恰好等于探针题型的并集。fixture 必须声明 `loading`：`direct-seed` 只把初始状态写入隔离数据根、待测行为仍走真实消息链，`real-chain` 则禁止 seed 会话或记忆。`fixed` 时钟要求每个 driver 步骤带升序 `at`，case 起点不得早于 `fixture.clock`；探针窗口只看 driver 步骤，不吸收 fixture 预置的助手消息。一个用户消息可挂多条探针；`critical` 只用于报告分层。case 通过要求证据完整、执行完成、全部适用规则（含 quality 规则）均为 `pass`：任一规则 `fail` 判失败，任一非 `pass` 判 inconclusive；用户抽查不参与聚合。消息轮数不设上限。
 
 题型注册表固定 7 族 24 型（记忆、对话、执行、互动、感知、边界、表达），并强制每个产品分类至少被一个题型覆盖。全部探针（含 `humanizer.*`）与 humanizer 质量规则统一由独立 coding-agent judge 判定；runner 只冻结判分包、校验并追加裁决，不调用模型 API、不读取 judge 凭据。
 
-代理只能起草 silver，gold 必须由用户本人针对当前 `specHash` 的真实会话消息审批，任一分量哈希变化即 stale。`actual` 实际输出不能充当期望来源；驱动包只含 `schemaVersion` / `caseId` / `revision` / `specHash` / `userRole` / `driver`，题型、探针、oracle、检查点、证据与评分只进审阅包。当前只有 `daily-companionship/saturday-companionship` 一条 silver/pending 候选（27 条用户消息 + 2 个 host 步骤、3 个会话、23 条探针其中 11 条关键、8 种题型；难度 L1 4／L2 5／L3 6／L4 6／L5 2；fixture 为 direct-seed，时钟固定），其他套件为空占位。
+代理只能起草 silver，gold 必须由用户本人针对当前 `specHash` 的真实会话消息审批，任一分量哈希变化即 stale。`actual` 实际输出不能充当期望来源；驱动包只含 `schemaVersion` / `caseId` / `revision` / `specHash` / `userRole` / `driver`，题型、探针、oracle、检查点、证据与评分只进审阅包。当前候选、消息／探针数量、题型与难度分布以 `dataset list`／`dataset review` 的输出为准；其余套件为空占位。
 
 ```bash
 node scripts/desk-pet-chat.mjs dataset validate
 node scripts/desk-pet-chat.mjs dataset list
 node scripts/desk-pet-chat.mjs dataset types
-node scripts/desk-pet-chat.mjs dataset review saturday-companionship
-node scripts/desk-pet-chat.mjs dataset driver saturday-companionship
-node scripts/desk-pet-chat.mjs eval prepare --case saturday-companionship --card <card.md> --authorization <auth.json> [--run-id <id>] [--baseline <evalRunId>]
-node scripts/desk-pet-chat.mjs eval prepare --repair-of <runId> [--run-id <id>]
-node scripts/desk-pet-chat.mjs eval start --run-id <id>
-node scripts/desk-pet-chat.mjs eval drive --run-id <id>
-node scripts/desk-pet-chat.mjs eval status --run-id <id>
-node scripts/desk-pet-chat.mjs eval finish --run-id <id> [--interrupted --reason <text>]
-node scripts/desk-pet-chat.mjs eval compare --run-id <id> [--baseline <evalRunId>] [--json]
-node scripts/desk-pet-chat.mjs eval holdout --case saturday-companionship [--json]
-node scripts/desk-pet-chat.mjs eval judge prepare --run-id <id> [--attempt-id <id>] [--json]
-node scripts/desk-pet-chat.mjs eval judge apply --run-id <id> --verdicts <file.json> [--json]
-node scripts/desk-pet-chat.mjs eval review show --run-id <id> [--attempt-id <id>] [--json]
-node scripts/desk-pet-chat.mjs eval review spotcheck --run-id <id> --checks <file.json> [--reviewer-name <name>] [--notes <text>] [--json]
-node scripts/desk-pet-chat.mjs eval report --run-id <id> [--json]
-node scripts/desk-pet-chat.mjs eval stop --run-id <id>
-node scripts/desk-pet-chat.mjs capture status
-node scripts/desk-pet-chat.mjs capture sessions
+node scripts/desk-pet-chat.mjs dataset review <caseId>
+node scripts/desk-pet-chat.mjs dataset driver <caseId>
 ```
 
-`dataset` 命令只读数据，不启动 app、不调用模型。W1–W5 已有格式、引用、题型覆盖、时钟与装载约束、难度分布、哈希与金银标计算，debug 隔离起停与 direct-seed 装载核验，测试侧证据封存／同源报告／五回保留与产品侧 trace 采集、跨会话取证、`finish` 封存接线，W4 的判分包冻结、独立 judge 裁决回填、可选抽查与四层同源报告，以及 W5 的授权冻结、Node 域固定时钟、驱动进度／续跑、预算复核、同条件对照、holdout 记录与修复 attempt；封存证据落在 `test/reports/chat/<evaluationRunId>/`。W3 已于 2026-10-25 验收（定向单测、类型／Rust、契约哈希与隔离封存冒烟，明细见执行契约）；W4 已实施并通过快层反例与完整门禁验收（2026-10-25）。W5 已于 2026-10-26 集中验收，L2／L3 与完整门禁通过，CE-01–CE-20 映射见执行契约。2026-10-26 经用户授权完成一次真实银标运行 `silver-20261026c`（被测 `deepseek-flash`、judge `deepseek-v4-pro`）：准备、驱动、封存、判分包、裁决回填与同源报告全链跑通，总判定 fail（3 条必需 + 2 条禁止规则 fail，1 条 critical inconclusive）；这证明链路可产生真实判分，不构成质量或 gold 结论。真实聊天 Skill 自主运行、用户 gold 审批与抽查仍未执行，CI 门禁仍未收口。
+`dataset` 的查询、校验与审阅命令只读数据，不启动 app、不调用模型；`dataset approve` 是唯一写审批入口，只接受用户本人给出的真实来源。封存证据落在 `test/reports/chat/<evaluationRunId>/`。隔离运行、驱动、判分、抽查与报告的完整命令和机制见 [`test/sim/README.md`](sim/README.md) 及三个 Skill；当前候选、最近运行与剩余验收项见[未完成工作与已知缺口 §12](../docs/plans/active/未完成工作与已知缺口.md)，实施批次与历史验收证据见[聊天评测闭环执行契约（归档）](../docs/history/implementation/聊天评测闭环执行契约-2026-10-26归档.md)。
 
-W2–W5 的 `eval` 命令覆盖隔离运行、证据封存、判分、驱动与报告。`prepare` 在 `test/.tmp/sim-eval-<id>` 建运行根：用随仓 `CONFIG.yaml` 模板合成隔离 `settings/CONFIG.yaml`（不读真实 CONFIG），要求显式 `--card <path>`（fixture 需要的 Card 不在仓库内，不得自动读取真实数据根）与 `--authorization <auth.json>`（用例、用途、模型／数据范围、trial／修复预算、holdout 一致性），把 fixture 初始会话与旧记忆写进 `seed.json`，写入 `clock.json` 并 stage `test/eval-models*.json` 供运行期覆盖被测模型。debug 宿主仅在 `DESKPET_SIM_EVAL=1` + 合法运行根下把数据根固定到 `<run>/data`，拿到单实例锁后写 `ready.json`；Node 只信 `ready.json`（父进程 pid、数据根、控制目录与 development 模式）。`start` 构建并拉起宿主，依次核对宿主 ready、控制通道 ready 与 `seed-report.json`，通过后建 attempt 并开始 trace 采集；`finish` 收口采集、写 dialogue、补声明会话、封存 attempt、生成同源报告并执行五回保留；`stop` 只写 `stop.request`，不发送信号，未完成采集以中断状态收口。`status` 输出阶段与所有权核验结果；`capture status|sessions` 经开发控制通道核对采集范围与来源，不读取真实用户会话。真实启动、ready、非法路径失败、跨进程单实例、E2E 互斥与停止后锁释放已于 2026-10-25 验收（证据保留在 `test/.tmp/sim-eval-w2-accept-*`）；`.instance.lock` 文件按设计保留，OS 在进程退出时释放锁。W3 的产品采集、封存与报告模块及反例测试已于 2026-10-25 验收。W4 的 `judge prepare` 只对已封存完整证据冻结判分包（含 rubric、驱动与证据引用、判分说明），`judge apply` 只校验独立 coding-agent judge 回填的裁决并把判分追加到 `grades/`；runner 不调用模型 API、不读取 judge 凭据，也不替 judge 作判断。`review show` 展示判分与证据并标出未抽查的规则；`review spotcheck` 只记录用户本人的可选抽查，不阻塞、不改写判分；`report` 按结论卡→检查对照→时间线→原始证据重建。W4 快层反例已运行通过。W5 的 `start` 核对 `clock.json` 一致性，`drive` 按驱动包逐步推进并持久化进度、从同一进度续跑且不重放未知副作用，调用前复核授权指纹与请求模型；每个消息步骤生成唯一操作身份（`caseId`／`trialId`／`sessionId`／`generation`／`stepId`），宿主与运行器双向核对回执，排队回复按 `requestId` 找到同一请求的 run 分支、不取最后一条助手消息，采集期间手动 `chat` 消息因没有 drive 身份会被拒绝；`compare` 只在固定条件一致时对照 baseline 与候选，`holdout` 只报告留出使用；`prepare --repair-of` 新建沿用原 Card／Profile／时钟与 Case 哈希的修复 attempt，旧失败保留。固定时钟只推进 Node 域 `Date`，Rust 调度器与 OS 时间不推进。W5 已于 2026-10-26 集中验收；真实模型运行已按用户授权跑过一次银标（`silver-20261026c`），真实 Skill 自主运行与用户关口仍需当次授权。
-
-三个 Skill 分工：[`desk-pet-chat`](sim/desk-pet-chat/SKILL.md) 负责真实聊天/自由评测，[`desk-pet-eval-authoring`](sim/desk-pet-eval-authoring/SKILL.md) 负责写用例与收集用户审批，[`desk-pet-eval-runner`](sim/desk-pet-eval-runner/SKILL.md) 负责结构化执行、判分包冻结、裁决回填与报告。全部探针由独立 coding-agent judge 判定；runner 只校验回填裁决并追加记录，用户抽查只用于核对、不阻塞。审阅入口在 authoring Skill：先列候选、询问要审哪条，再把审阅卡贴到聊天区。当前仍没有写 gold 审批文件的命令；`eval review spotcheck` 只记录用户对某次运行证据的抽查，不改变 case 的 silver/gold。数据规则、当前候选与审批边界见 [ideal-traces/README.md](ideal-traces/README.md)。
+三个 Skill 分工：[`desk-pet-chat`](sim/desk-pet-chat/SKILL.md) 负责真实聊天与自由定性评测，[`desk-pet-eval-authoring`](sim/desk-pet-eval-authoring/SKILL.md) 负责写用例并收集用户审批，[`desk-pet-eval-runner`](sim/desk-pet-eval-runner/SKILL.md) 负责结构化执行、判分包冻结、裁决回填与报告。gold 审批的唯一写入口是 `dataset approve`，只接受用户本人给出的真实来源并回读标签；`eval review spotcheck` 只记录用户对某次运行证据的抽查，不改变 case 的 silver/gold。数据规则与审批边界见 [ideal-traces/README.md](ideal-traces/README.md)。
 
 ## Contract 与 sourceHash
 

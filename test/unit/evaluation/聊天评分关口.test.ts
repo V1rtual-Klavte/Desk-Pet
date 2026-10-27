@@ -27,6 +27,7 @@ import {
   createChatRun,
   createDialogueWriter,
   createTraceWriter,
+  ensureTrialPlan,
   sealChatAttempt,
   setChatRunPhase,
   writeStateSnapshot,
@@ -399,6 +400,8 @@ interface AttemptOptions {
   requestedModel?: string;
   actualModel?: string;
   omitTrace?: string[];
+  runDir?: string;
+  trialId?: string;
 }
 
 interface SealedAttempt {
@@ -415,14 +418,14 @@ function sessionFor(stepId: string): string {
 async function sealAttempt(world: World, options: AttemptOptions = {}): Promise<SealedAttempt> {
   world.attemptCount += 1;
   const name = options.name ?? "main";
-  const { runDir } = createChatRun({
+  const runDir = options.runDir ?? createChatRun({
     reportsDir: world.reportsDir,
     evaluationRunId: `run-${world.attemptCount}-${name}`,
     createdAt: START,
     scope: { suiteIds: [world.entry.suiteId], caseIds: [world.entry.caseId] },
     budget: { trials: 1, maxCostUsd: 1 },
-  });
-  setChatRunPhase(runDir, { phase: "completed", updatedAt: START });
+  }).runDir;
+  if (!options.runDir) setChatRunPhase(runDir, { phase: "completed", updatedAt: START });
 
   const messageSessions: string[] = [];
   for (const step of world.driver) {
@@ -450,7 +453,7 @@ async function sealAttempt(world: World, options: AttemptOptions = {}): Promise<
     models: { requested: options.requestedModel ?? UNDER_TEST },
     budget: { trials: 1, maxCostUsd: 1 },
   };
-  const trialId = `trial-${world.attemptCount}-${name}`;
+  const trialId = options.trialId ?? `trial-${world.attemptCount}-${name}`;
   const started = beginChatAttempt({
     runDir,
     identity,
@@ -961,6 +964,16 @@ describe("judge 裁决校验", () => {
       }),
       "judge.prompt",
     );
+  });
+
+  it("拒绝非 coding-agent 平台回填的裁决，API 客户端不能产出权威判分 [chat-judge-authority]", async () => {
+    const { world, prepared } = await preparedWorld();
+    const { packet } = prepared.packet;
+    const apiVerdicts = verdictsFor(packet, { judge: { platform: "deepseek-api" } });
+
+    assertJudgingError(() => validateJudgeVerdicts({ packet, verdicts: apiVerdicts }), "judge.platform");
+    assertJudgingError(() => apply(world, prepared, apiVerdicts), "judge.platform");
+    expect(readJudgingRecords(prepared.attemptDir).grades).toHaveLength(0);
   });
 
   it("拒绝未知被测模型，避免无法核对异构性", async () => {
@@ -1511,6 +1524,42 @@ describe("同源报告四层", () => {
     expect(markdown).toContain("- 未抽查（可选）");
   });
 
+  it("历史 API 判分不因 authority 字段被当作 coding-agent 权威 [chat-judge-authority-history]", async () => {
+    const { world, prepared } = await preparedWorld();
+    // 复刻 2026-10-26 两次银标留下的旧记录形态：平台是 API，authority 被统一标成 coding-agent-judge。
+    const legacy = {
+      schemaVersion: 1,
+      gradeId: "judge-20261026t020626z",
+      createdAt: JUDGED,
+      rubricVersion: JUDGE_RUBRIC_VERSION,
+      graderVersion: CHAT_GRADER_VERSION,
+      authority: JUDGE_AUTHORITY,
+      checks: [],
+      summary: {
+        packetId: prepared.packet.packet.packetId,
+        judgedAt: JUDGED,
+        judge: {
+          platform: "deepseek-api",
+          model: JUDGE.model,
+          promptVersion: JUDGE_PROMPT_VERSION,
+        },
+      },
+    };
+    writeFileSync(
+      join(prepared.attemptDir, "grades", "judge-20261026t020626z.json"),
+      `${JSON.stringify(legacy, null, 2)}\n`,
+    );
+
+    expect(latestJudgeGrade(prepared.attemptDir)).toBeNull();
+    const status = statusFor(world, prepared);
+    expect(status.judge).toBeNull();
+    expect(status.check.status).toBe("inconclusive");
+
+    const markdown = reportFor(world, prepared);
+    expect(markdown).not.toContain("由独立 coding-agent judge 判定");
+    expect(markdown).toContain("尚无权威判分");
+  });
+
   it("未抽查时标注可选，抽查后展示覆盖与不一致", async () => {
     const { world, prepared } = await judgedWorld();
     const before = reportFor(world, prepared);
@@ -1565,5 +1614,62 @@ describe("同源报告四层", () => {
     expect(driftMarkdown).toContain("- 结论：数据集自采集后已变更");
     expect(driftMarkdown).not.toContain("### 检查对照");
     expect(driftMarkdown).not.toContain("- 判分者：");
+  });
+});
+
+describe("多 trial pass^k 报告", () => {
+  async function sealedTrialBatch(world: World, evaluationRunId: string, trialIds: string[]) {
+    const { runDir } = createChatRun({
+      reportsDir: world.reportsDir,
+      evaluationRunId,
+      createdAt: START,
+      scope: { suiteIds: [world.entry.suiteId], caseIds: [world.entry.caseId] },
+      budget: { trials: trialIds.length, maxCostUsd: trialIds.length },
+    });
+    ensureTrialPlan({
+      runDir,
+      evaluationRunId,
+      caseId: world.entry.caseId,
+      trialIds,
+      budgetTrials: trialIds.length,
+      authorizationFingerprint: HASH_E,
+      createdAt: START,
+    });
+    const attempts = [];
+    for (const trialId of trialIds) attempts.push(await prepare(world, { runDir, trialId }));
+    return { runDir, attempts };
+  }
+
+  it("全部试次通过时按 critical pass^k 给出 pass [chat-report-multi-trial]", async () => {
+    const world = makeWorld();
+    const { runDir, attempts } = await sealedTrialBatch(world, "run-batch-pass", ["t-1", "t-2", "t-3"]);
+    for (const attempt of attempts) apply(world, attempt, verdictsFor(attempt.packet.packet));
+    setChatRunPhase(runDir, { phase: "awaiting_judge", updatedAt: REVIEWED });
+
+    const markdown = reportFor(world, { runDir });
+    expect(markdown).toContain("- trial 计划: 3 个（冻结于");
+    expect(markdown).toContain("### 多 trial 聚合");
+    expect(markdown).toContain("- 总判定：pass — 全部 3 个 trial 的 critical 规则通过（pass^3）");
+    expect(markdown).toContain("- 判分者：一致（judge/model-x / qoder /");
+    expect(markdown).toContain("- 证据引用：pass/fail 规则引用齐备");
+    expect(markdown).not.toContain("门禁问题");
+  });
+
+  it("任一试次的 critical 规则失败时整体判 fail，其余试次通过不能抵消", async () => {
+    const world = makeWorld();
+    const { runDir, attempts } = await sealedTrialBatch(world, "run-batch-fail", ["t-1", "t-2", "t-3"]);
+    attempts.forEach((attempt, index) => {
+      apply(world, attempt, verdictsFor(
+        attempt.packet.packet,
+        index === 1 ? { perRule: { "p-current": "fail" } } : {},
+      ));
+    });
+    setChatRunPhase(runDir, { phase: "awaiting_judge", updatedAt: REVIEWED });
+
+    const markdown = reportFor(world, { runDir });
+    expect(markdown).toContain("- 总判定：fail — critical 规则存在 fail：p-current");
+    expect(markdown).toContain("#### critical pass^k");
+    expect(markdown).toContain("| p-current | yes | pass | fail | pass | fail |");
+    expect(markdown).not.toContain("pass^3");
   });
 });

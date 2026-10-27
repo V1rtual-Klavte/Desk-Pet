@@ -20,6 +20,7 @@ import {
   sealChatAttempt,
   setChatRunPhase,
   verifySealedAttempt,
+  writeArtifact,
 } from "../../sim/desk-pet-chat/evidence.mjs";
 import { renderChatReport, writeChatReport } from "../../sim/desk-pet-chat/report.mjs";
 
@@ -368,6 +369,40 @@ describe("聊天证据完整性", () => {
     chmodSync(dialoguePath, 0o644);
     appendFileSync(dialoguePath, `{"seq":100}\n`);
     expect(renderChatReport({ runDir, generatedAt: SEALED })).toContain("不能判为通过");
+  });
+
+  it("报告在驱动包含手工触发时注明组件路径，不冒充自然受理或 UI 显示 [chat-report-manual-trigger]", async () => {
+    const reportsDir = makeRoot();
+    const runDir = makeRun(reportsDir, "run-report-manual");
+    const attempt = await makeCompleteAttempt(runDir, {
+      beforeSeal: (attemptDir: string) => {
+        writeArtifact({
+          attemptDir,
+          name: "driver-package.json",
+          bytes: JSON.stringify({
+            schemaVersion: 4,
+            caseId: CASE_ID,
+            revision: 1,
+            specHash: HASH,
+            userRole: { knownFacts: [], goal: "自然陪伴", tone: "口语", allowedActions: ["chat"], mustNotReveal: [] },
+            driver: [
+              { id: "open", kind: "host", method: "chat_new_session", at: START },
+              { id: "proactive", kind: "host", method: "sim_proactive_tick", at: SEALED },
+            ],
+          }),
+        });
+      },
+    });
+
+    const markdown = renderChatReport({ runDir, generatedAt: SEALED });
+    expect(markdown).toContain("手工触发");
+    expect(markdown).toContain("sim_proactive_tick");
+    expect(markdown).toContain("不代表自然受理、调度或实际 UI 显示");
+    expect(attempt.status).toBe("complete");
+
+    const plainRun = makeRun(reportsDir, "run-report-plain");
+    await makeCompleteAttempt(plainRun);
+    expect(renderChatReport({ runDir: plainRun, generatedAt: SEALED })).not.toContain("手工触发");
   });
 });
 

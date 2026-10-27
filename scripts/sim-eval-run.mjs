@@ -12,6 +12,8 @@
  *   node scripts/sim-eval-run.mjs drive --run-id <id>
  *   node scripts/sim-eval-run.mjs status --run-id <id>
  *   node scripts/sim-eval-run.mjs finish --run-id <id> [--interrupted --reason <text>]
+ *   node scripts/sim-eval-run.mjs batch --case <caseId> --card <card.md> --authorization <auth.json>
+ *       [--trials <n>] [--evaluation-run-id <id>] [--baseline <evaluationRunId>]
  *   node scripts/sim-eval-run.mjs compare --run-id <id> [--baseline <evaluationRunId>] [--json]
  *   node scripts/sim-eval-run.mjs holdout --case <caseId> [--json]
  *   node scripts/sim-eval-run.mjs judge prepare --run-id <id> [--attempt-id <id>] [--json]
@@ -21,15 +23,18 @@
  *       [--reviewer-name <name>] [--notes <text>] [--json]
  *   node scripts/sim-eval-run.mjs report --run-id <id> [--json]
  *   node scripts/sim-eval-run.mjs stop --run-id <id>
+ *   node scripts/sim-eval-run.mjs rescue --run-id <id> [--reason <text>]
  *
  * 只有一个宿主能拥有运行根：prepare 建根并写入合成 CONFIG / Card / seed.json / clock.json /
  * authorization.json / driver-package.json，start 拉起 `DESKPET_SIM_EVAL=1` 的 debug 宿主并等待
  * ready、控制通道 ready 与 seed-report，然后建立 attempt 并开始 trace 采集；drive 按驱动包逐步
  * 推进固定时钟、发送用户消息并等待检查点，进度写 driver-progress.json（可续跑，in-flight 不重放）；
- * finish 按驱动结果结束试次、收口采集、写对话证据、封存 attempt 并生成同源报告；judge prepare
- * 只冻结判分包，judge apply 只校验并记录外部 coding-agent judge 的裁决；review spotcheck 只记录
+ * finish 按驱动结果结束试次、收口采集、写对话证据、封存 attempt 并生成同源报告；batch 先冻结
+ * trials.json 再串行执行多个独立试次（每个试次独立运行根与 attempt，失败占位不替换）；
+ * judge prepare 只冻结判分包，judge apply 只校验并记录外部 coding-agent judge 的裁决；review spotcheck 只记录
  * 用户本人的可选抽查；compare 只比较两次运行的固定条件；holdout 只报告留出用例的使用记录；
- * stop 只写 `stop.request`，宿主自己走产品退出序列。
+ * stop 只写 `stop.request`，宿主自己走产品退出序列并留下 exit.json；宿主没走完退出序列时
+ * rescue 把已落盘的草稿按中断封存（不冒充完成），让证据有终点、repair 可继续。
  *
  * 本文件是开发工具（Node 脚本），不进产品构建；纯校验函数导出给 L2 单测。
  * 不读取真实 CONFIG、凭据或用户数据：Card 由调用方显式给出，凭据只 stage
@@ -40,7 +45,8 @@
 import { spawn, spawnSync } from "node:child_process"
 import { createHash, randomBytes } from "node:crypto"
 import {
-  appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync,
+  appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync,
+  writeFileSync,
 } from "node:fs"
 import { join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -49,12 +55,12 @@ import { load as parseYaml } from "js-yaml"
 import { buildSyntheticConfig, writeSyntheticConfig } from "../test/host/native/synthetic-config.mjs"
 import { buildNativeHost } from "../test/host/native/build.mjs"
 import {
-  buildDriverPackage, datasetInputHash, hashCanonical, loadDataset,
+  buildDriverPackage, datasetInputHash, hashCanonical, loadDataset, MANUAL_TRIGGER_HOST_METHODS,
 } from "../test/sim/desk-pet-chat/dataset.mjs"
 import {
-  beginChatAttempt, CHAT_GRADER_VERSION, copyArtifact, createDialogueWriter, ensureChatRun,
-  extendChatAttemptSessions, listAttemptIds, listChatRuns, readChatRun, readChatWorkflow,
-  sealChatAttempt, setChatRunPhase, verifySealedAttempt,
+  beginChatAttempt, CHAT_GRADER_VERSION, copyArtifact, createDialogueWriter, ensureChatRun, ensureTrialPlan,
+  extendChatAttemptSessions, listAttemptIds, listChatRuns, readChatRun, readChatRunEvidence, readChatWorkflow,
+  readTrialPlan, sealChatAttempt, setChatRunPhase, verifySealedAttempt,
 } from "../test/sim/desk-pet-chat/evidence.mjs"
 import {
   applyJudgeVerdicts, formatJudgePacket, JUDGE_PROMPT_VERSION, latestJudgeGrade, loadJudgingContext,
@@ -105,6 +111,74 @@ export function makeRunId(now = new Date(), suffix = randomBytes(4).toString("he
 
 export function runDirFor(runId, repoRoot = REPO_ROOT) {
   return join(repoRoot, "test", ".tmp", `${RUN_DIR_PREFIX}${validateRunId(runId)}`)
+}
+
+/**
+ * `exit.json` 是宿主统一退出序列的证明：绑定本次 pid，如实携带 flush 结果。
+ * 缺文件、强杀或 flush 未完成都不能当成干净退出。
+ */
+export function validateHostExit(raw, { hostPid = null } = {}) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("exit.json 不是对象")
+  if (raw.schemaVersion !== RUNNER_STATE_SCHEMA_VERSION) {
+    throw new Error(`exit.json schemaVersion=${String(raw.schemaVersion)} 不受支持`)
+  }
+  if (!Number.isInteger(raw.pid) || raw.pid <= 0) throw new Error(`exit.json pid 不合法：${String(raw.pid)}`)
+  if (hostPid !== null && raw.pid !== hostPid) {
+    throw new Error(`exit.json pid=${raw.pid} 与 runner.json hostPid=${hostPid} 不一致`)
+  }
+  if (typeof raw.exitedAt !== "string" || Number.isNaN(Date.parse(raw.exitedAt))) {
+    throw new Error(`exit.json exitedAt 不是 ISO 时间：${String(raw.exitedAt)}`)
+  }
+  if (raw.flush !== null) {
+    if (typeof raw.flush !== "object" || Array.isArray(raw.flush)) throw new Error("exit.json flush 必须是对象或 null")
+    if (typeof raw.flush.flushed !== "boolean") throw new Error("exit.json flush.flushed 必须是布尔值")
+    if (!Number.isInteger(raw.flush.pending) || raw.flush.pending < 0) {
+      throw new Error("exit.json flush.pending 必须是非负整数")
+    }
+    if (raw.flush.detail !== undefined && raw.flush.detail !== null && typeof raw.flush.detail !== "string") {
+      throw new Error("exit.json flush.detail 必须是字符串或 null")
+    }
+  }
+  if (typeof raw.interrupted !== "boolean") throw new Error("exit.json interrupted 必须是布尔值")
+  if (typeof raw.forcedKill !== "boolean") throw new Error("exit.json forcedKill 必须是布尔值")
+  if (typeof raw.detail !== "string") throw new Error("exit.json detail 必须是字符串")
+  return {
+    schemaVersion: raw.schemaVersion,
+    pid: raw.pid,
+    exitedAt: raw.exitedAt,
+    flush: raw.flush
+      ? { flushed: raw.flush.flushed, pending: raw.flush.pending, detail: raw.flush.detail ?? null }
+      : null,
+    interrupted: raw.interrupted,
+    forcedKill: raw.forcedKill,
+    detail: raw.detail,
+  }
+}
+
+export function hostExitProblems(exit) {
+  if (!exit) return ["宿主没有写出 exit.json（可能不是产品退出或被强杀）；无法核对关停 flush"]
+  const problems = []
+  if (!exit.flush) problems.push("宿主关停未收到 Node flush 报告")
+  else if (!exit.flush.flushed) problems.push(`Node flush 未完成（pending=${exit.flush.pending}）：${exit.flush.detail ?? "无详情"}`)
+  if (exit.interrupted) problems.push("宿主关停被标记为中断")
+  if (exit.forcedKill) problems.push("宿主走了强杀路径")
+  return problems
+}
+
+function readHostExit(path, { hostPid = null } = {}) {
+  const raw = readJsonIfExists(path)
+  return raw ? validateHostExit(raw, { hostPid }) : null
+}
+
+/** 读取并归一化关停证据；记录损坏也算证据问题，不让读取错误盖住关停收口失败。 */
+function hostExitEvidence(path, hostPid) {
+  let exit = null
+  try {
+    exit = readHostExit(path, { hostPid })
+  } catch (error) {
+    return { exit: null, problems: [`exit.json 不可用：${messageOf(error)}`] }
+  }
+  return { exit, problems: hostExitProblems(exit) }
 }
 
 /** 证据目录名与 attempt 绑定共用同一套字符集；点号只用于版本化运行 id。 */
@@ -675,6 +749,95 @@ function countCaseAttempts(runDir, caseId) {
   return count
 }
 
+/** 计划内的试次只统计非修复 attempt；修复是同一试次的证据替换，不占新的 trial 名额。 */
+function listCaseTrialAttempts(runDir, caseId) {
+  if (!existsSync(runDir)) return []
+  const attempts = []
+  for (const attemptId of listAttemptIds(runDir)) {
+    const attemptDir = join(runDir, "attempts", attemptId)
+    let record = null
+    for (const name of ["manifest.json", "manifest.json.pending"]) {
+      const path = join(attemptDir, name)
+      if (!existsSync(path)) continue
+      record = readJsonIfExists(path)
+      break
+    }
+    if (!record) continue
+    const trial = (record.expectedTrials ?? []).find(candidate => candidate.caseId === caseId)
+    if (!trial) continue
+    attempts.push({
+      attemptId,
+      trialId: trial.trialId,
+      repair: Boolean(record.identity?.repair),
+      sealed: existsSync(join(attemptDir, "manifest.json")),
+    })
+  }
+  return attempts
+}
+
+/** 冻结计划按 trial 身份占用名额；同一 trialId 即使尚未封存也不能再次建立 attempt。 */
+function findAttemptByTrialId(runDir, caseId, trialId) {
+  return listCaseTrialAttempts(runDir, caseId).find(attempt => attempt.trialId === trialId) ?? null
+}
+
+export function planTrialBatch({ requestedTrials = null, existingAttempts = 0, budgetTrials }) {
+  if (!Number.isInteger(budgetTrials) || budgetTrials < 1) {
+    throw new Error(`授权预算 trials 必须是正整数：${String(budgetTrials)}`)
+  }
+  if (!Number.isInteger(existingAttempts) || existingAttempts < 0) {
+    throw new Error(`已有 attempt 数必须是非负整数：${String(existingAttempts)}`)
+  }
+  const requested = requestedTrials === null || requestedTrials === undefined ? budgetTrials : requestedTrials
+  if (!Number.isInteger(requested) || requested < 1) {
+    throw new Error(`--trials 必须是正整数：${String(requestedTrials)}`)
+  }
+  if (requested > budgetTrials) {
+    throw new Error(`--trials=${requested} 超过授权预算 trials=${budgetTrials}；扩大计划前先更新授权`)
+  }
+  if (requested < existingAttempts) {
+    throw new Error(`--trials=${requested} 小于已有 attempt 数 ${existingAttempts}；计划不能回收已产生的试次`)
+  }
+  return { plannedTrials: requested, existingAttempts, newTrials: requested - existingAttempts }
+}
+
+function trialIdSuffix(evaluationRunId) {
+  return createHash("sha256").update(evaluationRunId).digest("hex").slice(0, 8)
+}
+
+function trialIdBase(evaluationRunId, maxLength) {
+  const base = evaluationRunId.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "")
+  return base.slice(0, maxLength).replace(/-+$/g, "") || "batch"
+}
+
+/** 计划槽位与子运行都用评价组 id 派生：续跑时不需要额外的映射文件，也不会截断碰撞。 */
+export function batchTrialId(evaluationRunId, index) {
+  validateEvaluationRunId(evaluationRunId)
+  if (!Number.isInteger(index) || index < 1) throw new Error(`trial 序号必须是正整数：${String(index)}`)
+  return validateTrialId(`trial-${trialIdBase(evaluationRunId, 40)}-${trialIdSuffix(evaluationRunId)}-${String(index).padStart(2, "0")}`)
+}
+
+export function batchTrialRunId(evaluationRunId, index) {
+  validateEvaluationRunId(evaluationRunId)
+  if (!Number.isInteger(index) || index < 1) throw new Error(`trial 序号必须是正整数：${String(index)}`)
+  return validateRunId(`${trialIdBase(evaluationRunId, 28)}-${trialIdSuffix(evaluationRunId)}-t${String(index).padStart(2, "0")}`)
+}
+
+/** 计划冻结后只接受同一用例、同一授权与同一预算；批量子运行必须落在计划的 trialId 上。 */
+function assertTrialPlanBinding(plan, { state, authorization }) {
+  if (plan.caseId !== state.caseId) {
+    throw new Error(`trial 计划的用例 ${plan.caseId} 与本次运行 ${state.caseId} 不一致`)
+  }
+  if (plan.evaluationRunId !== state.chat.evaluationRunId) {
+    throw new Error(`trial 计划的运行组 ${plan.evaluationRunId} 与本次运行 ${state.chat.evaluationRunId} 不一致`)
+  }
+  if (plan.authorizationFingerprint !== authorizationFingerprint(authorization)) {
+    throw new Error("trials.json 的授权指纹与当前授权不一致；计划只能按冻结授权执行")
+  }
+  if (plan.budgetTrials !== authorization.budget.trials) {
+    throw new Error(`trials.json 的预算 trials=${plan.budgetTrials} 与当前授权 ${authorization.budget.trials} 不一致`)
+  }
+}
+
 function statePaths(runDir) {
   const dataRoot = join(runDir, "data")
   const controlDir = join(dataRoot, "logs", "sim", "control")
@@ -691,6 +854,7 @@ function statePaths(runDir) {
     driverPackagePath: join(runDir, "driver-package.json"),
     driverProgressPath: join(runDir, "driver-progress.json"),
     hostLogPath: join(runDir, "host.log"),
+    exitPath: join(runDir, "exit.json"),
     inboxPath: join(controlDir, "inbox.jsonl"),
     outboxPath: join(controlDir, "outbox.jsonl"),
     configPath: join(dataRoot, "settings", "CONFIG.yaml"),
@@ -764,6 +928,32 @@ function stageEvalModels({ repoRoot, dataRoot }) {
   return staged
 }
 
+/** prepare 与 batch 共用同一份用例前置校验；差别只在错误文案里的操作名。 */
+function loadCaseForRun({ caseId, label }) {
+  if (!caseId) throw new Error(`${label} 需要 --case <caseId>`)
+  const dataset = loadDataset({ repoRoot: REPO_ROOT })
+  if (dataset.errors.length > 0) {
+    for (const problem of dataset.errors) {
+      console.error(`${problem.code}${problem.file ? ` ${problem.file}` : ""}: ${problem.message}`)
+    }
+    throw new Error(`数据集有 ${dataset.errors.length} 个错误；${label} 不带着坏数据启动`)
+  }
+  const entry = dataset.cases.find(candidate => candidate.caseId === caseId)
+  if (!entry) {
+    throw new Error(`找不到用例：${caseId}；可用：${dataset.cases.map(candidate => candidate.caseId).join(", ") || "（无）"}`)
+  }
+  const suite = dataset.suites.find(candidate => candidate.suiteId === entry.suiteId)
+  if (!suite) throw new Error(`找不到套件：${entry.suiteId}`)
+  if (entry.fixture.loading?.mode !== "direct-seed") {
+    throw new Error(`fixture.loading.mode=${String(entry.fixture.loading?.mode)}，本运行器只支持 direct-seed`)
+  }
+  const unsupported = entry.case.precondition.hostCapabilities.filter(capability => !SUPPORTED_HOST_CAPABILITIES.has(capability))
+  if (unsupported.length > 0) {
+    throw new Error(`用例要求完整产品宿主未声明的能力：${unsupported.join(", ")}`)
+  }
+  return { dataset, entry, suite }
+}
+
 async function prepare(options) {
   const repoRoot = REPO_ROOT
   const repairing = options.repairOf ? loadState(validateRunId(options.repairOf)) : null
@@ -781,27 +971,8 @@ async function prepare(options) {
     throw new Error(`运行根已存在，拒绝覆盖：${relative(repoRoot, runDir)}；请换 --run-id 或先确认并手动清理`)
   }
 
-  const dataset = loadDataset({ repoRoot })
-  if (dataset.errors.length > 0) {
-    for (const problem of dataset.errors) {
-      console.error(`${problem.code}${problem.file ? ` ${problem.file}` : ""}: ${problem.message}`)
-    }
-    throw new Error(`数据集有 ${dataset.errors.length} 个错误；prepare 不带着坏数据启动`)
-  }
-  const entry = dataset.cases.find(candidate => candidate.caseId === caseId)
-  if (!entry) {
-    throw new Error(`找不到用例：${caseId}；可用：${dataset.cases.map(candidate => candidate.caseId).join(", ") || "（无）"}`)
-  }
-  const suite = dataset.suites.find(candidate => candidate.suiteId === entry.suiteId)
-  if (!suite) throw new Error(`找不到套件：${entry.suiteId}`)
+  const { dataset, entry, suite } = loadCaseForRun({ caseId, label: "prepare" })
   const purpose = suite.purpose
-  if (entry.fixture.loading?.mode !== "direct-seed") {
-    throw new Error(`fixture.loading.mode=${String(entry.fixture.loading?.mode)}，本运行器只支持 direct-seed`)
-  }
-  const unsupported = entry.case.precondition.hostCapabilities.filter(capability => !SUPPORTED_HOST_CAPABILITIES.has(capability))
-  if (unsupported.length > 0) {
-    throw new Error(`用例要求完整产品宿主未声明的能力：${unsupported.join(", ")}`)
-  }
   const evaluationRunId = repairing
     ? repairing.state.chat.evaluationRunId
     : options.evaluationRunId ? validateEvaluationRunId(options.evaluationRunId) : validateEvaluationRunId(runId)
@@ -1064,6 +1235,19 @@ async function startChatCapture({ paths, state, entry, dataset, createdAt }) {
     })
     runDir = chatRun.runDir
     assertChatScope(chatRun.run, state)
+    const plan = readTrialPlan(runDir)
+    if (plan) {
+      assertTrialPlanBinding(plan, { state, authorization })
+      if (!state.repair) {
+        if (!plan.trialIds.includes(trialId)) {
+          throw new Error(`trialId=${trialId} 不在冻结计划内（${plan.trialIds.join(", ")}）；批量运行必须按计划槽位建立 attempt`)
+        }
+        const used = findAttemptByTrialId(runDir, state.caseId, trialId)
+        if (used) {
+          throw new Error(`trialId=${trialId} 已由 attempt ${used.attemptId} 占用；计划试次不能被重放或替换`)
+        }
+      }
+    }
     const priorAttempts = countCaseAttempts(runDir, state.caseId)
     if (!state.repair && priorAttempts >= authorization.budget.trials) {
       throw new Error(`试次预算已用尽（${priorAttempts}/${authorization.budget.trials}）；不建立新 attempt`)
@@ -1362,7 +1546,9 @@ function driverTransport(paths, identity) {
     },
     sessions: syncSessions,
     async host(method, args) {
-      const event = await sendBridgeCommand(paths, { type: "host", method, args }, ["host"], CAPTURE_WAIT_MS)
+      // 任务交付组件最长等待 300s，手工触发沿用消息级超时；其余宿主步骤保持采集超时。
+      const timeoutMs = MANUAL_TRIGGER_HOST_METHODS.includes(method) ? DRIVER_MESSAGE_WAIT_MS : CAPTURE_WAIT_MS
+      const event = await sendBridgeCommand(paths, { type: "host", method, args }, ["host"], timeoutMs)
       return { method: event.method, result: event.result ?? null }
     },
     async context() {
@@ -1605,7 +1791,7 @@ async function finish(runId, options = {}) {
   if (!pid || !isAlive(pid)) {
     markUnsealed(state, "宿主已退出，采集无法收口")
     updateState(paths, state, { status: "failed", lastError: "宿主不在运行，无法收口采集" })
-    throw new Error("宿主不在运行，无法收口采集；证据按未封存保留")
+    throw new Error(`宿主不在运行，无法收口采集；证据按未封存保留，用 rescue --run-id ${runId} 按中断封存`)
   }
 
   const expected = { evaluationRunId: chat.evaluationRunId, attemptId: chat.attemptId, attemptDir }
@@ -1692,8 +1878,10 @@ async function finish(runId, options = {}) {
     })
 
     let stopError = null
+    let stopProblems = []
     try {
-      await stop(runId)
+      const stopped = await stop(runId)
+      stopProblems = stopped?.problems ?? []
     } catch (error) {
       stopError = messageOf(error)
       const fresh = loadState(runId)
@@ -1715,14 +1903,456 @@ async function finish(runId, options = {}) {
       `  retention: kept=${retention.kept.join(", ") || "（无）"}${retention.evicted.length ? ` evicted=${retention.evicted.join(", ")}` : ""}`,
       ...(retention.blocked ? [`  retention blocked: ${retention.reasons.join("；")}`] : []),
       ...(sealed.issues.length ? [`  issues:\n${sealed.issues.map(issue => `    - ${issue}`).join("\n")}`] : []),
+      ...(stopProblems.length ? [`  shutdown:\n${stopProblems.map(problem => `    - ${problem}`).join("\n")}`] : []),
       ...(stopError ? [`  stop error: ${stopError}`] : []),
     ].join("\n"))
-    if (sealed.status !== "complete" || outcome.status !== "completed" || stopError) process.exitCode = 1
+    if (sealed.status !== "complete" || outcome.status !== "completed" || stopError || stopProblems.length) {
+      process.exitCode = 1
+    }
   } catch (error) {
     markUnsealed(state, messageOf(error))
     updateState(paths, state, { lastError: messageOf(error) })
     throw error
   }
+}
+
+// ── rescue ──
+
+/**
+ * 故障救援：宿主没有走完产品退出序列时，把已落盘的 attempt 草稿按中断封存，
+ * 让未完成证据有终点、`prepare --repair-of` 可以继续。救援绝不冒充完成：
+ * 缺对话、缺 trace 封口、缺 exit.json 都写进 issues，封存结果保持 inconclusive。
+ */
+export async function rescueRun({ runDir, state, reason = null, now = new Date().toISOString() }) {
+  const paths = statePaths(runDir)
+  const pid = state.hostPid ?? null
+  if (pid && isAlive(pid)) throw new Error(`宿主仍在运行（pid=${pid}）；先 stop 再救援`)
+  const chat = state.chat
+  if (!chat?.attemptDir || !chat.attemptId) {
+    throw new Error("本运行没有建立 attempt；没有可救援的采集证据（运行组用 stop 收口）")
+  }
+  if (chat.sealedAt || existsSync(join(chat.attemptDir, "manifest.json"))) {
+    throw new Error("attempt 已封存；无需救援（用 report／review 查看证据）")
+  }
+  const pendingPath = join(chat.attemptDir, "manifest.json.pending")
+  if (!existsSync(pendingPath)) throw new Error(`attempt 草稿不存在：${pendingPath}；没有可封存的证据`)
+  const pending = readJsonIfExists(pendingPath)
+  const text = typeof reason === "string" && reason.trim() ? reason.trim() : "宿主已退出，采集未收口"
+  const { exit, problems } = hostExitEvidence(paths.exitPath, pid)
+
+  if (existsSync(paths.driverProgressPath)) {
+    copyArtifact({ attemptDir: chat.attemptDir, name: "driver-progress.json", sourcePath: paths.driverProgressPath })
+  }
+  const tracePath = join(chat.attemptDir, "trace.jsonl")
+  const actualModels = existsSync(tracePath) ? extractActualModels(readFileSync(tracePath, "utf8")) : []
+  const issues = [
+    `宿主退出前未完成采集收口，救援封存：${text}`,
+    ...(existsSync(paths.readyPath) ? ["ready.json 仍存在：宿主未走完产品退出序列"] : []),
+    ...problems.map(problem => `关停证据：${problem}`),
+  ]
+  const sealed = await sealChatAttempt({
+    attemptDir: chat.attemptDir,
+    sealedAt: now,
+    models: { actual: actualModels.length > 0 ? actualModels.join(",") : null },
+    sourceHash: computeSourceHash(),
+    inputs: pending.identity?.inputs ?? null,
+    outcome: "interrupted",
+    issues,
+  })
+  setChatRunPhase(chat.runDir, {
+    phase: "blocked",
+    updatedAt: now,
+    pendingDecision: { kind: "evidence_incomplete", reason: sealed.issues.join("；") || text },
+    nextAction: "证据已按中断封存；修复后按新运行组或 prepare --repair-of 重新采集",
+  })
+  const report = writeChatReport({ runDir: chat.runDir, generatedAt: now, dataset: loadReportDataset(state).dataset })
+  updateState(paths, state, {
+    status: "rescued",
+    lastError: `故障救援：${text}`,
+    chat: {
+      ...chat,
+      sealedAt: now,
+      manifestSha256: sealed.manifestSha256,
+      integrity: { status: sealed.status, issues: sealed.issues },
+      reportPath: relative(REPO_ROOT, report.path),
+    },
+    hostExit: exit,
+  })
+  return {
+    status: sealed.status,
+    issues: sealed.issues,
+    manifestSha256: sealed.manifestSha256,
+    reportPath: report.path,
+    hostExit: exit,
+    hostExitProblems: problems,
+  }
+}
+
+// ── batch ──
+
+const BATCH_STATE_FILE = "batch.json"
+export const BATCH_RUN_SCHEMA_VERSION = 1
+
+function runChild(args) {
+  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], {
+    cwd: REPO_ROOT,
+    stdio: "inherit",
+  })
+  if (result.error) throw new Error(`子命令 ${args[0]} 启动失败：${result.error.message}`)
+  return result.status ?? 1
+}
+
+function assertBatchRun(run, { entry, authorization, baseline }) {
+  const cases = Array.isArray(run.scope?.caseIds) ? run.scope.caseIds : []
+  const suites = Array.isArray(run.scope?.suiteIds) ? run.scope.suiteIds : []
+  if (cases.length > 0 && !cases.includes(entry.caseId)) {
+    throw new Error(`运行组 ${run.evaluationRunId} 的范围不含用例 ${entry.caseId}`)
+  }
+  if (suites.length > 0 && !suites.includes(entry.suiteId)) {
+    throw new Error(`运行组 ${run.evaluationRunId} 的范围不含套件 ${entry.suiteId}`)
+  }
+  if (run.scope?.purpose !== authorization.scope.purpose) {
+    throw new Error(`运行组用途=${String(run.scope?.purpose)} 与授权用途 ${authorization.scope.purpose} 不一致`)
+  }
+  if (run.scope?.holdout !== authorization.holdout) {
+    throw new Error("运行组的 holdout 标记与授权不一致")
+  }
+  if (JSON.stringify(run.budget) !== JSON.stringify(authorization.budget)) {
+    throw new Error("运行组预算与当前授权不一致；同一证据组不能混用不同预算")
+  }
+  if (JSON.stringify(run.baseline ?? null) !== JSON.stringify(baseline)) {
+    throw new Error("运行组 baseline 与本次批量不一致；续跑必须沿用原基线")
+  }
+}
+
+function findRunStateForAttempt(attemptDir) {
+  if (!existsSync(RUNS_BASE)) return null
+  const target = resolve(attemptDir)
+  for (const entry of readdirSync(RUNS_BASE, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(RUN_DIR_PREFIX)) continue
+    const runDir = join(RUNS_BASE, entry.name)
+    const state = readJsonIfExists(join(runDir, RUNNER_STATE_FILE))
+    if (!state?.chat?.attemptDir) continue
+    if (resolve(REPO_ROOT, state.chat.attemptDir) !== target) continue
+    return { runId: state.runId, runDir, state }
+  }
+  return null
+}
+
+function driveFailureReason(runId) {
+  try {
+    const { paths } = loadState(runId)
+    const progress = readDriverProgress(readJsonIfExists(paths.driverProgressPath))
+    const outcome = driverOutcome(progress)
+    if (outcome.status !== "completed" && outcome.reason) return outcome.reason
+  } catch (error) {
+    // 进度文件不可读时退回 runner 的最后错误；原始失败仍然优先于通用文案。
+    console.warn(`[batch] 读取驱动结果失败：${messageOf(error)}`)
+  }
+  try {
+    const { state } = loadState(runId)
+    if (state.lastError) return state.lastError
+  } catch (error) {
+    console.warn(`[batch] 读取运行状态失败：${messageOf(error)}`)
+  }
+  return "驱动未完成，原因未记录"
+}
+
+function validateBatchRecord(previous, { evaluationRunId, plan }) {
+  if (previous?.schemaVersion !== BATCH_RUN_SCHEMA_VERSION) {
+    throw new Error(`batch.json 版本不支持：${String(previous?.schemaVersion)}`)
+  }
+  if (previous.evaluationRunId !== evaluationRunId) {
+    throw new Error(`batch.json 的评价组 ${previous.evaluationRunId} 与本次 ${evaluationRunId} 不一致`)
+  }
+  if (previous.caseId !== plan.caseId) throw new Error("batch.json 的用例与冻结计划不一致")
+  if (previous.plannedTrials !== plan.plannedTrials || !Array.isArray(previous.trials)
+    || previous.trials.length !== plan.plannedTrials) {
+    throw new Error("batch.json 的槽位数量与冻结计划不一致")
+  }
+  for (const [index, trialId] of plan.trialIds.entries()) {
+    if (previous.trials[index]?.trialId !== trialId) {
+      throw new Error(`batch.json 第 ${index + 1} 个槽位 ${String(previous.trials[index]?.trialId)} 与计划 ${trialId} 不一致`)
+    }
+  }
+  const runIds = previous.trials.map(slot => slot.runId).filter(Boolean)
+  if (new Set(runIds).size !== runIds.length) throw new Error("batch.json 的子运行 id 重复")
+}
+
+/** 上一次 prepare/start 没留下 attempt 时换一个未占用的子运行 id；有 attempt 的槽位永远复用原现场。 */
+function resolveSlotRunId({ evaluationRunId, index, previousSlots }) {
+  const base = batchTrialRunId(evaluationRunId, index)
+  const last = [...previousSlots].reverse().find(slot => slot.index === index)?.runId
+  if (!last) return base
+  const lastDir = runDirFor(last)
+  if (!existsSync(lastDir)) return last
+  const state = readJsonIfExists(join(lastDir, RUNNER_STATE_FILE))
+  if (state?.chat?.attemptId) return last
+  if (state?.hostPid && isAlive(state.hostPid)) return last
+  for (let retry = 2; ; retry += 1) {
+    const candidate = validateRunId(`${base}-r${retry}`)
+    if (!existsSync(runDirFor(candidate))) return candidate
+  }
+}
+
+async function runBatchSlot({ slot, runDir, evaluationRunId, entry, authorizationPath, cardPath, baseline }) {
+  const existing = findAttemptByTrialId(runDir, entry.caseId, slot.trialId)
+  if (existing) {
+    const attemptDir = join(runDir, "attempts", existing.attemptId)
+    if (existing.sealed) {
+      const manifest = readJsonIfExists(join(attemptDir, "manifest.json"))
+      const located = findRunStateForAttempt(attemptDir)
+      return {
+        runId: located?.runId ?? slot.runId,
+        attemptId: existing.attemptId,
+        status: "sealed",
+        outcome: manifest?.outcome ?? null,
+        integrity: manifest?.integrity?.status ?? null,
+        reason: null,
+      }
+    }
+    // 计划槽位已被未封存 attempt 占用：不能替换，先停掉可能残留的宿主再记账。
+    const located = findRunStateForAttempt(attemptDir)
+    if (located?.state?.hostPid && isAlive(located.state.hostPid)) {
+      console.log(`[batch] ${slot.trialId} 的宿主仍在运行（run=${located.runId}）；先停止`)
+      await stop(located.runId)
+    }
+    return {
+      runId: located?.runId ?? slot.runId,
+      attemptId: existing.attemptId,
+      status: "unsealed",
+      outcome: null,
+      integrity: null,
+      reason: "计划槽位已有未封存 attempt；不替换，保持失败占位",
+    }
+  }
+
+  const runId = slot.runId
+  const trialRunDir = runDirFor(runId)
+  if (existsSync(trialRunDir)) {
+    throw new Error(
+      `trial ${slot.trialId} 的运行根已存在但没有对应 attempt（${relative(REPO_ROOT, trialRunDir)}）；`
+      + "请人工核对后换新的评价组",
+    )
+  }
+  const args = [
+    "prepare", "--case", entry.caseId, "--card", cardPath, "--authorization", authorizationPath,
+    "--run-id", runId, "--evaluation-run-id", evaluationRunId, "--trial-id", slot.trialId,
+  ]
+  if (baseline) args.push("--baseline", baseline.evaluationRunId)
+  if (runChild(args) !== 0) throw new Error(`trial ${slot.trialId} prepare 失败；批量中止（已保留现场）`)
+  if (runChild(["start", "--run-id", runId]) !== 0) {
+    throw new Error(`trial ${slot.trialId} start 失败；批量中止（已保留现场）`)
+  }
+  const driveStatus = runChild(["drive", "--run-id", runId])
+  if (driveStatus === 0) {
+    runChild(["finish", "--run-id", runId])
+  } else {
+    const reason = driveFailureReason(runId)
+    console.warn(`[batch] ${slot.trialId} 驱动未完成：${reason}；按中断收口并保留占位`)
+    runChild(["finish", "--run-id", runId, "--interrupted", "--reason", reason])
+  }
+
+  const after = loadState(runId).state
+  const attemptDir = after.chat?.attemptDir ?? null
+  const manifest = attemptDir ? readJsonIfExists(join(attemptDir, "manifest.json")) : null
+  if (!manifest) {
+    if (after.hostPid && isAlive(after.hostPid)) {
+      try {
+        await stop(runId)
+      } catch (error) {
+        throw new Error(`trial ${slot.trialId} 未能封存且宿主停止失败：${messageOf(error)}；批量中止`)
+      }
+    }
+    return {
+      runId,
+      attemptId: after.chat?.attemptId ?? null,
+      status: "unsealed",
+      outcome: null,
+      integrity: null,
+      reason: after.lastError ?? "finish 未封存",
+    }
+  }
+  return {
+    runId,
+    attemptId: after.chat.attemptId,
+    status: "sealed",
+    outcome: manifest.outcome ?? null,
+    integrity: manifest.integrity?.status ?? null,
+    reason: manifest.outcome === "completed" ? null : after.lastError ?? null,
+  }
+}
+
+/**
+ * 串行执行冻结计划里的每个槽位。计划在第一个试次之前写入 trials.json，失败或不完整的
+ * 试次保持占位、不被替换；批量只负责采集与封存，不判分、不调用模型 API。
+ */
+async function batch(options = {}) {
+  if (options.runId) throw new Error("batch 用 --evaluation-run-id 指定证据组；--run-id 只用于单个试次")
+  const { dataset, entry, suite } = loadCaseForRun({ caseId: options.caseId, label: "batch" })
+  if (!options.card) throw new Error("batch 缺少 --card <path>（fixture 需要的 Card 不被仓库跟踪）")
+  const cardPath = resolve(options.card)
+  if (!existsSync(cardPath)) throw new Error(`Card 文件不存在：${cardPath}`)
+  if (!options.authorization) {
+    throw new Error("batch 缺少 --authorization <file.json>（用户确认的用例范围、模型与预算）")
+  }
+  const authorizationPath = resolve(options.authorization)
+  const authorization = readAuthorizationFile(authorizationPath, { caseIds: [entry.caseId], purpose: suite.purpose })
+  const fingerprint = authorizationFingerprint(authorization)
+  const evaluationRunId = options.evaluationRunId
+    ? validateEvaluationRunId(options.evaluationRunId)
+    : validateEvaluationRunId(makeRunId())
+  const existingRunPath = join(CHAT_REPORTS_DIR, evaluationRunId)
+  const existingRun = existsSync(join(existingRunPath, "run.json")) ? readChatRun(existingRunPath) : null
+  const baseline = options.baselineId
+    ? { evaluationRunId: validateEvaluationRunId(options.baselineId) }
+    : existingRun?.baseline ?? null
+  if (baseline?.evaluationRunId === evaluationRunId) {
+    throw new Error("baseline 不能是本次运行的 evaluationRunId")
+  }
+  if (baseline && !existsSync(join(CHAT_REPORTS_DIR, baseline.evaluationRunId, "run.json"))) {
+    throw new Error(`baseline 运行组不存在：${baseline.evaluationRunId}`)
+  }
+  const requested = options.trials === undefined ? null : Number(options.trials)
+  let plan = existingRun ? readTrialPlan(existingRunPath) : null
+  let plannedTrials
+  if (plan) {
+    if (plan.caseId !== entry.caseId) {
+      throw new Error(`冻结计划的用例 ${plan.caseId} 与本次 ${entry.caseId} 不一致`)
+    }
+    if (plan.authorizationFingerprint !== fingerprint) {
+      throw new Error("trials.json 的授权指纹与当前授权不一致；计划只能按冻结授权执行")
+    }
+    if (plan.budgetTrials !== authorization.budget.trials) {
+      throw new Error(`trials.json 的预算 trials=${plan.budgetTrials} 与当前授权 ${authorization.budget.trials} 不一致`)
+    }
+    if (requested !== null && requested !== plan.plannedTrials) {
+      throw new Error(`trial 计划已冻结为 ${plan.plannedTrials} 个；不能用 --trials=${String(options.trials)} 改写`)
+    }
+    plannedTrials = plan.plannedTrials
+  } else {
+    if (existingRun && listCaseTrialAttempts(existingRunPath, entry.caseId).length > 0) {
+      throw new Error("运行组已有 attempt 但未冻结 trial 计划；不能事后补建计划")
+    }
+    plannedTrials = planTrialBatch({
+      requestedTrials: requested, existingAttempts: 0, budgetTrials: authorization.budget.trials,
+    }).plannedTrials
+  }
+
+  const scope = {
+    suiteIds: [entry.suiteId],
+    caseIds: [entry.caseId],
+    purpose: authorization.scope.purpose,
+    holdout: authorization.holdout,
+  }
+  const createdAt = nowIso()
+  const chatRun = ensureChatRun({
+    reportsDir: CHAT_REPORTS_DIR, evaluationRunId, createdAt, scope, budget: authorization.budget, baseline,
+  })
+  const runDir = chatRun.runDir
+  if (!chatRun.created) assertBatchRun(chatRun.run, { entry, authorization, baseline })
+  const trialIds = plan ? plan.trialIds : Array.from({ length: plannedTrials }, (_, index) => batchTrialId(evaluationRunId, index + 1))
+  plan = ensureTrialPlan({
+    runDir, evaluationRunId, caseId: entry.caseId, trialIds,
+    budgetTrials: authorization.budget.trials, authorizationFingerprint: fingerprint, createdAt,
+  }).plan
+
+  const batchPath = join(runDir, BATCH_STATE_FILE)
+  const previous = existsSync(batchPath) ? readJsonIfExists(batchPath) : null
+  if (previous) validateBatchRecord(previous, { evaluationRunId, plan })
+  const previousSlots = previous?.trials ?? []
+  const record = {
+    schemaVersion: BATCH_RUN_SCHEMA_VERSION,
+    evaluationRunId,
+    caseId: entry.caseId,
+    createdAt: previous?.createdAt ?? createdAt,
+    updatedAt: createdAt,
+    plannedTrials: plan.plannedTrials,
+    status: "running",
+    trials: plan.trialIds.map((trialId, index) => ({
+      index: index + 1,
+      trialId,
+      runId: resolveSlotRunId({ evaluationRunId, index: index + 1, previousSlots }),
+      attemptId: null,
+      status: "pending",
+      outcome: null,
+      integrity: null,
+      reason: null,
+    })),
+    nextAction: null,
+  }
+  writeJsonAtomic(batchPath, record)
+  setChatRunPhase(runDir, {
+    phase: "preparing",
+    updatedAt: createdAt,
+    pendingDecision: null,
+    nextAction: `batch 串行执行 ${record.plannedTrials} 个 trial（计划已冻结，失败不替换）`,
+  })
+
+  console.log([
+    `batch ${evaluationRunId} · ${entry.caseId}`,
+    `  plan: ${plan.plannedTrials} trials（budget trials=${authorization.budget.trials}）`,
+    `  evidence: ${relative(REPO_ROOT, runDir)}`,
+    ...record.trials.map(slot => `  #${slot.index} ${slot.trialId} → run ${slot.runId}`),
+  ].join("\n"))
+
+  for (const slot of record.trials) {
+    try {
+      Object.assign(slot, await runBatchSlot({
+        slot, runDir, evaluationRunId, entry, authorizationPath, cardPath, baseline,
+      }))
+    } catch (error) {
+      record.status = "blocked"
+      record.nextAction = messageOf(error)
+      writeJsonAtomic(batchPath, record)
+      try {
+        setChatRunPhase(runDir, {
+          phase: "blocked",
+          updatedAt: nowIso(),
+          pendingDecision: { kind: "batch_aborted", reason: messageOf(error) },
+          nextAction: `批量中止：${messageOf(error)}`,
+        })
+      } catch (phaseError) {
+        console.warn(`[batch] 标记运行组 blocked 失败：${messageOf(phaseError)}`)
+      }
+      throw error
+    }
+    writeJsonAtomic(batchPath, record)
+  }
+
+  const complete = record.trials.every(slot =>
+    slot.status === "sealed" && slot.outcome === "completed" && slot.integrity === "complete")
+  record.status = complete ? "completed" : "incomplete"
+  const gradableRuns = record.trials.filter(slot => slot.status === "sealed" && slot.integrity === "complete")
+  const nextAction = complete
+    ? `对每个子运行执行 judge prepare 并回填独立 coding-agent judge 裁决；之后用 report 查看 pass^k`
+    : "存在未封存、未完成或证据不完整的试次：该槽位保持占位，pass^k 只能 inconclusive；核对后新开评价组"
+  record.nextAction = nextAction
+  writeJsonAtomic(batchPath, record)
+  setChatRunPhase(runDir, {
+    phase: complete ? "awaiting_judge" : "blocked",
+    updatedAt: nowIso(),
+    pendingDecision: complete ? null : { kind: "trial_incomplete", reason: nextAction },
+    nextAction,
+  })
+  const report = writeChatReport({ runDir, generatedAt: nowIso(), dataset })
+  console.log([
+    `batch ${complete ? "collected" : "incomplete"} ${evaluationRunId}`,
+    `  trials: ${record.trials.filter(slot => slot.status === "sealed").length}/${record.plannedTrials} 已封存`
+      + ` · ${record.trials.filter(slot => slot.outcome === "completed").length} 执行完成`
+      + ` · ${record.trials.filter(slot => slot.status === "unsealed").length} 未封存`,
+    `  report: ${relative(REPO_ROOT, report.path)}`,
+    ...record.trials.map(slot => `  #${slot.index} ${slot.trialId}: ${slot.status}`
+      + `${slot.outcome ? ` · ${slot.outcome}` : ""}${slot.integrity ? ` · ${slot.integrity}` : ""}`
+      + `${slot.reason ? `（${slot.reason}）` : ""}`),
+    ...(gradableRuns.length > 0
+      ? [`  judge: ${gradableRuns.map(slot => `${slot.trialId} → node scripts/sim-eval-run.mjs judge prepare --run-id ${slot.runId}`
+        + `${slot.attemptId ? ` --attempt-id ${slot.attemptId}` : ""}`).join("\n         ")}`]
+      : []),
+    `  next: ${nextAction}`,
+  ].join("\n"))
+  if (!complete) process.exitCode = 1
+  return record
 }
 
 // ── compare / holdout ──
@@ -2149,24 +2779,65 @@ async function stop(runId) {
   if (!pid) {
     if (state.status !== "stopped") updateState(paths, state, { status: "stopped", stoppedAt: new Date().toISOString() })
     console.log(`${runId} 没有启动过宿主，无需停止`)
-    return
+    return { pid: null, hostExit: null, problems: [] }
   }
 
   if (!isAlive(pid)) {
     if (ready) {
-      throw new Error(`宿主 pid=${pid} 已退出但 ready.json 还在；这是异常现场，不自动删除（请人工核对）`)
+      throw new Error(
+        `宿主 pid=${pid} 已退出但 ready.json 还在；这是异常现场，不自动删除（请人工核对；`
+        + `未封存的采集用 rescue --run-id ${runId} 封存）`,
+      )
     }
-    if (state.status !== "stopped") updateState(paths, state, { status: "stopped", stoppedAt: new Date().toISOString() })
+    const { exit, problems } = hostExitEvidence(paths.exitPath, pid)
+    if (state.status !== "stopped") {
+      updateState(paths, state, {
+        status: "stopped",
+        stoppedAt: new Date().toISOString(),
+        hostExit: exit,
+        ...(problems.length ? { lastError: `宿主已退出，但关停证据不完整：${problems.join("；")}` } : {}),
+      })
+    }
     console.log(`${runId} 已停止（pid=${pid} 不存在）`)
-    return
+    if (problems.length) console.warn(`${runId} 关停证据：${problems.join("；")}`)
+    return { pid, hostExit: exit, problems }
   }
 
   if (writeStopRequest(paths, "runner stop")) console.log(`${runId} 写入 stop.request，等待统一退出序列`)
   else console.log(`${runId} stop.request 已存在，继续等待退出`)
   const stopped = await waitForStopQuiet(pid, paths, STOP_WAIT_MS)
   if (!stopped) throw new Error(`宿主 pid=${pid} 在 ${Math.round(STOP_WAIT_MS / 1000)}s 内未停止；未发送信号`)
-  updateState(paths, state, { status: "stopped", stoppedAt: new Date().toISOString() })
+  const { exit, problems } = hostExitEvidence(paths.exitPath, pid)
+  updateState(paths, state, {
+    status: "stopped",
+    stoppedAt: new Date().toISOString(),
+    hostExit: exit,
+    ...(problems.length ? { lastError: `宿主关停未干净：${problems.join("；")}` } : {}),
+  })
   console.log(`${runId} 已停止（pid=${pid}）`)
+  if (problems.length) console.warn(`${runId} 关停未干净：${problems.join("；")}`)
+  return { pid, hostExit: exit, problems }
+}
+
+async function stopCommand(runId) {
+  const result = await stop(runId)
+  if (result?.problems?.length) process.exitCode = 1
+}
+
+/** 救援是显式的人工裁决：只封存草稿，不重启宿主，也不推进驱动。 */
+async function rescueCommand(runId, options = {}) {
+  const { runDir, state } = loadState(runId)
+  const result = await rescueRun({ runDir, state, reason: options.reason ?? null })
+  console.log([
+    `rescued ${runId}（${result.status}）`,
+    `  evidence: ${relative(REPO_ROOT, state.chat.attemptDir)}`,
+    `  manifest: ${result.manifestSha256}`,
+    `  report: ${relative(REPO_ROOT, result.reportPath)}`,
+    `  hostExit: ${result.hostExit ? "已记录" : "缺失"}`,
+    ...(result.issues.length ? [`  issues:\n${result.issues.map(issue => `    - ${issue}`).join("\n")}`] : []),
+    "  next: 修复后按新运行组或 prepare --repair-of 重新采集",
+  ].join("\n"))
+  if (result.status !== "complete") process.exitCode = 1
 }
 
 // ── status ──
@@ -2299,6 +2970,7 @@ function status(runId) {
     repair: state.repair ?? null,
     holdout,
     host: { pid, alive, ready: Boolean(ready), readyError, generation: ready?.generation ?? state.generation },
+    hostExit: state.hostExit ?? null,
     bridge,
     seedReport,
     chat,
@@ -2320,6 +2992,7 @@ function parseArgs(argv) {
     "--run-id": "runId",
     "--evaluation-run-id": "evaluationRunId",
     "--trial-id": "trialId",
+    "--trials": "trials",
     "--attempt-id": "attemptId",
     "--baseline": "baselineId",
     "--repair-of": "repairOf",
@@ -2358,6 +3031,8 @@ const USAGE = [
   "  node scripts/sim-eval-run.mjs drive --run-id <id>",
   "  node scripts/sim-eval-run.mjs status --run-id <id>",
   "  node scripts/sim-eval-run.mjs finish --run-id <id> [--interrupted --reason <text>]",
+  "  node scripts/sim-eval-run.mjs batch --case <caseId> --card <card.md> --authorization <auth.json>",
+  "      [--trials <n>] [--evaluation-run-id <id>] [--baseline <evaluationRunId>]",
   "  node scripts/sim-eval-run.mjs compare --run-id <id> [--baseline <evaluationRunId>] [--json]",
   "  node scripts/sim-eval-run.mjs holdout --case <caseId> [--json]",
   "  node scripts/sim-eval-run.mjs judge prepare --run-id <id> [--attempt-id <id>] [--json]",
@@ -2367,11 +3042,16 @@ const USAGE = [
   "      [--attempt-id <id>] [--grade-id <id>] [--reviewer-name <name>] [--notes <text>] [--json]",
   "  node scripts/sim-eval-run.mjs report --run-id <id> [--json]",
   "  node scripts/sim-eval-run.mjs stop --run-id <id>",
+  "  node scripts/sim-eval-run.mjs rescue --run-id <id> [--reason <text>]",
   "",
   "prepare 需要用户显式给出的授权文件（用例范围、模型、预算、是否留出），并写入固定时钟",
   "与驱动包；start 只拉起宿主并开始采集；drive 按驱动包推进固定时钟与消息，进度可续跑，",
   "已开始但结果未知的步骤不重放；finish 只按驱动结果收口，驱动未完成时必须显式",
-  "--interrupted --reason。compare 只比较两次运行的固定条件，holdout 只报告留出使用记录。",
+  "--interrupted --reason。batch 先在运行组冻结 trials.json，再按计划串行准备、启动、驱动与",
+  "封存每个试次；失败或不完整的试次保持占位，不自动替换，也不自动判分。",
+  "compare 只比较两次运行的固定条件，holdout 只报告留出使用记录。",
+  "stop 只写 stop.request 并核对宿主留下的 exit.json（flush 未完成、强杀、中断都会报出）；",
+  "宿主没走完退出序列时 rescue 把已落盘的草稿按中断封存，证据保持 inconclusive。",
   "",
   "judge prepare 只冻结判分包；judge apply 只校验并记录独立 coding-agent judge 的回填裁决，",
   "运行器不调用模型 API、不读取 judge 凭据。review spotcheck 只记录用户本人的可选抽查，",
@@ -2397,6 +3077,7 @@ async function main(argv) {
     return
   }
   if (command === "prepare") return prepare(options)
+  if (command === "batch") return batch(options)
   if (command === "holdout") return holdout(options)
   const runId = options.runId
   if (!runId) throw new Error(`${command} 缺少 --run-id <id>`)
@@ -2409,7 +3090,8 @@ async function main(argv) {
   if (command === "judge") return judgeCommand(runId, subAction, options)
   if (command === "review") return reviewCommand(runId, subAction, options)
   if (command === "report") return reportCommand(runId, options)
-  if (command === "stop") return stop(runId)
+  if (command === "stop") return stopCommand(runId)
+  if (command === "rescue") return rescueCommand(runId, options)
   throw new Error(`未知命令：${command}\n${USAGE}`)
 }
 

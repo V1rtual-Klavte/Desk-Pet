@@ -1,6 +1,8 @@
 export const CHAT_EVIDENCE_SCHEMA_VERSION: 1;
 export const CHAT_RUN_SCHEMA_VERSION: 1;
 export const CHAT_ATTEMPT_SCHEMA_VERSION: 1;
+export const CHAT_TRIAL_PLAN_SCHEMA_VERSION: 1;
+export const TRIAL_PLAN_FILE: string;
 export const CHAT_GRADER_VERSION: string;
 export const CHAT_RETENTION_MAX_GROUPS: 5;
 export const CHAT_RETENTION_MAX_BYTES: number;
@@ -56,12 +58,13 @@ export interface ChatRunEntry {
 export interface ChatAttemptIdentity {
   code: { commit: string; sourceHash: string; dirty: boolean };
   inputs: { datasetHash: string; fixtureHash: string; cardHash: string; configHash: string };
-  tools: { driverVersion: string; rubricVersion: string; graderVersion: string };
+  tools: { driverVersion: string; rubricVersion: string; graderVersion: string; judgePromptVersion?: string };
   host: { mode: string; capabilities: string[] };
   platform: { os: string; arch: string };
   runtime: { version: string };
   models: { requested: string; actual?: string | null };
   budget: Record<string, unknown>;
+  repair?: { ofRunId: string; index: number; evaluationRunId: string } | null;
 }
 
 export interface ExpectedTrial {
@@ -280,10 +283,24 @@ export interface AppendReviewOptions {
   gradeId?: string;
 }
 
+export interface ChatTrialPlan {
+  schemaVersion: 1;
+  evaluationRunId: string;
+  caseId: string;
+  plannedTrials: number;
+  trialIds: string[];
+  budgetTrials: number;
+  authorizationFingerprint: string;
+  createdAt: string;
+}
+
 export interface ChatAttemptEvidence {
   attemptId: string;
   attemptDir: string;
   manifest: ChatAttemptManifest | null;
+  pendingManifest: StartedChatAttempt["attempt"] | null;
+  trialId: string | null;
+  repair: boolean;
   verification: SealedVerification;
   grades: GradeRecord[];
   reviews: ReviewRecord[];
@@ -292,6 +309,7 @@ export interface ChatAttemptEvidence {
 export interface ChatRunEvidence {
   run: ChatRun;
   workflow: ChatWorkflow;
+  plan: ChatTrialPlan | null;
   attempts: ChatAttemptEvidence[];
 }
 
@@ -317,6 +335,16 @@ export function ensureChatRun(options: {
 export function listChatRuns(reportsDir: string): ChatRunEntry[];
 export function readChatRun(runDir: string): ChatRun;
 export function readChatWorkflow(runDir: string): ChatWorkflow;
+export function readTrialPlan(runDir: string): ChatTrialPlan | null;
+export function ensureTrialPlan(options: {
+  runDir: string;
+  evaluationRunId: string;
+  caseId: string;
+  trialIds: string[];
+  budgetTrials: number;
+  authorizationFingerprint: string;
+  createdAt: string;
+}): { plan: ChatTrialPlan; created: boolean };
 export function setChatRunPhase(
   runDir: string,
   options: { phase: ChatRunPhase; updatedAt: string; pendingDecision?: unknown; nextAction?: unknown },

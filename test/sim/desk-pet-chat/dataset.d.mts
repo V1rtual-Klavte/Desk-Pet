@@ -7,12 +7,14 @@ export type MemoryScope = "user" | "card" | "session";
 export type FixturePreparation = "seed_session" | "seed_memory" | "seed_card" | "seed_profile";
 export type FixtureLoadingMode = "direct-seed" | "real-chain";
 export type ProbeDifficulty = 1 | 2 | 3 | 4 | 5;
+export type ManualTriggerHostMethod = "sim_proactive_tick" | "sim_task_deliver";
 export type DriverHostMethod =
   | "chat_new_session"
   | "chat_switch_session"
   | "chat_stop"
   | "chat_slash_command"
-  | "memory_dreaming_sweep";
+  | "memory_dreaming_sweep"
+  | ManualTriggerHostMethod;
 export type CheckpointWait = "assistant_message" | "memory_extraction_end" | "session_created" | "host_readback";
 export type EvidenceKind = "session_entry" | "memory_before_after" | "trace_event" | "host_readback" | "artifact";
 export type QualityRubric = "humanizer-six-dimensions";
@@ -75,6 +77,7 @@ export const MEMORY_SCOPE_VALUES: readonly MemoryScope[];
 export const FIXTURE_PREPARATION_VALUES: readonly FixturePreparation[];
 export const FIXTURE_LOADING_MODE_VALUES: readonly FixtureLoadingMode[];
 export const PROBE_DIFFICULTY_LEVELS: readonly ProbeDifficulty[];
+export const MANUAL_TRIGGER_HOST_METHODS: readonly ManualTriggerHostMethod[];
 export const DRIVER_HOST_METHOD_VALUES: readonly DriverHostMethod[];
 export const CHECKPOINT_WAIT_VALUES: readonly CheckpointWait[];
 export const EVIDENCE_KIND_VALUES: readonly EvidenceKind[];
@@ -489,6 +492,22 @@ export interface ApplyReviewDecisionsResult {
   errors: DatasetIssue[];
 }
 
+export interface WriteApprovalRecordsInput extends ApplyReviewDecisionsInput {
+  repoRoot?: string;
+  datasetRoot?: string;
+}
+
+export interface WrittenApproval {
+  approvalId: string;
+  path: string;
+}
+
+export interface WriteApprovalRecordsResult {
+  records: ApprovalRecord[];
+  written: WrittenApproval[];
+  errors: DatasetIssue[];
+}
+
 export interface DatasetSummary {
   suiteCount: number;
   caseCount: number;
@@ -528,6 +547,7 @@ export function validateApprovalRecord(
   options?: { expectedApprovalId?: string; expectedCaseId?: string; expectedSuiteId?: string },
 ): ApprovalRecord;
 export function applyReviewDecisions(input: ApplyReviewDecisionsInput): ApplyReviewDecisionsResult;
+export function writeApprovalRecords(input: WriteApprovalRecordsInput): WriteApprovalRecordsResult;
 export function buildDriverPackage(entry: CaseEntry): DriverPackage;
 export function buildReviewPackage(entry: CaseEntry, approvals?: readonly ApprovalRecord[]): ReviewPackage;
 export function formatReviewPackage(review: ReviewPackage): string;

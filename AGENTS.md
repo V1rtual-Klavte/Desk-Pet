@@ -69,7 +69,7 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
 - 需要和桌宠自然聊天、或跑“了解 → dreaming → 主动消息 → 定时任务”的真实链路时，
   先读 [`test/sim/desk-pet-chat/SKILL.md`](test/sim/desk-pet-chat/SKILL.md)，按其中的控制文件协议与聊天规范执行；
   结构化评测用例的编写与审批见 [`desk-pet-eval-authoring`](test/sim/desk-pet-eval-authoring/SKILL.md)，
-  隔离运行与所有权核验见 [`desk-pet-eval-runner`](test/sim/desk-pet-eval-runner/SKILL.md)（W2 隔离运行器与 W3 采集／封存已验收（2026-10-25）；W4 独立 coding-agent judge 判分、可选抽查与同源报告已实施并通过快层反例验收（2026-10-25）；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收（L2／L3 与完整门禁），并经用户授权完成一次真实银标运行（结果 fail）；真实聊天 Skill 自主运行与用户审批、抽查、裁定仍未执行）。
+  隔离运行与所有权核验见 [`desk-pet-eval-runner`](test/sim/desk-pet-eval-runner/SKILL.md)（W2 隔离运行器与 W3 采集／封存已验收（2026-10-25）；W2 停止调度／故障救援于 2026-10-27 补齐（真实宿主干净关停与强杀后救援已验证，在飞作业关停仅 L2）；W4 独立 coding-agent judge 判分、可选抽查与同源报告已实施并通过快层反例验收（2026-10-25）；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收（L2／L3 与完整门禁），多 trial 批量编排与 critical `pass^k` 聚合于 2026-10-27 补齐（L2；真实多试次待验收），并经用户授权完成两次真实银标运行（`silver-20261026c`／`d`；驱动与模型调用真实，`d` 验证自动抽取检查点）；两次运行的判分均由临时 API 客户端而非独立 coding-agent judge 产生，已作废待重判；真实聊天 Skill 自主运行与用户审批、抽查、裁定仍未执行）。
 - 控制通道只对 development 模式开放；控制文件、报告与 trace 位于开发数据根的 `logs/sim/` 下，
   具体路径和命令见该 skill。演练产物不提交到 git，也不指向生产数据根。
 - CI 分两条线：push/PR 走 `ci.yml`（双平台验证 + `bundle-config` 配置与契约源码校验，不做构建）；

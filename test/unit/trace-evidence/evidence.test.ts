@@ -40,6 +40,23 @@ describe("trace evidence buffer", () => {
     expect(contexts.resolve(event("host-2", "req-1"))?.sceneId).toBe("scene-b")
   })
 
+  it("resolves session-tagged events only through an explicit session binding [trace-context-session]", () => {
+    const contexts = new TraceContextMap()
+    const context = captureTraceContext({ sceneId: "scene-a", trialId: "trial-1", runId: "scene:scene-a:trial-1" })
+    const proactive = { ...event("run-proactive", "req-proactive"), sessionId: "session-1" }
+
+    expect(contexts.resolve(proactive)).toBeUndefined()
+    contexts.bindSession("session-1", context)
+    expect(contexts.resolve(proactive)).toBe(context)
+    // run/request 的精确归属优先于会话兜底：同一会话里仍按真实运行身份解析。
+    const precise = captureTraceContext({ sceneId: "scene-b", trialId: "trial-2", runId: "run-proactive" })
+    contexts.bind(precise)
+    expect(contexts.resolve(proactive)).toBe(precise)
+    contexts.release(context)
+    contexts.release(precise)
+    expect(contexts.resolve(proactive)).toBeUndefined()
+  })
+
   it("counts capacity drops and preserves the same chunk until its matching ACK [trace-bounded-ack]", () => {
     const context = captureTraceContext({ sceneId: "s", trialId: "t", runId: "r" })
     const buffer = new BoundedTraceBuffer({ maxEvents: 1, maxBytes: 4096, maxChunkBytes: 4096 })

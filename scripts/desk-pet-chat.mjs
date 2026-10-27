@@ -16,8 +16,8 @@
  *   node scripts/desk-pet-chat.mjs tasks
  *   node scripts/desk-pet-chat.mjs proactive-state
  *   node scripts/desk-pet-chat.mjs understanding
- *   node scripts/desk-pet-chat.mjs dataset validate|list|types|review|driver ...
- *   node scripts/desk-pet-chat.mjs eval prepare|start|drive|status|finish|compare|holdout|judge|report|review ...
+ *   node scripts/desk-pet-chat.mjs dataset validate|list|types|review|driver|approve ...
+ *   node scripts/desk-pet-chat.mjs eval prepare|start|drive|status|finish|batch|compare|holdout|judge|report|review|stop|rescue ...
  *   node scripts/desk-pet-chat.mjs capture status|sessions
  *   node scripts/desk-pet-chat.mjs wait <id>
  *   node scripts/desk-pet-chat.mjs ready
@@ -31,11 +31,13 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, relative, resolve } from "node:path";
 import {
+  DEFAULT_DATASET_ROOT,
   buildDriverPackage,
   buildReviewPackage,
   formatReviewPackage,
   loadDataset,
   summarizeDataset,
+  writeApprovalRecords,
 } from "../test/sim/desk-pet-chat/dataset.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -79,6 +81,25 @@ async function waitFor(id, timeoutMs = 300_000) {
 
 function commandId(prefix) {
   return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function parseFlagArgs(args) {
+  const values = new Map();
+  const positional = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const part = args[index];
+    if (part === "--json") continue;
+    if (!part.startsWith("--")) {
+      positional.push(part);
+      continue;
+    }
+    const key = part.slice(2);
+    const value = args[index + 1];
+    if (value === undefined || value.startsWith("--")) throw new Error(`参数缺少值：${part}`);
+    values.set(key, value);
+    index += 1;
+  }
+  return { values, positional };
 }
 
 function printReply(event, asJson) {
@@ -257,6 +278,72 @@ try {
     case "dataset": {
       const positional = rest.filter((part) => !part.startsWith("--"));
       const [action = "list", target] = positional;
+      if (action === "approve") {
+        const { values, positional: approvePositional } = parseFlagArgs(rest.slice(1));
+        const caseId = values.get("case") ?? approvePositional[0];
+        if (!caseId) {
+          throw new Error(
+            "用法：dataset approve <caseId> --reviewer-name <name> --session-id <id> --message-id <id> --quote <text> [--decision approved|rejected] [--notes <text>] [--reviewed-at <iso>] [--dataset-root <path>] [--json]",
+          );
+        }
+        const reviewerName = values.get("reviewer-name");
+        const sessionId = values.get("session-id");
+        const messageId = values.get("message-id");
+        const quote = values.get("quote");
+        const missing = [
+          ["--reviewer-name", reviewerName],
+          ["--session-id", sessionId],
+          ["--message-id", messageId],
+          ["--quote", quote],
+        ]
+          .filter(([, value]) => !value)
+          .map(([flag]) => flag);
+        if (missing.length > 0) throw new Error(`缺少审批来源参数：${missing.join(", ")}`);
+
+        const datasetRoot = values.get("dataset-root") ?? DEFAULT_DATASET_ROOT;
+        const dataset = loadDataset({ repoRoot: root, root: datasetRoot });
+        if (dataset.errors.length > 0) {
+          for (const problem of dataset.errors) {
+            console.error(`${problem.code}${problem.file ? ` ${problem.file}` : ""}: ${problem.message}`);
+          }
+          throw new Error("数据集存在结构错误，拒绝写入审批");
+        }
+        const entry = dataset.cases.find((candidate) => candidate.caseId === caseId);
+        if (!entry) throw new Error(`找不到用例：${caseId}`);
+
+        const decision = values.get("decision") ?? "approved";
+        const result = writeApprovalRecords({
+          repoRoot: root,
+          datasetRoot,
+          entries: [entry],
+          decisions: [{ caseId, decision, notes: values.get("notes") ?? "" }],
+          reviewer: { role: "user", name: reviewerName },
+          feedbackSource: { kind: "session_message", sessionId, messageId, quote },
+          reviewedAt: values.get("reviewed-at") ?? new Date().toISOString(),
+        });
+        if (result.errors.length > 0) {
+          for (const problem of result.errors) console.error(`${problem.code}: ${problem.message}`);
+          process.exitCode = 1;
+          break;
+        }
+
+        const reloaded = loadDataset({ repoRoot: root, root: datasetRoot });
+        const label = reloaded.cases.find((candidate) => candidate.caseId === caseId)?.label ?? null;
+        const payload = { approval: result.records[0], written: result.written, label };
+        if (asJson) {
+          console.log(json(payload));
+        } else {
+          console.log(`审批已写入：${result.written[0]?.path ?? "（无）"}`);
+          console.log(`标签：${label ? `${label.tier}/${label.status}` : "未回读"}（${label?.approvalId ?? "无"}）`);
+        }
+        const expectedTier = decision === "approved" ? "gold" : "silver";
+        const expectedStatus = decision === "approved" ? "approved" : "rejected";
+        if (!label || label.tier !== expectedTier || label.status !== expectedStatus) {
+          console.error(`审批写入后标签不符合预期：期望 ${expectedTier}/${expectedStatus}`);
+          process.exitCode = 1;
+        }
+        break;
+      }
       const dataset = loadDataset({ repoRoot: root });
       if (action === "types") {
         const summary = summarizeDataset(dataset);
@@ -470,7 +557,7 @@ try {
       break;
     }
     default:
-      console.error("用法：chat <text> | send <text> | cmd <type> [--screenshot] | observe [--screenshot] [--force] | host <method> [json] | humanize on|off|status | choice list|pick N|other|cancel | confirm list|allow|session|deny | context | window | sessions | tasks | proactive-state | understanding | capture status|sessions | plan <mode> | task [json] | dataset validate [suiteId] | dataset list [suiteId] | dataset types | dataset review <caseId> | dataset driver <caseId> | eval prepare|start|drive|status|finish|compare|holdout|judge|report|review|stop ... | suite <ids> [--rounds N] [--run] | wait <id> | ready | tail [n]");
+      console.error("用法：chat <text> | send <text> | cmd <type> [--screenshot] | observe [--screenshot] [--force] | host <method> [json] | humanize on|off|status | choice list|pick N|other|cancel | confirm list|allow|session|deny | context | window | sessions | tasks | proactive-state | understanding | capture status|sessions | plan <mode> | task [json] | dataset validate [suiteId] | dataset list [suiteId] | dataset types | dataset review <caseId> | dataset driver <caseId> | dataset approve <caseId> --reviewer-name <name> --session-id <id> --message-id <id> --quote <text> | eval prepare|start|drive|status|finish|batch|compare|holdout|judge|report|review|stop|rescue ... | suite <ids> [--rounds N] [--run] | wait <id> | ready | tail [n]");
       process.exitCode = 1;
   }
 } catch (error) {

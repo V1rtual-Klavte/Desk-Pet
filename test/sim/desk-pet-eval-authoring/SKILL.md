@@ -1,6 +1,6 @@
 ---
 name: desk-pet-eval-authoring
-description: 起草、修订和审阅 V1rtual-Desk-Pet 结构化聊天评测用例，向用户展示审阅包并收集 gold 批准。用户说“写评测用例”“审阅评测用例”“看看待审 case”“批准这个用例”“改一下评测题”时使用。只写数据集与审批，不启动 app、不判分；执行、独立 judge 判分与报告用 desk-pet-eval-runner。
+description: Use when 用户要写、改、审 V1rtual-Desk-Pet 结构化聊天评测用例，或说“审阅评测用例”“看看待审 case”“批准这个用例”“改一下评测题”。只处理数据集与审阅，不启动 app、不驱动、不判分；执行与判分用 desk-pet-eval-runner。
 ---
 
 # 写与审阅聊天评测用例
@@ -9,11 +9,12 @@ description: 起草、修订和审阅 V1rtual-Desk-Pet 结构化聊天评测用�
 
 这个 Skill 只做两件事：把用户意图或已确认问题写成结构化 case，以及把候选完整展示给用户、收集真实批准。它不启动桌宠、不驱动聊天、不运行评分，也不把“框架通过”当成用例批准。
 
-当前为 schema v4：case 是可跨会话的场景容器，探针（probe）是独立计分的最小断言。一个用户消息可以挂多条探针；case 通过要求证据完整、执行完成、全部适用规则成立，任一规则 `fail` 即失败，任一规则非 `pass` 只能判 inconclusive。每条探针必须绑定一个已登记 `rubric` 与一个 `questionType`，只有 rubric 声明需要时才写 `expectation`（主语、事实、时间范围、跨会话来源等），case 的 `questionTypes` 必须等于其探针题型的并集。所有探针（含 `humanizer.*`）与 case 级质量 rubric 都由独立 coding-agent judge 判定；运行器只冻结判分包、校验裁决并聚合，不调用模型、不读取 judge 凭据。用户抽查可选、不阻塞。
+当前为 schema v4：case 是可跨会话的场景容器，探针（probe）是独立计分的最小断言。一个用户消息可以挂多条探针；case 通过要求证据完整、执行完成、全部适用规则成立，任一规则 `fail` 即失败，任一规则非 `pass` 只能判 inconclusive。每条探针必须绑定一个已登记 `rubric` 与一个 `questionType`，只有 rubric 声明需要时才写 `expectation`（主语、事实、时间范围、跨会话来源等），case 的 `questionTypes` 必须等于其探针题型的并集。所有探针（含 `humanizer.*`）与 case 级质量 rubric 都由独立 coding-agent judge 判定；运行器只冻结判分包、校验裁决并聚合，不调用模型、不读取 judge 凭据。用户抽查可选、不阻塞。多试次（trial）是运行期决定：由 runner 在运行前冻结计划与预算（`eval batch`），写题不预设试次数，也不为凑 `pass^k` 复制 case。
 
 ## 边界
 
 - 代理只能起草 **silver**；**gold 必须由用户本人**针对当前 `specHash` 的真实会话消息批准。代理不得代填 `reviewer`、`feedbackSource` 或 `decision`。
+- `dataset approve` 是唯一写审批入口：代理只能在用户明确给出批准结论、姓名、真实会话／消息 id 与原文后执行，不手写 approval JSON，不拼造 `session_message`。
 - `actual` 实际输出不能当期望答案或 oracle；不要复制实际 trace 回填用例。
 - 旧格式 `*.ideal.md` 只由用户编写；用例运行结果不能反写理想稿。
 - 数据集只使用合成或经用户确认可用的 fixture，不读取真实 CONFIG、凭据或私人会话。
@@ -37,7 +38,7 @@ test/ideal-traces/
 - 分类 id 的唯一真相源是 [`../desk-pet-chat/categories.json`](../desk-pet-chat/categories.json)。
 - 题型 id 与家族的真相源是 [`../desk-pet-chat/question-types.json`](../desk-pet-chat/question-types.json)；每个分类至少被一个题型覆盖。
 - 一个 case 只存一份；同一 `caseId` 跨套件重复是数据集错误。
-- 当前只有 `daily-companionship/saturday-companionship` 一条 silver/pending 候选（27 条用户消息 + 2 个 host 步骤、23 条探针其中 11 条 critical；难度 L1 4／L2 5／L3 6／L4 6／L5 2；fixture 为 `direct-seed`、固定时钟），其他套件为空占位。
+- 当前有哪些 silver/pending 候选、探针数与难度分布，以 `dataset list` / `dataset validate` 的实时输出为准；本文件不记录会随用例演进的计数与运行状态。
 
 ## case 必需内容
 
@@ -48,7 +49,7 @@ test/ideal-traces/
 | 前置条件 | Card、关系阶段、初始会话与记忆、资源、时间、权限、所需宿主能力 |
 | 装载与时钟 | `fixture.loading` 选 `direct-seed`（只预置初始状态）或 `real-chain`（不 seed 会话/记忆）；`fixed` 时钟每个 driver 步骤带升序 `at`，case 起点不早于 `fixture.clock` |
 | 用户角色包 | 用户知道的事实、目的、语气与允许动作；不得含隐藏探针、内部状态结果或背诵答案 |
-| driver | 按顺序的用户消息与 host 步骤；`fixed` 模式下每步带 `at`；自然分支、追问应答、停止条件 |
+| driver | 按顺序的用户消息与 host 步骤；`fixed` 模式下每步带 `at`；自然分支、追问应答、停止条件。host 步骤只执行登记方法；`sim_proactive_tick`／`sim_task_deliver` 是评测驱动直接调用组件入口的手工触发，只用于需要主动／任务产物的用例，不代表自然受理、调度或实际 UI 显示 |
 | 检查点 | 可判定的事件或状态边界＋有限等待；不用固定 sleep 代替完成证据。`memory_extraction_end` 要求本步之后出现新的抽取作业并收口，空闲水位不算结束 |
 | probes | 逐条绑定 `after` 驱动步骤，写清窗口、极性、critical、`rubric`、`questionType`、`difficulty`、描述与证据 |
 | oracle | 只放允许替代表达；不再使用 case 级 `required` / `forbidden` |
@@ -76,7 +77,7 @@ test/ideal-traces/
 
 ## 题型与判分
 
-题型是独立的第二坐标，不替代 `categories`：`categories` 表示 case 触及哪些产品能力，`questionType` 表示这道题以什么方式挑战模型。共 7 个家族、24 个题型，完整定义以 `question-types.json` 为准：
+题型是独立的第二坐标，不替代 `categories`：`categories` 表示 case 触及哪些产品能力，`questionType` 表示这道题以什么方式挑战模型。题型按家族分组如下，完整定义以 `question-types.json` 为准：
 
 | 家族 | 题型 | 主要覆盖能力 |
 |---|---|---|
@@ -88,12 +89,12 @@ test/ideal-traces/
 | 边界 boundary | `boundary` 安全边界、`recovery` 错误恢复 | safety、tools、settings、resilience、tasks |
 | 表达 expression | `persona` 人格与 Card、`style` 表达风格 | persona、humanizer、chat |
 
-判分不按题型或 probe 作者声明路由：运行器把 case、驱动时间线、期望与允许引用的证据冻结成判分包，由独立 coding-agent judge（必须与被测模型异构）逐条判定；运行器只校验裁决并聚合，不调用模型、不读取 judge 凭据。
+判分不按题型或 probe 作者声明路由：运行器把 case、驱动时间线、期望与允许引用的证据冻结成判分包，由独立 coding-agent judge（必须与被测模型异构）逐条判定；运行器只校验裁决并聚合，不调用模型、不读取 judge 凭据。judge 必须是用户指定的独立 coding-agent 会话，不得由运行／驱动会话或临时 API 客户端充当；`judge.platform` 只接受 coding-agent 白名单（`claude-code`／`codex`／`qoder`），API 客户端回填会被拒绝，机械异构检查另看模型名。
 
 | 环节 | 谁做 | 产物 |
 |---|---|---|
 | 冻结 | runner | `judge-packets/<packetId>.packet.json`，绑定 attempt、数据集、判分版本与允许引用的证据 |
-| 判定 | 独立 coding-agent judge | verdicts JSON：judge 平台／模型／prompt 版本，每条规则的 pass／fail／inconclusive、理由与证据引用 |
+| 判定 | 用户指定的独立 coding-agent judge（异构模型） | verdicts JSON：judge 平台／模型／prompt 版本，每条规则的 pass／fail／inconclusive、理由与证据引用 |
 | 应用 | runner | 校验异构身份、规则覆盖与证据引用后追加版本化判分 |
 | 抽查 | 用户本人（可选） | `eval review spotcheck` 记录意见；不改变自动判分与聚合，不阻塞 |
 
@@ -122,9 +123,10 @@ test/ideal-traces/
   → 起草 case、合成 fixture、写 driver
   → 逐条写 probes 与证据引用
   → dataset validate 自查格式、引用、重复与反例
-  → 银标试跑（另用 runner；W3 隔离采集与封存已验收，W4 judge 判分与可选抽查已实现并通过快层反例验收；W5 授权、固定时钟、驱动、续跑、对照与修复已于 2026-10-26 集中验收；真实 judge 与真实模型已跑过一次银标，结果 fail，尚未形成基线或 gold）
+  → 银标试跑（另用 runner；运行与判分状态以执行契约和测试 README 为准）
   → 用户审阅并修改预期
-  → 冻结 gold 版本
+  → 用户批准（dataset approve 写入审批）
+  → dataset list 回读 gold
 ```
 
 试跑只用于发现题目和工具问题，不迎合产品错误。产品答错不会自动放宽探针；题目有歧义时向用户提交具体分歧，由用户裁定。
@@ -137,9 +139,16 @@ node scripts/desk-pet-chat.mjs dataset list
 node scripts/desk-pet-chat.mjs dataset types
 node scripts/desk-pet-chat.mjs dataset review <caseId>
 node scripts/desk-pet-chat.mjs dataset driver <caseId>
+node scripts/desk-pet-chat.mjs dataset approve <caseId> \
+  --reviewer-name <用户姓名> \
+  --session-id <真实会话 id> --message-id <真实用户消息 id> \
+  --quote <用户原话> \
+  [--decision approved|rejected] [--notes <原因>] [--reviewed-at <ISO 时间>] [--json]
 ```
 
-这些命令只读数据集，不启动 app、不调用模型。`validate` 输出套件数、用例数、探针数（关键数）、题型分布、难度分布与 gold／silver 数；`types` 按家族列出全部题型、覆盖分类和当前探针／用例计数；`review` 给人看完整候选、绑定哈希与旧审批差异；`driver` 只输出 `userRole` + `driver`，不含题型、探针、oracle、检查点、证据或评分。
+`validate`／`list`／`types`／`review`／`driver` 只读数据集，不启动 app、不调用模型。`validate` 输出套件数、用例数、探针数（关键数）、题型分布、难度分布与 gold／silver 数；`types` 按家族列出全部题型、覆盖分类和当前探针／用例计数；`review` 给人看完整候选、绑定哈希与旧审批差异；`driver` 只输出 `userRole` + `driver`，不含题型、探针、oracle、检查点、证据或评分。
+
+`approve` 写 `approvals/<approvalId>.json`：只接受用户本人给出的决定，`--quote` 必须是用户原话，`--session-id`／`--message-id` 指向该原话所在的真实消息；命令校验绑定、套件归属并拒绝覆盖既有审批。成功后回读标签，批准应为 `gold/approved`，驳回为 `silver/rejected`。代理不得代填或编造这些字段；没有真实来源时不得写入。
 
 ## 审阅模式（用户看候选，代理只展示）
 
@@ -149,15 +158,16 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 2. 用户选定后跑 `dataset review <caseId>`，把输出**原样贴在聊天区**；至少能看到来源、fixture、题型与判分方式、驱动步骤、检查点、探针、证据、未解决点与 `specHash`。
 3. 请用户按三类决定回复：**批准当前版本 / 修改具体条目 / 暂缓**。修改意见落到 case 或 fixture，改完提升 `revision`，重新展示新的 `specHash`。装载方式、难度分布与固定时钟也属于审阅内容；不只口头说“改好了”。
 4. 保留用户原话、`caseId` 与 `specHash`，作为后续写入审批的候选来源。不要把“框架可以”“测试全绿”或代理判断当成用户批准，也不要代填 `reviewer`、`feedbackSource` 或 `decision`。
-5. 当前仍没有写 gold 审批文件的命令；`eval review spotcheck` 只记录用户对某次运行证据的抽查意见，不改变 case 的 silver/gold，也不改变自动判分。用户在聊天里批准后，当前 case 仍是 silver / pending；不要手写 approval JSON。
+5. 用户明确批准后，核对用户原话、`caseId` 与当前 `specHash`，再执行 `dataset approve`；成功必须用 `dataset list` 回读确认 `gold/approved`。若命令报哈希、覆盖或来源错误，停下展示错误，不手改文件、不换字段重试。`eval review spotcheck` 只记录用户对某次运行证据的抽查意见，不改变 case 的 silver/gold，也不改变自动判分。
 6. 看过审阅包的代理不得再驱动同一个 case。驱动要换独立会话／代理，只读 `dataset driver`，避免探针与 oracle 视野污染。
 
 ## 金标与信任边界
 
 - 没有审批、最近一次匹配审批为拒绝、或审批绑定旧版本，都是 silver。
+- `dataset approve` 是唯一写审批的入口；代理不得创建 approval JSON、代填审批字段，或把 `eval review spotcheck` 当成 gold 审批。用户口头或聊天批准但没有真实 `session_message` 来源时不得写入。
 - 批准记录绑定 `contentHash` / `fixtureHash` / `driverHash` / `oracleHash` 与聚合 `specHash`；任一变化都会让旧审批 stale。审批历史保留，不覆盖、不删除。
-- 工具只校验结构和哈希，不证明审批人身份或消息真实存在；这一信任边界由真实审阅流程保证，报告不得夸大机械校验能力。
+- 写入命令只校验结构、哈希、套件归属和文件不覆盖，不证明审批人身份或消息真实存在；这一信任边界由真实审阅流程保证，报告不得夸大机械校验能力。
 - 金标争议保留本次 actual、原判分与待裁决项；用户裁定后创建新规格／评分版本，不直接覆盖旧预期。
-- 结构化探针与 case 级质量 rubric 全部由独立 coding-agent judge 按判分包判定；judge 与被测模型必须异构，运行器只校验与聚合，不调用模型，也没有“未校准即候选”的降级。
+- 结构化探针与 case 级质量 rubric 全部由用户指定的独立 coding-agent judge 按判分包判定；judge 与被测模型必须异构，运行器只校验与聚合，不调用模型，也没有“未校准即候选”的降级。
 - 拟人化同样由 judge 判定；用户抽查只用于自己核对结果，不产生 pass/fail、不改写判分，也不能让 case 变成 gold。
-- gold 只来自用户对用例规格的批准；运行判分、抽查意见和代理建议都不改变 silver/gold。
+- gold 只来自用户本人对当前 `specHash` 的批准，并由 `dataset approve` 写入；`dataset list` 未显示 `gold/approved` 就不是 gold。运行判分、抽查意见和代理建议同样不改变标签。

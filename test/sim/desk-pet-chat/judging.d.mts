@@ -7,7 +7,11 @@ export const VERDICTS_SCHEMA_VERSION: 1;
 export const JUDGE_PROMPT_VERSION: string;
 export const JUDGE_RUBRIC_VERSION: string;
 export const JUDGE_AUTHORITY: "coding-agent-judge";
+export const CODING_AGENT_PLATFORMS: readonly string[];
 export const AGGREGATION_RULE: "judge-all-rules";
+
+export function isCodingAgentPlatform(value: unknown): boolean;
+export function isAuthoritativeGrade(grade: GradeRecord | null | undefined): boolean;
 
 export type CheckStatus = "pass" | "fail" | "inconclusive" | "not_applicable";
 export type ExecutionStatus = "completed" | "failed" | "cancelled" | "blocked";

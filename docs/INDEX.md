@@ -17,7 +17,7 @@
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
 | Pi 协议与 Harness 接线 | [运行时契约](current/runtime-contract.md) | [工具系统](current/tool-system.md)、目标源码与[未完成总表](plans/active/未完成工作与已知缺口.md) |
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
-| 聊天评测三个 Skill、题型与判分、金银标、可选抽查与修复回归 | [聊天评测闭环执行契约](plans/active/聊天评测闭环执行契约.md)（W1–W3 已落数据、题型、Skill、银标候选、隔离运行器、装载器、证据与封存；W4 判分包／独立 judge／可选抽查／同源报告已实施并通过快层反例验收（2026-10-25）；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收，并经授权完成一次真实银标运行（fail）；真实 Skill 自主运行与用户关口未执行） | 当前入口见 [聊天 Skill](../test/sim/desk-pet-chat/SKILL.md)、[用例制作 Skill](../test/sim/desk-pet-eval-authoring/SKILL.md)、[运行与判分 Skill](../test/sim/desk-pet-eval-runner/SKILL.md)；进度见[未完成总表](plans/active/未完成工作与已知缺口.md) §12 |
+| 聊天评测三个 Skill、题型与判分、金银标、可选抽查与修复回归 | [未完成总表 §12](plans/active/未完成工作与已知缺口.md#12-统一聊天评测闭环)（剩余验收项与能力缺口） | 入口见 [聊天 Skill](../test/sim/desk-pet-chat/SKILL.md)、[用例制作 Skill](../test/sim/desk-pet-eval-authoring/SKILL.md)、[运行与判分 Skill](../test/sim/desk-pet-eval-runner/SKILL.md)；历史实施批次与证据见[归档契约](history/implementation/聊天评测闭环执行契约-2026-10-26归档.md) |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
 | 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |
 | 主动消息/静默了解/记忆整理的频率档位与锁屏语义 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[运行时数据](current/runtime-data.md)；剩余开放问题见[未完成总表](plans/active/未完成工作与已知缺口.md) §10 |
@@ -49,8 +49,7 @@
 
 ## 未完成工作
 
-- [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆剩余问题、活人感与整链陪伴的剩余环境验收、已知代码缺口与验证缺口。
-- [聊天评测闭环执行契约](plans/active/聊天评测闭环执行契约.md)：**目标方案，W1–W3 已落数据、题型、Skill、银标候选、隔离运行器、装载器、证据与封存（W2／W3 已验收 2026-10-25）；W4 判分包／独立 judge／可选抽查／同源报告已实施并通过快层反例验收（2026-10-25）；W5 授权、Node 域固定时钟、驱动／续跑、同条件对照与修复已于 2026-10-26 集中验收，并经授权完成一次真实银标运行（fail）；真实 Skill 自主运行与用户关口未执行**——合并现有聊天 Skill、直接接口驱动、用户亲审金标与 LLM 银标、因果证据、自动判分与可选抽查、授权修复回归、最近五回运行组保留；实施状态只在总表 §12 维护。
+- [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆剩余问题、活人感与整链陪伴的剩余环境验收、聊天评测剩余验收与能力缺口、已知代码缺口与验证缺口。
 
 ## 历史入口
 
@@ -59,6 +58,7 @@
 - [记忆检索底座 P0–P4 2026-10-18 归档](history/implementation/记忆检索底座-P0-P4-2026-10-18归档.md)：结构化词面检索、阅读/装配与列项补全的目标契约与 P0–P5/B2C 记录；**已实现并归档**，后续推断路由已归档为[记忆推断路由与检索补全](history/implementation/记忆推断路由与检索补全-2026-10-18归档.md)。
 - [记忆推断路由与检索补全 2026-10-18 归档](history/implementation/记忆推断路由与检索补全-2026-10-18归档.md)：推断/建议路由、地理归属、`temporalOrder` 与 advice/enumeration 扫描；**已实现并归档**，剩余复验、金标口径与契约重审见[未完成总表](plans/active/未完成工作与已知缺口.md) §3、§5。
 - [统一调度与子运行执行方案 2026-10-18 归档](history/implementation/统一调度与子运行执行方案-2026-10-18归档.md)：内部调度、用户提醒与执行型任务、工具确认、随机计划、Card 交付、思考强度与统一子运行；**已实施并以单元/集成/Rust/契约/全量严格 E2E ×3 验收后归档**，P1/P2 遗留见[未完成总表](plans/active/未完成工作与已知缺口.md) §11。
+- [聊天评测闭环执行契约 2026-10-26 归档](history/implementation/聊天评测闭环执行契约-2026-10-26归档.md)：三个 Skill 的目标设计、W1–W6 实施批次、隔离运行、证据封存、判分包与两次银标运行证据；**W1–W6 实现与集中门禁已验收；独立 coding-agent 重判、真实 Skill 自主运行、用户 gold 审批／抽查、CE-08／多 trial／CE-20／Windows 与 W2 停止调度仍未执行**，剩余项见[未完成总表](plans/active/未完成工作与已知缺口.md) §12。
 
 - [回合治理与图片生命周期执行契约 2026-10-06 归档](history/implementation/回合治理与图片生命周期执行契约-2026-10-06归档.md)：四项治理的目标契约与工作包清单——工具循环上限对齐主流（取消计数硬上限、病理检测替代）、AI 生成锁由回合状态推导（删 30s 定时强解与 cooldown 模块）、冷却锁搬进 Rust 账本、截图 200 上限取消与粘贴草稿回滚；**已实施（快层与 Rust 门禁全绿、契约按 analyze→generate 刷新）**，不再列入未完成总表。
 - [主动陪伴与记忆频率档位执行契约 2026-10-06 归档](history/implementation/主动陪伴与记忆频率档位执行契约-2026-10-06归档.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏语义、三处「关/低/中/高」频率档位、带工具规划器与自带 MCP 的目标契约与 W1–W5 波次；**W1–W4 与 W5-A 已实现后归档**（对照基线 `05bd0c1` + 工作树），server-pdf 等剩余开放问题见[未完成总表](plans/active/未完成工作与已知缺口.md) §10；Live 验收锚点已于 2026-10-06 达成（observed／understanding.json／proactive 表非 0）。
