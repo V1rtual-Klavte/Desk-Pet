@@ -45,7 +45,7 @@ function writeProfileFile(id: string, relativePath: string, content: string): vo
 }
 
 describe("readProfileMeta 轻量读取", () => {
-  it("每次从磁盘读 meta，不写缓存也不吃加载器缓存", async () => {
+  it("每次从磁盘读 meta，不写缓存也不吃加载器缓存 [profile-meta-fresh-read]", async () => {
     writeProfileFile("probe", "profile.yaml", "meta:\n  name: 旧名\n  description: 旧描述\n  version: 2\n")
     expect(await readProfileMeta("probe")).toEqual({ name: "旧名", description: "旧描述", version: 2 })
 
@@ -58,7 +58,7 @@ describe("readProfileMeta 轻量读取", () => {
     expect(getProfile("probe")?.meta.name).toBe("旧名") // 缓存未被 meta 读取改写
   })
 
-  it("meta 缺省时用 id/空描述/版本 1 兜底，读取失败返回 null", async () => {
+  it("meta 缺省时用 id/空描述/版本 1 兜底，读取失败返回 null [profile-meta-defaults-and-missing]", async () => {
     writeProfileFile("bare", "profile.yaml", "theme: {}\n")
     expect(await readProfileMeta("bare")).toEqual({ name: "bare", description: "", version: 1 })
     expect(await readProfileMeta("missing")).toBeNull()
@@ -66,7 +66,7 @@ describe("readProfileMeta 轻量读取", () => {
 })
 
 describe("Profile 自包含", () => {
-  it("自包含闭包：没有层配置时就是空层，不借邻居的层", async () => {
+  it("自包含闭包：没有层配置时就是空层，不借邻居的层 [profile-self-contained-layers]", async () => {
     writeProfileFile(
       "neighbor",
       "profile.yaml",
@@ -80,11 +80,11 @@ describe("Profile 自包含", () => {
     expect(loaded?.meta.name).toBe("独居")
   })
 
-  it("profile.yaml 缺失时返回 null，不伪造空 Profile", async () => {
+  it("profile.yaml 缺失时返回 null，不伪造空 Profile [profile-missing-yaml-null]", async () => {
     expect(await ensureProfileLoaded("ghost")).toBeNull()
   })
 
-  it("parallax 逐层默认：索引 2 默认启用并带 L2 素材，超出默认表回退最后一层", async () => {
+  it("parallax 逐层默认：索引 2 默认启用并带 L2 素材，超出默认表回退最后一层 [profile-parallax-layer-defaults]", async () => {
     writeProfileFile(
       "layers",
       "profile.yaml",
@@ -117,7 +117,7 @@ describe("Profile 自包含", () => {
 })
 
 describe("switchActiveProfile", () => {
-  it("只接受可加载的 Profile，失败时保持原激活项", async () => {
+  it("只接受可加载的 Profile，失败时保持原激活项 [profile-switch-active-guard]", async () => {
     writeProfileFile("good", "profile.yaml", "meta:\n  name: 好\n")
     expect(await switchActiveProfile("good")).toBe(true)
     expect(getActiveProfile()?.id).toBe("good")

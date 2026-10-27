@@ -1,3 +1,9 @@
+// 2026-10-27 Slash 命令表层纳入（B5「有实现无覆盖」批次）：sourceFiles 新增 engine/slash 的
+// 查找/注册核心与内置 /help、/clear（registry/types/index、commands/index|help|clear）——
+// 此前它们只有实现：preProcess 的唯一执行入口与下拉搜索全靠约定。本批新增 ar-38（L2 五条：
+// 整串精确优先、只对 acceptsArgs 做最长前缀、搜索三档计分、busyPolicy 准入、非文本结果路由
+// 与 /help 分组）与 ar-39（L3：/clear 经命令表新建会话、清空对话且旧会话文件保留）。
+// 各域命令（memory/proactive/skill/compact）仍由各自契约持有，不在此重复。sourceHash 按当前源码复算。
 // 2026-10-26 聊天评测消息绑定（本批刷新）：sourceFiles 中 engine/harness/delivery.ts 新增
 // readRequestResponse（按 requestId 在 completed run 的 fromTipId→tipId 区间内取证回复；
 // 首次 run 的 fromTipId=null 按会话开头处理），既有投递证据与运行槽行为未变。
@@ -285,6 +291,13 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/engine/choice-confirmation.ts",
     "src/services/engine/user-wait.ts",
     "src/services/engine/preprocessor.ts",
+    // 2026-10-27 Slash 命令表层（ar-38/ar-39）：preProcess 的查找/准入/结果路由与内置命令。
+    "src/services/engine/slash/index.ts",
+    "src/services/engine/slash/registry.ts",
+    "src/services/engine/slash/types.ts",
+    "src/services/engine/slash/commands/index.ts",
+    "src/services/engine/slash/commands/help.ts",
+    "src/services/engine/slash/commands/clear.ts",
     "src/services/engine/runtime/input-identity.ts",
     "src/services/engine/runtime/trace.ts",
     "src/services/engine/runtime/types.ts",
@@ -309,7 +322,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "16b5621f6d8f9efcd86a0e1c0d84c73cc224b5057cd2ef69b30acd75e9efae30",
+  sourceHash: "f0981313a70368dc5d69b4355d2ea95ba8f1bc29d9d8072a357b8f06d899c7b6",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -699,6 +712,37 @@ export const agentRuntimeContract: ModuleContract = {
       layer: "integration",
       depth: "deep",
       scenarios: ["variable-runtime-data-reminder-wiring", "variable-runtime-data-reminder-empty-block-wiring"],
+    },
+    // 2026-10-27 Slash 命令表层（B5）：命令表查找与执行路由此前只有实现与约定，
+    // 没有 caseId；本点钉注册表语义与 preProcess 的分支，/clear 的会话替换另立 L3 点。
+    {
+      id: "ar-38",
+      feature: "Slash 命令表的查找、忙碌准入、结果路由与 /help",
+      description:
+        "find 的顺序是硬约定：整串精确匹配优先（含空格的命令名不被某个可带参数的短名抢走），未命中时才只对声明了 acceptsArgs 的命令做最长前缀匹配，前缀必须以一处分隔空白开头（`x` 后缀与只有尾部空白都不算带参调用），参数是命令名之后的余下文本；search 按整串 / 前缀 / 包含三档计分（3/2/1）并优先高分展示，输入大小写不影响分档。preProcess 是唯一执行入口：忙碌期 busyPolicy=exclusive（缺省）明确拒绝且不执行命令、immediate 与 coordinated 照常执行；结果面五条出口各归各的形态 —— 文本进 response 且 text 清空、null 不出回复、技能准入返回 handled=false 并保留完整输入、命令异常收口为「命令执行出错…」、未注册的 slash 文本透传 AI。initSlashCommands 幂等（重复调用不复制命令、无重名），/help 按 会话 → 记忆 → 技能 → 通用 的固定顺序列出注册表全部命令（数量与 listAll 一致，含参数的命令显示参数说明）",
+      why: "查找顺序弄反会让 /memory clean 落到 /memory 上，用户看到的是另一条命令的结果；忙碌期放行 exclusive 命令会在别人回合中途改会话；把技能准入当普通文本会让 Harness 拿不到运行代际、正文永远不落盘；命令表重复注册或 /help 漏项都只在用户点下拉框/敲 /help 时暴露",
+      layer: "unit",
+      depth: "deep",
+      scenarios: [
+        "slash-find-exact-first",
+        "slash-find-longest-prefix",
+        "slash-search-scoring",
+        "slash-preprocess-busy-policy",
+        "slash-preprocess-result-routing",
+        "slash-help-grouped-listing",
+      ],
+    },
+    // 2026-10-27 Slash 命令表层（B5）：/clear 的会话替换在 L2 只能靠替身，真实仓库
+    // 落盘才证明「新会话建立、旧会话保留、视图与未回复计数归零」。
+    {
+      id: "ar-39",
+      feature: "/clear 新建会话并清空当前对话",
+      description:
+        "经唯一执行入口 preProcess(\"/clear\") 命中命令表后：命令返回可展示回执（不是「命令执行出错…」也不算未处理）；活跃会话换成一条新的真实会话（新 id 已落进会话仓库），旧会话仍留在会话列表与仓库里（清空不是删除）；当前对话视图清空、未回复计数归零。断言读的是隔离数据根的真实会话文件与视图状态 —— 只断命令返回值会把「换了指针但没落盘」「旧会话被删掉」放过去",
+      why: "用户用 /clear 时唯一关心的就是「现在是全新一页、之前那页还在」：新会话没落盘会在重启后丢正文，旧会话被顺手删掉则是不可恢复的数据损失，两者都不会抛错",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["slash-clear-new-session"],
     },
   ],
   // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles

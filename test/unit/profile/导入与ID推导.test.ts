@@ -47,7 +47,7 @@ async function buildZip(entries: Record<string, string | Uint8Array>): Promise<A
 }
 
 describe("importProfileZip", () => {
-  it("接受 { name, arrayBuffer } 结构并取字节一次，按文件名推导 ID 后真实落盘", async () => {
+  it("接受 { name, arrayBuffer } 结构并取字节一次，按文件名推导 ID 后真实落盘 [profile-import-roundtrip]", async () => {
     const arrayBuffer = vi.fn(async () =>
       buildZip({
         "profile.yaml": "meta:\n  name: 导入探针\n",
@@ -64,7 +64,7 @@ describe("importProfileZip", () => {
     expect([...readFileSync(join(root, "profiles", "myprofile", "materials", "L0", "bg.png"))]).toEqual([1, 2, 3])
   })
 
-  it("缺少 profile.yaml 的压缩包被拒绝，且一个文件都不落", async () => {
+  it("缺少 profile.yaml 的压缩包被拒绝，且一个文件都不落 [profile-import-reject-missing-yaml]", async () => {
     const result = await importProfileZip({
       name: "plain.zip",
       arrayBuffer: async () => buildZip({ "readme.txt": "no profile here" }),
@@ -75,7 +75,7 @@ describe("importProfileZip", () => {
     expect(existsSync(join(root, "profiles", "plain"))).toBe(false)
   })
 
-  it("无法从文件名推导合法 ID 时拒绝导入", async () => {
+  it("无法从文件名推导合法 ID 时拒绝导入 [profile-import-reject-invalid-id]", async () => {
     const result = await importProfileZip({
       name: ".zip",
       arrayBuffer: async () => buildZip({ "profile.yaml": "meta: {}" }),
@@ -84,7 +84,7 @@ describe("importProfileZip", () => {
     expect(result.message).toContain("Profile ID")
   })
 
-  it("同路径条目（大小写口径）如实报告覆盖，macOS 隐藏文件被跳过", async () => {
+  it("同路径条目（大小写口径）如实报告覆盖，macOS 隐藏文件被跳过 [profile-import-collision-report]", async () => {
     const result = await importProfileZip({
       name: "Collide.zip",
       arrayBuffer: async () =>
@@ -103,7 +103,7 @@ describe("importProfileZip", () => {
     expect(result.detail).toContain("A.yaml ← a.yaml")
   })
 
-  it("写入失败返回失败结果而不是抛出，不留下成功假象", async () => {
+  it("写入失败返回失败结果而不是抛出，不留下成功假象 [profile-import-write-failure]", async () => {
     const failing = {
       request: vi.fn(async () => {
         throw new HostCommandError("IO", "磁盘不可写")
@@ -126,7 +126,7 @@ describe("importProfileZip", () => {
 })
 
 describe("新建空 Profile", () => {
-  it("写五层空壳 profile.yaml + 五层素材目录，ID 与默认名取最小未占用序号", async () => {
+  it("写五层空壳 profile.yaml + 五层素材目录，ID 与默认名取最小未占用序号 [profile-create-scaffold]", async () => {
     const result = await createProfile(["profile1", "sugar-pink"])
 
     expect(result.ok).toBe(true)
@@ -156,7 +156,7 @@ describe("新建空 Profile", () => {
     }
   })
 
-  it("新建后可直接往五层目录写图并读回", async () => {
+  it("新建后可直接往五层目录写图并读回 [profile-create-writable-layers]", async () => {
     const result = await createProfile(await discoverAllProfiles())
     const id = result.newId!
     const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
@@ -168,7 +168,7 @@ describe("新建空 Profile", () => {
     expect([...readFileSync(join(root, "profiles", id, "materials", "L2", "body.png"))]).toEqual([...bytes])
   })
 
-  it("已有 profile1/profile2 时新建落在 profile3（磁盘实际文件为准）", async () => {
+  it("已有 profile1/profile2 时新建落在 profile3（磁盘实际文件为准） [profile-create-id-sequence]", async () => {
     const result = await createProfile(["profile1", "profile2"])
     expect(result.newId).toBe("profile3")
     expect(existsSync(join(root, "profiles", "profile3", "profile.yaml"))).toBe(true)
@@ -176,7 +176,7 @@ describe("新建空 Profile", () => {
 })
 
 describe("重命名", () => {
-  it("只改显示名：meta.name 落盘（两侧空白裁掉），id 目录不动", async () => {
+  it("只改显示名：meta.name 落盘（两侧空白裁掉），id 目录不动 [profile-rename-display-name]", async () => {
     const created = await createProfile(await discoverAllProfiles())
     const id = created.newId!
     const result = await renameProfile(id, "  小雨  ")
@@ -189,7 +189,7 @@ describe("重命名", () => {
     expect(readFileSync(join(root, "profiles", id, "profile.yaml"), "utf8")).toContain("小雨")
   })
 
-  it("纯空白名字被拒绝，磁盘文件一个字节都不动", async () => {
+  it("纯空白名字被拒绝，磁盘文件一个字节都不动 [profile-rename-reject-blank]", async () => {
     const created = await createProfile(await discoverAllProfiles())
     const id = created.newId!
     const path = join(root, "profiles", id, "profile.yaml")
@@ -202,7 +202,7 @@ describe("重命名", () => {
     expect(readFileSync(path, "utf8")).toBe(before)
   })
 
-  it("与其它 Profile 重名被拒绝（裁剪空白后精确比对），磁盘不动", async () => {
+  it("与其它 Profile 重名被拒绝（裁剪空白后精确比对），磁盘不动 [profile-rename-reject-duplicate]", async () => {
     const a = await createProfile(await discoverAllProfiles())
     const b = await createProfile(await discoverAllProfiles())
     const pathB = join(root, "profiles", b.newId!, "profile.yaml")
@@ -217,7 +217,7 @@ describe("重命名", () => {
 })
 
 describe("新建默认名避让", () => {
-  it("默认名被其它 Profile 占用时按（2）后缀避让", async () => {
+  it("默认名被其它 Profile 占用时按（2）后缀避让 [profile-create-default-name-avoid]", async () => {
     const result = await createProfile(["profile1", "profile2"], ["新 Profile 3"])
 
     expect(result.ok).toBe(true)
@@ -227,14 +227,14 @@ describe("新建默认名避让", () => {
 })
 
 describe("ID 与路径文本", () => {
-  it("nextCreateId 取最小未占用新建名，不跳号", () => {
+  it("nextCreateId 取最小未占用新建名，不跳号 [profile-next-create-id]", () => {
     expect(nextCreateId([])).toBe("profile1")
     expect(nextCreateId(["profile2"])).toBe("profile1")
     expect(nextCreateId(["profile1", "profile2", "profile3"])).toBe("profile4")
     expect(nextCreateId(["profile1", "profile3"])).toBe("profile2")
   })
 
-  it("profileDisplayPath 固定为数据根下 profiles/<id>", () => {
+  it("profileDisplayPath 固定为数据根下 profiles/<id> [profile-display-path]", () => {
     expect(profileDisplayPath("probe")).toBe(join(root, "profiles", "probe"))
   })
 })

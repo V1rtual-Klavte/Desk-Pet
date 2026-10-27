@@ -63,7 +63,7 @@ afterEach(() => {
 })
 
 describe("reportError 单一出口", () => {
-  it("把来源/分类、脱敏前的原文与完整详情交给宿主落盘，并写 error 日志", () => {
+  it("把来源/分类、脱敏前的原文与完整详情交给宿主落盘，并写 error 日志 [error-outlet-report-payload]", () => {
     const calls = installRecordingBridge()
     reportError("窗口", new Error("boom"))
 
@@ -80,7 +80,7 @@ describe("reportError 单一出口", () => {
     expect(loggerMocks.warn).not.toHaveBeenCalled()
   })
 
-  it("fatal 标记进错误日志，分类取 options.kind", () => {
+  it("fatal 标记进错误日志，分类取 options.kind [error-outlet-kind-fatal]", () => {
     installRecordingBridge()
     reportError("发送", new Error("链路断了"), { kind: "network", fatal: true })
     const [message] = loggerMocks.error.mock.calls[0]!
@@ -90,7 +90,7 @@ describe("reportError 单一出口", () => {
     expect(loggerMocks.error.mock.calls[0]![1]).toContain("链路断了")
   })
 
-  it("overlay:false 的预期内失败只留 warn，不升级成错误日志", () => {
+  it("overlay:false 的预期内失败只留 warn，不升级成错误日志 [error-outlet-overlay-false-warn]", () => {
     const calls = installRecordingBridge()
     reportError("Profile", { code: "IO", message: "素材缺失" }, { kind: "asset", overlay: false })
 
@@ -99,13 +99,13 @@ describe("reportError 单一出口", () => {
     expect(loggerMocks.error).not.toHaveBeenCalled()
   })
 
-  it("宿主通道未注入时也永不抛出，日志留痕照走", () => {
+  it("宿主通道未注入时也永不抛出，日志留痕照走 [error-outlet-never-throws]", () => {
     setHostBridge(null)
     expect(() => reportError("Config", new Error("save failed"))).not.toThrow()
     expect(loggerMocks.error).toHaveBeenCalledTimes(1)
   })
 
-  it("宿主上报失败（异步 reject）不阻断出口，也不产生未处理拒绝", async () => {
+  it("宿主上报失败（异步 reject）不阻断出口，也不产生未处理拒绝 [error-outlet-report-failure-swallowed]", async () => {
     const bridge = {
       request: vi.fn(async () => {
         throw Object.assign(new Error("report rejected"), { code: "OTHER" })
@@ -125,7 +125,7 @@ describe("reportError 单一出口", () => {
 })
 
 describe("summarizeError 脱敏与截断", () => {
-  it("API key / Bearer / password 等密钥形态先打码", () => {
+  it("API key / Bearer / password 等密钥形态先打码 [error-summary-secret-masking]", () => {
     // 回归钉：sk- 规则曾无捕获组却用 "$1***" 替换，输出会带字面 "$1"。断言打码后的
     // 完整文本（同时钉住密钥移除、前缀保留与 $1 不泄漏），不只是「不含原文 + 有 ***」。
     expect(summarizeError(new Error("请求失败 sk-abcdefgh12345678 被拒"))).toBe("请求失败 sk-*** 被拒")
@@ -135,7 +135,7 @@ describe("summarizeError 脱敏与截断", () => {
     expect(summarizeError("password=hunter2xyz")).toBe("password=***")
   })
 
-  it("空白折叠、超长截断加省略号，普通文本原样保留", () => {
+  it("空白折叠、超长截断加省略号，普通文本原样保留 [error-summary-collapse-truncate]", () => {
     expect(summarizeError("a\n\n b\t c")).toBe("a b c")
     expect(summarizeError(new Error("普通失败"))).toBe("普通失败")
     const long = summarizeError("x".repeat(300))
@@ -144,7 +144,7 @@ describe("summarizeError 脱敏与截断", () => {
     expect(summarizeError("x".repeat(300), 10)).toBe("xxxxxxxxxx…")
   })
 
-  it("AppErrorPayload 取 message 再脱敏", () => {
+  it("AppErrorPayload 取 message 再脱敏 [error-summary-payload-message]", () => {
     const summary = summarizeError({ code: "IO", message: "磁盘已满 sk-abcdefgh12345678" })
     expect(summary, "打码结果要干净：sk- 前缀保留、不留 $1 字面量").toBe("磁盘已满 sk-***")
   })
