@@ -53,6 +53,33 @@ describe("统一业务调度",()=>{
     expect(()=>kernel.register({id:"late-config",nextAt:()=>1,run:async()=>{}})).toThrow("scheduler_stopped")
     expect(vi.getTimerCount()).toBe(0)
   })
+  it("关停有界等待在飞作业，超时如实报告未收敛的作业 [scheduler-stop-bounded]",async()=>{
+    vi.useFakeTimers();vi.setSystemTime(0)
+    const kernel=new SchedulerKernel(),cancel=vi.fn()
+    let release!:()=>void
+    const held=new Promise<void>(resolve=>{release=resolve})
+    kernel.register({id:"held",nextAt:()=>0,cancel,run:async()=>{await held}})
+    void kernel.drain()
+    await Promise.resolve()
+    const stopping=kernel.stop({timeoutMs:1000})
+    await vi.advanceTimersByTimeAsync(1000)
+    const report=await stopping
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(report).toEqual({canceled:1,drained:false,abandoned:["held"]})
+    release()
+    await Promise.resolve()
+  })
+  it("作业抛错只留痕，不终止调度，后续唤醒仍会执行（故障救援） [scheduler-failure-rescue]",async()=>{
+    vi.useFakeTimers();vi.setSystemTime(0)
+    const kernel=new SchedulerKernel(),run=vi.fn(()=>Promise.reject(new Error("transient")))
+    kernel.register({id:"flaky",nextAt:()=>1000,run})
+    kernel.wake("flaky")
+    await vi.advanceTimersByTimeAsync(1)
+    kernel.wake("flaky")
+    await vi.advanceTimersByTimeAsync(1)
+    expect(run).toHaveBeenCalledTimes(2)
+    expect(await kernel.stop()).toEqual({canceled:0,drained:true,abandoned:[]})
+  })
   it("旧注销回调不能删除同名的新一代作业 [scheduler-stale-disposer]",async()=>{
     vi.useFakeTimers();vi.setSystemTime(0)
     const kernel=new SchedulerKernel(),seen:string[]=[],cancel=vi.fn()

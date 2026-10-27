@@ -7,6 +7,15 @@ export interface ScheduledJob {
   run: (now: number) => Promise<void>
   cancel?: () => void
 }
+
+/** 关停只能等这么久：宿主 flush 期限是 5s，超过期限的作业如实记为未收敛。 */
+export const SCHEDULER_STOP_TIMEOUT_MS = 2_000
+
+export interface SchedulerStopReport {
+  canceled: number
+  drained: boolean
+  abandoned: string[]
+}
 const log = createLogger("Scheduler")
 /** One process timer. Domain owners retain their own eligibility, cancellation and budgets. */
 export class SchedulerKernel {
@@ -76,13 +85,32 @@ export class SchedulerKernel {
     this.arm()
     await Promise.all(runs)
   }
-  async stop(): Promise<void> {
+  async stop({ timeoutMs = SCHEDULER_STOP_TIMEOUT_MS }: { timeoutMs?: number } = {}): Promise<SchedulerStopReport> {
     this.stopped = true
     if (this.timer) clearTimeout(this.timer)
     this.timer = undefined
-    for (const state of this.jobs.values()) state.job.cancel?.()
-    await Promise.all([...this.inFlight])
+    let canceled = 0
+    for (const state of this.jobs.values()) {
+      if (!state.job.cancel) continue
+      state.job.cancel()
+      canceled += 1
+    }
+    const pending = [...this.inFlight]
+    // 卡死的作业不能拖住整个退出序列：期限内没排空就如实上报，由调用方计入未完成。
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<"timeout">(resolve => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs)
+      timer.unref?.()
+    })
+    const drained = pending.length === 0
+      ? true
+      : await Promise.race([Promise.all(pending).then(() => "drained" as const), timeout]) === "drained"
+    if (timer) clearTimeout(timer)
+    const abandoned = drained
+      ? []
+      : [...this.jobs.values()].filter(state => state.running !== undefined).map(state => state.job.id).sort()
     this.jobs.clear()
+    return { canceled, drained, abandoned }
   }
 }
 export const internalScheduler = new SchedulerKernel()

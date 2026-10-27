@@ -27,7 +27,9 @@ pub const SIM_EVAL_RUN_DIR_ENV: &str = "DESKPET_SIM_EVAL_RUN_DIR";
 pub const READY_FILE: &str = "ready.json";
 pub const STOP_FILE: &str = "stop.request";
 pub const SEED_FILE: &str = "seed.json";
+pub const EXIT_FILE: &str = "exit.json";
 pub const READY_SCHEMA_VERSION: u32 = 1;
+pub const EXIT_SCHEMA_VERSION: u32 = 1;
 
 /// 运行根目录名前缀。与 `test/.tmp/e2e-` 同层但互不认领。
 const RUN_DIR_PREFIX: &str = "sim-eval-";
@@ -87,6 +89,10 @@ pub fn seed_path(run_dir: &Path) -> PathBuf {
     run_dir.join(SEED_FILE)
 }
 
+pub fn exit_path(run_dir: &Path) -> PathBuf {
+    run_dir.join(EXIT_FILE)
+}
+
 /// `ready.json` 的字段形状：启动器（读取方）与 Node 运行上下文共用 camelCase。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -118,12 +124,49 @@ pub fn write_ready(run_dir: &Path, ready: &SimEvalReady) -> AppResult<PathBuf> {
     Ok(target)
 }
 
+/// 关停 flush 的真实结果：启动器据此判断证据是否完整落盘，不把强杀当干净退出。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimEvalFlush {
+    pub flushed: bool,
+    pub pending: u64,
+    pub detail: Option<String>,
+}
+
+/// 产品退出序列结束后写入运行根：`ready.json` 只证明进程曾拥有运行根，
+/// `exit.json` 才证明它走了统一退出序列以及 flush 是否完成。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SimEvalExit {
+    pub schema_version: u32,
+    pub pid: u32,
+    pub exited_at: String,
+    pub flush: Option<SimEvalFlush>,
+    pub interrupted: bool,
+    pub forced_kill: bool,
+    pub detail: String,
+}
+
+/// 原子写退出记录（临时文件 + rename），避免启动器读到半截 JSON。
+pub fn write_exit(run_dir: &Path, exit: &SimEvalExit) -> AppResult<PathBuf> {
+    let target = exit_path(run_dir);
+    let temp = run_dir.join(format!(".{EXIT_FILE}.{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(exit)
+        .map_err(|error| AppError::Other(format!("exit.json 序列化失败: {error}")))?;
+    fs::write(&temp, text)
+        .map_err(|error| AppError::Io(format!("写入 exit.json 失败 {temp:?}: {error}")))?;
+    if target.exists() {
+        let _ = fs::remove_file(&target);
+    }
+    fs::rename(&temp, &target)
+        .map_err(|error| AppError::Io(format!("落位 exit.json 失败 {target:?}: {error}")))?;
+    Ok(target)
+}
+
 /// 运行期持有：正常返回时移除 ready；异常终止留下的文件由启动器按进程存活判定。
 pub struct ReadyGuard {
     path: PathBuf,
-}
-
-impl ReadyGuard {
+}impl ReadyGuard {
     pub fn new(run_dir: &Path) -> Self {
         Self {
             path: ready_path(run_dir),
@@ -254,6 +297,47 @@ mod tests {
         let guard = ReadyGuard::new(&run);
         guard.remove();
         assert!(!path.exists());
+        fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn exit_record_carries_flush_outcome_and_leaves_no_temp_file() {
+        let workspace = temp_workspace();
+        let dir = workspace.join("test/.tmp/sim-eval-exit");
+        fs::create_dir_all(&dir).unwrap();
+        let run = validate_run_dir(&dir, &workspace).unwrap();
+        let exit = SimEvalExit {
+            schema_version: EXIT_SCHEMA_VERSION,
+            pid: std::process::id(),
+            exited_at: "2026-10-27T10:00:00+08:00".into(),
+            flush: Some(SimEvalFlush {
+                flushed: false,
+                pending: 2,
+                detail: Some("business scheduler: dream 未在期限内收敛".into()),
+            }),
+            interrupted: true,
+            forced_kill: false,
+            detail: "关停结果: interrupted=true".into(),
+        };
+        let path = write_exit(&run, &exit).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(parsed["schemaVersion"], 1);
+        assert_eq!(parsed["pid"], std::process::id());
+        assert_eq!(parsed["exitedAt"], "2026-10-27T10:00:00+08:00");
+        assert_eq!(parsed["flush"]["flushed"], false);
+        assert_eq!(parsed["flush"]["pending"], 2);
+        assert_eq!(parsed["interrupted"], true);
+        assert_eq!(parsed["forcedKill"], false);
+        assert_eq!(
+            fs::read_dir(&run)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+                .count(),
+            0,
+            "临时文件不应残留"
+        );
         fs::remove_dir_all(&workspace).unwrap();
     }
 }

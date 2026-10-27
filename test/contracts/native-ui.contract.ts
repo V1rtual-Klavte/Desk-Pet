@@ -1,3 +1,7 @@
+// 2026-10-27 Harness 关停序列扩展（定向复核）：src/harness/main.ts 的 flushForShutdown 增加
+// 业务调度器有界停止结果（未收敛作业进 flush detail）与 sim 采集关停（未走 finish 的 trace
+// 按中断封口），属评测证据域的退出证据生产，由 evaluation 契约 eval-10 持有场景；nui-33 的
+// 宿主请求排空行为未变。sourceHash 按当前源码复算。
 // 2026-10-24 编辑器保存写盘批次：新增 nui-37（2 个 L3 caseId）—— 编辑器保存此前只有
 // L2 记录型假桥覆盖，真实落盘与「主窗舞台 / 编辑器预览同构」没有证据；现以隔离数据根
 // 走真实 Profile/CONFIG 文件 I/O（只拦 apply_stage_profile 以记录舞台载荷），并补入
@@ -241,7 +245,7 @@ export const nativeUiContract: ModuleContract = {
     // 推送仍带旧层，而 L3 的「舞台快照与回读同构」用例会红，hash 不算上它就漏判。
     "src/services/profile/loader.ts",
   ],
-  sourceHash: "fbb52fa0751f8208547913f8f3b18a7e4604b76df6435c0d520dafb49560b818",
+  sourceHash: "343a87735e3b125ef9779a7ad1395ac987ca1878875adc4bbe3e9422cc971223",
   coverage: [
     {
       id: "nui-34",

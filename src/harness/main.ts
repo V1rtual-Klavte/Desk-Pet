@@ -212,13 +212,16 @@ async function flushForShutdown(_context: HarnessContext): Promise<FlushReport> 
     await attempt("domain initialization", () => domainInitialization!, undefined)
   }
   // Stop producers before waiting on Harness slots; then disconnect Native-owned MCP clients.
-  await Promise.all([
+  const [schedulerStop] = await Promise.all([
+    attempt("business scheduler", () => internalScheduler.stop(), null),
     attempt("user task runtime", stopUserTaskRuntime, undefined),
-    attempt("business scheduler", () => internalScheduler.stop(), undefined),
     attempt("proactive scheduler", stopProactive, undefined),
     attempt("idle memory scheduler", stopDreaming, undefined),
     attempt("silent understanding", stopSilentUnderstanding, undefined),
   ])
+  if (schedulerStop && !schedulerStop.drained) {
+    failures.push(`business scheduler: ${schedulerStop.abandoned.join(", ") || "未知作业"} 未在期限内收敛`)
+  }
   const behaviorFlushed = await attempt("monitor disable", () => setMonitorEnabled(false), true)
   await attempt("window observation unsubscribe", async () => disconnectWindowObservation(), undefined)
   const runtime = await attempt("Harness runs and audit", () => harnessSlots.prepareForShutdown(), { unresolvedRuns: 0, pendingAudit: 0 })
@@ -236,6 +239,11 @@ async function flushForShutdown(_context: HarnessContext): Promise<FlushReport> 
   }, undefined)
   await attempt("MCP disconnect", disconnectAllMcpServers, undefined)
   const frameFailures = await attempt("session frame flush", () => flushSessionFrameWrites(BACKGROUND_CONTEXT), 0)
+  // sim 采集器持有自己的 trace 文件：未走 finish 的关停必须先按中断封口，否则证据停在半截。
+  await attempt("sim capture shutdown", async () => {
+    const { stopSimChatBridge } = await import("@/services/sim")
+    await stopSimChatBridge()
+  }, undefined)
   const permitAttached = await attempt("tool permit attach", retryBorrowerAttachIfPending, true)
   const permits = await attempt("tool permit release", flushPendingReleases, { attempted: 0, released: 0, pending: 0 })
   // Last: earlier shutdown stages can add log records that also need to be delivered.
@@ -250,6 +258,7 @@ async function flushForShutdown(_context: HarnessContext): Promise<FlushReport> 
     `pendingPermitReleases=${permits.pending}`,
     `permitAttached=${permitAttached}`,
     `behaviorFlushed=${behaviorFlushed}`,
+    `schedulerAbandoned=${schedulerStop?.abandoned.length ?? 0}`,
     `frameFlushFailures=${frameFailures}`,
     `logsFlushed=${logsFlushed}`,
     ...failures,

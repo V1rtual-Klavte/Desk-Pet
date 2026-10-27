@@ -217,7 +217,7 @@ fn run(mode: Mode) -> AppResult<i32> {
 
     // sim-eval：锁到手才写 ready —— 它证明本进程拥有这个运行根。写入失败直接失败，
     // 启动器不会把别的进程/别的数据根当成这次评测的宿主。
-    let sim_eval_ready = if let Some(run) = sim_eval_run.as_ref() {
+    let _sim_eval_ready = if let Some(run) = sim_eval_run.as_ref() {
         let ready = sim_eval::SimEvalReady {
             schema_version: sim_eval::READY_SCHEMA_VERSION,
             generation: random_hex(16)?,
@@ -239,9 +239,7 @@ fn run(mode: Mode) -> AppResult<i32> {
     } else {
         None
     };
-    let sim_eval_ready_path = sim_eval_ready
-        .as_ref()
-        .map(|guard| guard.path().to_path_buf());
+    let sim_eval_run_path = sim_eval_run.clone();
 
     // W10b 更新域装配（幂等）：解析嵌入的更新元数据、推导安装布局、执行启动恢复
     // （把上次中断的替换收口：回滚到上一完整版本 / 补记完成）。失败只留痕、不阻断
@@ -311,7 +309,7 @@ fn run(mode: Mode) -> AppResult<i32> {
         supervisor: supervisor.clone(),
         mcp: mcp_pool.clone(),
         bash: bash_pool.clone(),
-        sim_eval_ready: sim_eval_ready_path,
+        sim_eval_run: sim_eval_run_path,
     })));
 
     // W4 端口实现：资源授权表（启动时把 profiles 根整目录授权）、
@@ -523,15 +521,17 @@ struct ServiceExitHook {
     supervisor: Arc<NodeSupervisor>,
     mcp: Arc<McpPool>,
     bash: Arc<BashPool>,
-    /// sim-eval：退出序列一旦开始，就不再对外宣称「本进程拥有运行根」。
-    /// 平台退出走 `process::exit` 时 Drop 不会执行，所以这里显式移除。
-    sim_eval_ready: Option<PathBuf>,
+    /// sim-eval：退出序列一旦开始，就不再对外宣称「本进程拥有运行根」；
+    /// 收尾后写 `exit.json` 记录关停 flush 的真实结果。平台退出走 `process::exit`
+    /// 时 Drop 不会执行，所以 ready 在这里显式移除。
+    sim_eval_run: Option<PathBuf>,
 }
 
 impl HostExitHook for ServiceExitHook {
     fn run(&self) {
-        if let Some(path) = &self.sim_eval_ready {
-            if let Err(error) = std::fs::remove_file(path) {
+        if let Some(run) = &self.sim_eval_run {
+            let path = native_host::paths::sim_eval::ready_path(run);
+            if let Err(error) = std::fs::remove_file(&path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     rust_warn!("移除 sim-eval ready 失败 {}: {error}", path.display());
                 }
@@ -557,6 +557,27 @@ impl HostExitHook for ServiceExitHook {
         // ② Node：封 admission → 请求 flush → 等真实报告 → 停 Node；超时如实记中断。
         let report = self.supervisor.shutdown();
         log_shutdown_report(&report);
+        // ②b sim-eval：把 flush 的真实结果留在运行根；启动器据此区分干净退出与强杀/中断。
+        if let Some(run) = &self.sim_eval_run {
+            let exit = native_host::paths::sim_eval::SimEvalExit {
+                schema_version: native_host::paths::sim_eval::EXIT_SCHEMA_VERSION,
+                pid: std::process::id(),
+                exited_at: chrono::Local::now().to_rfc3339(),
+                flush: report.node_flush.as_ref().map(|flush| {
+                    native_host::paths::sim_eval::SimEvalFlush {
+                        flushed: flush.flushed,
+                        pending: flush.pending,
+                        detail: flush.detail.clone(),
+                    }
+                }),
+                interrupted: report.interrupted,
+                forced_kill: report.forced_kill,
+                detail: report.detail.clone(),
+            };
+            if let Err(error) = native_host::paths::sim_eval::write_exit(run, &exit) {
+                rust_warn!("写入 sim-eval exit.json 失败: {error}");
+            }
+        }
         // ③ W10b 更新安装的落位：到这里 Node/插件/MCP 已全部回收，若本次会话把更新
         // staging 完成（phase=staged），由 helper 在整套进程退出后替换安装目录并重启。
         // 没有 staged 更新时是 no-op；helper 拉起失败只留痕、不替换任何文件。
@@ -1044,7 +1065,7 @@ fn run_e2e() -> AppResult<i32> {
         supervisor: supervisor.clone(),
         mcp: mcp_pool.clone(),
         bash: bash_pool.clone(),
-        sim_eval_ready: None,
+        sim_eval_run: None,
     })));
     let assets = Arc::new(NativeAssetScope::new());
     assets

@@ -1,4 +1,9 @@
 // ==========================================
+// 2026-10-27 调度有界关停与故障救援（本批刷新）：scheduler/kernel.ts 的 stop 取消在飞作业后
+// 有界等待（默认 2s，短于宿主 5s flush 期限），超期返回 abandoned 作业清单而不是无限挂住退出序列；
+// 单个作业抛错只留痕，不终止调度、不清空后续唤醒。pr-22 补有界关停与故障救援场景；
+// sourceFiles 未增删（kernel.ts 原在列）。sourceHash 按当前源码复算。
+// ==========================================
 // 2026-10-26 聊天评测消息绑定（本批刷新）：sourceFiles 中 engine/harness/delivery.ts 新增
 // readRequestResponse（按 requestId 取证回复，首次 run 的 fromTipId=null 按会话开头处理）；
 // 主动表达投递与回执路径未变。pr-* 覆盖点未修订，仅按当前源码刷新 sourceHash。
@@ -316,7 +321,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "765bf4c7941a1f9d9794fff15ad20ea00d8218707af5df16f24e73497b830c59",
+  module:"proactive",sourceHash: "345804ab6f67365c07c73f10560225dc235f9dade45752f5d57b88af3d0dbbbd",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",
@@ -364,7 +369,7 @@ export const proactiveContract:ModuleContract={
     {id:"pr-19",feature:"用户日历、随机与可满足性",description:"缺失时刻待澄清；类型、枚举、IANA时区、计数周期、未知字段拒绝；一次/日/周/月/年按当地日历投影，DST缺时、月末和闰日复用既有规则，跨午夜窗和固定时刻追赶保留原周期；观察事件按真实发生时刻归属周期，跨午夜不丢、同日两次不共用样本；随机整数含上下界并满足窗口/最小间隔，最大次数不可执行不能靠少抽签掩盖，零次须显式允许；无观察事件不伪造触发；现有日额度、冷却与静默全集按实际系统本地时区核对，业务周期仍按任务时区；冲突拒绝，off返回needs_input",why:"程序必须证明物理与结构约束，不能把模型自报符合需求或推测画像当作日历、观察或送达证明",layer:"unit",depth:"deep",scenarios:["schedule-definition-validation","schedule-filtered-period-validation","schedule-calendar-frequencies","schedule-calendar-dst","schedule-cross-midnight-grace","schedule-random-count-gap","schedule-capacity-zero-count","schedule-observed-event-evidence","schedule-observed-event-period-identity","schedule-delivery-feasibility","schedule-delivery-cross-timezone"]},
     {id:"pr-20",feature:"用户工具提议与提交闭环",description:"模型只注册schedule_query/change，control在宿主事务前拒绝；缺失时刻草案不创建，完整可信指令直接提交并冻结session/Card/hash；短同意绑定唯一可见提议、实际参数、来源版本，变化拒绝；decline 只收 proposalId，从本轮可信提议派生原来源与精确目标，不接受另选 targetAction/事项/版本；多个提议的短拒绝与多个任务的模糊取消须澄清，只有用户明确目的或 ID 才绑定；complete/cancel/decline不携带taskPatch，reschedule不携带recurrence；snooze仅提交下次提醒投影，保留事项锚和原有效期；明确只读MCP冻结descriptor grant，未声明或破坏性提示返回needs_input",why:"工具名替换不能留下可触达旧控制面，提议不能混作已创建，授权字段与归属不能由模型伪造，延后不能偷偷改期",layer:"integration",depth:"deep",scenarios:["schedule-tool-surface","schedule-propose-create-closure","schedule-proposal-source-binding","schedule-unknown-commit-recovery","proactive-recurrence-snooze-validity","schedule-mcp-capability-grants","schedule-patch-shape","schedule-decline-preserves-matter","schedule-cancel-ambiguity"]},
     {id:"pr-21",feature:"MCP描述与持久能力授权",description:"发现保留完整nested schema及只读/破坏提示，原DANGER/external_side_effect/exclusive/never策略不降级；schema或提示变化改变descriptor hash；无精确grant、越界深层路径、私网URL拒绝；读提示本身不授权，PermissionKernel仍deny-first，只有持久任务scope允许精确调用",why:"MCP新闻检索需要能被明确授权，但服务自报readOnlyHint不能成为许可或扩大文件/网络作用域",layer:"integration",depth:"deep",scenarios:["schedule-mcp-descriptor-preservation","schedule-capability-scope-fingerprint","schedule-capability-permission-kernel"]},
-    {id:"pr-22",feature:"统一唤醒内核",description:"系统作业和用户到期任务由单一进程timer排唤醒；用户提醒唤醒不重排普通主动随机槽，关停取消在飞并等待收口",why:"只改工具名或再加并行timer不能实现统一调度，用户安排不能扰动原主动随机节奏",layer:"unit",depth:"deep",scenarios:["scheduler-single-wake","scheduler-independent-reminder-wake","scheduler-cancel-drain","scheduler-stopped-no-revive","scheduler-stale-disposer"]},
+    {id:"pr-22",feature:"统一唤醒内核",description:"系统作业和用户到期任务由单一进程timer排唤醒；用户提醒唤醒不重排普通主动随机槽；关停取消在飞并有界等待，超期如实返回未收敛作业清单，不无限挂住退出序列；单个作业抛错只留痕，不终止调度，后续唤醒仍会执行",why:"只改工具名或再加并行timer不能实现统一调度，用户安排不能扰动原主动随机节奏；卡死或抛错的作业既不能拖住关停，也不能让调度器停摆",layer:"unit",depth:"deep",scenarios:["scheduler-single-wake","scheduler-independent-reminder-wake","scheduler-cancel-drain","scheduler-stopped-no-revive","scheduler-stale-disposer","scheduler-stop-bounded","scheduler-failure-rescue"]},
     {id:"pr-23",feature:"执行产物证据与完成条件",description:"完成条件、工具成功回执、来源链接和发布时间逐项核对；失败/不完整不伪装完成，新闻新鲜度基于真实回执与任务时区日期而非模型自报；只把明确的未完成/缺产物归为needs_input，来源与能力合同失败归为failed，未知效果归为unresolved",why:"执行成功、结果已生成、消息已送达和用户现实事项完成是不同事实，未经工具证据核验的来源与日期不能成为产物完成依据",layer:"unit",depth:"deep",scenarios:["scheduled-artifact-provenance","scheduled-artifact-failure","scheduled-artifact-news-freshness","scheduled-artifact-failure-classification"]},
     {id:"pr-24",feature:"后台工作独立派发与关停",description:"长检索不阻塞新提醒到期检查；后台工作单独追踪，完成条件缺口进入needs_input，停止取消并等待执行排空",why:"共用唤醒核心不能把所有用户工作串成阻塞队列，进程退出不能留下未归属运行",layer:"integration",depth:"deep",scenarios:["scheduled-dispatch-independent-work","scheduled-dispatch-stop-drain"]},
     {id:"pr-25",feature:"用户任务 MCP 借用范围",description:"后台执行型任务只借用其持久化 work.capabilities 声明且当前已启用的 MCP server；按最长 server 名匹配，未知/未启用能力不扩大借用面，后续由缺失能力检查进入 needs_input",why:"任务执行不能继承对话或全部已启用 MCP 的连接面，否则一条只读任务会获得未授权的服务器工具",layer:"unit",depth:"shallow",scenarios:["schedule-task-mcp-scope"]},
