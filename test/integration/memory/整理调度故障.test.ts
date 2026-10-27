@@ -2,12 +2,15 @@
 // 记忆整理的调度故障窗口 —— L3
 // ==========================================
 //
-// 覆盖三条过去只靠实现语义、没有断言的路径：
+// 覆盖过去只靠实现语义、没有断言的路径：
 //   · 取消晚到：模型在取消之后才返回，响应不得被写成候选、不得发布；
 //   · 失败保留部分水位：批次 1 已 checkpoint、批次 2 失败时，已处理来源的推进不复原，
 //     失败作业不提交候选；
 //   · 批次上限：一次作业最多 3 批 × 20 条，只对已处理来源推进水位，剩余留给下一轮；
 //     checkpoint 的 coveredSourceIds 按批内每个会话推进（真实 Rust 侧按会话写水位）。
+//   · 跨窗口/前台冲突：界面取消或租约被抢后 checkpoint 冲突、评审期间前台写入推进 revision
+//     使提交冲突 —— 两条都以失败收口、不发布；回收作业也失败时不掩盖原始失败；恢复请求被
+//     Rust 拒绝时如实抛出、不接管作业（真实租约 SQL 由 Rust 单测钉住）。
 //
 // 边界替换：memory ipc（Rust 专属命令）、来源收集与模型调用用替身；跑真实 dreaming
 // 的批次循环、取消检查与水位调用序。真实 SQLite 水位与墓碑由 L4 记忆场景承担。
@@ -128,6 +131,11 @@ function reviewFailure(): Promise<never> {
   return Promise.reject(new Error("第二批模型调用失败"))
 }
 
+/** Rust `AppError::MemoryConflict` 经宿主回执映射后的错误形状（message 原样带出，code 供上层分类）。 */
+function memoryConflict(message: string): Error {
+  return Object.assign(new Error(message), { code: "MEMORY_CONFLICT" })
+}
+
 describe("记忆整理的取消与失败窗口", () => {
   it("取消后模型才返回：晚到响应不写候选、不提交，按取消收口 [dreaming-cancel-late-result]", async () => {
     const dreaming = await bootDreaming()
@@ -226,5 +234,73 @@ describe("记忆整理的取消与失败窗口", () => {
     expect(second.sourcesProcessed).toBe(5)
     expect(coveredBatches[3], "下一轮没有从剩余来源开始").toEqual(all.slice(60).map(source => source.sourceId))
     expect(cursor).toBe(65)
+  })
+
+  it("跨窗口租约冲突：界面取消后 checkpoint 被拒，整轮失败且不发布 [dreaming-checkpoint-conflict]", async () => {
+    const dreaming = await bootDreaming()
+    ipc.pendingMemorySourceCount.mockImplementation(async origin => (origin === "user" ? 1 : 0))
+    ipc.memoryJobSources.mockResolvedValue([userSource(1)])
+    harness.completePiText.mockResolvedValue(EMPTY_REVIEW)
+    // 另一窗口（设置页「取消作业」）先把作业置为 cancelled：本轮续租随之冲突。
+    ipc.checkpointMemoryJob.mockRejectedValue(memoryConflict("记忆库版本冲突"))
+
+    const outcome = await dreaming.runDreamingSweep({ automatic: true })
+
+    expect(outcome.status, "租约冲突被当成了正常完成").toBe("failed")
+    expect(outcome.message, "失败原因没有如实带出冲突").toContain("记忆库版本冲突")
+    expect(outcome.publishedCount, "冲突作业计入了发布数").toBe(0)
+    expect(ipc.commitMemoryDreamingJob, "冲突作业仍提交了候选").not.toHaveBeenCalled()
+    expect(ipc.cancelMemoryJob, "失败后没有回收本轮作业").toHaveBeenCalledWith("job-review")
+  })
+
+  it("前台写入推进 revision：提交边界冲突，候选留在 staging 不发布 [dreaming-commit-conflict]", async () => {
+    const dreaming = await bootDreaming()
+    ipc.pendingMemorySourceCount.mockImplementation(async origin => (origin === "user" ? 1 : 0))
+    ipc.memoryJobSources.mockResolvedValue([userSource(1)])
+    harness.completePiText.mockResolvedValue({
+      text: JSON.stringify({ candidates: [{ sourceIds: ["s1"], content: "用户有一条评审期间产生的事实", kind: "fact", scope: "user" }] }),
+      usage: { input: 50, output: 10 },
+    })
+    // 评审期间前台（记忆页/工具）写入推进了 revision：作业基准过期，发布必须整体拒绝。
+    ipc.commitMemoryDreamingJob.mockRejectedValue(memoryConflict("记忆库版本冲突"))
+
+    const outcome = await dreaming.runDreamingSweep({ automatic: true })
+
+    expect(outcome.status, "提交冲突被当成了完成").toBe("failed")
+    expect(outcome.message, "失败原因没有如实带出冲突").toContain("记忆库版本冲突")
+    expect(ipc.addMemoryCandidates, "评审结果没有进入 staging").toHaveBeenCalledTimes(1)
+    expect(ipc.commitMemoryDreamingJob, "提交请求没有发出").toHaveBeenCalledTimes(1)
+    expect(outcome.publishedCount, "提交冲突后仍计入发布数").toBe(0)
+    expect(ipc.cancelMemoryJob, "冲突后没有尝试回收作业").toHaveBeenCalled()
+  })
+
+  it("回收作业也失败时不掩盖原始失败：失败原因仍是模型错误 [dreaming-cancel-failure-keeps-error]", async () => {
+    const dreaming = await bootDreaming()
+    ipc.pendingMemorySourceCount.mockImplementation(async origin => (origin === "user" ? 1 : 0))
+    ipc.memoryJobSources.mockResolvedValue([userSource(1)])
+    harness.completePiText.mockImplementation(reviewFailure)
+    ipc.cancelMemoryJob.mockRejectedValue(memoryConflict("作业已处于终态"))
+
+    const outcome = await dreaming.runDreamingSweep({ automatic: true })
+
+    expect(outcome.status, "原始失败没有按 failed 收口").toBe("failed")
+    expect(outcome.message, "回收失败覆盖了原始失败原因").toContain("第二批模型调用失败")
+    expect(outcome.message, "原始失败原因被回收错误顶替").not.toContain("作业已处于终态")
+  })
+
+  it("恢复作业被 Rust 拒绝（状态/revision/遗忘代不符）：如实抛出，不接管、不提交 [dreaming-resume-conflict]", async () => {
+    const dreaming = await bootDreaming()
+    ipc.resumeMemoryJob.mockRejectedValue(memoryConflict("记忆库版本冲突"))
+
+    await expect(
+      dreaming.runDreamingSweep({ resumeJobId: "job-paused" }),
+      "恢复被拒却当成成功继续跑了",
+    ).rejects.toThrow("记忆库版本冲突")
+
+    expect(ipc.memoryJobSources, "恢复被拒后仍读取了作业来源").not.toHaveBeenCalled()
+    expect(ipc.addMemoryCandidates, "恢复被拒后仍写了候选").not.toHaveBeenCalled()
+    expect(ipc.commitMemoryDreamingJob, "恢复被拒后仍提交了作业").not.toHaveBeenCalled()
+    expect(ipc.cancelMemoryJob, "未接管的作业被取消了").not.toHaveBeenCalled()
+    expect(ipc.startMemoryJob, "恢复被拒后另开了新作业").not.toHaveBeenCalled()
   })
 })

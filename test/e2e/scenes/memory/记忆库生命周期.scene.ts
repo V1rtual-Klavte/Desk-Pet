@@ -2,7 +2,7 @@ import type { SceneDef } from "../../../e2e/types"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
 import {
   addMemoryCandidates, applyMemoryChange, commitMemoryDreamingJob, memoryList, memoryStatus,
-  queryMemory, registerMemorySources, startMemoryJob,
+  queryMemory, rebuildMemory, registerMemorySources, startMemoryJob,
 } from "@/services/agent/memory"
 import type { MemoryDraft, MemorySource } from "@/services/agent/memory"
 
@@ -57,7 +57,7 @@ export const 记忆库生命周期: SceneDef = {
     caseId: "memory-store-lifecycle",
     module: "memory",
     contractId: "mm-03",
-    description: "真实 SQLite 记忆库：中文短词召回、staging 候选隔离、自动提交、遗忘防回灌与版本冲突",
+    description: "真实 SQLite 记忆库：中文短词召回、staging 候选隔离、自动提交、遗忘防回灌、重建不复活与版本冲突",
     depth: "deep",
     suite: "regression",
     entry: "runtime",
@@ -138,6 +138,17 @@ export const 记忆库生命周期: SceneDef = {
             if (afterForget.length !== 0) throw new Error("遗忘后仍能召回")
             const reRegistered = await registerMemorySources([source])
             if (reRegistered !== 0) throw new Error(`遗忘来源重新登记 ${reRegistered} 条，期望 0`)
+
+            // 重建索引不能让遗忘复活：FTS 只从 active 条目重建，墓碑仍挡在来源池上。
+            // 未遗忘的条目重建后照旧可召回 —— 只有「整表灌回」式的错误重建才会让它失败。
+            const rebuilt = await rebuildMemory()
+            if (rebuilt < 1) throw new Error(`重建后索引条目 ${rebuilt}，期望至少 1（活跃条目）`)
+            const afterRebuild = await queryMemory("咖啡", { limit: 10 })
+            if (afterRebuild.length !== 0) throw new Error("重建索引后已遗忘的记忆复活")
+            const survivor = await queryMemory("老板", { limit: 10 })
+            if (survivor.length !== 1) throw new Error(`重建后未遗忘条目召回 ${survivor.length} 条，期望 1`)
+            const reRegisteredAfterRebuild = await registerMemorySources([source])
+            if (reRegisteredAfterRebuild !== 0) throw new Error(`重建后遗忘来源重新登记 ${reRegisteredAfterRebuild} 条，期望 0`)
           },
         },
       ],

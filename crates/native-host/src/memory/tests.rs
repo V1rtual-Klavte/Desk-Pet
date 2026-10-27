@@ -1186,6 +1186,135 @@ fn job_commit_advances_watermarks_for_every_covered_session() {
 }
 
 #[test]
+fn job_checkpoint_and_cancel_require_the_lease_owner() {
+    // 两个窗口同时整理时，作业归属由租约 owner 裁决：外来 owner 既不能续租也不能取消；
+    // 租约过期（崩溃遗留）后才允许接管，否则作业会永远卡在不可推进的 running 上。
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[source("src-1", "entry-1", "hash-1")])
+        .unwrap();
+    let job = store.job_start("review", "window-a").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+
+    let covered = vec!["src-1".to_string()];
+    let foreign = store.job_checkpoint(&job_id, "src-1", &covered, "window-b", 60_000);
+    assert!(
+        matches!(foreign, Err(AppError::MemoryConflict)),
+        "外来 owner 在租约未过期时推进了作业: {foreign:?}"
+    );
+    let foreign_cancel = store.job_cancel(&job_id, "window-b").unwrap();
+    assert_eq!(
+        foreign_cancel["status"],
+        json!("running"),
+        "外来 owner 取消了不属于它的作业"
+    );
+
+    // 租约过期 = 原持有者已失联：允许接管并接续推进（崩溃恢复的合法路径）。
+    store
+        .lock()
+        .unwrap()
+        .execute("UPDATE memory_jobs SET lease_until=0 WHERE id=?1", [&job_id])
+        .unwrap();
+    store
+        .job_checkpoint(&job_id, "src-1", &covered, "window-b", 60_000)
+        .expect("租约过期后应允许新 owner 接管");
+    let taken_over = store
+        .job_cancel(&job_id, "window-b")
+        .expect("接管后的 owner 应能取消作业");
+    assert_eq!(taken_over["status"], json!("cancelled"));
+
+    // 已取消的作业不能再续租：取消之后到达的批次不得继续写覆盖来源。
+    let after_cancel = store.job_checkpoint(&job_id, "src-1", &covered, "window-b", 60_000);
+    assert!(
+        matches!(after_cancel, Err(AppError::MemoryConflict)),
+        "取消后的作业仍接受了 checkpoint: {after_cancel:?}"
+    );
+}
+
+#[test]
+fn job_resume_requires_review_phase_and_the_frozen_revision() {
+    // 恢复的判据是「作业开跑时冻结的基准仍成立」：评审期间前台写入推进了 revision 之后，
+    // 旧作业不能按旧基准恢复；非 review 阶段的作业同样不能被恢复入口驱动。
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[source("src-1", "entry-1", "hash-1")])
+        .unwrap();
+    let stale_job = store.job_start("review", "host").unwrap();
+    let stale_id = stale_job["id"].as_str().unwrap().to_string();
+    store.job_cancel(&stale_id, "host").unwrap();
+
+    let revision = store.status().unwrap().revision;
+    add(
+        &store,
+        "op-foreground",
+        revision,
+        &draft("用户喜欢喝手冲", vec!["src-1"]),
+    );
+    let stale = store.job_resume(&stale_id, "host");
+    assert!(
+        matches!(stale, Err(AppError::MemoryConflict)),
+        "revision 已推进的作业仍按旧基准恢复: {stale:?}"
+    );
+
+    let fresh_job = store.job_start("review", "host").unwrap();
+    let fresh_id = fresh_job["id"].as_str().unwrap().to_string();
+    store.job_cancel(&fresh_id, "host").unwrap();
+    let resumed = store.job_resume(&fresh_id, "host").expect("同基准的取消作业应可恢复");
+    assert_eq!(resumed["status"], json!("running"));
+    assert_eq!(resumed["leaseOwner"], json!("host"));
+
+    let light = store.job_start("light", "host").unwrap();
+    let light_id = light["id"].as_str().unwrap().to_string();
+    store.job_cancel(&light_id, "host").unwrap();
+    let wrong_phase = store.job_resume(&light_id, "host");
+    assert!(
+        matches!(wrong_phase, Err(AppError::MemoryConflict)),
+        "非 review 作业被恢复入口驱动: {wrong_phase:?}"
+    );
+}
+
+#[test]
+fn commit_rejects_when_a_foreground_write_moved_the_revision_since_job_start() {
+    // 评审期间前台（记忆页/工具）写入推进 revision：作业冻结的基准随之过期，
+    // 自动提交必须整体拒绝 —— 不能拿新基准把旧评审结果当成仍然成立。
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[source("src-1", "entry-1", "hash-1")])
+        .unwrap();
+    let job = store.job_start("review", "host").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+    let candidate = draft("用户喜欢喝拿铁", vec!["src-1"]);
+    store
+        .candidates_add(
+            &job_id,
+            &[json!({"draft": candidate, "payloadHash": payload_hash(&candidate)})],
+        )
+        .unwrap();
+
+    add(
+        &store,
+        "op-foreground",
+        0,
+        &draft("用户喜欢喝手冲", vec!["src-1"]),
+    );
+    let current = store.status().unwrap().revision;
+    let stale = store.commit_dreaming_job(&job_id, current);
+    assert!(
+        matches!(stale, Err(AppError::MemoryConflict)),
+        "作业基准落后（前台写入已推进 revision）仍发布了候选: {stale:?}"
+    );
+    assert!(
+        store.query("拿铁", None, None, None, 10).unwrap().is_empty(),
+        "冲突提交仍把候选发布进了召回"
+    );
+    assert_eq!(
+        store.query("手冲", None, None, None, 10).unwrap().len(),
+        1,
+        "前台写入的事实不应受冲突提交影响"
+    );
+}
+
+#[test]
 fn natural_chinese_question_retrieves_address_fact_by_concept_bigrams() {
     let (_fixture, store) = Fixture::new();
     store
