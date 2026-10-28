@@ -28,20 +28,12 @@ function checkStatus(check) {
 
 function ruleList(caseEntry) {
   if (!caseEntry) return [];
-  const rules = caseEntry.case.probes.map((probe) => ({
+  return caseEntry.case.probes.map((probe) => ({
     ruleId: probe.id,
     rubric: probe.rubric,
     polarity: probe.polarity,
     critical: Boolean(probe.critical),
   }));
-  const quality = caseEntry.case.quality;
-  rules.push({
-    ruleId: `quality:${quality.rubric}`,
-    rubric: quality.rubric,
-    polarity: "required",
-    critical: true,
-  });
-  return rules;
 }
 
 function normalizeAttempt(attempt) {

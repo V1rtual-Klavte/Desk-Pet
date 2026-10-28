@@ -23,6 +23,7 @@
 | 结构化聊天评测数据集 | 可执行聊天用例池：代理起草 silver，用户按当前哈希审批 gold；题型是探针的认知维度；全部探针由独立 coding-agent judge 判定，用户抽查可选；驱动包与题型／探针／oracle 隔离；写题、运行与聊天由三个 Skill 分工；隔离运行根在 `test/.tmp/sim-eval-<id>`，封存证据在 `test/reports/chat/<evaluationRunId>/` | [ideal-traces/README.md](ideal-traces/README.md)、[sim/README.md](sim/README.md)；`node scripts/desk-pet-chat.mjs dataset …` / `eval …` / `capture …` | `suites/<suiteId>/` 下的 `suite.json` / `cases/` / `fixtures/` / `approvals/`；当前候选、最近运行与剩余验收项见[未完成总表 §12](../docs/plans/active/未完成工作与已知缺口.md) |
 | 外部记忆基准（权威对照） | 质量主口径：LongMemEval（官方模板）/ MemoryBank cn / LoCoMo（异构 LLM judge 语义正确率，不用官方 F1；按消耗分层跑，不进 CI／发布门禁）；LoCoMo 固定真人角色适配与统一任务规则、LongMemEval oracle 的 privileged reader control 均显式标记非产品分数 | [memory-bench/README.md](memory-bench/README.md)；`test:memory-bench` | memory-bench 报告 + hypotheses + 可审计外部判分派生报告 |
 | 记忆质量（自建兜底） | 兜底冒烟与治理语义回归：外部集未覆盖的来源/scope 反例、纠正、遗忘、称呼/偏好（真实 Provider，烧 token） | README 记忆质量段；`test:memory-quality` | 报告 + review/scored 包（组保留） |
+| 公开通用评测适配 | GAIA／MultiChallenge／BEAM 全量输入编译到现有聊天套件；GAIA 附件隔离复制；MemoryArena 环境后端与 LHTB verifier/Harbor 通过隔离 runner 接线，适配结论不等同官方分数，也不进入 CI／发布评测 | [sim/README.md](sim/README.md)；`dataset external catalog / install / status / verify / connect`；自备输入仍可用 `fetch / prepare / import` | 长期原始数据与套件在忽略的 `test/sim/desk-pet-chat/external/.data/<dataset>/{raw,dataset}/`；显式临时输出可在 `test/.tmp/external-eval/`；运行仍封存到 `test/reports/chat/` |
 | 记忆性能 | release 存储 + debug IPC 的资源账（1k/10k 库、P95） | README 性能段；`test:memory-performance` | `test/reports/performance/`（3 份滚动） |
 | 缺陷注入 | 快层的区分力观测（植入缺陷看抓不抓得到） | README「缺陷注入」；`test:mutation` | 控制台（不设阈值） |
 | 波动棘轮 | FLAKY 清单只缩不放 | README「波动与假绿」；`check-flaky-ratchet.mjs` | `test/reports/flaky.json`（豁免淘汰） |
@@ -33,7 +34,7 @@
 |---|---|
 | 测试跑哪个被测模型 | 默认继承隔离副本的**合成 CONFIG**（随仓 `CONFIG.yaml` 模板 + `test/host/native/fixtures/config-overrides.yaml` 覆盖；不复制真实 `CONFIG-DEV.yaml`，不含凭据）；可在 [eval-models.json](eval-models.json)、本地 `test/eval-models.local.json`（凭据/临时覆盖；已 gitignore）或环境变量 `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_PROVIDER` 覆盖（凭据只经后两者写进隔离副本） |
 | judge 模型与异构纪律 | **基准／质量 API judge**：`--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > 两层模型配置文件（[eval-models.json](eval-models.json) 与本地 `eval-models.local.json`）的 `judge.model`（当前 deepseek-v4-pro；显式使用可服务的异构模型，不依赖会被静默映射的请求名）；继承测试侧网关的 endpoint/apiKey；**必须不同于被测模型**，同模型在开跑前报错。**聊天评测 judge**：用户指定的独立 coding-agent 会话（Claude Code／Codex／Qoder 等），与被测模型异构，只读冻结判分包；runner 不调用模型 API、不读取 judge 凭据 |
-| 上游评测数据怎么装、装到哪 | [memory-bench/README.md](memory-bench/README.md)：prepare 命令、`--data-dir` / `DESKPET_BENCH_DATA_DIR`、revision + SHA-256 锁定清单（`upstream-lock.json`） |
+| 上游评测数据怎么装、装到哪 | 记忆基准：[memory-bench/README.md](memory-bench/README.md) 的 prepare / `--data-dir`；公开通用评测：[sim/README.md](sim/README.md#外部公开集适配) 的 install / status / verify / connect 与 fetch / prepare / import，默认长期根 `test/sim/desk-pet-chat/external/.data/<dataset>/`，有效缓存校验后复用 |
 | 报告与证据在哪、怎么淘汰 | README「报告在哪、怎么看」（组保留：最近 3 场 + 200 MiB；bench / quality 分目录各自淘汰） |
 | 评分口径与门槛 | README「Trace、记忆质量与性能门禁」+ [memory-bench/README.md](memory-bench/README.md)（judge 模板、语义正确率口径）；剩余质量问题的完成条件见[未完成总表 §3](../docs/plans/active/未完成工作与已知缺口.md) |
 | sourceHash 怎么算、什么时候要刷 | README「Contract 与 sourceHash」+ [SKILL.md](SKILL.md)（analyze → generate，不能只刷 hash） |
@@ -82,9 +83,10 @@
   报告分层，不按消息条数算；不设用户消息轮数上限。题型是探针的认知维度，
   case 声明的 `questionTypes` 必须恰好等于探针题型的并集。每条探针只声明 `rubric` 与可选的声明式
   `expectation`；内容词表、频率、时间关系、主语别名与跨会话来源在 `expectation` 声明一次，rubric
-  注册表只保留通用判据，不复制单个 case 的产品规则。全部探针与 humanizer 质量规则统一由独立
+  注册表只保留通用判据，不复制单个 case 的产品规则。全部探针统一由独立
   coding-agent judge（异构模型，加载 runner Skill）判定；runner 只冻结判分包、校验并追加裁决，
-  不调用模型 API、不读取 judge 凭据；用户抽查可选、不阻塞，也不改写判分。fixture 必须声明 `loading`：
+  不调用模型 API、不读取 judge 凭据；用户抽查可选、不阻塞，也不改写判分。结构化用例只评可核对的结果，
+  不评价语气、分泡或拟人化。fixture 必须声明 `loading`：
   `direct-seed` 只预置初始状态，待测行为仍走真实链路；`real-chain` 不得同时 seed 会话或记忆。
   `fixed` 时钟要求每个 driver 步骤带升序 `at`，runner 写入 `clock.json` 并在 Node 引导早期推进 Node 域 `Date`
   （Rust／OS 时间不推进）；`difficulty` 只用于报告分层，不改变通过判定；探针窗口限定 driver 步骤。
@@ -100,6 +102,8 @@
 - **LoCoMo 终态归档**：诊断、试跑和重跑证据保存在 `test/.tmp/`；只有用户明确认定为终态的结果才能放入 `test/reports/bench/final/`。完整跑完、judge 判分或代码门禁通过都不能代替用户认定；目前没有用户认定的 LoCoMo 终态结果。
 
 ## 维护义务（改了什么 → 必须同步什么）
+
+公开通用评测的来源 `external` 绑定固定 revision、输入哈希、上游身份、许可与适配范围；本地哈希不能证明其来自所声明的上游。导入不自动产生 gold 或质量分数，题面驱动与 oracle 隔离。固定历史保留角色且只测目标回合，Judge 的 `fixtureContext` 与本次实际对话分开，不能据此声称完成在线记忆抽取。缺附件装载、环境或 verifier 的题显式阻塞，不把元数据准备冒充可执行接入。`--dataset-root` 随运行固化供续跑与判分复用；格式以 [sim/README](sim/README.md) 为准。
 
 | 你改动了 | 必须同步 |
 |---|---|

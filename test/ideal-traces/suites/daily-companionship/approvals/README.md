@@ -4,7 +4,7 @@
 
 只有用户本人针对当前 `specHash` 的真实会话消息审阅后，才能在这里新增审批记录。唯一写入方式是 `node scripts/desk-pet-chat.mjs dataset approve ...`；代理可以起草候选、展示审阅包和差异，但不得代填 `reviewer`、`feedbackSource` 或审批结论，也不得把框架层面的方案通过当成用例审批。
 
-本 case 的全部探针（含 `humanizer.*` semantic）和 humanizer 质量 rubric 全部由独立 coding-agent judge 判定，没有 `human` 权威分流；用户可以抽查任一规则，gold 批准仍只能由用户本人给出。
+本 case 的全部探针统一由独立 coding-agent judge 判定，没有 `human` 权威分流；结构化用例只评可核对的结果，不评价语气、分泡或拟人化。用户可以抽查任一规则，gold 批准仍只能由用户本人给出。
 
 审批记录至少包含：
 
@@ -14,7 +14,7 @@
   "approvalId": "approval-<caseId>-<YYYYMMDDhhmmss>-<specHash 前 8 位>",
   "caseId": "saturday-companionship",
   "suiteId": "daily-companionship",
-  "revision": 5,
+  "revision": 6,
   "decision": "approved",
   "reviewer": { "role": "user", "name": "<用户名>" },
   "feedbackSource": {

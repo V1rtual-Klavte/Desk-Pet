@@ -1,6 +1,6 @@
 export type DatasetPurpose = "development" | "calibration" | "holdout" | "regression";
-export type CaseSourceKind = "ideal" | "confirmed-issue" | "requirement";
-export type HostCapability = "chat" | "memory" | "session";
+export type CaseSourceKind = "ideal" | "confirmed-issue" | "requirement" | "external";
+export type HostCapability = "chat" | "memory" | "session" | "tools";
 export type TimeMode = "real" | "fixed";
 export type MemoryKind = "fact" | "preference" | "episode" | "working";
 export type MemoryScope = "user" | "card" | "session";
@@ -17,12 +17,11 @@ export type DriverHostMethod =
   | ManualTriggerHostMethod;
 export type CheckpointWait = "assistant_message" | "memory_extraction_end" | "session_created" | "host_readback";
 export type EvidenceKind = "session_entry" | "memory_before_after" | "trace_event" | "host_readback" | "artifact";
-export type QualityRubric = "humanizer-six-dimensions";
 export type ReviewRole = "user";
 export type FeedbackSourceKind = "session_message";
 export type ReviewDecision = "approved" | "rejected";
 export type OracleCheckKind = "result" | "path" | "source" | "temporal" | "delivery" | "semantic";
-export type ProbeWindow = "last-assistant" | "state" | "all-assistant";
+export type ProbeWindow = "last-assistant" | "state" | "all-assistant" | "artifact";
 export type ProbePolarity = "required" | "forbidden";
 export type ProbeFrequency = "once-weekly" | "frequent" | "thrice-weekly" | "frequent-or-thrice-weekly";
 export type ProbeTemporal = "current" | "past";
@@ -32,9 +31,12 @@ export type ProbeExpectationKind =
   | "cross-session"
   | "temporal-scope"
   | "subjects"
-  | "session-source";
+  | "session-source"
+  | "deliverable"
+  | "external-result";
 export type CaseTier = "gold" | "silver";
 export type CaseLabelStatus = "approved" | "rejected" | "stale" | "pending";
+export type ToolApproval = "allow-once";
 
 export interface QuestionTypeFamily {
   readonly id: string;
@@ -81,7 +83,6 @@ export const MANUAL_TRIGGER_HOST_METHODS: readonly ManualTriggerHostMethod[];
 export const DRIVER_HOST_METHOD_VALUES: readonly DriverHostMethod[];
 export const CHECKPOINT_WAIT_VALUES: readonly CheckpointWait[];
 export const EVIDENCE_KIND_VALUES: readonly EvidenceKind[];
-export const QUALITY_RUBRIC_VALUES: readonly QualityRubric[];
 export const REVIEW_ROLE_VALUES: readonly ReviewRole[];
 export const FEEDBACK_SOURCE_VALUES: readonly FeedbackSourceKind[];
 export const DECISION_VALUES: readonly ReviewDecision[];
@@ -91,7 +92,21 @@ export const PROBE_POLARITY_VALUES: readonly ProbePolarity[];
 export const PROBE_FREQUENCY_VALUES: readonly ProbeFrequency[];
 export const PROBE_TEMPORAL_VALUES: readonly ProbeTemporal[];
 export const PROBE_EXPECTATION_KIND_VALUES: readonly ProbeExpectationKind[];
+export const TOOL_APPROVAL_VALUES: readonly ToolApproval[];
 export const RUBRIC_SPECS: readonly RubricSpec[];
+
+export interface DeliverableSpec {
+  id: string;
+  role: string;
+  path: string;
+  maxBytes?: number;
+}
+
+export interface DeliverableExpectation {
+  deliverableId: string;
+  contains?: string[];
+  notContains?: string[];
+}
 
 export interface SubjectSpec {
   label: string;
@@ -144,7 +159,26 @@ export type ProbeExpectation =
   | CrossSessionExpectation
   | TemporalScopeExpectation
   | MemorySubjectsExpectation
-  | SessionSourceExpectation;
+  | SessionSourceExpectation
+  | DeliverableExpectation
+  | ExternalResultExpectation;
+
+export interface ExternalResultExpectation {
+  referenceAnswers: string[];
+  criteria: string[];
+}
+
+export interface ExternalSourceBinding {
+  assets?: Array<{sourcePath: string; targetPath: string; sha256: string; bytes: number}>;
+  dataset: string;
+  id: string;
+  revision: string;
+  split: string;
+  sha256: string;
+  license: string;
+  protocol: "adapted";
+  adaptationNotes: string[];
+}
 
 export class DatasetError extends Error {
   code: string;
@@ -156,6 +190,7 @@ export interface CaseSource {
   ref: string;
   excerpt: string;
   note?: string;
+  upstream?: ExternalSourceBinding;
 }
 
 export interface CasePrecondition {
@@ -164,6 +199,7 @@ export interface CasePrecondition {
   fixtureId: string;
   time: { mode: TimeMode };
   hostCapabilities: HostCapability[];
+  toolApproval?: ToolApproval;
 }
 
 export interface UserRoleSpec {
@@ -230,11 +266,6 @@ export interface EvidenceSpec {
   description: string;
 }
 
-export interface QualitySpec {
-  rubric: QualityRubric;
-  rubricVersion: number;
-}
-
 export interface GovernanceSpec {
   purpose: DatasetPurpose;
   unresolvedPoints: string[];
@@ -258,7 +289,7 @@ export interface CaseSpec {
   oracle: OracleSpec;
   pathConstraints: PathConstraints;
   evidence: EvidenceSpec[];
-  quality: QualitySpec;
+  deliverables?: DeliverableSpec[];
   governance: GovernanceSpec;
 }
 
@@ -416,6 +447,8 @@ export interface Dataset {
 }
 
 export interface LoadDatasetOptions {
+  /** Select only these cases before loading large fixtures; suite identities remain unchanged. */
+  caseIds?: readonly string[];
   root?: string;
   repoRoot?: string;
   categoriesPath?: string;
@@ -554,3 +587,7 @@ export function formatReviewPackage(review: ReviewPackage): string;
 export function formatExpectation(expectation: ProbeExpectation | null | undefined): string;
 export function summarizeDataset(dataset: Dataset): DatasetSummary;
 export function loadDataset(options?: LoadDatasetOptions): Dataset;
+export const EXTERNAL_ASSET_MAX_BYTES: number;
+export function validateExternalAsset(asset: unknown): {sourcePath: string; targetPath: string; sha256: string; bytes: number};
+export function escapeDriverText(text: string): string;
+export function renderMessageTemplate(text: string, options?: {dataRoot?: string; label?: string}): string;

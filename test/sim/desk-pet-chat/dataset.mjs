@@ -17,13 +17,14 @@ export const DEFAULT_CATEGORIES_PATH = "test/sim/desk-pet-chat/categories.json";
 export const DEFAULT_QUESTION_TYPES_PATH = "test/sim/desk-pet-chat/question-types.json";
 
 export const PURPOSE_VALUES = Object.freeze(["development", "calibration", "holdout", "regression"]);
-export const SOURCE_KIND_VALUES = Object.freeze(["ideal", "confirmed-issue", "requirement"]);
-export const HOST_CAPABILITY_VALUES = Object.freeze(["chat", "memory", "session"]);
+export const SOURCE_KIND_VALUES = Object.freeze(["ideal", "confirmed-issue", "requirement", "external"]);
+export const HOST_CAPABILITY_VALUES = Object.freeze(["chat", "memory", "session", "tools"]);
 export const TIME_MODE_VALUES = Object.freeze(["real", "fixed"]);
 export const MEMORY_KIND_VALUES = Object.freeze(["fact", "preference", "episode", "working"]);
 export const MEMORY_SCOPE_VALUES = Object.freeze(["user", "card", "session"]);
 export const FIXTURE_PREPARATION_VALUES = Object.freeze(["seed_session", "seed_memory", "seed_card", "seed_profile"]);
 export const FIXTURE_LOADING_MODE_VALUES = Object.freeze(["direct-seed", "real-chain"]);
+export const EXTERNAL_ASSET_MAX_BYTES = 128 * 1024 * 1024;
 export const PROBE_DIFFICULTY_LEVELS = Object.freeze([1, 2, 3, 4, 5]);
 /** 评测驱动直接调用组件入口的手工触发，不代表自然受理、调度或实际 UI 显示。 */
 export const MANUAL_TRIGGER_HOST_METHODS = Object.freeze(["sim_proactive_tick", "sim_task_deliver"]);
@@ -48,12 +49,12 @@ export const EVIDENCE_KIND_VALUES = Object.freeze([
   "host_readback",
   "artifact",
 ]);
-export const QUALITY_RUBRIC_VALUES = Object.freeze(["humanizer-six-dimensions"]);
 export const REVIEW_ROLE_VALUES = Object.freeze(["user"]);
 export const FEEDBACK_SOURCE_VALUES = Object.freeze(["session_message"]);
 export const DECISION_VALUES = Object.freeze(["approved", "rejected"]);
 export const ORACLE_CHECK_KIND_VALUES = Object.freeze(["result", "path", "source", "temporal", "delivery", "semantic"]);
-export const PROBE_WINDOW_VALUES = Object.freeze(["last-assistant", "state", "all-assistant"]);
+export const PROBE_WINDOW_VALUES = Object.freeze(["last-assistant", "state", "all-assistant", "artifact"]);
+export const TOOL_APPROVAL_VALUES = Object.freeze(["allow-once"]);
 export const PROBE_POLARITY_VALUES = Object.freeze(["required", "forbidden"]);
 export const PROBE_FREQUENCY_VALUES = Object.freeze([
   "once-weekly",
@@ -69,26 +70,25 @@ export const PROBE_EXPECTATION_KIND_VALUES = Object.freeze([
   "temporal-scope",
   "subjects",
   "session-source",
+  "deliverable",
+  "external-result",
 ]);
 
 const RUBRIC_DEFINITIONS = Object.freeze([
+  { id: "external.expected-result", kind: "semantic", expectation: "external-result", description: "根据锁定的上游参考答案与判据核对实际结果；适配结果不冒充官方分数" },
   { id: "answer.fact-recall", kind: "semantic", expectation: "fact", description: "回答包含探针声明的事实（主语、频率或选择）" },
   { id: "answer.cross-session-recall", kind: "semantic", expectation: "cross-session", description: "新会话回答满足必需的跨会话事实，并至少满足一项允许的历史事实" },
   { id: "answer.corrects-false-premise", kind: "semantic", expectation: "none", description: "用户给出与已知事实冲突的前提时纠正前提，不顺着错误前提回答" },
   { id: "answer.no-fabrication", kind: "semantic", expectation: "none", description: "编造未被记录或无法确认的事情" },
   { id: "answer.temporal-scope", kind: "temporal", expectation: "temporal-scope", description: "在指定时间范围内出现探针禁止的事实，构成相对时序错误" },
+  { id: "answer.no-stale-choice", kind: "semantic", expectation: "none", description: "把已被用户更新掉的旧选择当作当前或最终选择" },
   { id: "memory-source.correction-entry", kind: "source", expectation: "subjects", description: "纠正事实来自本轮用户消息，且记忆主语匹配声明" },
   { id: "memory-source.no-fixture-as-update", kind: "source", expectation: "subjects", description: "把 fixture 初始记忆当作本轮用户更新" },
   { id: "session.answer-in-new-session", kind: "path", expectation: "session-source", description: "回答发生在驱动新建的会话，且与事实来源会话不同" },
   { id: "chat.correction-acknowledged", kind: "semantic", expectation: "none", description: "接住纠正的新事实，不否认、不复述旧结论" },
-  { id: "humanizer.casual-tone", kind: "semantic", expectation: "none", description: "语气自然、口语化，符合角色" },
-  { id: "humanizer.tech-banter", kind: "semantic", expectation: "none", description: "接技术梗时口语化，不讲课、不装懂" },
-  { id: "humanizer.short-confirmation", kind: "semantic", expectation: "none", description: "对短确认只作同档短回应，不追加新话题" },
-  { id: "humanizer.food-return", kind: "semantic", expectation: "none", description: "用自足的口语接住返场，不索取回应" },
-  { id: "humanizer.no-service-tone", kind: "semantic", expectation: "none", description: "出现助手腔、服务腔或未被请求的总结式建议" },
-  { id: "humanizer.no-meta-role", kind: "semantic", expectation: "none", description: "打破角色说自己是程序、AI 或模型" },
-  { id: "humanizer.no-self-explanation", kind: "semantic", expectation: "none", description: "解释自己的玩笑或刚说过的话" },
-  { id: "humanizer.no-unsolicited-advice", kind: "semantic", expectation: "none", description: "主动给建议、说教或催促" },
+  { id: "delivery.artifact-exists", kind: "delivery", expectation: "deliverable", description: "声明的交付产物已写入且内容完整（未被截断）" },
+  { id: "delivery.artifact-content", kind: "delivery", expectation: "deliverable", description: "交付产物内容满足声明的包含／不包含要求" },
+  { id: "chat.delivery-acknowledged", kind: "delivery", expectation: "none", description: "回复告知产物已生成或说明未完成" },
   { id: "reply.no-oracle-leak", kind: "delivery", expectation: "none", description: "回复中泄露探针、评分、fixture 或评测内部信息" },
 ]);
 
@@ -100,7 +100,11 @@ const RUBRIC_WINDOW_PINS = new Map([
   ["answer.cross-session-recall", "last-assistant"],
   ["memory-source.correction-entry", "state"],
   ["memory-source.no-fixture-as-update", "state"],
+  ["delivery.artifact-exists", "artifact"],
+  ["delivery.artifact-content", "artifact"],
 ]);
+const DELIVERY_ARTIFACT_RUBRICS = new Set(["delivery.artifact-exists", "delivery.artifact-content"]);
+const MESSAGE_PLACEHOLDERS = new Set(["dataRoot"]);
 const CASE_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const APPROVAL_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -223,6 +227,45 @@ function assertSubset(values, allowed, label) {
     }
   }
 }
+
+/** 交付路径必须是数据根下的相对 POSIX 路径；拒绝绝对路径、盘符、反斜杠与空段、.、..。 */
+function assertDeliverablePath(value, label) {
+  assertNonEmptyString(value, label);
+  if (value.includes("\\")) {
+    throw new DatasetError("case.deliverable-path", `${label} 必须使用 / 分隔：${value}`);
+  }
+  const segments = value.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..") || segments[0].includes(":")) {
+    throw new DatasetError("case.deliverable-path", `${label} 不能是绝对路径或包含空段、.、..：${value}`);
+  }
+  return value;
+}
+
+/** Four braces escape a literal pair, preserving upstream TeX/JSON without new placeholders. */
+export function escapeDriverText(text) { return text.replaceAll("{{", "{{{{").replaceAll("}}", "}}}}"); }
+
+export function renderMessageTemplate(text, { dataRoot, label = "驱动消息" } = {}) {
+  let result = "";
+  for (let index = 0; index < text.length;) {
+    if (text.startsWith("{{{{", index)) { result += "{{"; index += 4; continue; }
+    if (text.startsWith("}}}}", index)) { result += "}}"; index += 4; continue; }
+    if (text.startsWith("{{", index)) {
+      const end = text.indexOf("}}", index + 2);
+      const name = end < 0 ? "" : text.slice(index + 2, end);
+      if (end < 0) throw new DatasetError("case.placeholder-unknown", `${label} 含不完整的占位符：${text.slice(index)}`);
+      if (!MESSAGE_PLACEHOLDERS.has(name)) throw new DatasetError("case.placeholder-unknown", `${label} 含未登记占位符：{{${name}}}`);
+      if (typeof dataRoot !== "string" || !dataRoot.trim()) throw new DatasetError("driver.data-root", "驱动消息使用了 {{dataRoot}}，但本次运行没有数据根");
+      result += dataRoot;
+      index = end + 2;
+      continue;
+    }
+    if (text.startsWith("}}", index)) throw new DatasetError("case.placeholder-unknown", `${label} 含不完整的占位符`);
+    result += text[index++];
+  }
+  return result;
+}
+
+function assertMessagePlaceholders(text, label) { renderMessageTemplate(text, { dataRoot: "validation-root", label }); }
 
 function scanEmbeddedLabels(value, path, label) {
   if (Array.isArray(value)) {
@@ -429,7 +472,7 @@ function assertNewSessionBefore({ driver, driverIndexById, afterStepId, label })
   }
 }
 
-function validateExpectation({ probe, rubric, driver, driverById, driverIndexById, label }) {
+function validateExpectation({ probe, rubric, driver, driverById, driverIndexById, label, deliverableIds }) {
   if (rubric.expectation === "none") {
     if (probe.expectation !== undefined) {
       throw new DatasetError(
@@ -447,6 +490,15 @@ function validateExpectation({ probe, rubric, driver, driverById, driverIndexByI
   }
   const expectationLabel = `${label}.expectation`;
   assertRecord(probe.expectation, expectationLabel);
+  if (rubric.expectation === "external-result") {
+    assertExactKeys(probe.expectation, expectationLabel, ["referenceAnswers", "criteria"]);
+    assertStringArray(probe.expectation.referenceAnswers, `${expectationLabel}.referenceAnswers`, { allowEmpty: true });
+    assertStringArray(probe.expectation.criteria, `${expectationLabel}.criteria`, { allowEmpty: true });
+    if (probe.expectation.referenceAnswers.length + probe.expectation.criteria.length === 0) {
+      throw new DatasetError("schema.expectation-missing", `${expectationLabel} 至少需要上游参考答案或明确判据`);
+    }
+    return probe.expectation;
+  }
   if (rubric.expectation === "fact") {
     assertExactKeys(probe.expectation, expectationLabel, ["fact"]);
     assertFact(probe.expectation.fact, `${expectationLabel}.fact`);
@@ -509,10 +561,42 @@ function validateExpectation({ probe, rubric, driver, driverById, driverIndexByI
     });
     return probe.expectation;
   }
+  if (rubric.expectation === "deliverable") {
+    assertExactKeys(probe.expectation, expectationLabel, ["deliverableId"], ["contains", "notContains"]);
+    assertNonEmptyString(probe.expectation.deliverableId, `${expectationLabel}.deliverableId`);
+    if (!deliverableIds?.has(probe.expectation.deliverableId)) {
+      throw new DatasetError(
+        "case.deliverable-unknown",
+        `${expectationLabel}.deliverableId 未在 Case.deliverables 声明：${probe.expectation.deliverableId}`,
+      );
+    }
+    const hasContains = probe.expectation.contains !== undefined;
+    const hasNotContains = probe.expectation.notContains !== undefined;
+    if (rubric.id === "delivery.artifact-exists") {
+      if (hasContains || hasNotContains) {
+        throw new DatasetError(
+          "schema.expectation-unexpected",
+          `${expectationLabel} 不适用于 ${rubric.id}：存在性规则不接受内容词表`,
+        );
+      }
+      return probe.expectation;
+    }
+    if (!hasContains && !hasNotContains) {
+      throw new DatasetError(
+        "schema.expectation-missing",
+        `${expectationLabel} 至少声明 contains 或 notContains：${rubric.id}`,
+      );
+    }
+    if (hasContains) assertStringArray(probe.expectation.contains, `${expectationLabel}.contains`, { unique: true });
+    if (hasNotContains) {
+      assertStringArray(probe.expectation.notContains, `${expectationLabel}.notContains`, { unique: true });
+    }
+    return probe.expectation;
+  }
   throw new DatasetError("schema.expectation-kind", `${label}.expectation 类型未实现：${String(rubric.expectation)}`);
 }
 
-function validateProbe(probe, label, driver, driverById, driverIndexById, evidenceIds, questionTypeIds) {
+function validateProbe(probe, label, driver, driverById, driverIndexById, evidenceIds, questionTypeIds, deliverableIds) {
   assertExactKeys(
     probe,
     label,
@@ -530,7 +614,15 @@ function validateProbe(probe, label, driver, driverById, driverIndexById, eviden
   if (!rubric) {
     throw new DatasetError("case.oracle-unknown-rubric", `${label}.rubric 未登记：${String(probe.rubric)}`);
   }
-  validateExpectation({ probe, rubric, driver, driverById, driverIndexById, label });
+  if (probe.window === "artifact") {
+    if (!DELIVERY_ARTIFACT_RUBRICS.has(rubric.id)) {
+      throw new DatasetError("case.artifact-window", `${label}.window=artifact 只适用于交付产物规则：${rubric.id}`);
+    }
+    if (!deliverableIds || deliverableIds.size === 0) {
+      throw new DatasetError("case.deliverable-undeclared", `${label}.window=artifact 需要 Case.deliverables 声明产物`);
+    }
+  }
+  validateExpectation({ probe, rubric, driver, driverById, driverIndexById, label, deliverableIds });
   if (RUBRIC_WINDOW_PINS.has(rubric.id) && probe.window !== RUBRIC_WINDOW_PINS.get(rubric.id)) {
     throw new DatasetError(
       "case.rubric-window",
@@ -578,6 +670,7 @@ function validateDriverStep(step, label) {
     assertExactKeys(step, label, ["id", "kind", "text"], ["at"]);
     assertPattern(step.id, CASE_ID_PATTERN, `${label}.id`);
     assertNonEmptyString(step.text, `${label}.text`);
+    assertMessagePlaceholders(step.text, `${label}.text`);
     if (step.at !== undefined) assertIsoTimestamp(step.at, `${label}.at`);
     return { id: step.id, kind: "message", at: step.at };
   }
@@ -608,9 +701,8 @@ function omitKeys(record, keys) {
   return Object.fromEntries(Object.entries(record).filter(([key]) => !keys.includes(key)));
 }
 
-export function computeCaseBinding(caseSpec, fixture) {
+function bindingWithFixtureHash(caseSpec, fixtureHash) {
   const contentHash = hashCanonical(omitKeys(caseSpec, ["revision", "governance"]));
-  const fixtureHash = hashCanonical(fixture);
   const driverHash = hashCanonical({ userRole: caseSpec.userRole, driver: caseSpec.driver });
   const oracleHash = hashCanonical({
     probes: caseSpec.probes,
@@ -618,10 +710,14 @@ export function computeCaseBinding(caseSpec, fixture) {
     checkpoints: caseSpec.checkpoints,
     pathConstraints: caseSpec.pathConstraints,
     evidence: caseSpec.evidence,
-    quality: caseSpec.quality,
+    deliverables: caseSpec.deliverables,
   });
   const specHash = hashCanonical({ contentHash, fixtureHash, driverHash, oracleHash });
   return { contentHash, fixtureHash, driverHash, oracleHash, specHash };
+}
+
+export function computeCaseBinding(caseSpec, fixture) {
+  return bindingWithFixtureHash(caseSpec, hashCanonical(fixture));
 }
 
 /** 数据集输入哈希覆盖分类、题型注册表、套件、用例与 fixture，忽略读取路径等运行期噪声。 */
@@ -679,6 +775,17 @@ export function resolveCaseLabel(binding, approvals) {
   return { tier: "silver", status: "pending", approvalId: null, reviewedAt: null, mismatches: [] };
 }
 
+export function validateExternalAsset(asset) {
+  const label = "ExternalAsset";
+  assertExactKeys(asset, label, ["sourcePath", "targetPath", "sha256", "bytes"]);
+  for (const key of ["sourcePath", "targetPath"]) {
+    assertNonEmptyString(asset[key], `${label}.${key}`);
+    if (/^(?:[a-z]:|[\\/])/i.test(asset[key]) || asset[key].split(/[\\/]/).some(part => !part || part === "." || part === "..")) throw new DatasetError("asset.path", `${label}.${key} 必须是无越界分量的相对路径`);
+  }
+  if (!asset.targetPath.startsWith("inputs/") || !/^sha256:[a-f0-9]{64}$/.test(asset.sha256) || !Number.isSafeInteger(asset.bytes) || asset.bytes < 0 || asset.bytes > EXTERNAL_ASSET_MAX_BYTES) throw new DatasetError("asset.binding", "附件目标、散列或大小非法");
+  return asset;
+}
+
 export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
   const label = "Case";
   assertExactKeys(spec, label, [
@@ -698,9 +805,8 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
     "oracle",
     "pathConstraints",
     "evidence",
-    "quality",
     "governance",
-  ]);
+  ], ["deliverables"]);
   scanEmbeddedLabels(spec, "", label);
   if (spec.schemaVersion !== DATASET_SCHEMA_VERSION) {
     throw new DatasetError("schema.version", `${label}.schemaVersion 必须是 ${DATASET_SCHEMA_VERSION}`);
@@ -733,7 +839,7 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
     }
   }
 
-  assertExactKeys(spec.source, `${label}.source`, ["kind", "ref", "excerpt"], ["note"]);
+  assertExactKeys(spec.source, `${label}.source`, ["kind", "ref", "excerpt"], ["note", "upstream"]);
   if (spec.source.kind === "actual") {
     throw new DatasetError(
       "case.actual-source",
@@ -744,6 +850,32 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
   assertNonEmptyString(spec.source.ref, `${label}.source.ref`);
   assertNonEmptyString(spec.source.excerpt, `${label}.source.excerpt`);
   assertOptionalString(spec.source.note, `${label}.source.note`);
+  if (spec.source.kind === "external") {
+    const upstream = spec.source.upstream;
+    assertExactKeys(upstream, `${label}.source.upstream`, [
+      "dataset", "id", "revision", "split", "sha256", "license", "protocol", "adaptationNotes",
+    ], ["assets"]);
+    for (const key of ["dataset", "id", "split", "license"]) {
+      assertNonEmptyString(upstream[key], `${label}.source.upstream.${key}`);
+    }
+    if (!/^[a-f0-9]{40}$/.test(upstream.revision)) {
+      throw new DatasetError("case.external-revision", `${label}.source.upstream.revision 必须是固定的 40 位 commit`);
+    }
+    if (!/^sha256:[a-f0-9]{64}$/.test(upstream.sha256)) {
+      throw new DatasetError("case.external-hash", `${label}.source.upstream.sha256 必须绑定已导入的原始数据`);
+    }
+    if (upstream.protocol !== "adapted") {
+      throw new DatasetError("case.external-protocol", `${label}.source.upstream.protocol 必须是 adapted；本运行器不产生官方榜单分数`);
+    }
+    assertStringArray(upstream.adaptationNotes, `${label}.source.upstream.adaptationNotes`, { allowEmpty: true });
+    if (upstream.assets !== undefined) {
+      if (!Array.isArray(upstream.assets)) throw new DatasetError("asset.shape", "外部附件必须是数组");
+      upstream.assets.forEach(validateExternalAsset);
+      if (new Set(upstream.assets.map(asset => asset.targetPath)).size !== upstream.assets.length) throw new DatasetError("asset.target", "外部附件目标重复");
+    }
+  } else if (spec.source.upstream !== undefined) {
+    throw new DatasetError("case.external-source", `${label}.source.upstream 只适用于 external 来源`);
+  }
 
   assertExactKeys(spec.precondition, `${label}.precondition`, [
     "card",
@@ -751,7 +883,7 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
     "fixtureId",
     "time",
     "hostCapabilities",
-  ]);
+  ], ["toolApproval"]);
   assertNonEmptyString(spec.precondition.card, `${label}.precondition.card`);
   assertNonEmptyString(spec.precondition.profile, `${label}.precondition.profile`);
   assertPattern(spec.precondition.fixtureId, CASE_ID_PATTERN, `${label}.precondition.fixtureId`);
@@ -759,6 +891,12 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
   assertEnum(spec.precondition.time.mode, TIME_MODE_VALUES, `${label}.precondition.time.mode`);
   assertStringArray(spec.precondition.hostCapabilities, `${label}.precondition.hostCapabilities`, { unique: true });
   assertSubset(spec.precondition.hostCapabilities, HOST_CAPABILITY_VALUES, `${label}.precondition.hostCapabilities`);
+  if (spec.precondition.toolApproval !== undefined) {
+    assertEnum(spec.precondition.toolApproval, TOOL_APPROVAL_VALUES, `${label}.precondition.toolApproval`);
+    if (!spec.precondition.hostCapabilities.includes("tools")) {
+      throw new DatasetError("case.tool-approval", `${label}.precondition.toolApproval 需要 tools 宿主能力`);
+    }
+  }
 
   assertExactKeys(spec.userRole, `${label}.userRole`, [
     "knownFacts",
@@ -767,7 +905,7 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
     "allowedActions",
     "mustNotReveal",
   ]);
-  assertStringArray(spec.userRole.knownFacts, `${label}.userRole.knownFacts`, { unique: true });
+  assertStringArray(spec.userRole.knownFacts, `${label}.userRole.knownFacts`, { allowEmpty: true, unique: true });
   assertNonEmptyString(spec.userRole.goal, `${label}.userRole.goal`);
   assertNonEmptyString(spec.userRole.tone, `${label}.userRole.tone`);
   assertStringArray(spec.userRole.allowedActions, `${label}.userRole.allowedActions`, { unique: true });
@@ -872,6 +1010,32 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
   if (!Array.isArray(spec.probes) || spec.probes.length === 0) {
     throw new DatasetError("schema.invalid", `${label}.probes 必须是非空数组`);
   }
+  const deliverableIds = new Set();
+  const deliverablePaths = new Set();
+  if (spec.deliverables !== undefined) {
+    if (!Array.isArray(spec.deliverables) || spec.deliverables.length === 0) {
+      throw new DatasetError("schema.invalid", `${label}.deliverables 必须是非空数组`);
+    }
+    if (!spec.precondition.hostCapabilities.includes("tools")) {
+      throw new DatasetError("case.deliverables-capability", `${label}.deliverables 需要 tools 宿主能力`);
+    }
+    spec.deliverables.forEach((deliverable, index) => {
+      const deliverableLabel = `${label}.deliverables[${index}]`;
+      assertExactKeys(deliverable, deliverableLabel, ["id", "role", "path"], ["maxBytes"]);
+      assertPattern(deliverable.id, CASE_ID_PATTERN, `${deliverableLabel}.id`);
+      if (deliverableIds.has(deliverable.id)) {
+        throw new DatasetError("schema.invalid", `${label}.deliverables 含重复 id：${deliverable.id}`);
+      }
+      deliverableIds.add(deliverable.id);
+      assertNonEmptyString(deliverable.role, `${deliverableLabel}.role`);
+      assertDeliverablePath(deliverable.path, `${deliverableLabel}.path`);
+      if (deliverablePaths.has(deliverable.path)) {
+        throw new DatasetError("case.deliverable-path", `${label}.deliverables 含重复路径：${deliverable.path}`);
+      }
+      deliverablePaths.add(deliverable.path);
+      if (deliverable.maxBytes !== undefined) assertPositiveInteger(deliverable.maxBytes, `${deliverableLabel}.maxBytes`);
+    });
+  }
   const driverById = new Map(spec.driver.map((step) => [step.id, step]));
   const driverIndexById = new Map(spec.driver.map((step, index) => [step.id, index]));
   const probeIds = new Set();
@@ -886,6 +1050,7 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
       driverIndexById,
       evidenceIds,
       knownQuestionTypes,
+      deliverableIds,
     );
     if (probeIds.has(probe.id)) {
       throw new DatasetError("schema.invalid", `${label}.probes 含重复 id：${probe.id}`);
@@ -938,10 +1103,6 @@ export function validateCaseSpec(spec, { categoryIds, questionTypeIds } = {}) {
       );
     }
   }
-
-  assertExactKeys(spec.quality, `${label}.quality`, ["rubric", "rubricVersion"]);
-  assertEnum(spec.quality.rubric, QUALITY_RUBRIC_VALUES, `${label}.quality.rubric`);
-  assertPositiveInteger(spec.quality.rubricVersion, `${label}.quality.rubricVersion`);
 
   assertExactKeys(spec.governance, `${label}.governance`, ["purpose", "unresolvedPoints", "notes"]);
   assertEnum(spec.governance.purpose, PURPOSE_VALUES, `${label}.governance.purpose`);
@@ -1444,9 +1605,9 @@ export function buildReviewPackage(entry, approvals = entry.approvals ?? []) {
         "oracle",
         "pathConstraints",
         "evidence",
-        "quality",
         "governance",
         "source",
+        "deliverables",
         "approvalHistory",
       ],
       probeWindowScope: "driver-only",
@@ -1500,6 +1661,15 @@ function formatFact(fact) {
 /** 把探针的声明式 expectation 渲染成审阅可读文本，与检查器实现解耦。 */
 export function formatExpectation(expectation) {
   if (!expectation) return "";
+  if (expectation.referenceAnswers || expectation.criteria) {
+    return JSON.stringify({ referenceAnswers: expectation.referenceAnswers, criteria: expectation.criteria });
+  }
+  if (expectation.deliverableId) {
+    const parts = [`产物：${expectation.deliverableId}`];
+    if (expectation.contains?.length) parts.push(`包含：${expectation.contains.join("、")}`);
+    if (expectation.notContains?.length) parts.push(`不包含：${expectation.notContains.join("、")}`);
+    return parts.join("；");
+  }
   if (expectation.fact) return `事实：${formatFact(expectation.fact)}`;
   if (expectation.sourceStep && expectation.requiredFacts) {
     const anyOf = expectation.anyOfFacts?.length
@@ -1552,6 +1722,16 @@ export function formatReviewPackage(review) {
   lines.push(`- Fixture 装载：${review.fixture.loading.mode}（${review.fixture.loading.note}）`);
   lines.push(`- 时间模式：${review.candidate.precondition.time.mode}`);
   lines.push(`- 宿主能力：${review.candidate.precondition.hostCapabilities.join("、")}`);
+  if (review.candidate.precondition.toolApproval) {
+    lines.push(`- 工具确认：${review.candidate.precondition.toolApproval}（评测驱动代替用户确认一次）`);
+  }
+  if (review.candidate.deliverables?.length) {
+    lines.push(
+      `- 交付产物：${review.candidate.deliverables
+        .map((deliverable) => `${deliverable.id}（${deliverable.role}）→ ${deliverable.path}${deliverable.maxBytes ? ` ≤${deliverable.maxBytes}B` : ""}`)
+        .join("；")}`,
+    );
+  }
   lines.push("");
   const { questionTypeCounts, difficultyCounts } = tallyProbeAxes(review.candidate.probes);
   lines.push("## 题型与判分");
@@ -1567,7 +1747,7 @@ export function formatReviewPackage(review) {
       (level) => `L${level} ${difficultyCounts.get(level) ?? 0}`,
     ).join(" · ")}`,
   );
-  lines.push("- 判分：全部探针与质量规则由独立 coding-agent judge 判定；用户抽查可选，不阻塞。");
+  lines.push("- 判分：全部探针由独立 coding-agent judge 按结果判定；用户抽查可选，不阻塞。");
   lines.push("");
   lines.push("## 用户角色");
   lines.push("");
@@ -1621,13 +1801,6 @@ export function formatReviewPackage(review) {
   for (const evidence of review.candidate.evidence) {
     lines.push(`- ${evidence.id} [${evidence.kind}]：${evidence.description}（${evidence.source}）`);
   }
-  lines.push("");
-  lines.push("## 质量评分");
-  lines.push("");
-  lines.push(
-    `- ${review.candidate.quality.rubric} v${review.candidate.quality.rubricVersion}`,
-  );
-  lines.push("- 判分方式：由独立 coding-agent judge 按当前 rubric 判定；用户抽查仅用于核对，不改写判分。");
   lines.push("");
   lines.push("## 未解决点");
   lines.push("");
@@ -1785,6 +1958,7 @@ export function loadDataset(options = {}) {
   const approvalsById = new Map();
   const fixtureCache = new Map();
   const declaredCaseIds = new Map();
+  const selectedCaseIds = options.caseIds === undefined ? null : new Set(options.caseIds);
 
   let categories = [];
   let categoriesPath = null;
@@ -1932,6 +2106,7 @@ export function loadDataset(options = {}) {
     const suiteEntries = [];
     for (const caseId of suiteSpec.caseIds) {
       if (duplicateCaseIds.has(caseId)) continue;
+      if (selectedCaseIds && !selectedCaseIds.has(caseId)) continue;
       const casePath = caseFileById.get(caseId);
       if (!casePath) {
         errors.push(
@@ -1975,7 +2150,7 @@ export function loadDataset(options = {}) {
             fixture = validateFixtureSpec(readJson(fixturePath), {
               expectedFixtureId: caseSpec.precondition.fixtureId,
             });
-            fixtureCache.set(fixturePath, { fixture });
+            fixtureCache.set(fixturePath, { fixture, hash: hashCanonical(fixture) });
           } catch (error) {
             fixtureCache.set(fixturePath, { error });
             throw error;
@@ -1983,7 +2158,7 @@ export function loadDataset(options = {}) {
         }
         validateCaseAgainstFixture(caseSpec, fixture);
 
-        const binding = computeCaseBinding(caseSpec, fixture);
+        const binding = bindingWithFixtureHash(caseSpec, fixtureCache.get(fixturePath).hash);
         const entry = {
           caseId: caseSpec.caseId,
           suiteId: suiteSpec.suiteId,
@@ -2020,6 +2195,7 @@ export function loadDataset(options = {}) {
             expectedApprovalId: approvalId,
             expectedSuiteId: suiteSpec.suiteId,
           });
+          if (selectedCaseIds && !selectedCaseIds.has(record.caseId)) continue;
           if (approvalsById.has(record.approvalId)) {
             throw new DatasetError(
               "approval.duplicate-id",

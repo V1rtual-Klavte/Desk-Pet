@@ -26,7 +26,6 @@ import { batchTrialId, batchTrialRunId, planTrialBatch } from "../../../scripts/
 const START = "2026-10-27T09:00:00.000+08:00";
 const REPORTED = "2026-10-27T10:00:00.000+08:00";
 const CASE_ID = "multi-trial-case";
-const QUALITY_RULE = "quality:humanizer-six-dimensions";
 const HASH = `sha256:${"a".repeat(64)}`;
 const JUDGE = { platform: "qoder", model: "judge/model-x", promptVersion: "judge-prompt@1" };
 const OTHER_JUDGE = { platform: "qoder", model: "judge/model-y", promptVersion: "judge-prompt@1" };
@@ -87,9 +86,8 @@ function caseEntry() {
     case: {
       probes: [
         { id: "p-core", rubric: "answer.core", polarity: "required", critical: true },
-        { id: "p-style", rubric: "humanizer.style", polarity: "required", critical: false },
+        { id: "p-secondary", rubric: "answer.fact-recall", polarity: "required", critical: false },
       ],
-      quality: { rubric: "humanizer-six-dimensions", rubricVersion: 1 },
     },
   } as any;
 }
@@ -97,8 +95,7 @@ function caseEntry() {
 function judgeStatus(ruleStatuses: Record<string, string>, overrides: Record<string, unknown> = {}) {
   const checks = [
     { ruleId: "p-core", rubric: "answer.core", status: ruleStatuses["p-core"] ?? "pass", reason: "核心结论", evidence: [{ ref: "dialogue:session-1#entry-1", excerpt: "回答" }] },
-    { ruleId: "p-style", rubric: "humanizer.style", status: ruleStatuses["p-style"] ?? "pass", reason: "口吻自然", evidence: [{ ref: "dialogue:session-1#entry-1", excerpt: "回答" }] },
-    { ruleId: QUALITY_RULE, rubric: "humanizer-six-dimensions", status: ruleStatuses[QUALITY_RULE] ?? "pass", reason: "质量规则", evidence: [{ ref: "dialogue:session-1#entry-1", excerpt: "回答" }] },
+    { ruleId: "p-secondary", rubric: "answer.fact-recall", status: ruleStatuses["p-secondary"] ?? "pass", reason: "补充事实", evidence: [{ ref: "dialogue:session-1#entry-1", excerpt: "回答" }] },
   ];
   return {
     evidence: "complete",
@@ -262,7 +259,7 @@ describe("多 trial 聚合", () => {
       plan: trialPlan(["t-1", "t-2", "t-3"]),
       attempts: [
         attemptView("t-1", "0001"),
-        attemptView("t-2", "0002", { "p-style": "fail" }),
+        attemptView("t-2", "0002", { "p-secondary": "fail" }),
         attemptView("t-3", "0003"),
       ],
     });
@@ -275,9 +272,9 @@ describe("多 trial 聚合", () => {
     expect(result.criticalPassK).toMatchObject({ k: 3, status: "pass" });
     expect(result.overall.status).toBe("pass");
     expect(result.overall.reason).toContain("pass^3");
-    const style = result.rules.find((rule: any) => rule.ruleId === "p-style")!;
-    expect(style.critical).toBe(false);
-    expect(style.counts.fail).toBe(1);
+    const secondary = result.rules.find((rule: any) => rule.ruleId === "p-secondary")!;
+    expect(secondary.critical).toBe(false);
+    expect(secondary.counts.fail).toBe(1);
   });
 
   it("任一 trial 的 critical 规则 fail 直接判 fail，并指出 trial", () => {

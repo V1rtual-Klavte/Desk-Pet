@@ -146,8 +146,7 @@ describe("聊天评测闭环（L3 合成用例）", () => {
     const card = getActiveCard()
     const cardLabel = card?.name ?? card?.id ?? "default"
 
-    // 判分包与报告要保持确定性：关掉 humanizer 与记忆抽取/召回，只留两次主回合请求。
-    // quality 规则仍按 humanizer-six-dimensions 冻结，它评的是最终回复，不由开关决定。
+    // 判分包与报告要保持确定性：关掉拟人化与记忆抽取/召回，只留两次主回合请求。
     setOverrides({ "ai.humanizer.enabled": false, "ai.memory.enabled": false })
     await flushConfig()
 
@@ -158,7 +157,7 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       familyId: "eval-loop",
       title: "跨会话承接冒烟",
       categories: ["chat", "session"],
-      questionTypes: ["tone", "new-session", "boundary"],
+      questionTypes: ["multi-turn", "new-session", "boundary"],
       source: {
         kind: "ideal",
         ref: "test/integration/evaluation/聊天评测闭环.test.ts",
@@ -185,16 +184,16 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       ],
       probes: [
         {
-          id: "p-tone",
+          id: "p-fabrication",
           after: "m1",
           window: "last-assistant",
-          rubric: "humanizer.casual-tone",
-          questionType: "tone",
+          rubric: "answer.no-fabrication",
+          questionType: "multi-turn",
           polarity: "required",
           critical: true,
           difficulty: 2,
-          description: "第一轮回复自然口语",
-          evidence: ["tone-reply"],
+          description: "第一轮回复不编造用户未给出的地点细节",
+          evidence: ["first-reply"],
         },
         {
           id: "p-new-session",
@@ -234,11 +233,10 @@ describe("聊天评测闭环（L3 合成用例）", () => {
         allowedToolSubstitutions: [],
       },
       evidence: [
-        { id: "tone-reply", kind: "session_entry", source: "S0 的第一轮助手回复", description: "核对语气" },
+        { id: "first-reply", kind: "session_entry", source: "S0 的第一轮助手回复", description: "核对不编造未给出的细节" },
         { id: "new-session-reply", kind: "session_entry", source: "S1 的第二轮助手回复", description: "核对跨会话承接" },
         { id: "transcript", kind: "artifact", source: "artifacts/transcript.txt", description: "两层会话可见正文" },
       ],
-      quality: { rubric: "humanizer-six-dimensions", rubricVersion: 1 },
       governance: {
         purpose: "regression",
         unresolvedPoints: ["合成用例尚无独立判分，不能当作质量结论"],
@@ -246,7 +244,7 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       },
     }, {
       categoryIds: ["chat", "session"],
-      questionTypeIds: ["tone", "new-session", "boundary"],
+      questionTypeIds: ["multi-turn", "new-session", "boundary"],
     })
 
     const fixtureSpec = validateFixtureSpec({
@@ -279,7 +277,7 @@ describe("聊天评测闭环（L3 合成用例）", () => {
     ]
     const questionTypeFamilies = [{ id: "eval-loop", name: "闭环", goal: "评测闭环冒烟" }]
     const questionTypes = [
-      { id: "tone", family: "eval-loop", name: "语气", goal: "口语自然", capabilities: ["chat"] },
+      { id: "multi-turn", family: "eval-loop", name: "多轮", goal: "多轮承接与不编造", capabilities: ["chat"] },
       { id: "new-session", family: "eval-loop", name: "新会话", goal: "跨会话承接", capabilities: ["session"] },
       { id: "boundary", family: "eval-loop", name: "边界", goal: "不泄露内部信息", capabilities: ["chat"] },
     ]
@@ -686,10 +684,9 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       expect(prepared.packet.trialId).toBe(TRIAL_ID)
       expect(prepared.packet.underTest).toEqual({ requested: FAKE_MODEL.id, actual: FAKE_MODEL.id })
       expect(prepared.packet.rules.map(rule => rule.ruleId)).toEqual([
-        "p-tone",
+        "p-fabrication",
         "p-new-session",
         "p-no-leak",
-        "quality:humanizer-six-dimensions",
       ])
       expect(prepared.packet.rules[0]?.window.mode).toBe("last-assistant")
       expect(prepared.packet.rules[1]?.window.mode).toBe("last-assistant")
@@ -707,9 +704,9 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       expect(context.stepsById.get("h1")?.sessionId).toBe(sessionAfter)
       expect(context.stepsById.get("m2")?.sessionId).toBe(sessionAfter)
 
-      const toneWindow = resolveProbeWindow({ context, probe: caseSpec.probes[0]! })
-      expect(toneWindow.ok).toBe(true)
-      expect(toneWindow.replies).toHaveLength(1)
+      const firstWindow = resolveProbeWindow({ context, probe: caseSpec.probes[0]! })
+      expect(firstWindow.ok).toBe(true)
+      expect(firstWindow.replies).toHaveLength(1)
       const newSessionWindow = resolveProbeWindow({ context, probe: caseSpec.probes[1]! })
       expect(newSessionWindow.ok).toBe(true)
       expect(newSessionWindow.replies).toHaveLength(1)
@@ -730,9 +727,9 @@ describe("聊天评测闭环（L3 合成用例）", () => {
         mismatches: [],
       })
       expect(status.check.status).toBe("inconclusive")
-      expect(status.check.counts.required.total).toBe(3)
+      expect(status.check.counts.required.total).toBe(2)
       expect(status.check.counts.forbidden.total).toBe(1)
-      expect(status.check.counts.critical.total).toBe(3)
+      expect(status.check.counts.critical.total).toBe(2)
 
       setChatRunPhase(runDir, { phase: "awaiting_judge", updatedAt: new Date().toISOString() })
       const report = writeChatReport({
@@ -744,7 +741,7 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       expect(report.markdown).toContain("- 判分者：尚无判分")
       expect(report.markdown).toContain("- 抽查：未抽查（可选，不阻塞）")
       expect(report.markdown).toContain("- 聚合规则：judge-all-rules；gold=false")
-      expect(report.markdown).toContain("- 规则：inconclusive（必需 0/3 通过，禁止项 0/1 通过，关键 0/3 通过）")
+      expect(report.markdown).toContain("- 规则：inconclusive（必需 0/2 通过，禁止项 0/1 通过，关键 0/2 通过）")
       expect(readdirSync(join(attemptDir, "grades"))).toEqual([])
     } finally {
       if (trialStarted && !trialEnded) {

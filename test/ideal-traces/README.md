@@ -113,7 +113,13 @@ test/ideal-traces/
     └── tool-and-plan/.gitkeep
 ```
 
-`saturday-companionship` 合并自两份用户理想稿（原稿已删除），由代理起草，当前是 **silver / pending**，不是 gold。fixture 采用 `direct-seed`：只把初始会话和旧记忆写入隔离数据根，纠正、自动记忆抽取与跨会话召回全部由真实消息触发。它用多轮用户驱动消息与 host 新会话步骤串成三个会话，覆盖纠正、技术梗、短确认、云吃、采购、错误前提与长程回忆；探针逐题绑定驱动步骤、观察窗口、题型与难度，当前数量与分布以 `dataset list`／`dataset review` 输出为准。时钟固定为 `2026-10-24` 起的三段会话，每个驱动步骤带 `at`。首轮 7 条用户消息来自用户理想稿，其余是代理扩写，必须逐条审阅。空套件目录只有 `.gitkeep`；没有 `suite.json` 就不会进入数据集，也不代表对应类别已经覆盖。一个用例只存一份，`categories` 是多标签；同一 `caseId` 跨套件重复会直接判数据集错误。
+`saturday-companionship` 合并自两份用户理想稿（原稿已删除），由代理起草，当前是 **silver / pending**，不是 gold。fixture 采用 `direct-seed`：只把初始会话和旧记忆写入隔离数据根，纠正、自动记忆抽取与跨会话召回全部由真实消息触发。它用多轮用户驱动消息与 host 新会话步骤串成四个会话，覆盖纠正、技术梗、短确认、云吃、清单更新、两次错误前提与长程回忆；探针只评可核对的结果（记忆来源、时序、跨会话召回、错误前提与不编造），不评价语气或拟人化。探针逐题绑定驱动步骤、观察窗口、题型与难度，当前数量与分布以 `dataset list`／`dataset review` 输出为准。时钟固定为 `2026-10-24` 起的四段会话，每个驱动步骤带 `at`。首轮 7 条用户消息来自用户理想稿，其余是代理扩写，必须逐条审阅。空套件目录只有 `.gitkeep`；没有 `suite.json` 就不会进入数据集，也不代表对应类别已经覆盖。一个用例只存一份，`categories` 是多标签；同一 `caseId` 跨套件重复会直接判数据集错误。
+
+### 外部公开集不进入受跟踪题库
+
+外部输入适配仍复用这里的结构化 case、fixture、driver、审批与判分流程，但不写入 `test/ideal-traces/suites/`。长期原始数据和导入结果分别保存在忽略的 `test/sim/desk-pet-chat/external/.data/<dataset>/raw/` 与 `.../.data/<dataset>/dataset/`；fetch 先核验现有缓存再离线复用，校验不符拒绝覆盖。临时验收可显式使用 `test/.tmp/external-eval/<dataset>/`。支持源、固定 revision 与适配边界见 [`test/sim/README.md`](../sim/README.md#外部公开集适配) 和 [`test/sim/desk-pet-chat/external/catalog.json`](../sim/desk-pet-chat/external/catalog.json)。外部 case 使用 `source.kind: "external"`，保留被读取源文件的哈希及 upstream binding；只被引用、未读取的二进制附件／环境资产不在该哈希内。用例仍是 silver；公开参考答案只进 oracle／判分包，driver 不携带判据。任何运行、适配或 judge 结果都不能代替用户对当前 `specHash` 的真实消息审批。
+
+GAIA gated 数据只从调用者已获准的本地输入读取，不读取账号凭据；带附件任务保持阻塞。MultiChallenge 将 conversation 最后一条 user 消息作为 live 请求；`target_question` 与 `pass_criteria`（通常为 YES）只供 judge，不能进入 driver。BEAM 使用固定历史加单个 live probe，不声称复现上游完整评测。MemoryArena 所需持久环境与 LHTB 所需 verifier／修改版 harness 尚不可运行，必须保留阻塞状态。LHTB 默认绑定 catalog 的 Git 仓库 commit。原始文件与导入根均不得复制进本目录或作为可再分发数据提交。
 
 ### 标签与审批
 
@@ -126,10 +132,10 @@ test/ideal-traces/
 
 ### 内容规则
 
-- `source.kind` 只能是 `ideal` / `confirmed-issue` / `requirement`；`actual` 实际输出不能充当期望答案或 oracle。
+- `source.kind` 为 `ideal` / `confirmed-issue` / `requirement` / `external`；`actual` 实际输出不能充当期望答案或 oracle。
 - 多标签用例在用例总数里只计一次，分类计数各自加一。
 - case 的 `questionTypes` 必须恰好等于其探针 `questionType` 的并集：声明了却没探针、或探针用了没声明，都是数据集错误。
-- 驱动包只含 `schemaVersion` / `caseId` / `revision` / `specHash` / `userRole` / `driver`；`questionTypes`、`probes`、`checkpoints`、`oracle`、`pathConstraints`、`evidence`、`quality` 只进审阅包，不能给驱动。
+- 驱动包只含 `schemaVersion` / `caseId` / `revision` / `specHash` / `userRole` / `driver`；`questionTypes`、`probes`、`checkpoints`、`oracle`、`pathConstraints`、`evidence` 只进审阅包，不能给驱动。
 - fixture 只使用合成或经用户确认可用的数据；初始记忆的 `origin` 必须是 `user`，且来源指向初始会话中的用户消息，不能伪造派生行为记忆。
 - 全部探针由独立 coding-agent judge 按 rubric 判定；runner 只校验运行有效性（证据完整、执行完成、窗口有效、oracle 未泄漏）与裁决结构，不产出内容分数，也不替 judge 作判断。
 - 探针的内容词表、频率、时间关系、主语别名与跨会话来源只在 `expectation` 声明一次；rubric 注册表只保留通用判据，不维护单个 case 的产品规则。
@@ -153,7 +159,7 @@ test/ideal-traces/
 | 边界 | boundary、recovery | safety／tools／settings／resilience／tasks |
 | 表达 | persona、style | persona／humanizer／chat |
 
-判分不由题型或规则类别分流，所有探针（含 `humanizer.*`）与 humanizer 质量规则都交给同一个独立 coding-agent judge：
+判分不由题型或规则类别分流，所有探针都交给同一个独立 coding-agent judge：
 
 | 环节 | 谁来做 | 产出 |
 |---|---|---|
@@ -162,7 +168,7 @@ test/ideal-traces/
 | 回填与校验 | runner | 校验覆盖、绑定、证据引用与异构性后追加 `grades/`；不合规硬失败 |
 | 用户抽查（可选） | 用户本人 | `reviews/` 追加抽查记录；不阻塞、不改写判分 |
 
-case 级 `quality` 只声明 `{ rubric, rubricVersion }`，不声明权威或建议位。judge 与被测模型同源时 `judge apply` 直接拒绝。
+judge 与被测模型同源时 `judge apply` 直接拒绝。
 
 ### 探针与计分单位
 
@@ -170,7 +176,7 @@ case 级 `quality` 只声明 `{ rubric, rubricVersion }`，不声明权威或建
 - `after` 指定驱动步骤；`window` 决定看哪里：`last-assistant` 只看该步后的助手回复，`state` 看该检查点的产品状态（如记忆来源），`all-assistant` 扫描全部会话的助手回复。
 - `polarity: required` 表示 rubric 描述的行为必须出现；`forbidden` 表示 rubric 描述的错误行为必须不出现。`critical` 用于报告分层。
 - 同一 rubric 可以在不同步骤复用；probe id 必须唯一，同一 rubric 不能同时 required 与 forbidden。
-- case 级通过规则：所有适用规则（含 quality 规则）均为 `pass` 才通过；任一 `fail` 判失败，任一非 `pass`（含窗口不可用）判 inconclusive；证据不完整或执行未完成时一律 inconclusive，已证实失败不会被缺证据洗掉。用户抽查不参与聚合。
+- case 级通过规则：所有适用规则均为 `pass` 才通过；任一 `fail` 判失败，任一非 `pass`（含窗口不可用）判 inconclusive；证据不完整或执行未完成时一律 inconclusive，已证实失败不会被缺证据洗掉。用户抽查不参与聚合。
 - 判分者只按冻结的判分包与封存证据裁决；runner 只校验运行有效性与裁决结构。coding agent 的自由评述是另一种证据，不能写成 gold 审批或结构化通过。
 
 ### 命令

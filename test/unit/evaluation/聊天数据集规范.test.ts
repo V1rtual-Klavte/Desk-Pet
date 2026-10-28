@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   PROBE_EXPECTATION_KIND_VALUES,
-  QUALITY_RUBRIC_VALUES,
   RUBRIC_SPECS,
   applyReviewDecisions,
   buildDriverPackage,
@@ -118,15 +117,15 @@ describe("聊天评测数据集规范", () => {
     expect(dataset.cases[0]!.suiteId).toBe("daily-companionship");
     expect(dataset.cases[0]!.case.schemaVersion).toBe(4);
     expect(dataset.cases[0]!.fixture.schemaVersion).toBe(4);
-    expect(dataset.cases[0]!.case.categories).toEqual(["chat", "memory", "session", "humanizer"]);
+    expect(dataset.cases[0]!.case.categories).toEqual(["chat", "memory", "session"]);
     expect(dataset.cases[0]!.case.questionTypes).toEqual([
       "correction",
       "source",
-      "style",
-      "multi-turn",
       "cross-session",
       "temporal",
       "adversarial",
+      "fact",
+      "multi-turn",
       "boundary",
     ]);
     expect(dataset.cases[0]!.case.source.kind).toBe("ideal");
@@ -146,10 +145,10 @@ describe("聊天评测数据集规范", () => {
     for (const categoryId of categoryIds) expect(coveredCategories.has(categoryId)).toBe(true);
   });
 
-  it("合并用例扩长为三会话多轮驱动，追问不泄露纠正答案，纠正结果不预置", () => {
+  it("合并用例扩长为四会话多轮驱动，追问不泄露纠正答案，纠正结果不预置", () => {
     const entry = loadDataset().cases[0]!;
     const messageSteps = entry.case.driver.filter((step) => step.kind === "message");
-    expect(messageSteps).toHaveLength(27);
+    expect(messageSteps).toHaveLength(30);
     expect(messageSteps.map((step) => step.id)).toEqual([
       "correct-exercise",
       "tech-banter",
@@ -170,16 +169,19 @@ describe("聊天评测数据集规范", () => {
       "food-recall",
       "shopping-plan",
       "shopping-list",
-      "chicken-banter",
-      "cooking",
-      "game",
+      "shopping-update",
+      "shopping-confirm",
+      "shopping-trap",
       "goodbye",
       "c-leg-sore",
-      "c-coworker-run",
+      "c-distance-trap",
       "summary",
       "close",
+      "d-shopping-recall",
+      "d-cycling-premise",
+      "d-close",
     ]);
-    expect(entry.case.driver).toHaveLength(29);
+    expect(entry.case.driver).toHaveLength(33);
     expect(entry.case.driver.map((step) => step.id)).toEqual([
       "correct-exercise",
       "tech-banter",
@@ -201,15 +203,19 @@ describe("聊天评测数据集规范", () => {
       "food-recall",
       "shopping-plan",
       "shopping-list",
-      "chicken-banter",
-      "cooking",
-      "game",
+      "shopping-update",
+      "shopping-confirm",
+      "shopping-trap",
       "goodbye",
       "new-session-c",
       "c-leg-sore",
-      "c-coworker-run",
+      "c-distance-trap",
       "summary",
       "close",
+      "new-session-d",
+      "d-shopping-recall",
+      "d-cycling-premise",
+      "d-close",
     ]);
     expect(
       entry.case.driver
@@ -218,6 +224,7 @@ describe("聊天评测数据集规范", () => {
     ).toEqual([
       ["new-session-b", "chat_new_session"],
       ["new-session-c", "chat_new_session"],
+      ["new-session-d", "chat_new_session"],
     ]);
 
     const ask = entry.case.driver.find((step) => step.id === "ask-history");
@@ -230,7 +237,7 @@ describe("聊天评测数据集规范", () => {
 
     const seeded = entry.fixture.initialMemory.map((memory) => memory.content).join("\n");
     const fixtureText = entry.fixture.initialSession.messages.map((message) => message.content).join("\n");
-    for (const corrected of ["一周只跑一次", "经常骑车", "实习之前我跑得老勤了"]) {
+    for (const corrected of ["一周只跑一次", "经常骑车", "实习之前我跑得老勤了", "酸奶"]) {
       expect(seeded).not.toContain(corrected);
       expect(fixtureText).not.toContain(corrected);
     }
@@ -244,8 +251,16 @@ describe("聊天评测数据集规范", () => {
       "trap",
       "clarify",
       "food-recall",
+      "shopping-list",
+      "shopping-update",
+      "shopping-confirm",
+      "shopping-trap",
       "new-session-c",
+      "c-distance-trap",
       "summary",
+      "new-session-d",
+      "d-shopping-recall",
+      "d-cycling-premise",
     ]);
     expect(entry.case.governance.unresolvedPoints.join("\n")).toMatch(/扩写|扩展/);
   });
@@ -310,19 +325,19 @@ describe("聊天评测数据集规范", () => {
 
     const entry = loadDataset().cases[0]!;
     const review = buildReviewPackage(entry);
-    expect(review.difficultyCounts).toEqual({ 1: 4, 2: 5, 3: 6, 4: 6, 5: 2 });
-    expect(formatReviewPackage(review)).toContain("难度分布：L1 4 · L2 5 · L3 6 · L4 6 · L5 2");
+    expect(review.difficultyCounts).toEqual({ 1: 2, 2: 3, 3: 6, 4: 10, 5: 4 });
+    expect(formatReviewPackage(review)).toContain("难度分布：L1 2 · L2 3 · L3 6 · L4 10 · L5 4");
 
     const summary = summarizeDataset(loadDataset());
-    expect(summary.difficultyCounts).toEqual({ 1: 4, 2: 5, 3: 6, 4: 6, 5: 2 });
+    expect(summary.difficultyCounts).toEqual({ 1: 2, 2: 3, 3: 6, 4: 10, 5: 4 });
   });
 
-  it("探针逐题绑定驱动步骤，23 条探针中 11 条关键，全局探针只扫全部助手回复", () => {
+  it("探针逐题绑定驱动步骤，25 条探针中 17 条关键，全局探针只扫全部助手回复", () => {
     const entry = loadDataset().cases[0]!;
     const driverIds = new Set(entry.case.driver.map((step) => step.id));
-    expect(entry.case.probes).toHaveLength(23);
-    expect(entry.case.probes.filter((probe) => probe.critical)).toHaveLength(11);
-    expect(entry.case.probes.filter((probe) => probe.polarity === "required")).toHaveLength(15);
+    expect(entry.case.probes).toHaveLength(25);
+    expect(entry.case.probes.filter((probe) => probe.critical)).toHaveLength(17);
+    expect(entry.case.probes.filter((probe) => probe.polarity === "required")).toHaveLength(17);
     expect(entry.case.probes.filter((probe) => probe.polarity === "forbidden")).toHaveLength(8);
     for (const probe of entry.case.probes) {
       expect(driverIds.has(probe.after)).toBe(true);
@@ -332,10 +347,6 @@ describe("聊天评测数据集规范", () => {
       "p-correction-ack",
       "p-memory-source",
       "p-memory-no-fixture-update",
-      "p-tech-banter",
-      "p-short-confirmation",
-      "p-food-return",
-      "p-tired-no-advice",
       "p-cross-session-provenance",
       "p-cross-session-answer",
       "p-current-frequency",
@@ -347,15 +358,19 @@ describe("聊天评测数据集规范", () => {
       "p-clarify-ack",
       "p-food-choice-recall",
       "p-abstain-food",
+      "p-plan-update-recall",
+      "p-shopping-premise",
       "p-durable-provenance",
       "p-durable-recall",
-      "p-global-service-tone",
-      "p-global-meta",
+      "p-durable-cycling-swap",
+      "p-distance-no-fabrication",
+      "p-durable-shopping-provenance",
+      "p-durable-shopping-recall",
+      "p-durable-shopping-stale",
+      "p-durable-cycling-premise",
       "p-global-oracle-leak",
     ]);
     expect(entry.case.probes.filter((probe) => probe.window === "all-assistant").map((probe) => probe.id)).toEqual([
-      "p-global-service-tone",
-      "p-global-meta",
       "p-global-oracle-leak",
     ]);
     expect(entry.case.oracle.allowedAlternatives.length).toBeGreaterThan(0);
@@ -370,14 +385,14 @@ describe("聊天评测数据集规范", () => {
       counts[probe.questionType] = (counts[probe.questionType] ?? 0) + 1;
     }
     expect(counts).toEqual({
-      temporal: 5,
       correction: 2,
       source: 2,
-      "cross-session": 5,
-      "multi-turn": 2,
-      adversarial: 2,
+      "cross-session": 7,
+      temporal: 6,
+      adversarial: 5,
+      fact: 1,
+      "multi-turn": 1,
       boundary: 1,
-      style: 4,
     });
     expect(new Set(entry.case.probes.map((probe) => probe.questionType))).toEqual(
       new Set(entry.case.questionTypes),
@@ -398,11 +413,11 @@ describe("聊天评测数据集规范", () => {
     expect(() => validateCaseSpec(unused, { questionTypeIds })).toThrow(/未使用/);
 
     const undeclared = baseCase();
-    undeclared.questionTypes = undeclared.questionTypes.filter((id: string) => id !== "style");
+    undeclared.questionTypes = undeclared.questionTypes.filter((id: string) => id !== "correction");
     expect(() => validateCaseSpec(undeclared, { questionTypeIds })).toThrow(/未声明/);
   });
 
-  it("全部探针共享同一 rubric 注册表，humanizer 不再单独声明人工权威", () => {
+  it("全部探针共享同一 rubric 注册表，不再包含拟人化语气规则", () => {
     const entry = loadDataset().cases[0]!;
     const rubricById = new Map(RUBRIC_SPECS.map((spec) => [spec.id, spec]));
     for (const probe of entry.case.probes) {
@@ -410,42 +425,22 @@ describe("聊天评测数据集规范", () => {
       expect(probe).not.toHaveProperty("authority");
       expect(probe).not.toHaveProperty("assistants");
     }
-    const humanizerProbes = entry.case.probes.filter((probe) => probe.rubric.startsWith("humanizer."));
-    expect(humanizerProbes.map((probe) => probe.rubric)).toEqual([
-      "humanizer.tech-banter",
-      "humanizer.short-confirmation",
-      "humanizer.food-return",
-      "humanizer.no-unsolicited-advice",
-      "humanizer.no-service-tone",
-      "humanizer.no-meta-role",
-    ]);
-    for (const probe of humanizerProbes) expect(rubricById.get(probe.rubric)!.kind).toBe("semantic");
+    expect(entry.case.probes.filter((probe) => probe.rubric.startsWith("humanizer."))).toEqual([]);
+    expect(rubricById.has("answer.no-stale-choice")).toBe(true);
+    expect(rubricById.get("answer.no-stale-choice")!.kind).toBe("semantic");
 
     const probeAuthority = baseCase();
     probeAuthority.probes[0].authority = "human";
     expect(() => validateCaseSpec(probeAuthority)).toThrow(/未登记字段：authority/);
   });
 
-  it("拟人化质量评分只绑定 rubric 与版本，不声明权威或建议位", () => {
+  it("用例不再声明拟人化质量评分", () => {
     const entry = loadDataset().cases[0]!;
-    expect(QUALITY_RUBRIC_VALUES).toContain(entry.case.quality.rubric);
-    expect(Object.keys(entry.case.quality).sort()).toEqual(["rubric", "rubricVersion"]);
+    expect(entry.case).not.toHaveProperty("quality");
 
-    const missingVersion = baseCase();
-    delete missingVersion.quality.rubricVersion;
-    expect(() => validateCaseSpec(missingVersion)).toThrow(/缺少字段：rubricVersion/);
-
-    const unknownRubric = baseCase();
-    unknownRubric.quality.rubric = "humanizer-v2";
-    expect(() => validateCaseSpec(unknownRubric)).toThrow(/humanizer-six-dimensions/);
-
-    const legacyAuthority = baseCase();
-    legacyAuthority.quality.authority = "human";
-    expect(() => validateCaseSpec(legacyAuthority)).toThrow(/未登记字段：authority/);
-
-    const legacyAssistants = baseCase();
-    legacyAssistants.quality.assistants = ["coding-agent"];
-    expect(() => validateCaseSpec(legacyAssistants)).toThrow(/未登记字段：assistants/);
+    const legacyQuality = baseCase();
+    legacyQuality.quality = { rubric: "humanizer-six-dimensions", rubricVersion: 1 };
+    expect(() => validateCaseSpec(legacyQuality)).toThrow(/未登记字段：quality/);
   });
 
   it("题型注册表必须覆盖全部分类，且只能引用已登记分类", () => {
@@ -560,7 +555,7 @@ describe("聊天评测数据集规范", () => {
     expect(() => validateCaseSpec(missingSubjects)).toThrow(/expectation 必填/);
 
     const unexpected = baseCase();
-    unexpected.probes.find((item: any) => item.id === "p-tech-banter").expectation = {
+    unexpected.probes.find((item: any) => item.id === "p-correction-ack").expectation = {
       subjects: [{ label: "跑", aliases: [] }],
     };
     expect(() => validateCaseSpec(unexpected)).toThrow(/不适用/);
@@ -664,7 +659,7 @@ describe("聊天评测数据集规范", () => {
     expect(expectationById["memory-source.no-fixture-as-update"]).toBe("subjects");
     expect(expectationById["session.answer-in-new-session"]).toBe("session-source");
     expect(expectationById["chat.correction-acknowledged"]).toBe("none");
-    expect(expectationById["humanizer.tech-banter"]).toBe("none");
+    expect(expectationById["answer.no-stale-choice"]).toBe("none");
     expect(expectationById["reply.no-oracle-leak"]).toBe("none");
     for (const spec of RUBRIC_SPECS) {
       expect(Object.keys(spec).sort()).toEqual(["description", "expectation", "id", "kind"]);
@@ -870,7 +865,6 @@ describe("聊天评测数据集规范", () => {
     expect(driverPackage).not.toHaveProperty("oracle");
     expect(driverPackage).not.toHaveProperty("checkpoints");
     expect(driverPackage).not.toHaveProperty("evidence");
-    expect(driverPackage).not.toHaveProperty("quality");
     expect(driverPackage).not.toHaveProperty("questionTypes");
     const driverJson = JSON.stringify(driverPackage);
     expect(driverJson).not.toContain("p-correction-ack");
@@ -897,16 +891,18 @@ describe("聊天评测数据集规范", () => {
     expect(review.trustBoundary.excludedFromDriver).toContain("oracle");
     expect(review.trustBoundary.excludedFromDriver).toContain("questionTypes");
     expect(review.questionTypes).toEqual(entry.case.questionTypes);
-    expect(review.candidate.probes).toHaveLength(23);
+    expect(review.candidate.probes).toHaveLength(25);
     expect(review.candidate.oracle.allowedAlternatives.length).toBeGreaterThan(0);
 
     const markdown = formatReviewPackage(review);
     expect(markdown).toContain("信任边界");
     expect(markdown).toContain("题型与判分");
-    expect(markdown).toContain("全部探针与质量规则由独立 coding-agent judge 判定；用户抽查可选，不阻塞");
-    expect(markdown).toContain("humanizer-six-dimensions v1");
+    expect(markdown).toContain("全部探针由独立 coding-agent judge 按结果判定；用户抽查可选，不阻塞");
+    expect(markdown).not.toContain("质量规则");
+    expect(markdown).not.toContain("humanizer-six-dimensions");
     expect(markdown).toContain("探针");
     expect(markdown).toContain("p-current-frequency");
+    expect(markdown).toContain("answer.no-stale-choice");
     expect(markdown).toContain("answer.fact-recall");
     expect(markdown).toContain("期望 事实：跑步");
     expect(markdown).toContain("critical");
@@ -918,28 +914,30 @@ describe("聊天评测数据集规范", () => {
     expect(summary.caseCount).toBe(1);
     expect(summary.goldCount).toBe(0);
     expect(summary.silverCount).toBe(1);
-    expect(summary.probeCount).toBe(23);
-    expect(summary.criticalProbeCount).toBe(11);
+    expect(summary.probeCount).toBe(25);
+    expect(summary.criticalProbeCount).toBe(17);
     expect(summary.categoryCounts.memory).toBe(1);
     expect(summary.categoryCounts.session).toBe(1);
     expect(summary.categoryCounts.chat).toBe(1);
-    expect(summary.categoryCounts.humanizer).toBe(1);
+    expect(summary.categoryCounts.humanizer).toBe(0);
     expect(summary.questionTypeCounts).toMatchObject({
-      temporal: 5,
       correction: 2,
       source: 2,
-      "cross-session": 5,
-      "multi-turn": 2,
-      adversarial: 2,
+      "cross-session": 7,
+      temporal: 6,
+      adversarial: 5,
+      fact: 1,
+      "multi-turn": 1,
       boundary: 1,
-      style: 4,
+      style: 0,
     });
     expect(Object.keys(summary.questionTypeCounts)).toHaveLength(24);
     expect(summary.caseQuestionTypeCounts.temporal).toBe(1);
-    expect(summary.caseQuestionTypeCounts.style).toBe(1);
+    expect(summary.caseQuestionTypeCounts.fact).toBe(1);
+    expect(summary.caseQuestionTypeCounts.style).toBe(0);
     expect(summary.caseQuestionTypeCounts.open).toBe(0);
-    expect(summary.suites[0]!.probeCount).toBe(23);
-    expect(summary.suites[0]!.criticalProbeCount).toBe(11);
+    expect(summary.suites[0]!.probeCount).toBe(25);
+    expect(summary.suites[0]!.criticalProbeCount).toBe(17);
   });
 
   it("规范化哈希与对象键顺序无关", () => {

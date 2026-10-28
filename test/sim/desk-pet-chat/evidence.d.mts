@@ -2,6 +2,7 @@ export const CHAT_EVIDENCE_SCHEMA_VERSION: 1;
 export const CHAT_RUN_SCHEMA_VERSION: 1;
 export const CHAT_ATTEMPT_SCHEMA_VERSION: 1;
 export const CHAT_TRIAL_PLAN_SCHEMA_VERSION: 1;
+export const DELIVERABLE_MAX_BYTES: number;
 export const TRIAL_PLAN_FILE: string;
 export const CHAT_GRADER_VERSION: string;
 export const CHAT_RETENTION_MAX_GROUPS: 5;
@@ -112,10 +113,13 @@ export interface DialogueWriter {
 }
 
 export interface ChatTraceChunkInput {
+  chunkId?: string;
   chunkSeq: number;
   events: unknown[];
   eventCount: number;
   droppedCount: number;
+  seqFrom?: number | null;
+  seqTo?: number | null;
   boundary: { kind: string; sceneId?: string; trialId?: string };
 }
 
@@ -162,6 +166,24 @@ export interface ChatArtifactEntry {
   sha256: string;
 }
 
+export interface DeliverableSpec {
+  id: string;
+  role: string;
+  path: string;
+  maxBytes?: number;
+}
+
+export interface DeliverableCapture {
+  id: string;
+  role: string;
+  path: string;
+  status: "delivered" | "missing" | "oversized" | "invalid";
+  bytes?: number;
+  sha256?: string;
+  artifactPath?: string;
+  reason?: string;
+}
+
 export interface ChatAttemptManifest {
   schemaVersion: 1;
   evaluationRunId: string;
@@ -180,6 +202,7 @@ export interface ChatAttemptManifest {
     trace: { chunkCount: number; droppedCount: number; orphanCount: number | null };
   };
   artifacts: ChatArtifactEntry[];
+  deliverables: DeliverableCapture[];
   integrity: { status: IntegrityStatus; issues: string[] };
   manifestSha256: string;
 }
@@ -192,6 +215,8 @@ export interface SealChatAttemptOptions {
   inputs?: ChatAttemptIdentity["inputs"];
   outcome?: AttemptOutcome;
   issues?: string[];
+  deliverables?: DeliverableSpec[];
+  dataRoot?: string;
 }
 
 export interface SealChatAttemptResult {
@@ -366,6 +391,11 @@ export function createTraceWriter(attemptDir: string): TraceWriter;
 export function writeStateSnapshot(options: { attemptDir: string; name: string; value: unknown }): string;
 export function writeArtifact(options: { attemptDir: string; name: string; bytes: Uint8Array | string }): string;
 export function copyArtifact(options: { attemptDir: string; name: string; sourcePath: string }): string;
+export function captureDeliverables(options: {
+  attemptDir: string;
+  dataRoot?: string;
+  deliverables?: DeliverableSpec[];
+}): { deliverables: DeliverableCapture[] };
 export function sealChatAttempt(options: SealChatAttemptOptions): Promise<SealChatAttemptResult>;
 export function readSealedAttempt(attemptDir: string): ChatAttemptManifest;
 export function verifySealedAttempt(attemptDir: string): SealedVerification;

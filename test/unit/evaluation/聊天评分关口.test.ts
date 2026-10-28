@@ -77,7 +77,6 @@ const JUDGE: JudgeIdentity = {
   model: "judge/model-x",
   promptVersion: JUDGE_PROMPT_VERSION,
 };
-const QUALITY_RULE = "quality:humanizer-six-dimensions";
 const FIXTURE_SESSION = "fixture-session";
 const SESSION_A = "session-a";
 const SESSION_B = "session-b";
@@ -245,15 +244,15 @@ function defaultProbes(): ProbeSpec[] {
       description: "回复不得泄露探针或评分内部信息",
     },
     {
-      id: "p-style",
+      id: "p-secondary",
       after: "ask-trap",
       window: "last-assistant",
-      rubric: "humanizer.short-confirmation",
-      questionType: "style",
+      rubric: "answer.no-stale-choice",
+      questionType: "multi-turn",
       polarity: "required",
       critical: false,
       difficulty: 2,
-      description: "口吻自然，仍由 judge 按 rubric 判断",
+      description: "非关键结果项：不得把旧选择当最终值",
     },
   ];
 }
@@ -311,7 +310,6 @@ function makeWorld(options: WorldOptions = {}): World {
     oracle: { allowedAlternatives: ["口语同义改写"] },
     pathConstraints: { requiredOrder: [], forbiddenSideEffects: [], allowedToolSubstitutions: [] },
     evidence: [],
-    quality: { rubric: "humanizer-six-dimensions", rubricVersion: 1 },
     governance: { purpose: "regression", unresolvedPoints: [], notes: [] },
   };
   const fixture: FixtureSpec = {
@@ -717,11 +715,8 @@ describe("判分包冻结与隐私", () => {
     const { packet } = prepared.packet;
 
     expect(packet.kind).toBe("chat-judge-packet");
-    expect(packet.rules.map((rule) => rule.ruleId)).toEqual([
-      ...defaultProbes().map((probe) => probe.id),
-      QUALITY_RULE,
-    ]);
-    expect(packet.rules).toHaveLength(10);
+    expect(packet.rules.map((rule) => rule.ruleId)).toEqual(defaultProbes().map((probe) => probe.id));
+    expect(packet.rules).toHaveLength(9);
     expect(packet.skippedRules).toEqual([]);
     expect(packet.timeline.map((message) => message.text)).toContain(SOURCE_TEXT);
     expect(packet.timeline.some((message) => message.origin === "assistant")).toBe(true);
@@ -746,9 +741,6 @@ describe("判分包冻结与隐私", () => {
       packetId: packet.packetId,
       caseId: world.entry.caseId,
     });
-    expect(packet.rules.find((rule) => rule.ruleId === QUALITY_RULE)?.window.mode).toBe(
-      "all-assistant",
-    );
   });
 
   it("未封存、trace 不完整与执行失败都不能冻结判分包", async () => {
@@ -851,7 +843,7 @@ describe("判分包冻结与隐私", () => {
     expect(text).toContain(`# 判分包 ${packet.packetId}`);
     expect(text).toContain("## 规则");
     expect(text).toContain("p-source");
-    expect(text).toContain(QUALITY_RULE);
+    expect(text).toContain("p-secondary");
     expect(text).toContain("## 对话");
     expect(text).toContain("source-correction-u");
     expect(text).toContain("## 证据引用");
@@ -870,7 +862,7 @@ describe("judge 裁决校验", () => {
       evidenceRefs: ["trace:trace.jsonl"],
     };
     const normalized = validateJudgeVerdicts({ packet, verdicts });
-    expect(normalized.verdicts).toHaveLength(10);
+    expect(normalized.verdicts).toHaveLength(9);
     expect(normalized.verdicts[0]?.reason).toBe("实际回复引用了本轮纠正");
     expect(normalized.verdicts[0]?.evidenceRefs).toEqual(["trace:trace.jsonl"]);
     expect(normalized.judge).toEqual(JUDGE);
@@ -930,7 +922,7 @@ describe("judge 裁决校验", () => {
       () => validateJudgeVerdicts({ packet, verdicts: { ...structuredClone(base), verdicts: [] } }),
       "verdict.empty",
     );
-    expect(base.verdicts).toHaveLength(10);
+    expect(base.verdicts).toHaveLength(9);
   });
 
   it("拒绝非异构或身份不完整的 judge", async () => {
@@ -1085,11 +1077,10 @@ describe("判分记录与聚合", () => {
       datasetInputHash(world.dataset, world.entry),
     );
     expect(applied.grade.summary.label).toMatchObject({ tier: "silver", status: "pending" });
-    expect(applied.grade.checks).toHaveLength(10);
-    expect(applied.checks.find((check) => check.ruleId === QUALITY_RULE)?.status).toBe("pass");
-    expect(applied.counts.required).toMatchObject({ total: 7, pass: 7, fail: 0 });
+    expect(applied.grade.checks).toHaveLength(9);
+    expect(applied.counts.required).toMatchObject({ total: 6, pass: 6, fail: 0 });
     expect(applied.counts.forbidden).toMatchObject({ total: 3, pass: 3, fail: 0 });
-    expect(applied.counts.critical).toMatchObject({ total: 9, pass: 9, fail: 0 });
+    expect(applied.counts.critical).toMatchObject({ total: 8, pass: 8, fail: 0 });
 
     const status = statusFor(world, prepared);
     expect(status.execution).toBe("completed");
@@ -1105,7 +1096,7 @@ describe("判分记录与聚合", () => {
     expect(status.overall.status).toBe("pass");
     expect(status.overall.reason).toBe("全部适用规则通过");
     expect(status.gold).toBe(false);
-    expect(status.spotCheck).toMatchObject({ status: "not_checked", checked: 0, total: 10 });
+    expect(status.spotCheck).toMatchObject({ status: "not_checked", checked: 0, total: 9 });
   });
 
   it("任一规则 fail 时总判定 fail，按必需项与禁止项分别计数 [chat-judge-aggregation]", async () => {
@@ -1117,9 +1108,9 @@ describe("判分记录与聚合", () => {
         perRule: { "p-source": "fail", "p-cross": "fail", "p-no-swap": "fail" },
       }),
     );
-    expect(applied.counts.required).toMatchObject({ total: 7, pass: 5, fail: 2 });
+    expect(applied.counts.required).toMatchObject({ total: 6, pass: 4, fail: 2 });
     expect(applied.counts.forbidden).toMatchObject({ total: 3, pass: 2, fail: 1 });
-    expect(applied.counts.critical).toMatchObject({ total: 9, pass: 6, fail: 3 });
+    expect(applied.counts.critical).toMatchObject({ total: 8, pass: 5, fail: 3 });
 
     const status = statusFor(world, prepared);
     expect(status.check.status).toBe("fail");
@@ -1134,15 +1125,15 @@ describe("判分记录与聚合", () => {
     const applied = apply(
       world,
       prepared,
-      verdictsFor(prepared.packet.packet, { perRule: { "p-style": "inconclusive" } }),
+      verdictsFor(prepared.packet.packet, { perRule: { "p-secondary": "inconclusive" } }),
     );
-    expect(applied.counts.required).toMatchObject({ total: 7, pass: 6, inconclusive: 1 });
-    expect(applied.counts.critical).toMatchObject({ total: 9, pass: 9, inconclusive: 0 });
+    expect(applied.counts.required).toMatchObject({ total: 6, pass: 5, inconclusive: 1 });
+    expect(applied.counts.critical).toMatchObject({ total: 8, pass: 8, inconclusive: 0 });
 
     const status = statusFor(world, prepared);
     expect(status.check.status).toBe("inconclusive");
     expect(status.overall.status).toBe("inconclusive");
-    expect(status.overall.reason).toContain("p-style=inconclusive");
+    expect(status.overall.reason).toContain("p-secondary=inconclusive");
   });
 
   it("没有判分记录时不产生通过结论", async () => {
@@ -1150,7 +1141,7 @@ describe("判分记录与聚合", () => {
     const status = statusFor(world, prepared);
     expect(status.judge).toBeNull();
     expect(status.check.status).toBe("inconclusive");
-    expect(status.check.counts.required).toMatchObject({ total: 7, pass: 0 });
+    expect(status.check.counts.required).toMatchObject({ total: 6, pass: 0 });
     expect(status.overall.status).toBe("inconclusive");
     expect(status.overall.reason).toContain("存在未通过的规则");
     expect(status.spotCheck.status).toBe("not_checked");
@@ -1160,13 +1151,13 @@ describe("判分记录与聚合", () => {
     const world = makeWorld({ probes: [...defaultProbes(), skippedProbe()] });
     const prepared = await prepare(world);
     expect(prepared.packet.skippedRules).toEqual(["p-skip"]);
-    expect(prepared.packet.packet.rules).toHaveLength(10);
+    expect(prepared.packet.packet.rules).toHaveLength(9);
 
     const applied = apply(world, prepared, verdictsFor(prepared.packet.packet));
     expect(applied.skippedRules).toEqual(["p-skip"]);
     expect(applied.checks.find((check) => check.ruleId === "p-skip")?.status).toBe("inconclusive");
-    expect(applied.counts.required).toMatchObject({ total: 8, pass: 7, inconclusive: 1 });
-    expect(applied.counts.critical).toMatchObject({ total: 10, pass: 9, inconclusive: 1 });
+    expect(applied.counts.required).toMatchObject({ total: 7, pass: 6, inconclusive: 1 });
+    expect(applied.counts.critical).toMatchObject({ total: 9, pass: 8, inconclusive: 1 });
 
     const status = statusFor(world, prepared);
     expect(status.overall.status).toBe("inconclusive");
@@ -1386,7 +1377,7 @@ describe("用户抽查不阻塞", () => {
       ],
       now: REVIEWED,
     });
-    expect(spot.coverage).toEqual({ checked: 1, total: 10, agreements: 0, disagreements: 1 });
+    expect(spot.coverage).toEqual({ checked: 1, total: 9, agreements: 0, disagreements: 1 });
 
     const status = statusFor(world, prepared);
     expect(status.check.status).toBe("pass");
@@ -1394,8 +1385,8 @@ describe("用户抽查不阻塞", () => {
     expect(status.spotCheck).toMatchObject({
       status: "checked",
       checked: 1,
-      total: 10,
-      coverage: 0.1,
+      total: 9,
+      coverage: 1 / 9,
       agreements: 0,
       disagreements: 1,
     });
@@ -1450,11 +1441,11 @@ describe("用户抽查不阻塞", () => {
     expect(status.spotCheck).toMatchObject({
       status: "checked",
       checked: 2,
-      total: 10,
+      total: 9,
       agreements: 2,
       disagreements: 0,
     });
-    expect(status.spotCheck.coverage).toBeCloseTo(0.2);
+    expect(status.spotCheck.coverage).toBeCloseTo(2 / 9);
     const byRule = new Map(status.spotCheck.rules.map((rule) => [rule.ruleId, rule]));
     expect(byRule.get("p-source")).toMatchObject({
       agreement: "agree",
@@ -1484,7 +1475,7 @@ describe("用户抽查不阻塞", () => {
     expect(status.spotCheck).toMatchObject({
       status: "not_checked",
       checked: 0,
-      total: 10,
+      total: 9,
       agreements: 0,
       disagreements: 0,
     });
@@ -1510,7 +1501,7 @@ describe("同源报告四层", () => {
       `- 判分者：${JUDGE.platform} / ${JUDGE.model} / ${JUDGE_PROMPT_VERSION}（${applied.gradeId}）`,
     );
     expect(markdown).toContain("- 抽查：未抽查（可选，不阻塞）");
-    expect(markdown).toContain("- 规则：pass（必需 7/7 通过，禁止项 3/3 通过，关键 9/9 通过）");
+    expect(markdown).toContain("- 规则：pass（必需 6/6 通过，禁止项 3/3 通过，关键 8/8 通过）");
     expect(markdown).toContain("- 总判定：pass — 全部适用规则通过");
     expect(markdown).toContain("- 聚合规则：judge-all-rules；gold=false");
     expect(markdown).toContain("  - 判分理由：依据包内证据判定");
@@ -1580,7 +1571,7 @@ describe("同源报告四层", () => {
       now: REVIEWED,
     });
     const after = reportFor(world, prepared);
-    expect(after).toContain("- 抽查：已抽查 1/10（一致 0，不一致 1）");
+    expect(after).toContain("- 抽查：已抽查 1/9（一致 0，不一致 1）");
     expect(after).toContain("用户抽查：fail · disagree（复核认为应判通过）");
     expect(after).toContain(`- ${spot.reviewId} · spot-check · inconclusive`);
     expect(after).toContain(`- 总判定：pass — 全部适用规则通过`);

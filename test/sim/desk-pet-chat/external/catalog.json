@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "id": "gaia",
+      "url": "https://huggingface.co/datasets/gaia-benchmark/GAIA",
+      "repository": "gaia-benchmark/GAIA",
+      "revision": "682dd723ee1e1697e00360edccf2366dc8418dd9",
+      "format": [
+        "Parquet",
+        "JSONL (legacy local exports)"
+      ],
+      "acceptedInputFormats": [
+        "Parquet",
+        "JSON",
+        "JSONL"
+      ],
+      "split": [
+        "dev",
+        "validation",
+        "test"
+      ],
+      "license": "No license declared on the dataset card",
+      "availability": "gated; authorized local data only",
+      "downloadPolicy": "explicit installer uses existing authorized local Hugging Face login in its subprocess; no credential or account identity is persisted",
+      "readiness": "165 validation records with references; verified attachments are staged into isolated inputs; 301 test answer placeholders are not scoreable",
+      "installedSplitCounts": {
+        "validation": 165,
+        "test": 301
+      }
+    },
+    {
+      "id": "multichallenge",
+      "url": "https://huggingface.co/datasets/ScaleAI/MultiChallenge",
+      "repository": "ScaleAI/MultiChallenge",
+      "revision": "670fd81f270314d0f8f82b34fcfe2187fd28f699",
+      "format": [
+        "Parquet",
+        "JSONL export"
+      ],
+      "acceptedInputFormats": [
+        "Parquet",
+        "JSON",
+        "JSONL"
+      ],
+      "split": [
+        "test"
+      ],
+      "license": "CC-BY-4.0",
+      "availability": "public",
+      "downloadPolicy": "explicit bounded downloads only",
+      "readiness": "fixed conversation and pass criteria are public; adapted judge is not official leaderboard scoring",
+      "files": [
+        {
+          "upstreamPath": "data/test-00000-of-00001.parquet",
+          "url": "https://huggingface.co/datasets/ScaleAI/MultiChallenge/resolve/670fd81f270314d0f8f82b34fcfe2187fd28f699/data/test-00000-of-00001.parquet",
+          "bytes": 975319,
+          "sha256": "2711646aba61f814823297714aaf757e3a1b71c66c501402231de48490650515"
+        }
+      ]
+    },
+    {
+      "id": "memoryarena",
+      "url": "https://huggingface.co/datasets/ZexueHe/memoryarena",
+      "repository": "ZexueHe/memoryarena",
+      "revision": "da1a37c8b19280e18627ca01cf368195a5e1d92e",
+      "format": [
+        "JSONL"
+      ],
+      "acceptedInputFormats": [
+        "JSON",
+        "JSONL"
+      ],
+      "split": [
+        "test"
+      ],
+      "license": "CC-BY-4.0",
+      "availability": "public; five configurations",
+      "downloadPolicy": "explicit bounded downloads only",
+      "readiness": "all five configurations installed; ordered per-group native sessions with MCP tools and explicit memory checkpoints; travel uses official evaluator, other scoring/retrieval adaptations are recorded",
+      "files": [
+        {
+          "upstreamPath": "group_travel_planner/data.jsonl",
+          "url": "https://huggingface.co/datasets/ZexueHe/memoryarena/resolve/da1a37c8b19280e18627ca01cf368195a5e1d92e/group_travel_planner/data.jsonl",
+          "bytes": 6165901,
+          "sha256": "2f955d444f6f3ad3c5da2064359ab19f8fc1f90621ff9d00723a450a009c3732"
+        },
+        {
+          "upstreamPath": "bundled_shopping/data.jsonl",
+          "url": "https://huggingface.co/datasets/ZexueHe/memoryarena/resolve/da1a37c8b19280e18627ca01cf368195a5e1d92e/bundled_shopping/data.jsonl",
+          "bytes": 1601723,
+          "sha256": "4411a2da528a33dc6aca519b49cc225895363f18b2d19b191fddb501200134ef"
+        },
+        {
+          "upstreamPath": "formal_reasoning_math/data.jsonl",
+          "url": "https://huggingface.co/datasets/ZexueHe/memoryarena/resolve/da1a37c8b19280e18627ca01cf368195a5e1d92e/formal_reasoning_math/data.jsonl",
+          "bytes": 829228,
+          "sha256": "ff5b0ad575847c7476a02d1e35661592a833bd0cff384cb54bc6f35b46de7803"
+        },
+        {
+          "upstreamPath": "formal_reasoning_phys/data.jsonl",
+          "url": "https://huggingface.co/datasets/ZexueHe/memoryarena/resolve/da1a37c8b19280e18627ca01cf368195a5e1d92e/formal_reasoning_phys/data.jsonl",
+          "bytes": 87070,
+          "sha256": "580862006af2ff2bfc8c5d2d2b9a60bf33a46cbb64f27d60a2bfe039aec61cf6"
+        },
+        {
+          "upstreamPath": "progressive_search/data.jsonl",
+          "url": "https://huggingface.co/datasets/ZexueHe/memoryarena/resolve/da1a37c8b19280e18627ca01cf368195a5e1d92e/progressive_search/data.jsonl",
+          "bytes": 3618343,
+          "sha256": "b445ee36fa3ccb9ad08eae9e7adda86bbc64f14f1e2a0682a8b2085cdb8e4c0e"
+        }
+      ],
+      "officialRepository": "https://github.com/ZexueHe/MemoryArena",
+      "officialRevision": "6cd9de14b71915e39ac742a20dc33785e14b6aab"
+    },
+    {
+      "id": "beam",
+      "url": "https://github.com/mohammadtavakoli78/BEAM",
+      "repository": "mohammadtavakoli78/BEAM",
+      "revision": "b2da22eac88bb0874c64665f13457eb99835774a",
+      "datasetUrl": "https://huggingface.co/datasets/Mohammadta/BEAM",
+      "datasetRevision": "3205395e897e7318c7b094ef4e6047b9b82dbb03",
+      "format": [
+        "chat.json + probing_questions.json",
+        "Parquet"
+      ],
+      "acceptedInputFormats": [
+        "BEAM task directories with paired JSON files",
+        "JSON",
+        "JSONL"
+      ],
+      "split": [
+        "100K",
+        "500K",
+        "1M",
+        "10M"
+      ],
+      "defaultAdaptationSplit": "100K",
+      "license": "CC-BY-SA-4.0",
+      "availability": "public",
+      "downloadPolicy": "explicit full pinned installation, resumable by shard; 10M has its own repository revision",
+      "readiness": "full historical roles, probes, rubric and answer fields retained; fixed-history replay does not reproduce online ingestion; current public files label the smallest bucket 100K while the paper describes it as approximately 128K",
+      "files": [
+        {
+          "upstreamPath": "data/100K-00000-of-00001.parquet",
+          "url": "https://huggingface.co/datasets/Mohammadta/BEAM/resolve/3205395e897e7318c7b094ef4e6047b9b82dbb03/data/100K-00000-of-00001.parquet",
+          "revision": "3205395e897e7318c7b094ef4e6047b9b82dbb03",
+          "bytes": 5429768,
+          "sha256": "c0519be25907005ba873c927c50877471d550873039d96c041554d0075a78ace"
+        },
+        {
+          "upstreamPath": "data/500K-00000-of-00001.parquet",
+          "url": "https://huggingface.co/datasets/Mohammadta/BEAM/resolve/3205395e897e7318c7b094ef4e6047b9b82dbb03/data/500K-00000-of-00001.parquet",
+          "revision": "3205395e897e7318c7b094ef4e6047b9b82dbb03",
+          "bytes": 33956263,
+          "sha256": "af05921c979355038e1761b7cde3d2dd713200dd3071b278de0200f6c7f30122"
+        },
+        {
+          "upstreamPath": "data/1M-00000-of-00001.parquet",
+          "url": "https://huggingface.co/datasets/Mohammadta/BEAM/resolve/3205395e897e7318c7b094ef4e6047b9b82dbb03/data/1M-00000-of-00001.parquet",
+          "revision": "3205395e897e7318c7b094ef4e6047b9b82dbb03",
+          "bytes": 66156374,
+          "sha256": "41b5acbbb55a586b1305514ef9d9fb03365d9b3331b598a1c2dd7603d93ef533"
+        },
+        {
+          "upstreamPath": "data/10M-00000-of-00002.parquet",
+          "url": "https://huggingface.co/datasets/Mohammadta/BEAM-10M/resolve/b5c972d2132e4b291049c257ee42cb82929be9c0/data/10M-00000-of-00002.parquet",
+          "revision": "b5c972d2132e4b291049c257ee42cb82929be9c0",
+          "bytes": 153844664,
+          "sha256": "31d96fd47ec56221d202e68792f26c00e49467dd4b36ee105c36ebd19ef78ad5"
+        },
+        {
+          "upstreamPath": "data/10M-00001-of-00002.parquet",
+          "url": "https://huggingface.co/datasets/Mohammadta/BEAM-10M/resolve/b5c972d2132e4b291049c257ee42cb82929be9c0/data/10M-00001-of-00002.parquet",
+          "revision": "b5c972d2132e4b291049c257ee42cb82929be9c0",
+          "bytes": 189980875,
+          "sha256": "a4f13fe25af51d57405ae41008689c31d1421377f3efde56a024b441deb2ee65"
+        }
+      ],
+      "additionalDatasets": [
+        {
+          "repository": "Mohammadta/BEAM-10M",
+          "revision": "b5c972d2132e4b291049c257ee42cb82929be9c0"
+        }
+      ]
+    },
+    {
+      "id": "lhtb",
+      "url": "https://github.com/zli12321/LHTB",
+      "repository": "zli12321/LHTB",
+      "revision": "7ca0cacea9bf6a0694eaad7306bed794eaaaabce",
+      "datasetUrl": "https://huggingface.co/datasets/IntelligenceLab/Long-Horizon-Terminal-Bench",
+      "datasetRevision": "21458ac18bd0b903772c096ba69b9c9fd3957c93",
+      "format": [
+        "task.toml + instruction.md + environment directory"
+      ],
+      "acceptedInputFormats": [
+        "LHTB task directories",
+        "JSON",
+        "JSONL with taskToml and instruction fields"
+      ],
+      "split": [
+        "2.0",
+        "2.0-additions",
+        "1.0"
+      ],
+      "license": "Apache-2.0",
+      "availability": "HF task export withholds tests/private and solution; pinned GitHub task checkout can include tests/private and solution paths",
+      "downloadPolicy": "explicit full pinned source and Harbor installation; task images acquired on demand by exact reference/digest before model execution",
+      "readiness": "77 public task directories with official verifier entrypoints, including tests/private verifier paths; custom Harbor agent delegates to isolated native Desk-Pet runtime through scoped terminal MCP; images remain per-task prerequisites"
+    }
+  ]
+}

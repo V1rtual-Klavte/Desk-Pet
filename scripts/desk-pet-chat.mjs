@@ -276,8 +276,133 @@ try {
       break;
     }
     case "dataset": {
-      const positional = rest.filter((part) => !part.startsWith("--"));
-      const [action = "list", target] = positional;
+      const parsedDatasetArgs = parseFlagArgs(rest);
+      const [action = "list", target] = parsedDatasetArgs.positional;
+      if (action === "external") {
+        const [, externalAction = "catalog", datasetId] = parsedDatasetArgs.positional;
+        const { prepareExternalSource, getExternalSource, listExternalSources, downloadPinnedExternalFile } = await import("../test/sim/desk-pet-chat/external/prepare.mjs");
+        if (externalAction === "catalog") {
+          console.log(json(listExternalSources()));
+          break;
+        }
+        if (["install", "status", "verify", "connect"].includes(externalAction)) {
+          const { installExternalDatasets, inspectExternalDatasets } = await import("../test/sim/desk-pet-chat/external/install.mjs");
+          const dataset = datasetId ?? "all";
+          const values = parsedDatasetArgs.values;
+          if (externalAction === "install") {
+            const result = await installExternalDatasets({ dataset, repoRoot: root, card: values.get("card-name"), onProgress: event => { if (event.imported || event.phase) console.error(json(event)); } });
+            console.log(json(result));
+            if (!result.complete) process.exitCode = 1;
+          } else if (externalAction === "connect") {
+            const { connectInstalledDataset } = await import("../test/sim/desk-pet-chat/external/connect.mjs");
+            const datasets = dataset === "all" ? ["multichallenge", "beam", "gaia", "memoryarena"] : [dataset];
+            if (!values.get("card-name")) throw new Error("connect 需要 --card-name <运行时Card名称>");
+            const results = [];
+            for (const id of datasets) {
+              if (id === "memoryarena") {
+                const { connectMemoryArena } = await import("../test/sim/desk-pet-chat/external/memoryarena-connect.mjs");
+                results.push(connectMemoryArena({ repoRoot: root, card: values.get("card-name") }));
+              } else results.push(await connectInstalledDataset({ dataset: id, repoRoot: root, card: values.get("card-name") }));
+            }
+            console.log(json({ results }));
+          } else {
+            const result = await inspectExternalDatasets({ dataset, repoRoot: root });
+            console.log(json(result));
+            if (externalAction === "verify" && !result.complete) process.exitCode = 1;
+          }
+          break;
+        }
+        if (externalAction === "run" && datasetId === "lhtb") {
+          const { startLhtbRun } = await import("../test/sim/desk-pet-chat/external/lhtb.mjs");
+          const values = parsedDatasetArgs.values;
+          console.log(json(await startLhtbRun({
+            taskId: values.get("task"), cardPath: values.get("card"), authorizationPath: values.get("authorization"),
+            runId: values.get("run-id") ?? `lhtb-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`,
+            repoRoot: root, modelCallsAuthorized: true,
+          })));
+          break;
+        }
+        if (externalAction === "run" && datasetId === "memoryarena") {
+          const { runMemoryArenaGroup } = await import("../test/sim/desk-pet-chat/external/memoryarena-connect.mjs");
+          const values = parsedDatasetArgs.values;
+          const result = await runMemoryArenaGroup({ config: values.get("config"), groupId: Number(values.get("task")), cardPath: values.get("card"), authorizationPath: values.get("authorization"), modelSettingsPath: values.get("model-settings"), runId: values.get("run-id"), repoRoot: root });
+          console.log(json(result));
+          if (!result.executionComplete) process.exitCode = 1;
+          break;
+        }
+        if (externalAction === "smoke") {
+          const { runExternalNativeSmoke } = await import("../test/sim/desk-pet-chat/external/native-smoke.mjs");
+          console.log(json(await runExternalNativeSmoke({ repoRoot: root })));
+          break;
+        }
+        if (["tasks", "plan", "run-status"].includes(externalAction) && datasetId === "lhtb") {
+          const { listLhtbTasks, planLhtbRun, getLhtbRunStatus } = await import("../test/sim/desk-pet-chat/external/lhtb.mjs");
+          const { externalCaseId } = await import("../test/sim/desk-pet-chat/external/index.mjs");
+          const values = parsedDatasetArgs.values;
+          if (externalAction === "run-status") console.log(json(getLhtbRunStatus({ runId: values.get("run-id") })));
+          else if (externalAction === "tasks") console.log(json(listLhtbTasks({ family: values.get("family") ?? "all" })));
+          else {
+            const taskIds = (values.get("task") ?? "").split(",").filter(Boolean);
+            const plan = planLhtbRun({ taskIds, trials: Number(values.get("trials") ?? 1), maxWallSeconds: values.has("max-seconds") ? Number(values.get("max-seconds")) : null });
+            console.log(json({ ...plan, caseIds: taskIds.map(id => externalCaseId({ dataset: "lhtb", id, split: "environment" })) }));
+          }
+          break;
+        }
+        if (["tasks", "plan"].includes(externalAction) && datasetId === "memoryarena") {
+          const { EXTERNAL_DATASET_ROOT, externalCaseId } = await import("../test/sim/desk-pet-chat/external/index.mjs");
+          const values = parsedDatasetArgs.values;
+          const manifest = JSON.parse(readFileSync(join(root, EXTERNAL_DATASET_ROOT, "memoryarena/dataset/import.json"), "utf8"));
+          const tasks = manifest.cases.filter(item => !values.get("config") || item.config === values.get("config"));
+          if (externalAction === "tasks") console.log(json({ tasks }));
+          else {
+            const target = tasks.find(item => item.groupId === Number(values.get("task")));
+            if (!values.get("config") || !target) throw new Error("plan memoryarena 需要 --config <配置名> --task <组id>");
+            console.log(json({ ...target, caseId: externalCaseId({ dataset: "memoryarena", id: `${target.config}-${target.groupId}`, split: target.config }), sameDataRoot: true, newSessionPerSubtask: true, extractMemory: manifest.extractMemory, requiresExplicitRunAuthorization: true }));
+          }
+          break;
+        }
+        if (externalAction === "fetch" && datasetId) {
+          const source = getExternalSource(datasetId);
+          const values = parsedDatasetArgs.values;
+          const selectedUrl = values.get("url") ?? source.files?.[0]?.url;
+          if (!selectedUrl) throw new Error("该来源需 --url <固定 revision 的单个公开文件地址>；GAIA 不代取");
+          const locked = source.files?.find(file => file.url === selectedUrl);
+          const downloaded = await downloadPinnedExternalFile({
+            dataset: datasetId, url: selectedUrl,
+            outputDir: values.get("output"),
+            repoRoot: root, expectedSha256: locked?.sha256,
+          });
+          console.log(json(downloaded));
+          break;
+        }
+        if (!["prepare", "import"].includes(externalAction) || !datasetId) {
+          throw new Error("用法：dataset external catalog | prepare|import <dataset> --input <path> [--revision <commit>] [--split <split>] [--limit <n>] [--output <path>] [--card-name <name>]");
+        }
+        const values = parsedDatasetArgs.values;
+        const inputPath = values.get("input");
+        if (!inputPath) throw new Error("外部集需要 --input <已获准访问的本地文件或任务目录>；CLI 不读取账号凭据或绕过数据访问条件");
+        getExternalSource(datasetId);
+        if (externalAction === "import" && !values.get("card-name")) throw new Error("import 需要 --card-name <运行时 Card 名称>");
+        const rawLimit = values.get("limit");
+        const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+        if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) throw new Error("--limit 必须是正整数");
+        const prepared = await prepareExternalSource({
+          dataset: datasetId, inputPath: resolve(inputPath),
+          revision: values.get("revision"), split: values.get("split"), limit,
+          ...(externalAction === "prepare" ? { outputDir: values.get("output") } : {}),
+        });
+        if (externalAction === "prepare") {
+          console.log(json(prepared.manifest));
+          break;
+        }
+        const { importExternalTasks } = await import("../test/sim/desk-pet-chat/external/index.mjs");
+        const imported = importExternalTasks(prepared.tasks, {
+          repoRoot: root, root: values.get("output"), card: values.get("card-name"),
+          profile: values.get("profile"), clock: values.get("clock"), rawSha256: prepared.manifest.rawSha256,
+        });
+        console.log(json(imported));
+        break;
+      }
       if (action === "approve") {
         const { values, positional: approvePositional } = parseFlagArgs(rest.slice(1));
         const caseId = values.get("case") ?? approvePositional[0];
@@ -344,7 +469,11 @@ try {
         }
         break;
       }
-      const dataset = loadDataset({ repoRoot: root });
+      const dataset = loadDataset({
+        repoRoot: root,
+        root: parsedDatasetArgs.values.get("dataset-root"),
+        ...(["review", "driver"].includes(action) && target ? { caseIds: [target] } : {}),
+      });
       if (action === "types") {
         const summary = summarizeDataset(dataset);
         const rows = dataset.questionTypes.map((type) => ({

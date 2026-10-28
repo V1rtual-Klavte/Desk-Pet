@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import {
-  chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
-  readdirSync, renameSync, statSync, writeFileSync, writeSync,
+  chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
+  readdirSync, realpathSync, renameSync, statSync, writeFileSync, writeSync,
 } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { hashCanonical } from "./dataset.mjs";
 import { inspectTraceEvidence } from "../../../scripts/trace-evidence.mjs";
 
@@ -16,6 +16,7 @@ export const CHAT_EVIDENCE_SCHEMA_VERSION = 1;
 export const CHAT_RUN_SCHEMA_VERSION = 1;
 export const CHAT_ATTEMPT_SCHEMA_VERSION = 1;
 export const CHAT_TRIAL_PLAN_SCHEMA_VERSION = 1;
+export const DELIVERABLE_MAX_BYTES = 64 * 1024;
 /** 判分语义与聚合规则的版本；改动判定口径必须递增，旧判分继续绑定旧版本。 */
 export const CHAT_GRADER_VERSION = "chat-grader@3";
 export const CHAT_RETENTION_MAX_GROUPS = 5;
@@ -516,6 +517,97 @@ export function copyArtifact({ attemptDir, name, sourcePath }) {
   return writeArtifact({ attemptDir, name, bytes: readFileSync(sourcePath) });
 }
 
+function deliverableEntry(deliverable, status, extra = {}) {
+  return {
+    id: deliverable.id,
+    role: deliverable.role ?? "",
+    path: deliverable.path,
+    status,
+    ...extra,
+  };
+}
+
+/**
+ * 交付产物只在数据根内按声明路径采集：符号链接、越界路径、缺失与超限都记为逐项状态，
+ * 不并入证据完整性问题——由判分规则据此判失败，而不是让整份证据不可用。
+ */
+export function captureDeliverables({ attemptDir, dataRoot, deliverables = [] }) {
+  if (!Array.isArray(deliverables)) fail("deliverables.invalid", "deliverables 必须是数组");
+  if (deliverables.length > 0 && (typeof dataRoot !== "string" || !dataRoot)) {
+    fail("deliverables.data-root", "声明了交付产物但未提供数据根");
+  }
+  let realRoot = null;
+  if (typeof dataRoot === "string" && dataRoot) {
+    try { realRoot = realpathSync(dataRoot); }
+    catch { realRoot = null; }
+  }
+  const captured = [];
+  for (const deliverable of deliverables) {
+    assertRecord(deliverable, "deliverable");
+    const spec = {
+      id: assertId(deliverable.id, "deliverable.id"),
+      role: deliverable.role ?? "",
+      path: deliverable.path,
+    };
+    if (typeof spec.path !== "string" || !spec.path) {
+      fail("deliverables.path", `交付产物 ${spec.id} 缺少 path`);
+    }
+    const maxBytes = deliverable.maxBytes === undefined ? DELIVERABLE_MAX_BYTES : deliverable.maxBytes;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      fail("deliverables.max-bytes", `交付产物 ${spec.id} 的 maxBytes 必须是正整数`);
+    }
+    const target = resolve(dataRoot, spec.path);
+    const relativePath = relative(dataRoot, target);
+    if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+      captured.push(deliverableEntry(spec, "invalid", { reason: `产物路径越过数据根：${spec.path}` }));
+      continue;
+    }
+    let stats;
+    try { stats = lstatSync(target); }
+    catch {
+      captured.push(deliverableEntry(spec, "missing", { reason: `产物不存在：${spec.path}` }));
+      continue;
+    }
+    if (stats.isSymbolicLink()) {
+      captured.push(deliverableEntry(spec, "invalid", { reason: `产物路径是符号链接，拒绝采集：${spec.path}` }));
+      continue;
+    }
+    if (!stats.isFile()) {
+      captured.push(deliverableEntry(spec, "invalid", { reason: `产物不是普通文件：${spec.path}` }));
+      continue;
+    }
+    let realTarget;
+    try { realTarget = realpathSync(target); }
+    catch {
+      captured.push(deliverableEntry(spec, "invalid", { reason: `产物无法解析真实路径：${spec.path}` }));
+      continue;
+    }
+    const realRelative = realRoot ? relative(realRoot, realTarget) : "";
+    if (!realRoot || !realRelative || realRelative.startsWith("..") || isAbsolute(realRelative)) {
+      captured.push(deliverableEntry(spec, "invalid", { reason: `产物真实路径越过数据根：${spec.path}` }));
+      continue;
+    }
+    if (stats.size > maxBytes) {
+      captured.push(deliverableEntry(spec, "oversized", {
+        bytes: stats.size,
+        reason: `产物 ${stats.size} 字节超过上限 ${maxBytes} 字节`,
+      }));
+      continue;
+    }
+    const content = readFileSync(target);
+    const extension = extname(spec.path).toLowerCase();
+    const suffix = /^\.[a-z0-9]+$/.test(extension) ? extension : "";
+    const artifactPath = `artifacts/deliverable-${spec.id}${suffix}`;
+    writeArtifact({ attemptDir, name: basename(artifactPath), bytes: content });
+    captured.push(deliverableEntry(spec, "delivered", {
+      bytes: content.length,
+      sha256: hashBytes(content),
+      artifactPath,
+    }));
+  }
+  return { deliverables: captured };
+}
+
 function readDialogueRecords(path) {
   const issues = [];
   const messages = [];
@@ -624,6 +716,7 @@ export function readAttemptTimeline(attemptDir) {
 
 export async function sealChatAttempt({
   attemptDir, sealedAt, models, sourceHash, inputs, outcome = "completed", issues: extraIssues = [],
+  deliverables = [], dataRoot,
 }) {
   if (existsSync(join(attemptDir, MANIFEST_FILE))) fail("attempt.sealed", "attempt 已封存，不能重复封存");
   const pendingPath = join(attemptDir, MANIFEST_PENDING);
@@ -679,6 +772,7 @@ export async function sealChatAttempt({
     });
   }
 
+  const captured = captureDeliverables({ attemptDir, dataRoot, deliverables });
   const collected = collectArtifacts(attemptDir);
   issues.push(...collected.issues);
   const baseArtifacts = [];
@@ -711,6 +805,7 @@ export async function sealChatAttempt({
       },
     },
     artifacts,
+    deliverables: captured.deliverables,
     integrity: { status, issues: uniqueIssues },
   };
   const manifest = { ...manifestBody, manifestSha256: hashCanonical(manifestBody) };

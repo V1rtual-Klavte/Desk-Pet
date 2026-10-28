@@ -17,6 +17,7 @@
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
 | Pi 协议与 Harness 接线 | [运行时契约](current/runtime-contract.md) | [工具系统](current/tool-system.md)、目标源码与[未完成总表](plans/active/未完成工作与已知缺口.md) |
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
+| 公开通用评测安装、接线与运行（GAIA／MultiChallenge／MemoryArena／BEAM／LHTB） | [演练与评测说明](../test/sim/README.md) | `dataset external install / status / verify / connect`；[固定来源清单](../test/sim/desk-pet-chat/external/catalog.json)；沿用聊天评测，不进入 CI／发布评测 |
 | 聊天评测三个 Skill、题型与判分、金银标、可选抽查与修复回归 | [未完成总表 §12](plans/active/未完成工作与已知缺口.md#12-统一聊天评测闭环)（剩余验收项与能力缺口） | 入口见 [聊天 Skill](../test/sim/desk-pet-chat/SKILL.md)、[用例制作 Skill](../test/sim/desk-pet-eval-authoring/SKILL.md)、[运行与判分 Skill](../test/sim/desk-pet-eval-runner/SKILL.md)；历史实施批次与证据见[归档契约](history/implementation/聊天评测闭环执行契约-2026-10-26归档.md) |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
 | 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |

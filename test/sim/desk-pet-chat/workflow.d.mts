@@ -65,7 +65,7 @@ export interface DriverStepRecord {
 }
 
 export interface DriverProgress {
-  schemaVersion: 1;
+  schemaVersion: 2;
   caseId: string;
   revision: number;
   specHash: string;
@@ -89,8 +89,18 @@ export interface DriverProgress {
     contextErrors: Array<{ at: string; stepId: string; error: string }>;
   };
   steps: DriverStepRecord[];
+  confirmations: DriverConfirmationRecord[];
   totalSteps?: number;
   lastUsageStepId?: string;
+}
+
+export interface DriverConfirmationRecord {
+  stepId: string;
+  requestId: string;
+  toolName: string;
+  effectClass: string;
+  decision: "allow_once";
+  at: string;
 }
 
 export interface DriverSummary {
@@ -103,6 +113,7 @@ export interface DriverSummary {
   blocked: { code: string; message: string; at: string } | null;
   clockBase: string;
   lastClock: string;
+  confirmations: number;
   usage: {
     messages: number;
     tokens: number;
@@ -133,6 +144,17 @@ export interface DriverTransport {
   host(method: string, args?: Record<string, unknown>): Promise<Record<string, unknown>>;
   context(): Promise<Record<string, unknown>>;
   memoryState(): Promise<Record<string, unknown>>;
+  confirm?(action: ConfirmAction): Promise<Record<string, unknown>>;
+}
+
+export type ConfirmAction =
+  | { action: "query" }
+  | { action: "resolve"; requestId: string; decision: "allow_once" };
+
+export interface PendingConfirmation {
+  requestId: string;
+  toolName: string;
+  effectClass: string;
 }
 
 export interface ExecuteDriverOptions {
@@ -144,6 +166,9 @@ export interface ExecuteDriverOptions {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   memoryWait?: { deadlineMs: number; pollMs: number; stableMs: number };
+  dataRoot?: string;
+  toolApproval?: "allow-once" | null;
+  confirmPollMs?: number;
 }
 
 export interface DriverOutcome {
@@ -212,13 +237,16 @@ export class WorkflowError extends Error {
 }
 
 export const WORKFLOW_SCHEMA_VERSION: 1;
-export const DRIVER_PROGRESS_SCHEMA_VERSION: 1;
+export const DRIVER_PROGRESS_SCHEMA_VERSION: 2;
 export const AUTHORIZATION_SCHEMA_VERSION: 1;
 export const AUTHORIZATION_DATA_SCOPE: "isolated";
 export const DRIVER_PROGRESS_FILE: string;
 export const DRIVER_PACKAGE_FILE: string;
 export const AUTHORIZATION_FILE: string;
 export const CLOCK_FILE: string;
+export const TOOL_APPROVAL_VALUES: readonly ["allow-once"];
+export const CONFIRMATION_DECISION_VALUES: readonly ["allow_once"];
+export const DRIVER_CONFIRM_POLL_MS: number;
 export const DRIVER_STATUSES: readonly DriverStatus[];
 export const DRIVER_STEP_STATUSES: readonly DriverStepStatus[];
 export const CHECKPOINT_WAITS: readonly CheckpointWait[];
@@ -237,6 +265,8 @@ export function buildClockFile(input: { base: string; reason: string }): ClockFi
 export function validateClockFile(raw: unknown): ClockFile;
 export function validateDriverPackage(raw: unknown): DriverPackage;
 export function validateSyncPoints(raw: unknown): CheckpointSpec[];
+export function renderDriverText(text: string, options?: { dataRoot?: string }): string;
+export function readPendingConfirmation(response: unknown): PendingConfirmation | null;
 export function createDriverProgress(input: {
   driverPackage: DriverPackage;
   driverHash: string;

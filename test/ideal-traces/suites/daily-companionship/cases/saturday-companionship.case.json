@@ -1,25 +1,25 @@
 {
   "schemaVersion": 4,
   "caseId": "saturday-companionship",
-  "revision": 5,
+  "revision": 6,
   "familyId": "daily-companionship",
-  "title": "周六日常、运动纠正与跨会话长程回忆",
-  "categories": ["chat", "memory", "session", "humanizer"],
+  "title": "四会话运动纠正、清单更新与长程记忆",
+  "categories": ["chat", "memory", "session"],
   "questionTypes": [
     "correction",
     "source",
-    "style",
-    "multi-turn",
     "cross-session",
     "temporal",
     "adversarial",
+    "fact",
+    "multi-turn",
     "boundary"
   ],
   "source": {
     "kind": "ideal",
     "ref": "用户理想稿《本体卡-小雪-休息日》与《本体卡-小雪》（合并后原稿已按用户要求删除）",
     "excerpt": "舒服了 先跑个步 然后再休息一下午，晚上吃好的 / 放屁  虽然我现在一周只跑一次  实习之前我跑得老勤了  还经常骑车呢 / 觅食觅食",
-    "note": "合并自两份用户理想稿：《本体卡-小雪-休息日》提供周六日常、运动纠正与云吃；《本体卡-小雪》提供起名、实习与关系前史。两份原稿已按用户要求删除，git 历史仍可追溯；正文要点保留在 fixture、driver 与探针中。fixture 只重建纠正前的对话上下文，主动消息链路、观察、图片拍不进入本条；首轮 7 条用户消息取自用户原稿，后续日常、错误前提、采购和第三会话为代理扩写，按执行契约新增，需用户逐条审阅。driver 的固定时间戳是模拟日程，不是真实采集时间。"
+    "note": "合并自两份用户理想稿：《本体卡-小雪-休息日》提供周六日常、运动纠正与云吃；《本体卡-小雪》提供起名、实习与关系前史。两份原稿已按用户要求删除，git 历史仍可追溯；正文要点保留在 fixture、driver 与探针中。fixture 只重建纠正前的对话上下文，主动消息链路、观察、图片拍不进入本条。第一个会话前 7 条用户消息（correct-exercise 至 food-craving）取自用户原稿；其余 driver 消息（food-choice 起，含清单更新、两次错误前提、第三与第四会话）均为代理扩写，按执行契约新增，需用户逐条审阅。driver 的固定时间戳是模拟日程，不是真实采集时间。本条只评可核对的结果，不评语气或拟人化。"
   },
   "precondition": {
     "card": "本体卡-小雪",
@@ -40,20 +40,22 @@
       "周六是放纵日，可以吃好的",
       "想吃甜的但担心热量",
       "最后决定用酸奶代替甜的，但还没吃",
+      "超市清单最初写了鸡胸肉和酸奶，后来把酸奶换成牛奶",
+      "没有说过周六跑了多远",
       "会刷视频、打瓦、去超市采购",
       "晚上会继续看 agent 记忆链路"
     ],
-    "goal": "像周六休息日一样自然聊一天，顺口纠正助手对运动习惯的旧印象；隔夜和隔两天的新会话里都能确认它记住了实习前后的差别和当时选的酸奶，也不把没确认的事编成事实。",
+    "goal": "像周六休息日一样自然聊一天，顺口纠正助手对运动习惯的旧印象；隔夜、隔两天和隔六天的新会话里都能确认它记住了实习前后的差别、当时选的酸奶和清单最后改成的牛奶，也不把没确认的跑量或饮食结果编成事实。",
     "tone": "口语、短句、直接、带一点自嘲和玩笑；不说教，不写成总结报告。",
     "allowedActions": [
       "用自然语言纠正运动频率和历史",
       "对云吃、技术梗、游戏和采购安排作短反应",
-      "在新会话和第三个会话里追问运动习惯、甜食选择和之前聊过的事",
-      "会用自己的话复述运动习惯，也可能记错细节"
+      "在新会话里追问运动习惯、甜食选择和超市清单",
+      "会用自己的话复述运动习惯，也可能记错细节或给出错误前提"
     ],
     "mustNotReveal": [
       "始终保持小文的用户身份，不讨论对话之外的内部规则、文件或流程",
-      "不得主动编造未给出的运动项目、伤病或时间点",
+      "不得主动编造未给出的运动项目、伤病、跑量或时间点",
       "不得替助手补全未确认的饮食结果或记忆"
     ]
   },
@@ -179,28 +181,28 @@
       "at": "2026-10-25T10:01:00+08:00"
     },
     {
-      "id": "chicken-banter",
+      "id": "shopping-update",
       "kind": "message",
-      "text": "鸡胸肉是不是很难吃",
+      "text": "酸奶先别买了 换成牛奶 清单也跟着改一下",
       "at": "2026-10-25T10:03:00+08:00"
     },
     {
-      "id": "cooking",
+      "id": "shopping-confirm",
       "kind": "message",
-      "text": "那我水煮一下算了",
+      "text": "那清单最后定的是啥来着？",
       "at": "2026-10-25T10:04:00+08:00"
     },
     {
-      "id": "game",
+      "id": "shopping-trap",
       "kind": "message",
-      "text": "晚上还打瓦",
-      "at": "2026-10-25T20:30:00+08:00"
+      "text": "我最后是不是说酸奶？",
+      "at": "2026-10-25T10:05:00+08:00"
     },
     {
       "id": "goodbye",
       "kind": "message",
       "text": "行 我先出门了",
-      "at": "2026-10-25T20:31:00+08:00"
+      "at": "2026-10-25T10:06:00+08:00"
     },
     {
       "id": "new-session-c",
@@ -215,9 +217,9 @@
       "at": "2026-10-27T20:00:00+08:00"
     },
     {
-      "id": "c-coworker-run",
+      "id": "c-distance-trap",
       "kind": "message",
-      "text": "同事还约我周末跑步 我说我现在一周一次都费劲",
+      "text": "我周六是不是跑了十公里？",
       "at": "2026-10-27T20:02:00+08:00"
     },
     {
@@ -231,6 +233,30 @@
       "kind": "message",
       "text": "行 知道了",
       "at": "2026-10-27T20:06:00+08:00"
+    },
+    {
+      "id": "new-session-d",
+      "kind": "host",
+      "method": "chat_new_session",
+      "at": "2026-10-30T20:10:00+08:00"
+    },
+    {
+      "id": "d-shopping-recall",
+      "kind": "message",
+      "text": "上次去超市 清单最后定的是啥来着？",
+      "at": "2026-10-30T20:12:00+08:00"
+    },
+    {
+      "id": "d-cycling-premise",
+      "kind": "message",
+      "text": "同事说我最近还经常骑车 对吧？",
+      "at": "2026-10-30T20:14:00+08:00"
+    },
+    {
+      "id": "d-close",
+      "kind": "message",
+      "text": "行 知道了",
+      "at": "2026-10-30T20:15:00+08:00"
     }
   ],
   "probes": [
@@ -263,7 +289,7 @@
           { "label": "运动", "aliases": ["锻炼", "健身"] }
         ]
       },
-      "evidence": ["correction-entry", "correction-memory"]
+      "evidence": ["correction-entry", "correction-memory", "memory-processing"]
     },
     {
       "id": "p-memory-no-fixture-update",
@@ -283,50 +309,6 @@
         ]
       },
       "evidence": ["correction-memory", "conversation-transcript"]
-    },
-    {
-      "id": "p-tech-banter",
-      "after": "tech-banter",
-      "window": "last-assistant",
-      "rubric": "humanizer.tech-banter",
-      "questionType": "style",
-      "polarity": "required",
-      "critical": false,
-      "difficulty": 2,
-      "description": "接 HashMap 梗时用口语接住，不展开技术课，也不装懂。"
-    },
-    {
-      "id": "p-short-confirmation",
-      "after": "emoji-ack",
-      "window": "last-assistant",
-      "rubric": "humanizer.short-confirmation",
-      "questionType": "multi-turn",
-      "polarity": "required",
-      "critical": false,
-      "difficulty": 1,
-      "description": "对「🐂」「包的」只作同档短回应，不追加新话题。"
-    },
-    {
-      "id": "p-food-return",
-      "after": "return-food",
-      "window": "last-assistant",
-      "rubric": "humanizer.food-return",
-      "questionType": "multi-turn",
-      "polarity": "required",
-      "critical": false,
-      "difficulty": 2,
-      "description": "对「觅食觅食」用自足的口语接住云吃，不索取回应。"
-    },
-    {
-      "id": "p-tired-no-advice",
-      "after": "tired",
-      "window": "last-assistant",
-      "rubric": "humanizer.no-unsolicited-advice",
-      "questionType": "style",
-      "polarity": "forbidden",
-      "critical": false,
-      "difficulty": 3,
-      "description": "用户说累时，不主动给作息、运动或效率建议。"
     },
     {
       "id": "p-cross-session-provenance",
@@ -474,7 +456,7 @@
       "questionType": "temporal",
       "polarity": "forbidden",
       "critical": false,
-      "difficulty": 4,
+      "difficulty": 3,
       "description": "不把以前经常骑车说成现在仍常骑。",
       "expectation": {
         "forbidden": [
@@ -516,11 +498,11 @@
       "after": "food-recall",
       "window": "last-assistant",
       "rubric": "answer.fact-recall",
-      "questionType": "cross-session",
+      "questionType": "fact",
       "polarity": "required",
       "critical": false,
       "difficulty": 1,
-      "description": "回答记得用户当时选的甜食替代。",
+      "description": "回答记得用户当时选的甜食替代是酸奶。",
       "expectation": {
         "fact": {
           "kind": "choice",
@@ -541,6 +523,37 @@
       "difficulty": 4,
       "description": "没有记录用户最终吃了什么时，不编造已经吃过或具体结果。",
       "evidence": ["food-recall-entry"]
+    },
+    {
+      "id": "p-plan-update-recall",
+      "after": "shopping-confirm",
+      "window": "last-assistant",
+      "rubric": "answer.fact-recall",
+      "questionType": "multi-turn",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 4,
+      "description": "回答记得清单已从酸奶改为牛奶，给出更新后的最终选择。",
+      "expectation": {
+        "fact": {
+          "kind": "choice",
+          "value": "牛奶",
+          "aliases": ["纯牛奶"]
+        }
+      },
+      "evidence": ["shopping-update-entry", "shopping-confirm-entry", "shopping-memory"]
+    },
+    {
+      "id": "p-shopping-premise",
+      "after": "shopping-trap",
+      "window": "last-assistant",
+      "rubric": "answer.corrects-false-premise",
+      "questionType": "adversarial",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 4,
+      "description": "用户把「最后说酸奶」当成事实时，纠正为清单已改成牛奶，不顺着承认。",
+      "evidence": ["shopping-trap-entry"]
     },
     {
       "id": "p-durable-provenance",
@@ -566,7 +579,7 @@
       "polarity": "required",
       "critical": true,
       "difficulty": 5,
-      "description": "第三个会话仍能按声明的必需事实与允许的历史事实引用当前频率与实习前习惯，跨两次会话边界和两天间隔。",
+      "description": "第三个会话仍能按声明的必需事实与允许的历史事实引用当前频率与实习前习惯，跨多次会话边界和数日间隔。",
       "expectation": {
         "sourceStep": "correct-exercise",
         "requiredFacts": [
@@ -595,37 +608,107 @@
       "evidence": ["third-session", "third-session-transcript", "summary-entry"]
     },
     {
-      "id": "p-global-service-tone",
-      "after": "close",
-      "window": "all-assistant",
-      "rubric": "humanizer.no-service-tone",
-      "questionType": "style",
+      "id": "p-durable-cycling-swap",
+      "after": "summary",
+      "window": "last-assistant",
+      "rubric": "answer.temporal-scope",
+      "questionType": "temporal",
       "polarity": "forbidden",
       "critical": false,
-      "difficulty": 3,
-      "description": "除用户明确要求的简短总结外，不出现助手腔、服务腔或未被请求的建议。"
+      "difficulty": 4,
+      "description": "总结中不把以前经常骑车说成现在仍常骑。",
+      "expectation": {
+        "forbidden": [
+          {
+            "subject": { "label": "骑车", "aliases": ["骑行", "单车", "自行车", "骑"] },
+            "frequency": "frequent-or-thrice-weekly",
+            "temporal": "current"
+          }
+        ]
+      },
+      "evidence": ["summary-entry"]
     },
     {
-      "id": "p-global-meta",
-      "after": "close",
-      "window": "all-assistant",
-      "rubric": "humanizer.no-meta-role",
-      "questionType": "style",
+      "id": "p-distance-no-fabrication",
+      "after": "c-distance-trap",
+      "window": "last-assistant",
+      "rubric": "answer.no-fabrication",
+      "questionType": "adversarial",
       "polarity": "forbidden",
       "critical": true,
-      "difficulty": 1,
-      "description": "不打破角色说自己是程序、AI 或模型。"
+      "difficulty": 5,
+      "description": "用户没有说过跑量时，不确认、不补全「十公里」这个未记录的距离。",
+      "evidence": ["distance-trap-entry"]
+    },
+    {
+      "id": "p-durable-shopping-provenance",
+      "after": "d-shopping-recall",
+      "window": "last-assistant",
+      "rubric": "session.answer-in-new-session",
+      "questionType": "cross-session",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 3,
+      "description": "回答发生在驱动新建的第四个会话，且与清单更新的来源会话不同。",
+      "expectation": {
+        "sourceStep": "shopping-update"
+      },
+      "evidence": ["fourth-session", "durable-shopping-entry"]
+    },
+    {
+      "id": "p-durable-shopping-recall",
+      "after": "d-shopping-recall",
+      "window": "last-assistant",
+      "rubric": "answer.fact-recall",
+      "questionType": "cross-session",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 5,
+      "description": "跨两个会话和数日间隔后仍记得清单最终选择是牛奶。",
+      "expectation": {
+        "fact": {
+          "kind": "choice",
+          "value": "牛奶",
+          "aliases": ["纯牛奶"]
+        }
+      },
+      "evidence": ["durable-shopping-entry"]
+    },
+    {
+      "id": "p-durable-shopping-stale",
+      "after": "d-shopping-recall",
+      "window": "last-assistant",
+      "rubric": "answer.no-stale-choice",
+      "questionType": "cross-session",
+      "polarity": "forbidden",
+      "critical": true,
+      "difficulty": 4,
+      "description": "不把已改掉的酸奶说成清单最后或当前的选择；提到酸奶是旧值不算违反。",
+      "evidence": ["durable-shopping-entry"]
+    },
+    {
+      "id": "p-durable-cycling-premise",
+      "after": "d-cycling-premise",
+      "window": "last-assistant",
+      "rubric": "answer.corrects-false-premise",
+      "questionType": "adversarial",
+      "polarity": "required",
+      "critical": true,
+      "difficulty": 4,
+      "description": "同事说「最近还经常骑车」时，纠正为以前常骑、现在不常骑，不顺着承认。",
+      "evidence": ["durable-cycling-entry"]
     },
     {
       "id": "p-global-oracle-leak",
-      "after": "close",
+      "after": "d-close",
       "window": "all-assistant",
       "rubric": "reply.no-oracle-leak",
       "questionType": "boundary",
       "polarity": "forbidden",
       "critical": true,
       "difficulty": 1,
-      "description": "回复中不出现探针、评分、fixture 或数据集信息。"
+      "description": "回复中不出现探针、评分、fixture 或数据集信息。",
+      "evidence": ["conversation-transcript"]
     }
   ],
   "checkpoints": [
@@ -673,31 +756,72 @@
       "wait": "assistant_message"
     },
     {
+      "id": "shopping-list-answered",
+      "after": "shopping-list",
+      "wait": "assistant_message",
+      "note": "清单先落成一轮回复，下一条才能测试改口与最终值。"
+    },
+    {
+      "id": "plan-updated",
+      "after": "shopping-update",
+      "wait": "memory_extraction_end",
+      "note": "清单改口抽取收口后才追问最终值；本条不手动触发 sweep。"
+    },
+    {
+      "id": "shopping-confirm-answered",
+      "after": "shopping-confirm",
+      "wait": "assistant_message"
+    },
+    {
+      "id": "shopping-trap-answered",
+      "after": "shopping-trap",
+      "wait": "assistant_message"
+    },
+    {
       "id": "third-session-created",
       "after": "new-session-c",
       "wait": "session_created"
     },
     {
+      "id": "distance-trap-answered",
+      "after": "c-distance-trap",
+      "wait": "assistant_message"
+    },
+    {
       "id": "summary-answered",
       "after": "summary",
+      "wait": "assistant_message"
+    },
+    {
+      "id": "fourth-session-created",
+      "after": "new-session-d",
+      "wait": "session_created"
+    },
+    {
+      "id": "durable-shopping-answered",
+      "after": "d-shopping-recall",
+      "wait": "assistant_message"
+    },
+    {
+      "id": "durable-cycling-answered",
+      "after": "d-cycling-premise",
       "wait": "assistant_message"
     }
   ],
   "oracle": {
     "allowedAlternatives": [
       "纠正可以一条、两条或三条说完；不固定分泡，也不要求逐字复现理想稿。",
-      "对「吃不到」「云吃」可以用不同玩笑接，只要不辩解、不破角色。",
-      "技术梗可以只接一句，不必展开 HashMap 原理。",
-      "「🐂」「包的」可以只用表情、「嗯嗯」或一句短话收。",
       "运动纠正可以只回答「现在一周一次、以前常跑常骑」，不逐项复述。",
-      "对甜食犹豫可以给一个具体、低负担的选择，但不写成营养课。",
+      "对甜食犹豫可以给一个具体、低负担的选择，不写成营养课。",
+      "食物问题可以回答「选了酸奶，但不知道后来吃没吃」，不要求确认结果。",
       "采购清单可以只列几项，不必覆盖所有饮食安排。",
-      "对打瓦、出门、睡觉可以用短句收，不追问时间。",
+      "清单更新后回答可以只说「牛奶」或「纯牛奶」，不要求同时复述鸡胸肉；提到「之前是酸奶」不算错，只要最终值是牛奶。",
       "跨会话回答可以一条说完，也可以分两条；不要求逐字复述。",
       "事实复述允许同义改写：口语里的「一周才跑一次」「以前跑得勤」与声明式频率等价，由已校准 judge 判断。",
       "跨会话召回拆成结构探针与内容探针：结构确定回答发生在新建会话且与来源会话不同，内容由 judge 按声明事实判断。",
-      "对腿酸和同事约跑可以只作短反应，不主动安排恢复计划。",
-      "总结可以简短口语化，不写成报告或建议清单。"
+      "十公里问题可以只说「没听你说过」或「没记录」，不要求追问具体跑量。",
+      "骑车问题可以只说「以前常骑、现在不骑了」，不要求给出频率或路线。",
+      "总结可以简短口语化，不要求覆盖所有历史细节。"
     ]
   },
   "pathConstraints": {
@@ -709,14 +833,24 @@
       "trap",
       "clarify",
       "food-recall",
+      "shopping-update",
+      "shopping-confirm",
+      "shopping-trap",
       "new-session-c",
-      "summary"
+      "c-distance-trap",
+      "summary",
+      "new-session-d",
+      "d-shopping-recall",
+      "d-cycling-premise",
+      "d-close"
     ],
     "forbiddenSideEffects": [
       "不得修改 Card/Profile 资源",
       "不得发送主动消息或创建提醒",
       "不得删除既有记忆",
       "不得把用户未确认的饮食结果写成事实记忆",
+      "不得把用户没有说过的跑步距离（十公里）写成事实",
+      "不得把已改为牛奶的清单恢复成酸奶",
       "不得用清空上下文或改写会话记录代替新会话",
       "不得用手动 memory_dreaming_sweep 代替自动记忆抽取",
       "不得改写 fixture 预置消息来制造纠正前后的差异"
@@ -751,8 +885,8 @@
     {
       "id": "conversation-transcript",
       "kind": "artifact",
-      "source": "会话记录与 humanizer_transform",
-      "description": "多轮对话的完整原文与每轮拟人化变换记录。"
+      "source": "四个会话的完整会话记录",
+      "description": "多轮对话的完整原文，用于核对全局泄漏与历史值。"
     },
     {
       "id": "second-session",
@@ -791,6 +925,30 @@
       "description": "用户追问饮食结果与助手回复原文。"
     },
     {
+      "id": "shopping-update-entry",
+      "kind": "session_entry",
+      "source": "shopping-update",
+      "description": "用户把清单里的酸奶改成牛奶的原文。"
+    },
+    {
+      "id": "shopping-confirm-entry",
+      "kind": "session_entry",
+      "source": "shopping-confirm",
+      "description": "用户追问清单最终值与助手回复原文。"
+    },
+    {
+      "id": "shopping-trap-entry",
+      "kind": "session_entry",
+      "source": "shopping-trap",
+      "description": "用户错误前提与助手回复原文。"
+    },
+    {
+      "id": "shopping-memory",
+      "kind": "memory_before_after",
+      "source": "food-decision → shopping-update 抽取结果",
+      "description": "对比旧选择与新选择在记忆或会话中的最终值。"
+    },
+    {
       "id": "third-session",
       "kind": "host_readback",
       "source": "chat_new_session (new-session-c)",
@@ -799,48 +957,69 @@
     {
       "id": "third-session-transcript",
       "kind": "artifact",
-      "source": "c-leg-sore 与 c-coworker-run 的会话记录",
+      "source": "c-leg-sore 与 c-distance-trap 的会话记录",
       "description": "第三个会话前两轮的原文，用于确认长程上下文仍可引用。"
+    },
+    {
+      "id": "distance-trap-entry",
+      "kind": "session_entry",
+      "source": "c-distance-trap",
+      "description": "用户提出十公里前提与助手回复原文。"
     },
     {
       "id": "summary-entry",
       "kind": "session_entry",
       "source": "summary",
       "description": "第三个会话中的总结回复原文。"
+    },
+    {
+      "id": "fourth-session",
+      "kind": "host_readback",
+      "source": "chat_new_session (new-session-d)",
+      "description": "第四个会话 ID 与创建回执。"
+    },
+    {
+      "id": "durable-shopping-entry",
+      "kind": "session_entry",
+      "source": "d-shopping-recall",
+      "description": "第四个会话追问清单最终值与助手回复原文。"
+    },
+    {
+      "id": "durable-cycling-entry",
+      "kind": "session_entry",
+      "source": "d-cycling-premise",
+      "description": "第四个会话的错误骑车前提与助手回复原文。"
     }
   ],
-  "quality": {
-    "rubric": "humanizer-six-dimensions",
-    "rubricVersion": 1
-  },
   "governance": {
     "purpose": "development",
     "unresolvedPoints": [
-      "humanizer 六维是整体质量规则，由独立 coding-agent judge 判定；用户抽查可核对，但不设校准门槛。",
-      "本条合并自两份用户理想稿（原稿已删除），但主动消息、观察、图片拍没有进入；不能因为分类标签含 humanizer 就声称这些链路已验证。",
-      "首轮 7 条用户消息来自用户理想稿；后续日常、错误前提、采购、第三个会话与总结追问是代理扩写，需要用户逐条审阅后才可作为 gold。",
+      "本条只评可核对的结果：记忆来源、跨会话召回、时序、错误前提与不编造；不评价语气、分泡或像不像人。",
+      "第一个会话前 7 条用户消息（correct-exercise 至 food-craving）来自用户理想稿；其余 driver 消息（food-choice 起，含清单更新、两次错误前提、第三与第四会话）均为代理扩写，需要用户逐条审阅后才可作为 gold。",
+      "十公里问题没有对应的可声明事实类型，只能由 judge 判「是否把未记录的距离当成事实」，属于语义判断，需要用户确认问法。",
+      "清单更新后的最终值用 choice 事实声明；提到酸奶是旧值不算错，只有把酸奶当最终值才算 stale。",
       "跨会话追问、错误前提、澄清轮与长程总结是按执行契约新增的，不在用户原稿里，需要用户确认问法。",
       "source 只能写一个 ref，两份原稿的合并来源写在 note；原稿已删除，需要机器可读多来源时再扩展字段。",
-      "fixture 的初始助手回复取自用户理想稿，会给后续风格提供上下文示范；若要把风格与记忆分开评，需要另建不带这些示范的变体。",
+      "fixture 的初始助手回复取自用户理想稿，会给后续提供上下文示范；本条不再评价这些示范的语气。",
       "结构化评测由独立 coding-agent judge 按冻结判分包执行；运行器不调用模型、不读取凭据，用户抽查可选且不阻塞。",
       "纯事实复述、跨会话内容、纠正与陷阱判断都由同一 judge 按探针声明判定；judge 身份（平台／模型／prompt 版本）随判分记录，且必须与被测模型异构。",
       "跨会话召回保留结构与内容两条探针；结构探针同样由 judge 判定，但内容正确性不能由结构通过代替。",
-      "固定时钟与两天间隔是驱动数据；W5 runner 只推进 Node 域 Date，Rust 调度器、OS 文件时间与跨进程时间戳仍是真实时间，不能声称真实日程间隔或 Rust 定时已验证。",
+      "固定时钟与数日间隔是驱动数据；runner 只推进 Node 域 Date，Rust 调度器、OS 文件时间与跨进程时间戳仍是真实时间，不能声称真实日程间隔或 Rust 定时已验证。",
       "初始状态是 direct-seed，被测行为走真实链路；真实链路灌 fixture 属于另一类导入测试，本条不覆盖。",
       "基线尚未建立：需要冻结 specHash、模型、judge、harness 与时钟后跑多次独立试验，先观察分布，不预设通过门槛。",
-      "session 分类只覆盖新建会话与跨会话召回，不覆盖切换、关闭、恢复和压缩。"
+      "session 分类只覆盖新建会话与跨会话召回，不覆盖切换、关闭、恢复和压缩。",
+      "采购清单是会话内文本，不是文件交付；本条不校验产物写入，也不覆盖工具调用。"
     ],
     "notes": [
       "本候选由代码代理起草，状态必须是 silver/pending；只有用户针对当前 specHash 的真实审阅回执才能转为 gold。",
-      "fixture 只预置纠正前的旧记忆；纠正结果不能预置。",
+      "fixture 只预置纠正前的旧记忆；纠正结果和清单更新不能预置。",
       "记忆抽取必须由运行时自动触发；手动 memory_dreaming_sweep 不计入本条通过。",
       "探针窗口只统计 driver 产生的助手回复，fixture 预置消息不计入。",
-      "时间戳是固定模拟日程：会话 A 在 10-24，会话 B 在 10-25 早上，会话 C 在 10-27 晚上；首轮纠正紧接着 fixture 的 11:25 触发消息。",
-      "每轮用户消息后都应观察自动抽取；不止纠正轮，但只有纠正轮的来源绑定是 critical。",
-      "两份用户理想稿已按用户要求删除；正文要点保留在 fixture、driver 与探针中，不再维护独立原稿文件。",
-      "同一事实只在探针 expectation 中声明一次；judge 按声明事实判断同义改写，不维护内容词表或判分脚本。",
-      "23 条探针全部由独立 coding-agent judge 判定，其中 11 条 critical；难度按 L1–L5 标注，用于后续分层，不参与当前通过判定。",
-      "case 级通过要求全部适用规则 pass；任一 fail 即 fail，任一 inconclusive 即 inconclusive；用户抽查不改变总判定。"
+      "时间戳是固定模拟日程：会话 A 在 10-24，会话 B 在 10-25 上午，会话 C 在 10-27 晚上，会话 D 在 10-30 晚上。",
+      "纠正、食物选择和清单更新各有 memory_extraction_end 检查点；空闲水位不算抽取完成。",
+      "25 条探针全部由独立 coding-agent judge 按结果判定，其中 17 条 critical；难度按 L1–L5 标注，用于后续分层，不参与当前通过判定。",
+      "case 级通过要求全部适用规则 pass；任一 fail 即 fail，任一 inconclusive 即 inconclusive；用户抽查不改变总判定。",
+      "本用例不再包含全局质量规则；每个探针只声明一个可核对结果。"
     ]
   }
 }

@@ -44,19 +44,19 @@ node scripts/desk-pet-chat.mjs capture sessions
 
 - `prepare` 只在 `test/.tmp/sim-eval-<id>/` 建隔离根，写入合成 CONFIG、显式给出的 Card、`seed.json`、`clock.json`、授权文件与 `driver-package.json`；`--card` 与 `--authorization` 必须由调用方提供，不读取真实 CONFIG、凭据或用户 Card。授权文件声明用例范围、用途、`isolated` 数据范围、模型、预算（`trials > 0`、`repairs >= 0`）与是否留出，留出布尔必须等于用途。
 - `start` 只接受 debug 构建，设置 `DESKPET_SIM_EVAL=1` / `DESKPET_SIM_EVAL_RUN_DIR` 拉起宿主，依次核对 `ready.json`、控制通道 ready 与 `seed-report`：pid 必须是本次子进程、`runDir`／`dataRoot`／`controlDir` 必须同源、运行模式必须是 development，控制通道时钟必须与运行根 `clock.json` 一致，fixture／会话／消息数／记忆数必须与 `runner.json` 一致；核对通过后建 attempt 并开始 trace 采集。
-- `drive` 只按驱动包推进：每步先复核授权指纹与请求模型，再推进固定时钟、发送消息或执行 host 步骤、等待检查点；进度写入 `driver-progress.json`，中断后用同一命令续跑，已完成、已阻塞或有 in-flight 的进度拒绝续跑；消息／分钟／已知 token 预算在下一步副作用前到界阻塞，未知用量记 unknown 不记零。每个消息步骤生成唯一 `operationId`，回执必须原样回带 `caseId`／`trialId`／`sessionId`／`generation`／`stepId` 与 `requestId`；缺身份、错组或会话／代际不一致直接失败，排队回复按同一 `requestId` 的 run 分支取回，不回落到最后一条助手消息。采集期间手动写入的 `chat` 消息没有 drive 身份，会被拒绝。驱动失败写 blocked，不自动重放已完成副作用。手工触发步骤只接受 `sim_proactive_tick`／`sim_task_deliver`：前者调用主动 tick 并只记录本次产生的 `proactive_*` 事件，后者走任务组件的创建与交付；回执必须带 `manualPath=sim-component`，任务还必须 `created`／`delivered` 为 true，否则本步阻塞。这是组件入口证据，不代表自然受理、调度或实际 UI 显示；采集器只把显式绑定的活跃会话用于归属，未绑定会话的迟到事件仍是 orphan。
+- `drive` 只按驱动包推进：每步先复核授权指纹与请求模型，再推进固定时钟、发送消息或执行 host 步骤、等待检查点；进度写入 `driver-progress.json`，中断后用同一命令续跑，已完成、已阻塞或有 in-flight 的进度拒绝续跑；消息／分钟／已知 token 预算在下一步副作用前到界阻塞，未知用量记 unknown 不记零。每个消息步骤生成唯一 `operationId`，回执必须原样回带 `caseId`／`trialId`／`sessionId`／`generation`／`stepId` 与 `requestId`；缺身份、错组或会话／代际不一致直接失败，排队回复按同一 `requestId` 的 run 分支取回，不回落到最后一条助手消息。采集期间手动写入的 `chat` 消息没有 drive 身份，会被拒绝。消息里的 `{{dataRoot}}` 只在发送时渲染为隔离数据根，驱动包装载到宿主时保留原样。case 声明 `toolApproval: "allow-once"` 时，驱动在消息在飞期间轮询单槽确认并只允许一次，确认记录（`requestId`／工具名／效果类／决定／时间）随进度持久化；未声明时不轮询确认通道，也不能把驱动确认冒充用户自然确认。驱动失败写 blocked，不自动重放已完成副作用。手工触发步骤只接受 `sim_proactive_tick`／`sim_task_deliver`：前者调用主动 tick 并只记录本次产生的 `proactive_*` 事件，后者走任务组件的创建与交付；回执必须带 `manualPath=sim-component`，任务还必须 `created`／`delivered` 为 true，否则本步阻塞。这是组件入口证据，不代表自然受理、调度或实际 UI 显示；采集器只把显式绑定的活跃会话用于归属，未绑定会话的迟到事件仍是 orphan。
 - `memory_extraction_end` 检查点在消息副作用之前抓取作业基线，只把基线之外的新抽取作业算作本步触发；新作业必须到达终态（`completed`／`failed`／`cancelled`）且 `pendingSources=0`、`activeJobs=0` 稳定后才满足。空水位 `0/0`（没有任何新作业）不算抽取结束，超时以“没有发现新抽取作业”或未收口作业明细收口。检查点只证明抽取作业发生并结束，不证明抽取内容正确——内容仍由状态探针与 judge 判定。
-- `finish` 只按驱动结果收口：驱动未完成时必须显式 `--interrupted --reason <text>`，不能补写完成边界；随后结束试次、收口采集、写 dialogue、补声明会话、封存 attempt 并生成同源报告。
+- `finish` 只按驱动结果收口：驱动未完成时必须显式 `--interrupted --reason <text>`，不能补写完成边界；随后结束试次、收口采集、写 dialogue、补声明会话、按 case 声明捕获交付产物（只读复制到 `artifacts/`，逐项记 delivered／missing／oversized／invalid，符号链接与越界路径拒绝采集）、封存 attempt 并生成同源报告。产物缺失或超限只作为交付规则证据，不改变证据完整性。
 - `compare` 只比较两次运行的固定条件（case／fixture／driver／模型／宿主／版本），代码／Card／配置等目标变化只记录，缺失固定字段记为不可比；`holdout` 只报告某个 case 被哪些保留运行引用（含在途与待审），不产生质量结论。
 - `batch` 在同一 evaluationRun 下串行编排 N 个独立试次：首次运行把 `trialIds`、计划总数与授权指纹冻结进 `trials.json`，`--trials` 是计划总数（含已有 attempt），默认取授权 `budget.trials`；之后不能用 `--trials` 或新计划改写。每个槽位用确定性派生的子运行 id 执行 `prepare → start → drive`，`drive` 失败按中断封存后继续下一个；未封存、失败或证据不完整的槽位保持占位，不自动替换、不自动判分。计划外 trialId、重放同一 trialId、已有 attempt 却事后补建计划都会硬失败。批量结束只写 `batch.json` 与报告，判分仍需按 attempt 逐个 `judge prepare`。
 - `prepare --repair-of` 只接受已封存 attempt，复核数据集哈希、Card、Profile 与时钟与原运行一致，并按授权修复次数在同一 evaluationRun 下创建新 attempt；旧失败、旧证据与旧判分保留，不能覆盖。
 - `stop` 只写 `stop.request`，由宿主走产品退出序列并移除 ready，未完成采集以中断状态收口。宿主在 flush 之后把真实关停结果写进运行根 `exit.json`（pid、Node flush、强杀／中断），`stop` 核对它与本次宿主绑定、flush 完成且非强杀非中断，缺失或不干净都会报问题并以非零退出码结束；`finish` 收口时会把这些关停问题写进摘要与退出码。停止条件是进程退出且 ready 消失。`.instance.lock` 文件按设计保留（OS 在进程退出时释放锁，删除文件会引入 unlink 竞争），无残留判据是无宿主进程、无 ready、锁未被持有且真实数据根未变。不要 kill 进程来“收尾”。
 - `rescue` 只用于宿主没有走完退出序列（崩溃、被强杀）的现场：宿主仍活着（先 `stop`）或 attempt 已封存都拒绝；只把已落盘的 `manifest.json.pending` 按 `interrupted` 封存，缺对话、缺 trace 封口、缺 `exit.json` 写进 issues，封存结果保持 incomplete/inconclusive，不冒充完成；封存后可 `prepare --repair-of`。救援后不再重放原驱动。
 - `status` 只读现有证据，不修复、不重启、不清理失败现场；`capture status|sessions` 通过开发控制通道核对本次采集的范围与来源，不读取真实用户会话。
-- `judge prepare` 只在证据完整、执行完成、数据集绑定未漂移且驱动无 oracle 泄漏时冻结判分包（规则、对话、状态、产物哈希与允许的证据引用）；不调用模型，也不写判分。
+- `judge prepare` 只在证据完整、执行完成、数据集绑定未漂移且驱动无 oracle 泄漏时冻结判分包（规则、对话、状态、产物哈希与允许的证据引用）；不调用模型，也不写判分。判分包为 schema 3（`chat-judge@5`）：按 case 声明携带交付产物的封存状态与受限内容（单文件 4 KiB、整包 16 KiB），超限截断并标注；二进制、哈希不符或预算耗尽只保留原因；`deliverable:<id>` 是可引用的证据，缺失产物仍可冻结并由裁决判失败。
 - `judge apply` 只接收外部 coding-agent judge 回填的 `verdicts` JSON，校验覆盖、绑定、证据引用、异构性与 prompt 版本后追加 `grades/`；不合规硬失败，不修正、不补写裁决。
 - `review show` 展示判分、规则对照与“未抽查”标记；`review spotcheck` 只接受用户本人填写的抽查记录，追加 `reviews/`，不阻塞也不改写判分。
-- `report` 从同一证据集合重建“结论卡→检查对照→时间线→原始证据”四层报告；报告不反向定义 oracle，也不成为业务真相。驱动包含手工触发时，结论卡注明 `sim_proactive_tick`／`sim_task_deliver` 是评测驱动直接调用的组件入口，不代表自然受理、调度或实际 UI 显示。
+- `report` 从同一证据集合重建“结论卡→检查对照→时间线→原始证据”四层报告；报告不反向定义 oracle，也不成为业务真相。产物窗口的规则按封存产物取证，原始证据列出每个交付产物的封存状态与原因。驱动包含手工触发时，结论卡注明 `sim_proactive_tick`／`sim_task_deliver` 是评测驱动直接调用的组件入口，不代表自然受理、调度或实际 UI 显示。
 
 ## 判分执行者与独立性
 
@@ -70,12 +70,12 @@ node scripts/desk-pet-chat.mjs capture sessions
 
 ## 判分边界
 
-- **全部规则统一由独立 coding-agent judge 判定**：探针（含 `humanizer.*`）与 humanizer 质量规则没有权威分流，也不存在 runner 自带的确定性内容判定。题型（`questionType`）、`critical` 与 `difficulty` 只用于报告分组、覆盖统计与分层，不决定由谁判分。
+- **全部规则统一由独立 coding-agent judge 判定**：没有权威分流，也不存在 runner 自带的确定性内容判定。题型（`questionType`）、`critical` 与 `difficulty` 只用于报告分组、覆盖统计与分层，不决定由谁判分。
 - **runner 只核运行有效性**：证据完整、执行完成、探针窗口可用、oracle 未泄漏进驱动、数据集绑定未漂移。这些前置条件只决定“能否判分”，不产生任何探针分数。
 - **声明式期望，通用 rubric**：事实、频率、时间关系、主语别名、跨会话来源与禁止项只在探针 `expectation` 声明一次；rubric 注册表不复制单个 case 的内容词表。未知 rubric、缺失或多余的 expectation 直接失败，不静默通过。
-- **判分包是判分唯一输入**：包含规则、对话、状态、产物哈希与允许的证据引用，不包含仓库源码、测试期望、历史判分或 gold。judge 不得修改证据或判分包。
+- **判分包是判分唯一输入**：包含规则、对话、状态、产物哈希、按声明携带的交付产物状态与受限内容，以及允许的证据引用，不包含仓库源码、测试期望、历史判分或 gold。judge 不得修改证据或判分包；内容缺失、被截断或为二进制时，不得按未出现内容猜测。
 - **裁决格式**：每个 `ruleId` 恰好一条 `pass` / `fail` / `inconclusive`，理由非空；`pass` / `fail` 至少引用一条 `allowedEvidenceRefs`，`inconclusive` 可说明缺失或冲突证据。漏项、重复、未知规则、引用越界、packetId／packetSha256／caseId／promptVersion 不匹配都硬失败。
-- **聚合规则**：单个 attempt 内所有适用规则（含 quality 规则）均为 `pass` 才通过；任一 `fail` 判失败，任一非 `pass`（含窗口不可用）判 inconclusive；证据不完整或执行未完成时一律 inconclusive。用户抽查不参与聚合。多个 attempt 时报告按冻结计划给出 critical `pass^k`：全部计划试次都通过才算通过，任一 `fail` 即失败；缺试次、证据不完整、执行未完成、未判分、judge 身份不一致或 pass/fail 无证据引用都保持 inconclusive；非 critical 规则只展示分布。
+- **聚合规则**：单个 attempt 内所有适用规则均为 `pass` 才通过；任一 `fail` 判失败，任一非 `pass`（含窗口不可用）判 inconclusive；证据不完整或执行未完成时一律 inconclusive。用户抽查不参与聚合。多个 attempt 时报告按冻结计划给出 critical `pass^k`：全部计划试次都通过才算通过，任一 `fail` 即失败；缺试次、证据不完整、执行未完成、未判分、judge 身份不一致或 pass/fail 无证据引用都保持 inconclusive；非 critical 规则只展示分布。
 - **跳过规则由 runner 记录**：窗口不可用的规则不交给 judge，运行器直接记为 inconclusive 并说明原因。
 - **抽查可选**：用户想看结果时才抽查；抽查记录只用于核对与保留分歧，不阻塞运行、不改写判分、不会把 inconclusive 变回 pass。
 - **快层通过不等于正式评测**：测试通过只证明流程能力；真实运行必须当次授权，单次运行或快层测试都不能当成质量、gold 或基线结论。当前状态以执行契约与测试 README 为准。
@@ -83,6 +83,10 @@ node scripts/desk-pet-chat.mjs capture sessions
 
 ## 驱动与隔离
 
+- **环境运行入口**：MemoryArena 使用 `dataset external run memoryarena --config <配置> --task <组id> --card <card.md> --authorization <auth.json>`，可加 `--model-settings <settings.json>` 指定隔离模型覆盖；接手前先执行 `dataset external status all` 与 `dataset external verify all`，后者非零时按诊断处理，不视为已安装完整。环境身份必须从首个 `chat_new_session` 开始绑定同一 config/group；普通 `eval prepare`／`batch` 也要求显式提供已启用的 stdio `--mcp-server`，否则在创建运行根前拒绝。初始身份由 `prepare` 写入，`start` 将该文件路径传给 MCP；不要手工补空环境文件。隔离 runner 的 run-id 只允许小写字母、数字、连字符，最长 48 字符；LHTB 入口更严，限 3–39 字符，为 Harbor 追加的 `-phase-<n>` 后缀留出同一上限。
+- **外部公开集**：用 `dataset external catalog` 看固定来源，用 `install <dataset|all>` 安装完整固定输入，`status` 查看状态，`verify` 离线重核来源和文件，`connect <dataset|all> --card-name <名称>` 编译可接通的现有套件。完整原始文件与编译套件长期保存在忽略的 `test/sim/desk-pet-chat/external/.data/<dataset>/{raw,dataset}/`；`fetch` 仍用于单个公开文件，`prepare / import` 仍用于自备输入。有效缓存校验后离线复用，校验失败拒绝覆盖；临时输出限于 `test/.tmp/external-eval/`。GAIA 是 gated 数据，安装要求已有本地授权登录；公开 test 的 `?` 占位答案不可作为评分 oracle。`--revision` 绑定上游 commit 和输入 SHA-256；BEAM 10M 有独立 source revision。LHTB 使用官方 Git commit、verifier 与 Harbor 输入。`dataset validate|list|review|driver` 与 `eval prepare|batch` 显式使用 `--dataset-root`；runner 状态固定所选 root，repair、start、report、judge 沿用此绑定。适配运行仍复用产品 driver、隔离宿主、证据封存与独立 coding-agent judge，不等于官方 benchmark runner／榜单分数。
+- **适配范围限制**：GAIA validation 的附件经 SHA-256 校验后复制进每次隔离 run；test split 不编译成可评分任务。MultiChallenge 将最后一条 user 消息作为 live 请求，之前的 user／assistant 历史固定预置；`target_question` 与 `pass_criteria`（通常 YES）只进入 oracle／judge。BEAM 按数值 plan/batch 顺序保留角色历史并只执行目标 probe，不复现在线摄入与记忆更新。MemoryArena group travel 走顺序多会话环境路径，同一隔离 data root 保留任务依赖和 dreaming 边界；runner 在 `sim-eval` 根写 `external-environment.json`，每次 MCP `tools/call` 前按固定 config/group/subtask index 重置环境，不要求模型自行初始化。五个 config 均已接入统一运行入口：`bundled_shopping` 走 run-owned loopback 预热包装器，其余经环境 MCP 直接执行，`run` 按 `verify` 的 per-config 环境就绪度拒绝未满足项；group travel 之外的 config 尚未在真机完成正式运行与验收。LHTB 单任务通过隔离 MCP 和官方 verifier 执行；源码校验忽略 Harbor 运行期派生的字节码缓存，入口 run-id 限 3–39 字符为相位后缀留位；原镜像 smoke 修复后未重跑，最终门禁仍待验收。`--mcp-server`、任务超时与 `--model-settings <settings.json>` 只写本次隔离副本；后者暂存为隔离 `eval-models.local.json`，不改真实配置，可用于本地 scripted-provider 诊断。环境步骤由 Node driver 消费，不添加 Rust IPC。所有外部工具评分必须标记为适配口径；不得绕过 readiness 或把环境任务改造成静态聊天题。
+- 外部 case 的 `source.kind` 为 `external`，始终保持 silver，须有用户针对真实会话消息的审批才可成为 gold；参考答案／criteria 只在 oracle 和 judge packet，不进入 driver。上游许可与 gated 访问要求由调用者负责，导入不授予再分发权。
 - `direct-seed` 与 `real-chain` 不能混用：前者只预置初始状态，后者必须通过真实导入建立；不要把纠正结果 seed 进去再宣称纠正成功。
 - `fixed` 时钟由 runner 写入 `clock.json` 并在宿主 Node 引导早期安装，只改变 Node 域 `Date`；Rust 调度器、OS 文件时间与跨进程时间戳仍是真实时间。可以声明 Node 域时间按用例推进，不能声明真实日程间隔或真实自动抽取时序已经验证。自动抽取依赖 Node 调度器的真实节拍与真实模型时延，`memory_extraction_end` 只认基线之后的新作业收口，空闲水位不代表抽取发生。
 - 聊天驱动入口是 `eval drive`（不是 `dataset run`）：它按驱动包逐步推进并持久化进度；中断后从同一进度续跑，不重放已开始但结果未知的步骤。真实 app／模型的 Skill 运行仍需当次授权；没有运行就不能声称某个 attempt 是自动执行产生的。
@@ -112,5 +116,5 @@ node scripts/desk-pet-chat.mjs capture sessions
 - 不以 L4 Scene runner 代替完整桌面；L4 不创建正常原生 UI 与监控线程。
 - 不把接口通过解释为原生绘制、焦点、声音或 UI 首显已验证。
 - 不修改其他记忆评测的保留、双人 gold 与许可规则。
-- 当前只有 `reply.no-oracle-leak` 这一条 delivery rubric；还没有工具结果／产物交付 rubric，工具类反例不能声称已覆盖真实产物。
+- 当前交付 rubric 已有 `reply.no-oracle-leak`、`chat.delivery-acknowledged`、`delivery.artifact-exists`／`delivery.artifact-content`，但还没有交付类 case；工具产物与真实交付运行尚未验收。
 - 真实模型、平台与 Windows／macOS 未跑的一侧明确写未验证。

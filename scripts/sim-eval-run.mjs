@@ -48,12 +48,14 @@ import {
   appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync,
   writeFileSync,
 } from "node:fs"
-import { join, relative, resolve } from "node:path"
+import { dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { load as parseYaml } from "js-yaml"
 
 import { buildSyntheticConfig, writeSyntheticConfig } from "../test/host/native/synthetic-config.mjs"
 import { buildNativeHost } from "../test/host/native/build.mjs"
+import { stageExternalAssets } from "../test/sim/desk-pet-chat/external/assets.mjs"
+import { MEMORYARENA_CONFIGS } from "../test/sim/desk-pet-chat/external/memoryarena.mjs"
 import {
   buildDriverPackage, datasetInputHash, hashCanonical, loadDataset, MANUAL_TRIGGER_HOST_METHODS,
 } from "../test/sim/desk-pet-chat/dataset.mjs"
@@ -63,7 +65,7 @@ import {
   readTrialPlan, sealChatAttempt, setChatRunPhase, verifySealedAttempt,
 } from "../test/sim/desk-pet-chat/evidence.mjs"
 import {
-  applyJudgeVerdicts, formatJudgePacket, JUDGE_PROMPT_VERSION, latestJudgeGrade, loadJudgingContext,
+  applyJudgeVerdicts, formatJudgePacket, JUDGE_PROMPT_VERSION, JUDGE_RUBRIC_VERSION, latestJudgeGrade, loadJudgingContext,
   prepareJudgePacket, readJudgingRecords, recordSpotCheck, summarizeAttemptStatus,
 } from "../test/sim/desk-pet-chat/judging.mjs"
 import { pruneChatRuns, writeChatReport } from "../test/sim/desk-pet-chat/report.mjs"
@@ -83,7 +85,7 @@ const NODE_RUNTIME_FILE = join(REPO_ROOT, "packaging", "node-runtime.json")
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,47}$/
 const EVALUATION_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const TRIAL_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,95}$/
-const SUPPORTED_HOST_CAPABILITIES = new Set(["chat", "memory", "session"])
+const SUPPORTED_HOST_CAPABILITIES = new Set(["chat", "memory", "session", "tools"])
 const READY_WAIT_MS = 90_000
 const BRIDGE_WAIT_MS = 180_000
 const CAPTURE_WAIT_MS = 180_000
@@ -224,14 +226,16 @@ export function parseCardMeta(raw) {
  * 运行期 CONFIG 覆盖：激活目标 Card / Profile，并关掉主动与静默了解。
  * 自动记忆整理（dreaming）保持开启 —— 纠正轮的自动抽取是 case 的真实链路。
  */
-export function buildRunOverrides({ cardId, profileId }) {
+export function buildRunOverrides({ cardId, profileId, mcpServers, turnTimeoutMs }) {
   if (typeof cardId !== "string" || cardId.trim() === "") throw new Error("覆盖缺少 Card id")
   return {
     ai: {
       personality: { active: cardId },
       proactive: { frequency: "off" },
       silentAccess: { frequency: "off" },
+      ...(turnTimeoutMs ? { loop: { turnTimeoutMs } } : {}),
     },
+    ...(mcpServers ? { tools: { mcp: { servers: mcpServers } } } : {}),
     ...(profileId ? { appearance: { activeProfile: profileId } } : {}),
   }
 }
@@ -551,7 +555,7 @@ function readRequestedModel(configPath) {
 }
 
 function inputHashes({ state }) {
-  const dataset = loadDataset({ repoRoot: REPO_ROOT })
+  const dataset = loadDataset({ repoRoot: REPO_ROOT, root: state.datasetRoot, caseIds: [state.caseId] })
   const entry = dataset.cases.find(candidate => candidate.caseId === state.caseId)
   if (!entry) throw new Error(`数据集里找不到用例：${state.caseId}`)
   return {
@@ -679,7 +683,7 @@ function buildAttemptIdentity(state, entry) {
     inputs: inputHashes({ state }),
     tools: {
       driverVersion: entry.binding.driverHash,
-      rubricVersion: `${entry.case.quality.rubric}@${entry.case.quality.rubricVersion}`,
+      rubricVersion: JUDGE_RUBRIC_VERSION,
       graderVersion: CHAT_GRADER_VERSION,
       judgePromptVersion: JUDGE_PROMPT_VERSION,
     },
@@ -879,7 +883,32 @@ function updateState(paths, state, patch) {
   return state
 }
 
-function hostEnv(runDir, controlDir, timezone) {
+export function validateExternalEnvironmentStep(step) {
+  const { config, groupId, subtaskIndex } = step ?? {}
+  if (!MEMORYARENA_CONFIGS.includes(config) || !Number.isSafeInteger(groupId) || groupId < 0
+    || !Number.isSafeInteger(subtaskIndex) || subtaskIndex < (config === "group_travel_planner" ? -1 : 0)) {
+    throw new Error("非法环境子任务身份")
+  }
+  return { config, groupId, subtaskIndex }
+}
+
+export function initialExternalEnvironmentStep(driver, mcpServer) {
+  const steps = driver.filter(step => step.args?.externalEnvironmentStep !== undefined)
+  if (!steps.length) return null
+  if (!mcpServer || mcpServer.transport !== "stdio" || mcpServer.enabled !== true) {
+    throw new Error("环境用例必须绑定已启用的 stdio MCP；请使用 dataset external run 或提供 --mcp-server")
+  }
+  if (driver[0] !== steps[0]) throw new Error("环境用例必须在首条消息前绑定初始子任务")
+  const initial = validateExternalEnvironmentStep(steps[0].args.externalEnvironmentStep)
+  for (const step of steps) {
+    if (step.kind !== "host" || step.method !== "chat_new_session") throw new Error("环境切换只允许会话边界")
+    const identity = validateExternalEnvironmentStep(step.args.externalEnvironmentStep)
+    if (identity.config !== initial.config || identity.groupId !== initial.groupId) throw new Error("环境用例不能跨配置或任务组切换")
+  }
+  return initial
+}
+
+function hostEnv(runDir, controlDir, timezone, externalEnvironment) {
   return {
     ...process.env,
     DESKPET_SIM_EVAL: "1",
@@ -887,6 +916,7 @@ function hostEnv(runDir, controlDir, timezone) {
     DESKPET_SIM_CHAT: "1",
     DESKPET_SIM_CONTROL: controlDir,
     ...(timezone ? { TZ: timezone } : {}),
+    ...(externalEnvironment ? { DESKPET_MEMORYARENA_STEP_FILE: join(runDir, "external-environment.json") } : {}),
   }
 }
 
@@ -914,10 +944,10 @@ function resolveProfile({ fixture, repoRoot }) {
   return fixture.profile
 }
 
-function stageEvalModels({ repoRoot, dataRoot }) {
+function stageEvalModels({ repoRoot, dataRoot, modelSettingsPath }) {
   const staged = []
   for (const [name, required] of [["eval-models.json", true], ["eval-models.local.json", false]]) {
-    const source = join(repoRoot, "test", name)
+    const source = name === "eval-models.local.json" && modelSettingsPath ? resolve(modelSettingsPath) : join(repoRoot, "test", name)
     if (!existsSync(source)) {
       if (required) console.warn(`[prepare] ${name} 不存在；被测模型将继承隔离副本配置`)
       continue
@@ -929,9 +959,9 @@ function stageEvalModels({ repoRoot, dataRoot }) {
 }
 
 /** prepare 与 batch 共用同一份用例前置校验；差别只在错误文案里的操作名。 */
-function loadCaseForRun({ caseId, label }) {
+function loadCaseForRun({ caseId, label, datasetRoot }) {
   if (!caseId) throw new Error(`${label} 需要 --case <caseId>`)
-  const dataset = loadDataset({ repoRoot: REPO_ROOT })
+  const dataset = loadDataset({ repoRoot: REPO_ROOT, root: datasetRoot, caseIds: [caseId] })
   if (dataset.errors.length > 0) {
     for (const problem of dataset.errors) {
       console.error(`${problem.code}${problem.file ? ` ${problem.file}` : ""}: ${problem.message}`)
@@ -971,7 +1001,11 @@ async function prepare(options) {
     throw new Error(`运行根已存在，拒绝覆盖：${relative(repoRoot, runDir)}；请换 --run-id 或先确认并手动清理`)
   }
 
-  const { dataset, entry, suite } = loadCaseForRun({ caseId, label: "prepare" })
+  const datasetRoot = options.datasetRoot ?? repairing?.state.datasetRoot
+  if (repairing && options.datasetRoot && resolve(REPO_ROOT, options.datasetRoot) !== resolve(REPO_ROOT, repairing.state.datasetRoot ?? "test/ideal-traces")) {
+    throw new Error("修复必须沿用原运行的数据集目录")
+  }
+  const { dataset, entry, suite } = loadCaseForRun({ caseId, label: "prepare", datasetRoot })
   const purpose = suite.purpose
   const evaluationRunId = repairing
     ? repairing.state.chat.evaluationRunId
@@ -1055,18 +1089,33 @@ async function prepare(options) {
   const syncPoints = validateCheckpointBindings(validateSyncPoints(entry.case.checkpoints), driverPackage)
 
   const paths = statePaths(runDir)
+  const externalMcpServer = options.mcpServer
+    ? JSON.parse(readFileSync(resolve(options.mcpServer), "utf8"))
+    : repairing?.state.externalMcpServer ?? null
+  if (externalMcpServer && (externalMcpServer.transport !== "stdio" || externalMcpServer.enabled !== true)) {
+    throw new Error("评测环境 MCP 必须是已启用的 stdio 服务")
+  }
+  if (repairing && options.mcpServer && hashCanonical(externalMcpServer) !== hashCanonical(repairing.state.externalMcpServer)) {
+    throw new Error("修复必须沿用同一评测环境 MCP 服务")
+  }
+  const externalEnvironment = initialExternalEnvironmentStep(driverPackage.driver, externalMcpServer)
   mkdirSync(join(paths.dataRoot, "settings"), { recursive: true })
   mkdirSync(join(paths.dataRoot, "personality", "cards"), { recursive: true })
   mkdirSync(paths.controlDir, { recursive: true })
-
+  const stagedInputs = stageExternalAssets(entry.case.source.upstream?.assets, { repoRoot, dataRoot: paths.dataRoot })
+  if (externalEnvironment) writeJsonAtomic(join(runDir, "external-environment.json"), externalEnvironment)
   const configText = buildSyntheticConfig({
     repoRoot,
-    overrides: buildRunOverrides({ cardId: card.id, profileId }),
+    overrides: buildRunOverrides({
+      cardId: card.id, profileId,
+      ...(externalMcpServer ? { mcpServers: [externalMcpServer], turnTimeoutMs: Math.max(DRIVER_MESSAGE_WAIT_MS, authorization.budget.minutes * 60000) } : {}),
+    }),
   })
   writeSyntheticConfig(paths.dataRoot, configText)
   const stagedCardPath = join(paths.dataRoot, "personality", "cards", card.fileName)
   writeFileSync(stagedCardPath, cardText)
-  const stagedModels = stageEvalModels({ repoRoot, dataRoot: paths.dataRoot })
+  const modelSettingsPath = options.modelSettings ?? repairing?.state.modelSettingsPath ?? null
+  const stagedModels = stageEvalModels({ repoRoot, dataRoot: paths.dataRoot, modelSettingsPath })
 
   writeJsonAtomic(paths.seedPath, {
     schemaVersion: 1,
@@ -1100,6 +1149,7 @@ async function prepare(options) {
     label: entry.label,
     hashes: entry.binding,
     datasetHash,
+    datasetRoot: relative(repoRoot, dataset.root),
     fixture: { id: entry.fixture.fixtureId, path: entry.fixturePath, hash: entry.binding.fixtureHash },
     expectedSeed,
     card: { ...card, sha256: sha256(cardText), stagedPath: relative(repoRoot, stagedCardPath) },
@@ -1126,6 +1176,8 @@ async function prepare(options) {
       usage: null,
     },
     syncPoints,
+    deliverables: entry.case.deliverables ?? [],
+    toolApproval: entry.case.precondition.toolApproval ?? null,
     baseline,
     repair,
     runDir,
@@ -1138,6 +1190,9 @@ async function prepare(options) {
     stopPath: paths.stopPath,
     hostLogPath: paths.hostLogPath,
     stagedModels,
+    modelSettingsPath,
+    stagedInputs,
+    externalMcpServer,
     chat: {
       evaluationRunId,
       trialId,
@@ -1182,6 +1237,14 @@ async function prepare(options) {
       + ` minutes=${authorization.budget.minutes} trials=${authorization.budget.trials} repairs=${authorization.budget.repairs}`
       + ` · holdout=${authorization.holdout}`,
     `  driver: ${driverPackage.driver.length} 步 / ${syncPoints.length} 个检查点 · ${entry.binding.driverHash}`,
+    ...((entry.case.deliverables ?? []).length > 0
+      ? [`  deliverables: ${entry.case.deliverables
+        .map(deliverable => `${deliverable.id}（${deliverable.role}）→ ${deliverable.path}`)
+        .join("；")}`]
+      : []),
+    ...(entry.case.precondition.toolApproval
+      ? [`  tool approval: ${entry.case.precondition.toolApproval}（驱动代替用户确认一次）`]
+      : []),
     ...(repair ? [`  repair: #${repair.index} of ${repair.ofRunId}（复用同一 evaluationRunId）`] : []),
     ...(baseline ? [`  baseline: ${baseline.evaluationRunId}`] : []),
     `  eval-models: ${stagedModels.length > 0 ? stagedModels.join(", ") : "未 stage（全部继承）"}`,
@@ -1369,7 +1432,8 @@ async function start(runId) {
   if (authorizationFingerprint(authorization) !== state.authorization.fingerprint) {
     throw new Error("authorization.json 与 runner.json 记录的授权指纹不一致")
   }
-  readDriverPackageFile(paths.driverPackagePath, state)
+  const driverPackage = readDriverPackageFile(paths.driverPackagePath, state)
+  const externalEnvironment = initialExternalEnvironmentStep(driverPackage.driver, state.externalMcpServer)
 
   updateState(paths, state, { status: "starting", hostPid: null, lastError: null })
 
@@ -1384,7 +1448,7 @@ async function start(runId) {
     try {
       child = spawn(binary, [], {
         cwd: REPO_ROOT,
-        env: hostEnv(runDir, paths.controlDir, clock.timezone),
+        env: hostEnv(runDir, paths.controlDir, clock.timezone, externalEnvironment),
         stdio: ["ignore", fd, fd],
         detached: true,
         windowsHide: true,
@@ -1442,7 +1506,7 @@ async function start(runId) {
       return raw ? validateSeedReport(raw, expected) : undefined
     })
 
-    const dataset = loadDataset({ repoRoot: REPO_ROOT })
+    const dataset = loadDataset({ repoRoot: REPO_ROOT, root: state.datasetRoot, caseIds: [state.caseId] })
     if (dataset.errors.length > 0) {
       for (const problem of dataset.errors) {
         console.error(`${problem.code}${problem.file ? ` ${problem.file}` : ""}: ${problem.message}`)
@@ -1508,8 +1572,8 @@ async function waitForStopQuiet(pid, paths, timeoutMs) {
 
 // ── drive ──
 
-/** 驱动传输层只走控制通道：时钟、消息、会话、宿主方法、上下文用量与记忆水位。 */
-function driverTransport(paths, identity) {
+/** 驱动传输层只走控制通道：时钟、消息、会话、宿主方法、上下文用量、记忆水位与工具确认。 */
+function driverTransport(paths, identity, messageTimeoutMs = DRIVER_MESSAGE_WAIT_MS, externalEnvironment = false) {
   if (typeof identity?.trialId !== "string" || identity.trialId === "") {
     throw new Error("驱动传输缺少 trialId；不能发送没有试次身份的消息")
   }
@@ -1540,15 +1604,20 @@ function driverTransport(paths, identity) {
         generation: identity.generation,
       }
       const event = await sendBridgeCommand(
-        paths, { type: "message", text, operation: expected }, ["message"], DRIVER_MESSAGE_WAIT_MS,
+        paths, { type: "message", text, operation: expected }, ["message"], messageTimeoutMs,
       )
       return validateMessageReceipt(event, expected)
     },
     sessions: syncSessions,
     async host(method, args) {
+      const { externalEnvironmentStep, ...hostArgs } = args ?? {}
+      if (externalEnvironmentStep !== undefined) {
+        if (!externalEnvironment || method !== "chat_new_session") throw new Error("环境切换只允许已绑定外部MCP的会话边界")
+        writeJsonAtomic(join(dirname(paths.seedPath), "external-environment.json"), validateExternalEnvironmentStep(externalEnvironmentStep))
+      }
       // 任务交付组件最长等待 300s，手工触发沿用消息级超时；其余宿主步骤保持采集超时。
       const timeoutMs = MANUAL_TRIGGER_HOST_METHODS.includes(method) ? DRIVER_MESSAGE_WAIT_MS : CAPTURE_WAIT_MS
-      const event = await sendBridgeCommand(paths, { type: "host", method, args }, ["host"], timeoutMs)
+      const event = await sendBridgeCommand(paths, { type: "host", method, args: hostArgs }, ["host"], timeoutMs)
       return { method: event.method, result: event.result ?? null }
     },
     async context() {
@@ -1558,6 +1627,25 @@ function driverTransport(paths, identity) {
     async memoryState() {
       const event = await sendBridgeCommand(paths, { type: "memory_state" }, ["memory_state"], 30_000)
       return event.result
+    },
+    async confirm(action) {
+      if (action?.action === "query") {
+        const event = await sendBridgeCommand(paths, { type: "confirm" }, ["confirm"], 30_000)
+        return { pending: event.pending ?? null }
+      }
+      if (action?.action === "resolve") {
+        const event = await sendBridgeCommand(
+          paths, { type: "confirm", decision: action.decision }, ["confirm"], 30_000,
+        )
+        if (event.requestId !== action.requestId || event.decision !== action.decision) {
+          throw new Error(
+            `确认回执与请求不一致：requestId=${String(event.requestId)} decision=${String(event.decision)}`
+            + `（期望 ${action.requestId} / ${action.decision}）`,
+          )
+        }
+        return { resolved: true, requestId: event.requestId, decision: event.decision }
+      }
+      throw new Error(`未知确认动作：${String(action?.action)}`)
     },
   }
 }
@@ -1608,7 +1696,9 @@ async function drive(runId) {
       progress,
       driverPackage,
       syncPoints: state.syncPoints,
-      transport: driverTransport(paths, { trialId: chat.trialId, generation: state.generation }),
+      transport: driverTransport(paths, { trialId: chat.trialId, generation: state.generation }, state.externalMcpServer ? Math.max(DRIVER_MESSAGE_WAIT_MS, state.authorization.budget.minutes * 60000) : DRIVER_MESSAGE_WAIT_MS, Boolean(state.externalMcpServer)),
+      dataRoot: state.dataRoot,
+      toolApproval: state.toolApproval ?? null,
       onProgress: persist,
     })
     const final = await persist()
@@ -1617,7 +1707,8 @@ async function drive(runId) {
     console.log([
       `driven ${runId}`,
       `  driver: ${final.status} ${final.completed}/${final.total ?? driverPackage.driver.length} 步`
-        + ` · 检查点 ${checkpoints} 个已满足`,
+        + ` · 检查点 ${checkpoints} 个已满足`
+        + `${final.confirmations ? ` · 工具确认 ${final.confirmations} 次` : ""}`,
       `  clock: ${final.clockBase} → ${final.lastClock}`,
       `  usage: messages=${final.usage.messages}/${progress.budget.messages}`
         + ` tokens=${final.usage.tokens}/${progress.budget.tokens}`
@@ -1644,7 +1735,7 @@ async function drive(runId) {
 
 /** 报告与判分加载同一份当前数据集；判分要求哈希未变，报告允许展示漂移原因。 */
 function loadReportDataset(state) {
-  const dataset = loadDataset({ repoRoot: REPO_ROOT })
+  const dataset = loadDataset({ repoRoot: REPO_ROOT, root: state.datasetRoot, caseIds: [state.caseId] })
   if (dataset.errors.length > 0) {
     return { dataset: null, error: `数据集有 ${dataset.errors.length} 个错误：${dataset.errors.map(problem => problem.message).join("；")}` }
   }
@@ -1839,6 +1930,8 @@ async function finish(runId, options = {}) {
       inputs: inputHashes({ state }),
       outcome: outcome.status,
       issues: finished.issues,
+      deliverables: state.deliverables ?? [],
+      dataRoot: state.dataRoot,
     })
 
     const driver = driverSummary(progress)
@@ -1892,9 +1985,15 @@ async function finish(runId, options = {}) {
       `${sealed.status === "complete" ? "sealed" : "sealed (incomplete)"} ${runId}`,
       `  evidence: test/reports/chat/${chat.evaluationRunId}/attempts/${chat.attemptId}`,
       `  driver: ${driver.status} ${driver.completed}/${driver.total ?? state.driver.steps} 步`
-        + ` · outcome=${outcome.status}${closeReason ? `（${closeReason}）` : ""}`,
+        + ` · outcome=${outcome.status}${closeReason ? `（${closeReason}）` : ""}`
+        + `${driver.confirmations ? ` · 工具确认 ${driver.confirmations} 次` : ""}`,
       `  outcome: ${outcome.status} / integrity=${sealed.status}`,
       `  dialogue: ${finished.dialogue.messageCount} 条 / 会话 ${finished.dialogue.sessions.join(", ") || "（无）"}`,
+      ...(sealed.manifest.deliverables.length > 0
+        ? [`  deliverables: ${sealed.manifest.deliverables
+          .map(item => `${item.id}=${item.status}${item.bytes === undefined ? "" : `(${item.bytes}B)`}`)
+          .join(" ")}`]
+        : []),
       `  models: requested=${chat.identity?.models?.requested ?? "?"} actual=${actualModels.join(",") || "（未记录）"}`,
       `  usage: messages=${driver.usage.messages} tokens=${driver.usage.tokens}`
         + `${driver.usage.tokensUnknown ? "（含未知用量）" : ""}`,
@@ -1958,6 +2057,8 @@ export async function rescueRun({ runDir, state, reason = null, now = new Date()
     inputs: pending.identity?.inputs ?? null,
     outcome: "interrupted",
     issues,
+    deliverables: state.deliverables ?? [],
+    dataRoot: state.dataRoot,
   })
   setChatRunPhase(chat.runDir, {
     phase: "blocked",
@@ -2095,7 +2196,7 @@ function resolveSlotRunId({ evaluationRunId, index, previousSlots }) {
   }
 }
 
-async function runBatchSlot({ slot, runDir, evaluationRunId, entry, authorizationPath, cardPath, baseline }) {
+async function runBatchSlot({ slot, runDir, evaluationRunId, entry, authorizationPath, cardPath, baseline, datasetRoot }) {
   const existing = findAttemptByTrialId(runDir, entry.caseId, slot.trialId)
   if (existing) {
     const attemptDir = join(runDir, "attempts", existing.attemptId)
@@ -2139,6 +2240,7 @@ async function runBatchSlot({ slot, runDir, evaluationRunId, entry, authorizatio
     "prepare", "--case", entry.caseId, "--card", cardPath, "--authorization", authorizationPath,
     "--run-id", runId, "--evaluation-run-id", evaluationRunId, "--trial-id", slot.trialId,
   ]
+  if (datasetRoot) args.push("--dataset-root", datasetRoot)
   if (baseline) args.push("--baseline", baseline.evaluationRunId)
   if (runChild(args) !== 0) throw new Error(`trial ${slot.trialId} prepare 失败；批量中止（已保留现场）`)
   if (runChild(["start", "--run-id", runId]) !== 0) {
@@ -2189,7 +2291,7 @@ async function runBatchSlot({ slot, runDir, evaluationRunId, entry, authorizatio
  */
 async function batch(options = {}) {
   if (options.runId) throw new Error("batch 用 --evaluation-run-id 指定证据组；--run-id 只用于单个试次")
-  const { dataset, entry, suite } = loadCaseForRun({ caseId: options.caseId, label: "batch" })
+  const { dataset, entry, suite } = loadCaseForRun({ caseId: options.caseId, label: "batch", datasetRoot: options.datasetRoot })
   if (!options.card) throw new Error("batch 缺少 --card <path>（fixture 需要的 Card 不被仓库跟踪）")
   const cardPath = resolve(options.card)
   if (!existsSync(cardPath)) throw new Error(`Card 文件不存在：${cardPath}`)
@@ -2300,6 +2402,7 @@ async function batch(options = {}) {
     try {
       Object.assign(slot, await runBatchSlot({
         slot, runDir, evaluationRunId, entry, authorizationPath, cardPath, baseline,
+        datasetRoot: dataset.root,
       }))
     } catch (error) {
       record.status = "blocked"
@@ -2437,7 +2540,7 @@ function compare(runId, options = {}) {
 /** 留出用例是否已被任何运行组使用（含在途与待审）；只报告，不改变证据。 */
 function holdout(options = {}) {
   if (!options.caseId) throw new Error("holdout 需要 --case <caseId>")
-  const dataset = loadDataset({ repoRoot: REPO_ROOT })
+  const dataset = loadDataset({ repoRoot: REPO_ROOT, root: options.datasetRoot, caseIds: [options.caseId] })
   if (dataset.errors.length > 0) {
     throw new Error(`数据集有 ${dataset.errors.length} 个错误：${dataset.errors.map(problem => problem.message).join("；")}`)
   }
@@ -2986,6 +3089,9 @@ function status(runId) {
 function parseArgs(argv) {
   const options = {}
   const names = {
+    "--dataset-root": "datasetRoot",
+    "--mcp-server": "mcpServer",
+    "--model-settings": "modelSettings",
     "--case": "caseId",
     "--card": "card",
     "--authorization": "authorization",

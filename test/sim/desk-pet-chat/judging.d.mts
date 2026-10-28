@@ -2,7 +2,9 @@ import type { CaseEntry, Dataset, ProbeSpec } from "./dataset.mjs";
 import type { ChatAttemptManifest, GradeRecord, ReviewRecord, SealedVerification } from "./evidence.mjs";
 
 export const JUDGING_SCHEMA_VERSION: 1;
-export const JUDGE_PACKET_SCHEMA_VERSION: 1;
+export const JUDGE_PACKET_SCHEMA_VERSION: 3;
+export const DELIVERABLE_CONTENT_MAX_BYTES: number;
+export const DELIVERABLE_CONTENT_TOTAL_MAX_BYTES: number;
 export const VERDICTS_SCHEMA_VERSION: 1;
 export const JUDGE_PROMPT_VERSION: string;
 export const JUDGE_RUBRIC_VERSION: string;
@@ -91,6 +93,7 @@ export interface JudgePacketRule {
   kind: string;
   description: string;
   expectation: string | null;
+  deliverableId?: string;
   polarity: "required" | "forbidden";
   critical: boolean;
   questionType: string;
@@ -119,8 +122,23 @@ export interface SkippedJudgeRule {
   window: { mode: string; after: string };
 }
 
+export interface JudgePacketDeliverable {
+  id: string;
+  role: string;
+  path: string;
+  maxBytes?: number;
+  status: "delivered" | "missing" | "oversized" | "invalid";
+  bytes?: number;
+  sha256?: string;
+  artifactPath?: string;
+  reason?: string;
+  content: string | null;
+  truncated: boolean;
+  contentIssue?: string;
+}
+
 export interface JudgePacket {
-  schemaVersion: 1;
+  schemaVersion: 3;
   kind: "chat-judge-packet";
   packetId: string;
   packetSha256: string;
@@ -151,10 +169,16 @@ export interface JudgePacket {
     knownFacts: string[];
     mustNotReveal: string[];
     allowedAlternatives: string[];
-    quality: { rubric: string; rubricVersion: number };
     pathConstraints: Record<string, unknown>;
     evidence: Array<{ id: string; kind: string; source: string; description: string }>;
+    externalSource?: import("./dataset.mjs").ExternalSourceBinding;
   };
+  fixtureContext: {
+    origin: "fixture";
+    fixtureHash: string;
+    sessionId: string;
+    messages: Array<{ id: string; role: "user" | "assistant"; content: string; at: string }>;
+  } | null;
   rules: JudgePacketRule[];
   skippedRules: SkippedJudgeRule[];
   timeline: Array<{
@@ -172,6 +196,7 @@ export interface JudgePacket {
     capture: Record<string, unknown> | null;
   };
   artifacts: Array<{ role: string; path: string; sha256: string }>;
+  deliverables: JudgePacketDeliverable[];
   allowedEvidenceRefs: string[];
   instructions: string[];
   verdictFormat: Record<string, unknown>;

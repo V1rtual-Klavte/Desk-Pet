@@ -4,6 +4,7 @@ import {
   DRIVER_HOST_METHOD_VALUES,
   PURPOSE_VALUES,
   hashCanonical,
+  renderMessageTemplate,
 } from "./dataset.mjs";
 
 /**
@@ -17,13 +18,16 @@ import {
  */
 
 export const WORKFLOW_SCHEMA_VERSION = 1;
-export const DRIVER_PROGRESS_SCHEMA_VERSION = 1;
+export const DRIVER_PROGRESS_SCHEMA_VERSION = 2;
 export const AUTHORIZATION_SCHEMA_VERSION = 1;
 export const AUTHORIZATION_DATA_SCOPE = "isolated";
 export const DRIVER_PROGRESS_FILE = "driver-progress.json";
 export const DRIVER_PACKAGE_FILE = "driver-package.json";
 export const AUTHORIZATION_FILE = "authorization.json";
 export const CLOCK_FILE = "clock.json";
+export const TOOL_APPROVAL_VALUES = Object.freeze(["allow-once"]);
+export const CONFIRMATION_DECISION_VALUES = Object.freeze(["allow_once"]);
+export const DRIVER_CONFIRM_POLL_MS = 250;
 
 export const DRIVER_STATUSES = Object.freeze(["pending", "running", "completed", "blocked"]);
 export const DRIVER_STEP_STATUSES = Object.freeze(["completed", "failed"]);
@@ -364,6 +368,29 @@ export function validateSyncPoints(raw) {
 
 // ── 驱动进度 ──
 
+/**
+ * 驱动包保留占位符原样（跨机器哈希稳定），发送时才用本次运行的数据根渲染。
+ * 未知占位符在数据集校验阶段已被拒绝；这里兜底防止绕过校验的驱动包把原文发给模型。
+ */
+export function renderDriverText(text, { dataRoot } = {}) {
+  assertText(text, "driver.text");
+  try { return renderMessageTemplate(text, { dataRoot }); }
+  catch (error) { fail(error.code === "driver.data-root" ? "driver.data-root" : "driver.placeholder", error.message); }
+}
+
+/** 确认查询的单槽回执：没有待确认请求时返回 null。 */
+export function readPendingConfirmation(response) {
+  assertRecord(response, "confirm.query");
+  const pending = response.pending;
+  if (pending === null || pending === undefined) return null;
+  assertRecord(pending, "confirm.pending");
+  return {
+    requestId: assertText(pending.requestId, "confirm.pending.requestId"),
+    toolName: assertText(pending.toolName, "confirm.pending.toolName"),
+    effectClass: assertText(pending.effectClass, "confirm.pending.effectClass"),
+  };
+}
+
 export function createDriverProgress({ driverPackage, driverHash, budget, clockBase, startedAt }) {
   assertPattern(driverHash, HASH_PATTERN, "driverHash");
   assertInstant(clockBase, "clockBase");
@@ -399,6 +426,7 @@ export function createDriverProgress({ driverPackage, driverHash, budget, clockB
       contextErrors: [],
     },
     steps: [],
+    confirmations: [],
   };
 }
 
@@ -406,6 +434,7 @@ export function readDriverProgress(raw) {
   assertExactKeys(raw, "driverProgress", [
     "schemaVersion", "caseId", "revision", "specHash", "driverHash", "clockBase", "index",
     "status", "inFlight", "blocked", "createdAt", "updatedAt", "budget", "usage", "steps",
+    "confirmations",
   ], ["totalSteps", "lastUsageStepId"]);
   if (raw.totalSteps !== undefined) assertPositiveInteger(raw.totalSteps, "driverProgress.totalSteps");
   if (raw.lastUsageStepId !== undefined) assertPattern(raw.lastUsageStepId, CASE_ID_PATTERN, "driverProgress.lastUsageStepId");
@@ -493,6 +522,22 @@ export function readDriverProgress(raw) {
       }
     }
   }
+  if (!Array.isArray(raw.confirmations)) fail("driver.confirm-record", "driverProgress.confirmations 必须是数组");
+  const confirmedRequests = new Set();
+  for (const [index, item] of raw.confirmations.entries()) {
+    const label = `driverProgress.confirmations[${index}]`;
+    assertExactKeys(item, label, ["stepId", "requestId", "toolName", "effectClass", "decision", "at"]);
+    assertPattern(item.stepId, CASE_ID_PATTERN, `${label}.stepId`);
+    assertText(item.requestId, `${label}.requestId`);
+    assertText(item.toolName, `${label}.toolName`);
+    assertText(item.effectClass, `${label}.effectClass`);
+    if (!CONFIRMATION_DECISION_VALUES.includes(item.decision)) {
+      fail("driver.confirm-record", `${label}.decision 非法：${String(item.decision)}`);
+    }
+    assertInstant(item.at, `${label}.at`);
+    if (confirmedRequests.has(item.requestId)) fail("driver.confirm-record", `${label}.requestId 重复：${item.requestId}`);
+    confirmedRequests.add(item.requestId);
+  }
   return raw;
 }
 
@@ -557,6 +602,7 @@ export function driverSummary(progress) {
     blocked: progress.blocked,
     clockBase: progress.clockBase,
     lastClock: progress.steps.at(-1)?.clock?.base ?? progress.clockBase,
+    confirmations: progress.confirmations.length,
     usage: {
       messages: progress.usage.messages,
       tokens: progress.usage.tokens,
@@ -780,6 +826,57 @@ async function satisfyCheckpoint({ checkpoint, record, transport, now, sleep, me
 }
 
 /**
+ * 消息在飞期间轮询单槽确认请求：只按声明自动允许一次，并在确认后立即把记录写进进度，
+ * 保证崩溃或阻塞时能从现场看出工具调用是否被驱动放行。确认通道故障立即中止，不等消息超时。
+ */
+async function messageWithAutoConfirm({
+  text, operation, transport, progress, onProgress, stepId, now, sleep, confirmPollMs,
+}) {
+  let settled = false;
+  const done = transport.message(text, operation).then(
+    (value) => { settled = true; return { ok: true, value }; },
+    (error) => { settled = true; return { ok: false, error }; },
+  );
+  let failPoll;
+  const pollFailure = new Promise((_, reject) => { failPoll = reject; });
+  const poll = (async () => {
+    while (!settled) {
+      try {
+        const pending = readPendingConfirmation(await transport.confirm({ action: "query" }));
+        if (pending && !progress.confirmations.some((item) => item.requestId === pending.requestId)) {
+          await transport.confirm({ action: "resolve", requestId: pending.requestId, decision: "allow_once" });
+          const at = new Date(now()).toISOString();
+          progress.confirmations.push({
+            stepId,
+            requestId: pending.requestId,
+            toolName: pending.toolName,
+            effectClass: pending.effectClass,
+            decision: "allow_once",
+            at,
+          });
+          progress.updatedAt = at;
+          await onProgress(progress);
+        }
+      } catch (error) {
+        failPoll(error);
+        return;
+      }
+      await sleep(confirmPollMs);
+    }
+  })();
+  let outcome;
+  try {
+    outcome = await Promise.race([done, pollFailure]);
+  } catch (error) {
+    await poll;
+    throw error;
+  }
+  await poll;
+  if (outcome.ok) return outcome.value;
+  throw outcome.error;
+}
+
+/**
  * 执行（或续跑）驱动。每步先推进固定时钟，再检查预算，最后才产生副作用。
  * 任一步失败或检查点超时都阻塞驱动，不自动重放已开始的步骤。
  */
@@ -792,14 +889,22 @@ export async function executeDriver({
   now = () => Date.now(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   memoryWait = { deadlineMs: 300_000, pollMs: 500, stableMs: 1_000 },
+  dataRoot,
+  toolApproval = null,
+  confirmPollMs = DRIVER_CONFIRM_POLL_MS,
 }) {
   const pkg = validateDriverPackage(driverPackage);
   validateSyncPoints(syncPoints);
   assertPackageMatches(progress, pkg);
   if (progress.status === "completed") return driverSummary(progress);
   assertResumable(progress);
+  if (toolApproval !== null && !TOOL_APPROVAL_VALUES.includes(toolApproval)) {
+    fail("driver.tool-approval", `未知工具确认声明：${String(toolApproval)}`);
+  }
   if (!isRecord(transport)) fail("driver.transport", "缺少驱动传输层");
-  for (const method of ["clock", "message", "sessions", "host", "context", "memoryState"]) {
+  const requiredMethods = ["clock", "message", "sessions", "host", "context", "memoryState"];
+  if (toolApproval !== null) requiredMethods.push("confirm");
+  for (const method of requiredMethods) {
     if (typeof transport[method] !== "function") fail("driver.transport", `驱动传输层缺少 ${method}`);
   }
   if (!progress.usage.startedAt) progress.usage.startedAt = new Date(now()).toISOString();
@@ -844,7 +949,19 @@ export async function executeDriver({
     let record;
     try {
       response = step.kind === "message"
-        ? await transport.message(step.text, operation)
+        ? await (toolApproval === "allow-once"
+          ? messageWithAutoConfirm({
+            text: renderDriverText(step.text, { dataRoot }),
+            operation,
+            transport,
+            progress,
+            onProgress,
+            stepId: step.id,
+            now,
+            sleep,
+            confirmPollMs,
+          })
+          : transport.message(renderDriverText(step.text, { dataRoot }), operation))
         : await executeHostStep(step, transport);
       const result = stepResultFor(step, response, operation);
       if (step.kind === "message" && (response.outcome === "failed" || result.reply.trim() === "")) {

@@ -116,6 +116,11 @@ function renderConclusion({ attempt, run, caseEntry, caseIssue, status }) {
     `- 请求模型 / 实际模型：${manifest.models?.requested ?? "?"} / ${manifest.models?.actual ?? "?"}`,
     `- 执行 / 证据：${manifest.outcome} / ${manifest.integrity?.status ?? "unknown"}`,
   ];
+  if (caseEntry?.case.source.kind === "external") {
+    const upstream = caseEntry.case.source.upstream;
+    lines.push(`- 外部适配观测：${upstream.dataset} / ${upstream.split} / ${upstream.id}；revision ${upstream.revision}；不是官方榜单分数`);
+    for (const note of upstream.adaptationNotes) lines.push(`  - 适配范围：${note}`);
+  }
   if (status) {
     const { required, forbidden, critical } = status.check.counts;
     const judge = status.judge
@@ -146,7 +151,7 @@ function renderConclusion({ attempt, run, caseEntry, caseIssue, status }) {
 }
 
 function renderCheck({ check, probe, context, spot }) {
-  const target = check.probeId ?? "quality";
+  const target = check.probeId ?? check.ruleId;
   const rubric = check.rubric ? ` · ${check.rubric}` : "";
   const lines = [
     `- **${target}** — ${check.status}（${check.polarity}${check.critical ? " · critical" : ""}${rubric}${probe ? `；题型 ${probe.questionType}` : ""}）`,
@@ -156,7 +161,8 @@ function renderCheck({ check, probe, context, spot }) {
   if (probe) {
     const window = resolveProbeWindow({ context, probe });
     if (window.replies.length === 0) {
-      lines.push(`  - 实际：该规则使用${probe.window === "state" ? "状态" : "回复"}证据${window.reason ? `（${window.reason}）` : "，见原始证据"}`);
+      const windowLabel = probe.window === "state" ? "状态" : probe.window === "artifact" ? "封存产物" : "回复";
+      lines.push(`  - 实际：该规则使用${windowLabel}证据${window.reason ? `（${window.reason}）` : "，见原始证据"}`);
     } else {
       lines.push("  - 实际：");
       for (const reply of window.replies.slice(0, ASSISTANT_CAP)) {
@@ -258,6 +264,9 @@ function renderRawEvidence({ attempt, context, timeline }) {
     `- trace：${timeline.trace.chunkCount} 块；${timeline.events.length} 事件；dropped=${timeline.trace.droppedCount}；complete=${String(timeline.trace.complete)}`,
     `- 状态：before=${stateSummary(context?.before)}；after=${stateSummary(context?.after)}`,
     `- capture：${context?.capture ? `complete=${String(context.capture.complete)}；issues=${Array.isArray(context.capture.issues) ? context.capture.issues.length : "未知"}` : "缺失"}`,
+    ...(manifest.deliverables?.length
+      ? [`- 交付产物：${manifest.deliverables.map((deliverable) => `${deliverable.id}=${deliverable.status}${Number.isSafeInteger(deliverable.bytes) ? `（${deliverable.bytes} 字节）` : ""}${deliverable.reason ? `（${clip(deliverable.reason, 80)}）` : ""}`).join("；")}`]
+      : []),
     `- 源码哈希：${manifest.sourceHash}`,
     "",
     "产物:",

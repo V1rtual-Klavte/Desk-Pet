@@ -4,7 +4,7 @@
 //
 // 运行器只负责：把封存证据与当前 case 冻结成判分包、校验 judge 回填的裁决、
 // 追加只读判分记录。模型调用不在运行器内发生，也不读取任何凭据。
-// 所有探针（含 humanizer 质量规则）都由独立 coding-agent judge 判定；
+// 所有探针都由独立 coding-agent judge 按结果判定；
 // 用户抽查是可选项，只记录覆盖与一致性，不阻塞、不改写判分结论。
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -16,12 +16,13 @@ import {
   formatExpectation,
   hashCanonical,
 } from "./dataset.mjs";
-import { CHAT_GRADER_VERSION, appendGrade, appendReview, verifySealedAttempt } from "./evidence.mjs";
+import { CHAT_GRADER_VERSION, appendGrade, appendReview, hashBytes, verifySealedAttempt } from "./evidence.mjs";
 
 export const JUDGING_SCHEMA_VERSION = 1;
-export const JUDGE_PACKET_SCHEMA_VERSION = 1;
+/** packet 3：固定历史作为 fixtureContext 冻结，和本次实际生成的对话分开。 */
+export const JUDGE_PACKET_SCHEMA_VERSION = 3;
 export const VERDICTS_SCHEMA_VERSION = 1;
-export const JUDGE_PROMPT_VERSION = "chat-judge@3";
+export const JUDGE_PROMPT_VERSION = "chat-judge@5";
 export const JUDGE_RUBRIC_VERSION = JUDGE_PROMPT_VERSION;
 export const JUDGE_AUTHORITY = "coding-agent-judge";
 /** 只有这些执行平台的回填才算 coding-agent 权威；API 客户端跑同样的 prompt 也不算。 */
@@ -37,19 +38,14 @@ export const SPOT_CHECK_AGREEMENTS = Object.freeze(["agree", "disagree"]);
 const PACKET_DIR = "judge-packets";
 const PACKET_ID_PATTERN = /^packet-[a-z0-9][a-z0-9._-]*$/;
 const REVIEW_ID_PREFIX = "spot";
-const QUALITY_DIMENSIONS = [
-  "自然口语",
-  "角色一致",
-  "不服务腔、不说教",
-  "不暴露程序或模型身份",
-  "不解释自己刚说过的话",
-  "不索取回应或追问",
-];
 const INTERNAL_TERMS = Object.freeze([
   "probe", "rubric", "oracle", "spechash", "oraclehash", "checkpoint",
-  "gold", "silver", "humanizer", "dataset", "judge packet",
+  "gold", "silver", "dataset", "judge packet",
 ]);
 const MAX_EVIDENCE_EXCERPT = 180;
+/** 判分包携带产物内容的边界：单文件与整包总量都按字节计，超限截断并标注。 */
+export const DELIVERABLE_CONTENT_MAX_BYTES = 4096;
+export const DELIVERABLE_CONTENT_TOTAL_MAX_BYTES = 16384;
 
 export class JudgingError extends Error {
   constructor(code, message) {
@@ -328,6 +324,10 @@ export function resolveProbeWindow({ context, probe }) {
     }
     return { ok: true, empty: false, replies: [], step, reason: null };
   }
+  if (probe.window === "artifact") {
+    // 产物是 attempt 级证据（封存时捕获），窗口不依赖本步的助手回复。
+    return { ok: true, empty: false, replies: [], step, reason: null };
+  }
   if (!step.message) {
     return { ok: false, empty: true, replies: [], step, reason: `驱动步骤未对应到对话消息：${probe.after}` };
   }
@@ -359,14 +359,75 @@ function dialogueRef(message) {
   return `dialogue:${message.sessionId}:${message.entryId}`;
 }
 
-function allowedEvidenceRefs({ context }) {
+/**
+ * 判分包携带交付产物的封存状态与受限内容：单文件与整包都有字节预算，
+ * 二进制、哈希不符或预算耗尽都不塞内容，只保留原因；状态本身照实呈现。
+ */
+function buildDeliverables({ context, caseEntry }) {
+  const declared = caseEntry.case.deliverables ?? [];
+  const captures = new Map((context.manifest?.deliverables ?? []).map((item) => [item.id, item]));
+  let remaining = DELIVERABLE_CONTENT_TOTAL_MAX_BYTES;
+  return declared.map((spec) => {
+    const capture = captures.get(spec.id) ?? null;
+    const deliverable = {
+      id: spec.id,
+      role: spec.role,
+      path: spec.path,
+      ...(spec.maxBytes === undefined ? {} : { maxBytes: spec.maxBytes }),
+      status: capture?.status ?? "missing",
+      ...(capture?.bytes === undefined ? {} : { bytes: capture.bytes }),
+      ...(capture?.sha256 === undefined ? {} : { sha256: capture.sha256 }),
+      ...(capture?.artifactPath === undefined ? {} : { artifactPath: capture.artifactPath }),
+      ...(capture?.reason === undefined ? {} : { reason: capture.reason }),
+      content: null,
+      truncated: false,
+    };
+    if (!capture) {
+      deliverable.contentIssue = "封存记录未包含该产物";
+      return deliverable;
+    }
+    if (capture.status !== "delivered" || typeof capture.artifactPath !== "string"
+      || !capture.artifactPath.startsWith("artifacts/")) {
+      return deliverable;
+    }
+    const artifactPath = join(context.attemptDir, capture.artifactPath);
+    if (!existsSync(artifactPath)) {
+      deliverable.contentIssue = "封存产物文件缺失";
+      return deliverable;
+    }
+    const bytes = readFileSync(artifactPath);
+    if (typeof capture.sha256 === "string" && hashBytes(bytes) !== capture.sha256) {
+      deliverable.contentIssue = "产物内容与封存哈希不一致";
+      return deliverable;
+    }
+    if (bytes.includes(0)) {
+      deliverable.contentIssue = "二进制内容不进入判分包";
+      return deliverable;
+    }
+    if (remaining <= 0) {
+      deliverable.contentIssue = "判分包内容预算已用尽";
+      return deliverable;
+    }
+    const take = Math.min(DELIVERABLE_CONTENT_MAX_BYTES, remaining, bytes.length);
+    deliverable.content = bytes.subarray(0, take).toString("utf8");
+    deliverable.truncated = take < bytes.length;
+    remaining -= take;
+    return deliverable;
+  });
+}
+
+function allowedEvidenceRefs({ context, deliverables, fixtureContext }) {
   const refs = context.messages.map(dialogueRef);
+  for (const message of fixtureContext?.messages ?? []) refs.push(`fixture:${message.id}`);
   for (const name of ["before", "after", "capture"]) {
     if (context[name]) refs.push(`state:${name}`);
   }
   refs.push("trace:trace.jsonl");
   for (const artifact of context.manifest?.artifacts ?? []) {
     refs.push(`artifact:${artifact.path}`);
+  }
+  for (const deliverable of deliverables) {
+    refs.push(`deliverable:${deliverable.id}`);
   }
   return unique(refs);
 }
@@ -387,7 +448,6 @@ export function checkDriverNoOracleLeak({ dataset, caseEntry }) {
     ...RUBRIC_SPECS.map((rubric) => rubric.id),
     ...caseEntry.case.evidence.map((item) => item.id),
     ...caseEntry.case.checkpoints.map((item) => item.id),
-    caseEntry.case.quality.rubric,
     caseEntry.binding.specHash,
     caseEntry.binding.oracleHash,
     caseEntry.binding.driverHash,
@@ -430,14 +490,21 @@ function stepWindow({ window, probe }) {
   };
 }
 
-function ruleInstruction(probe) {
+function ruleInstruction(probe, deliverable) {
+  if (deliverable) {
+    return `这是交付产物规则：产物 ${deliverable.id}（${deliverable.path}）的封存状态为 ${deliverable.status}，`
+      + "内容与截断情况见 packet.deliverables。"
+      + "status=delivered 且内容满足声明要求才判 pass；missing/oversized/invalid 判 fail；"
+      + "内容被截断、为二进制或因预算缺失而不足以核对时判 inconclusive。";
+  }
   if (probe.polarity === "forbidden") {
     return "这是禁止项：只有确认回复/状态中未出现被禁止的行为才判 pass；出现即 fail；证据不足以确认时判 inconclusive。";
   }
   return "这是必需项：回复/状态满足规则要求才判 pass；明确违反判 fail；证据不足或窗口内没有可判定内容判 inconclusive。";
 }
 
-function buildRules({ context, caseEntry }) {
+function buildRules({ context, caseEntry, deliverables }) {
+  const deliverablesById = new Map(deliverables.map((deliverable) => [deliverable.id, deliverable]));
   const rules = [];
   const skippedRules = [];
   for (const probe of caseEntry.case.probes) {
@@ -458,6 +525,8 @@ function buildRules({ context, caseEntry }) {
       });
       continue;
     }
+    const deliverableId = probe.expectation?.deliverableId ?? null;
+    const deliverable = deliverableId ? deliverablesById.get(deliverableId) ?? null : null;
     rules.push({
       ruleId: probe.id,
       probeId: probe.id,
@@ -465,34 +534,16 @@ function buildRules({ context, caseEntry }) {
       kind: rubric.kind,
       description: probe.description,
       expectation: formatExpectation(probe.expectation) || null,
+      ...(deliverableId ? { deliverableId } : {}),
       polarity: probe.polarity,
       critical: probe.critical,
       questionType: probe.questionType,
       difficulty: probe.difficulty,
       evidenceIds: probe.evidence ?? [],
       window: stepWindow({ window, probe }),
-      instruction: ruleInstruction(probe),
+      instruction: ruleInstruction(probe, deliverable),
     });
   }
-  const quality = caseEntry.case.quality;
-  const assistantSeqs = context.messages
-    .filter((message) => message.origin === "assistant")
-    .map((message) => message.seq);
-  rules.push({
-    ruleId: `quality:${quality.rubric}`,
-    probeId: null,
-    rubric: quality.rubric,
-    kind: "quality",
-    description: "全部助手回复的整体拟人化质量",
-    expectation: `按 ${quality.rubric} v${quality.rubricVersion} 综合判断`,
-    polarity: "required",
-    critical: true,
-    questionType: "quality",
-    difficulty: null,
-    evidenceIds: [],
-    window: { mode: "all-assistant", after: null, stepId: null, startSeq: null, endSeq: null, messageSeqs: assistantSeqs },
-    instruction: `综合全部助手回复，按六维整体判断：${QUALITY_DIMENSIONS.join("、")}。任一维度明显不达标判 fail；整体自然且无服务腔判 pass；回复不足或无法判断判 inconclusive。`,
-  });
   return { rules, skippedRules };
 }
 
@@ -508,7 +559,14 @@ function nextPacketId(packetDir, now) {
 }
 
 function buildPacket({ context, datasetHash, caseEntry, packetId, now }) {
-  const { rules, skippedRules } = buildRules({ context, caseEntry });
+  const deliverables = buildDeliverables({ context, caseEntry });
+  const fixtureContext = caseEntry.case.source.kind === "external" ? {
+    origin: "fixture",
+    fixtureHash: caseEntry.binding.fixtureHash,
+    sessionId: caseEntry.fixture.initialSession.id,
+    messages: caseEntry.fixture.initialSession.messages.map(message => ({ ...message })),
+  } : null;
+  const { rules, skippedRules } = buildRules({ context, caseEntry, deliverables });
   const manifest = context.manifest;
   return {
     schemaVersion: JUDGE_PACKET_SCHEMA_VERSION,
@@ -544,13 +602,11 @@ function buildPacket({ context, datasetHash, caseEntry, packetId, now }) {
       knownFacts: caseEntry.case.userRole.knownFacts,
       mustNotReveal: caseEntry.case.userRole.mustNotReveal,
       allowedAlternatives: caseEntry.case.oracle.allowedAlternatives,
-      quality: {
-        rubric: caseEntry.case.quality.rubric,
-        rubricVersion: caseEntry.case.quality.rubricVersion,
-      },
       pathConstraints: caseEntry.case.pathConstraints,
       evidence: caseEntry.case.evidence,
+      ...(caseEntry.case.source.kind === "external" ? { externalSource: caseEntry.case.source.upstream } : {}),
     },
+    fixtureContext,
     rules,
     skippedRules,
     timeline: context.messages.map((message) => ({
@@ -572,12 +628,15 @@ function buildPacket({ context, datasetHash, caseEntry, packetId, now }) {
       path: artifact.path,
       sha256: artifact.sha256,
     })),
-    allowedEvidenceRefs: allowedEvidenceRefs({ context }),
+    deliverables,
+    allowedEvidenceRefs: allowedEvidenceRefs({ context, deliverables, fixtureContext }),
     instructions: [
+      "fixtureContext 是锁定的预置历史，只作目标回合的语境；不得当作被测模型本次生成、在线记忆抽取或任务完成的证据。fixture:<id> 引用保持此来源。",
       "你是独立评测裁判，不是被测产品，也不能读取被测仓库的源码、测试期望或历史判分。",
       "只依据本包内的对话、状态、产物与规则判定；不补写证据，不修改任何文件。",
       "逐条判定 rules；skippedRules 不需要判定，运行器会记为 inconclusive。",
       "pass 表示规则要求满足；对 forbidden 规则，pass 表示未出现被禁止的行为。",
+      "交付产物规则以 packet.deliverables 的封存状态与内容为准；内容缺失、被截断或为二进制时不得按未出现内容猜测。",
       "pass 或 fail 至少引用一条 allowedEvidenceRefs 中的证据；inconclusive 要说明缺失或冲突的证据。",
       "judge.identity 必须如实填写当前执行裁判的 platform、model 与 promptVersion；若你正是本包 underTest 中的模型，停止并报告，不要写 verdicts。",
       "输出单个 JSON 文件，字段严格按 verdictFormat；不要输出 Markdown 或额外解释。",
@@ -779,7 +838,12 @@ export function validateJudgeVerdicts({ packet, verdicts }) {
   };
 }
 
-function evidenceForRef(ref, { context, byRef }) {
+function evidenceForRef(ref, { context, byRef, packet }) {
+  if (ref.startsWith("fixture:")) {
+    const message = packet?.fixtureContext?.messages.find(candidate => candidate.id === ref.slice("fixture:".length));
+    if (!message) fail("verdict.evidence-ref", `预置历史引用不存在：${ref}`);
+    return { ref, excerpt: `预置历史 ${message.role}：${excerpt(message.content)}` };
+  }
   if (ref.startsWith("dialogue:")) {
     const message = byRef.get(ref);
     if (!message) fail("verdict.evidence-ref", `对话引用不存在：${ref}`);
@@ -793,6 +857,18 @@ function evidenceForRef(ref, { context, byRef }) {
   }
   if (ref.startsWith("artifact:")) {
     return { ref, excerpt: ref.slice("artifact:".length) };
+  }
+  if (ref.startsWith("deliverable:")) {
+    const id = ref.slice("deliverable:".length);
+    const deliverable = (packet?.deliverables ?? []).find((candidate) => candidate.id === id);
+    if (!deliverable) fail("verdict.evidence-ref", `产物引用不存在：${ref}`);
+    const status = `${deliverable.id} ${deliverable.status}（${deliverable.path}）`;
+    return {
+      ref,
+      excerpt: deliverable.content === null || deliverable.content === undefined
+        ? status
+        : `${status}：${excerpt(deliverable.content)}`,
+    };
   }
   fail("verdict.evidence-ref", `未知证据引用：${ref}`);
 }
@@ -838,7 +914,7 @@ function buildChecks({ packet, normalized, context }) {
       kind: rule.kind,
       status: verdict.verdict,
       reason: verdict.reason,
-      evidence: verdict.evidenceRefs.map((ref) => evidenceForRef(ref, { context, byRef })),
+      evidence: verdict.evidenceRefs.map((ref) => evidenceForRef(ref, { context, byRef, packet })),
       polarity: rule.polarity,
       critical: rule.critical,
       questionType: rule.questionType,
@@ -919,11 +995,6 @@ export function applyJudgeVerdicts({
     evidence: context.evidenceStatus,
     counts,
     skippedRules: packet.skippedRules.map((rule) => rule.ruleId),
-    quality: {
-      ruleId: `quality:${caseEntry.case.quality.rubric}`,
-      rubric: caseEntry.case.quality.rubric,
-      rubricVersion: caseEntry.case.quality.rubricVersion,
-    },
     label: caseEntry.label ?? null,
   };
   const grade = appendGrade({
@@ -1050,22 +1121,6 @@ export function summarizeAttemptStatus({ caseEntry, context, grades = null, revi
       difficulty: probe.difficulty,
       window: check?.window ?? null,
     };
-  });
-  const quality = caseEntry.case.quality;
-  const qualityRuleId = `quality:${quality.rubric}`;
-  const qualityCheck = byRule.get(qualityRuleId);
-  checks.push({
-    ruleId: qualityRuleId,
-    probeId: null,
-    rubric: quality.rubric,
-    status: qualityCheck && CHECK_STATUSES.includes(qualityCheck.status) ? qualityCheck.status : "inconclusive",
-    reason: qualityCheck?.reason ?? "尚无判分记录",
-    evidence: qualityCheck?.evidence ?? [],
-    polarity: "required",
-    critical: true,
-    questionType: "quality",
-    difficulty: null,
-    window: qualityCheck?.window ?? null,
   });
   const counts = countChecks(checks);
   const checkStatus = checks.some((check) => check.status === "fail")
@@ -1242,6 +1297,28 @@ export function formatJudgePacket({ packet }) {
     lines.push("## 跳过规则（运行器记为 inconclusive）");
     lines.push("");
     for (const rule of packet.skippedRules) lines.push(`- ${rule.ruleId}：${rule.reason}`);
+  }
+  if ((packet.deliverables ?? []).length > 0) {
+    lines.push("");
+    lines.push("## 交付产物");
+    lines.push("");
+    for (const deliverable of packet.deliverables) {
+      const size = deliverable.bytes === undefined ? "" : ` · ${deliverable.bytes}B`;
+      lines.push(`- ${deliverable.id}（${deliverable.role}）→ ${deliverable.path} · ${deliverable.status}${size}`);
+      if (deliverable.reason) lines.push(`  - 原因：${deliverable.reason}`);
+      if (deliverable.contentIssue) lines.push(`  - 内容：${deliverable.contentIssue}`);
+      if (deliverable.content !== null && deliverable.content !== undefined) {
+        lines.push(`  - 内容${deliverable.truncated ? "（已截断）" : ""}：`);
+        for (const line of String(deliverable.content).split("\n")) lines.push(`    ${line}`);
+      }
+    }
+  }
+  if (packet.fixtureContext) {
+    lines.push("", "## 预置历史（非本次生成）", "");
+    lines.push(`- fixture hash：${packet.fixtureContext.fixtureHash}`);
+    for (const message of packet.fixtureContext.messages) {
+      lines.push(`- fixture:${message.id} ${message.role}：${message.content}`);
+    }
   }
   lines.push("");
   lines.push("## 对话");
