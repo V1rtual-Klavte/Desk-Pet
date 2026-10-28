@@ -82,7 +82,9 @@ export function buildExternalCase(task, { card, profile = "default", clock = DEF
     },
     precondition: { card, profile, fixtureId, time: { mode: "fixed" }, hostCapabilities: ["chat", "session", ...(task.categories?.includes("tools") ? ["tools"] : [])] },
     userRole: { knownFacts: [], goal: originalPrompt, tone: "保留上游用户要求", allowedActions: ["发送原始目标请求"], mustNotReveal: ["参考答案与判分条件"] },
-    driver: [{ id: "target", kind: "message", text: prompt, at: new Date(base + 1).toISOString() }],
+    // 固定时钟只前进不回退：宿主从 start 到 drive 之间已经真实走过若干秒，步骤时间必须留出一个
+    // 明显晚于运行起步的间隔，否则推进请求会被收敛到当前时刻，驱动在第一个步骤就阻塞。
+    driver: [{ id: "target", kind: "message", text: prompt, at: new Date(base + 60 * 60 * 1000).toISOString() }],
     probes: [{
       id: "upstream-result", after: "target", window: "last-assistant", rubric: "external.expected-result",
       questionType, polarity: "required", critical: true, difficulty: task.difficulty ?? 3,

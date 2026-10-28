@@ -198,6 +198,15 @@ describe("公开评测接线", () => {
     expect(entry.case.source.upstream).toMatchObject({ dataset: input.dataset, id: input.id, revision: COMMIT, split: "test", protocol: "adapted" });
   });
 
+  it("目标回合排在固定时钟之后，留出可推进的间隔 [external-import-clock-slack]", () => {
+    const { output } = importOne();
+    const entry = loadDataset({ repoRoot: ROOT, root: output }).cases[0]!;
+    const slack = Date.parse(String((entry.case.driver[0] as any).at)) - Date.parse(String(entry.fixture.clock));
+    expect(slack).toBeGreaterThanOrEqual(60_000);
+    const history = entry.fixture.initialSession.messages;
+    expect(Date.parse(String(history[history.length - 1]!.at))).toBeLessThan(Date.parse(String(entry.fixture.clock)));
+  });
+
   it("拒绝可变 revision 和未绑定 SHA-256 的外部来源 [external-import-provenance-pin]", () => {
     const mutable = task({ revision: "main" });
     expect(() => buildExternalCase(mutable, { card: "Test card", rawSha256: hashCanonical(mutable) })).toThrow(/40 位 commit/);

@@ -437,6 +437,20 @@ describe("驱动执行", () => {
     expect(progress.usage.tokensUnknown).toBe(false)
   })
 
+  it("步骤时间已被模拟时钟走过时在副作用之前阻塞，并说明时钟不回退 [chat-driver-clock-monotonic]", async () => {
+    const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    // 宿主起步到 drive 之间真实走过时间：推进请求收敛到当前模拟时刻，不会退回步骤时间。
+    const transport = fakeTransport({ clock: async () => ({ base: AT_2, now: AT_2, timezone: "Etc/GMT-8" }) })
+
+    await expect(executeDriver({ progress, driverPackage: pkg, transport, now: time.now, sleep: time.sleep }))
+      .rejects.toThrow(/不回退/)
+    expect(transport.state.messages).toEqual([])
+    expect(progress.usage.messages).toBe(0)
+    expect(progress.index).toBe(0)
+  })
+
   it("消息步骤携带唯一操作身份，回执回存会话与代际 [chat-driver-operation]", async () => {
     const pkg = driverPackage([
       { id: "say-1", kind: "message", text: "一", at: AT_1 },

@@ -929,7 +929,8 @@ export async function executeDriver({
       fail("driver.clock", `固定时钟回执不完整（步骤 ${step.id}）`);
     }
     if (Date.parse(clock.base) !== Date.parse(step.at)) {
-      fail("driver.clock", `固定时钟没有推进到步骤时间：步骤 ${step.id} 要求 ${step.at}，实际 ${clock.base}`);
+      const alreadyPast = Date.parse(clock.base) > Date.parse(step.at);
+      fail("driver.clock", `固定时钟没有推进到步骤时间：步骤 ${step.id} 要求 ${step.at}，实际 ${clock.base}${alreadyPast ? "（模拟时钟不回退：步骤时间已过去，用例要把 at 排在宿主起步之后，或以新运行重采）" : ""}`);
     }
     // 基线必须在副作用之前：之后出现的作业才可能是本步触发的抽取。
     const memoryBaseline = syncPoints.some((point) => point.after === step.id && point.wait === "memory_extraction_end")
