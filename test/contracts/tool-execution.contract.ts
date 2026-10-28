@@ -1,3 +1,4 @@
+// 2026-10-27 DeepSeek Fetch：te-46 覆盖错误与在途取消，te-47 覆盖 Router 20秒取消和参数/结果日志脱敏；其余分派与许可语义不变。
 // 2026-10-24 子代理团队角度批次：agent_spawn 的 team 模式新增可选 angles（2–3 个自定义
 // 分析角度；缺省取默认角度前两个），angles 只对 team 有效且在派发前校验；部分角度失败时
 // lead 成功即整体成功，工具结果标注未完成角度（未完成角度取自成员结果，不把 MCP 连接失败等
@@ -186,6 +187,9 @@ import type { ModuleContract } from "../host/types"
 export const toolExecutionContract: ModuleContract = {
   module: "tool-execution",
   sourceFiles: [
+    "src/services/tool/local-extra/webfetch-core.ts",
+    "src/services/tool/local-extra/webfetch.ts",
+    "src/services/tool/log-url.ts",
     // 2026-10-06 工具循环治理批次补入：病理检测（同参连击 / 连续失败的软硬阈值与中性文案）
     // 的唯一定义点；te-31 的软提示内容与 te-16/te-17 之外的循环治理行为都从它产出。
     "src/services/engine/harness/tool-loop-guard.ts",
@@ -253,8 +257,11 @@ export const toolExecutionContract: ModuleContract = {
     // 都从这里取值；改值 = 改线协议。同名常量表服务宿主/UI/Node 多个域。
     "src/services/host/event-names.ts",
   ],
-  sourceHash: "fa4fdf68d06c0b410bbca3601579b41398f9988a56eca04955afb47f4b01ad73",
+  sourceHash: "11dc2ac701f4eb00f609a9bf9950834d38f1b06bb3c1c3b990d394bf234e1839",
   coverage: [
+    {"id": "te-46", "feature": "DeepSeek Fetch 协议与错误/取消语义", "description": "公开 HTTP(S) URL 预检、POST /v1/tools/fetch 与 Bearer、Markdown 结果；403 安全拒绝不冒充401认证失败，402余额与404正文不可用分别提示，在途请求透传取消信号并返回cancelled", "why": "错误可归因且取消确实到达网络请求", "layer": "unit", "depth": "deep", "scenarios": ["web-fetch-error-semantics", "web-fetch-inflight-cancel"]},
+    {"id": "te-47", "feature": "Fetch 的 Router 超时与日志投影", "description": "实际 web_fetch handler 经 Router 的20秒死线取消在途Fetch并记timeout；参数日志剥离URL查询与fragment，完成日志仅记字符数，完整来源仍在结果中", "why": "全链日志不能绕过专用日志脱敏，超时不能只结束外层而留下网络请求", "layer": "integration", "depth": "deep", "scenarios": ["web-fetch-router-redaction", "web-fetch-router-timeout"]},
+
     { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对作为会话条目持久化，完整工具文本保留（L0 只改请求视图；Router 不做内联截断，旧 L1 截断已删），read_session_event 按条目 id 或其**最短唯一前缀**分页回读（前缀不唯一时返回明确错误、绝不任选；完整 id 恒可读），页大小由 `transcriptPageTokens(window)`（= `toolResultTokenBudget(window)`，与 L0 单条结果同一份额）的 **token 口径**限定并随窗口单调（旧的固定字符页宽常量已删除），单页正文由 `sliceByTokenBudget` 切出、`estimateContextTokens(正文) <= pageTokens` 恒成立，`offset` 仍是字符下标；读取限定当前 session（reader 是槽上的 readToolResult，工具只认地址引用）；**可回读条目不止工具结果** —— 计划步骤产出（deskpet.plan_step_result 自定义条目）共用同一地址命名空间，前缀唯一性跨两类条目判定（否则「唯一前缀」可能在另一类条目上撞名），计划步骤产出按落盘载荷投影为「[计划步骤结果] 步骤 N「标题」：验收档 + 正文 + 错误」，未命中文案统一为「当前会话没有此条目」（不再声称是工具结果）；该扩展的 integration 级回读断言按层拆出为 te-45（L3），本点的 L4 场景仍只覆盖工具结果。超上限边界上条目仍为全文、请求视图带真地址（前缀形态）、bash 截断带 spill 回读路径（实际生效上限由 Rust 回传）。MCP 结果与内置工具走同一条回读链，**一次性截断已删**（旧 MAX_MCP_RESULT_CHARS 的「正文里如实标记不保留全文、不写假 eventId」前提随决策 11 反转）：全文原样落会话条目，缩短只由 L0 投影按 details.deskpetEntryId 完成，模型随后用 read_session_event 取回 —— 因此超过旧 50,000 字符的结果仍可回读。无地址的条目（取不到 `details.deskpetEntryId`）不写假 eventId：未缩短形态不追加任何行、缩短形态在占位串里如实说明「中间段不可恢复」，留痕按内容指纹键（`noAddressWarnKey` = `长度:首 NO_ADDRESS_WARN_KEY_CHARS=32 字符`）去重、同键只报一次，键集合有界（`NO_ADDRESS_WARN_KEYS=64`，满员按插入序 FIFO 淘汰最旧键）—— 指纹分键与去重由 memory 的 mm-27 场景断言；有界淘汰（满员淘汰最早键、淘汰键可重新留痕）由 test/unit/tool-execution/工具结果留痕上限.test.ts 直接断言（该单测无 caseId）。唯一的物理上限在条目写盘链上（native-execution-env 的 MAX_TOOL_FILE_BYTES，5 MB）：超过时写盘如实失败，**不做静默截断**（§8.8 的裁定，边界本身未由本点场景断言，见 harness-storage 的 hs-02）", why: "短请求不能以丢失工具证据为代价；删掉截断后「大结果仍能取回」正是这条链唯一的可观测结论", layer: "e2e", depth: "deep", scenarios: ["tool-transcript-recovery", "tool-archive-beyond-inline-limit", "tool-mcp-large-result-readback"] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具。场景点名的 system_info 已按决策 13 改写为「运行环境」：五行输出（操作系统、架构、CPU 核心数、内存「已用 / 总 (百分比)，可用」、bash 默认工作目录），其中三个内存口径来自 Rust system_info（新增 memAvailable 字段，used 与 available 是各自独立的计数口径、不是互补关系），bash 默认 cwd 由 TS 侧 NativeExecutionEnv.defaultCwd() 提供而不是 Rust 返回值，因此不重复永不变的信息（旧实现里的「永不变」条目已删）。注：场景只断言工具调用成功与非空回复、不绑字段名，所以这五行的字段级形状未由本点断言（Rust 侧 SystemInfoResult 由单测覆盖）", why: "端到端工具链验证", layer: "e2e", depth: "deep", scenarios: ["tool-system-info"] },
     { id: "te-09", feature: "Provider 网络边界", description: "Provider 固定用户配置的 origin，拒绝 host/scheme/port 漂移并禁止重定向携带认证；显式 localhost/provider 可用，响应按流限额", why: "避免网络策略绕过和内存失控", layer: "integration", depth: "shallow", scenarios: ["tool-provider-network-boundary"] },

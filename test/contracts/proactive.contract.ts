@@ -1,3 +1,4 @@
+// 2026-10-27 定向复核：共享 tool/registry.ts 仅新增 web_fetch 注册；本域 Card/阶段缓存与主动子运行工具白名单/调度行为未改，保持原 coverage。
 // ==========================================
 // 2026-10-27 调度有界关停与故障救援（本批刷新）：scheduler/kernel.ts 的 stop 取消在飞作业后
 // 有界等待（默认 2s，短于宿主 5s flush 期限），超期返回 abandoned 作业清单而不是无限挂住退出序列；
@@ -321,7 +322,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "345804ab6f67365c07c73f10560225dc235f9dade45752f5d57b88af3d0dbbbd",
+  module:"proactive",sourceHash: "27764d2c2fb6786af32554a73cf188f02c2327ec2ad01fb2b762d2fd1b133dff",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

@@ -122,7 +122,7 @@ Desk-Pet/
 ### 依赖关系
 
 - **运行时零外部依赖**：Node 22.22.3 随包分发、界面原生绘制；MCP 服务器按需借用，未启用不连接、不驻留。
-- **出网请求只发生在模型服务、更新检查与 MCP 远程连接**：模型侧为 OpenAI 兼容接口（默认 DeepSeek，也支持 OpenAI / Ollama / LM Studio 等），Provider 调用单点收在 `engine/harness/model-gateway.ts`。
+- **出网请求只发生在模型服务、网页抓取、更新检查与 MCP 远程连接**：模型侧为 OpenAI 兼容接口（默认 DeepSeek，也支持 OpenAI / Ollama / LM Studio 等），Provider 调用单点收在 `engine/harness/model-gateway.ts`；`web_fetch` 经 DeepSeek Fetch 抓取公开网页正文。
 - **唯一跨进程通道是私有 IPC**（macOS Unix socket / Windows 命名管道）：Node → 宿主命令（`HostCommandMap`，逐条对应 Rust `NativeDispatcher`）、宿主 → Node 请求（`HostRequestMap`，`host_request_result` 回执）、事件（`HostEventMap`）；超限字段自动走 blob 二进制帧。业务层不直接碰窗口，宿主不直接碰模型。
 
 ## 下载安装

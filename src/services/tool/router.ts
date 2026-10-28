@@ -9,6 +9,7 @@ import { acquireToolPermit, releaseToolPermit } from "./execution-permit"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
+import { urlForLog } from "./log-url"
 // 用户等待的预算豁免（零依赖叶子）：等待期间挂起本工具的超时计时器，见下方执行段注释。
 import { createPausableDeadline, isUserWaiting, subscribeUserWait } from "@/services/engine/user-wait"
 
@@ -48,7 +49,8 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
 
   try {
     if (ctx.signal?.aborted) return audit({ success: false, content: "", error: "工具执行已取消", errorCode: "cancelled" }, "cancelled")
-    log.debug("执行工具:", toolName, "| params:", JSON.stringify(params).substring(0, 100))
+    const loggedParams = tool.actionCategory === "net.fetch" ? { url: urlForLog(params.url) } : params
+    log.debug("执行工具:", toolName, "| params:", JSON.stringify(loggedParams).substring(0, 100))
 
     // 有界执行许可：纯读共享并发上限，效果独占；delegate 交给子运行各自取（§5.1）。
     const acquisition = await acquireToolPermit(tool, ctx)
@@ -117,7 +119,10 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
     if (result.success) {
       // 结果不在 router 里被裁：条目存全文，缩短只发生在请求层 L0（`context/tool-output.ts`），
       // 且那里带 eventId 回读地址。
-      log.debug("工具完成:", toolName, "| 结果:", result.content.substring(0, 100))
+      // Fetch text contains its full source URL and may echo signed query parameters.
+      // The complete result remains in the session; diagnostic logs record only its size.
+      const loggedResult = tool.actionCategory === "net.fetch" ? `${result.content.length} 字符` : result.content.substring(0, 100)
+      log.debug("工具完成:", toolName, "| 结果:", loggedResult)
       return audit(result, "success")
     }
 

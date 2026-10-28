@@ -1,3 +1,4 @@
+// 2026-10-27 定向复核：共享 tool/registry.ts 仅新增 web_fetch 注册；本域 Card/阶段缓存与主动子运行工具白名单/调度行为未改，保持原 coverage。
 // 2026-10-06 计划提议工具批次（本批刷新）：sourceFiles 变化仅限 src/services/tool/registry.ts
 // （registerDefaultTools 增一行 registerPlanTool()：把 propose_plan 纳入内置工具注册）。
 // 本契约登记的是 Card 管理域的行为（pc-01..pc-19），工具注册清单的增删不改这些覆盖点；
@@ -32,7 +33,7 @@ export const personalityCardContract: ModuleContract = {
   // stages-prompt.md 是生成侧的另一半契约：它决定模型输出哪些键，validateStages 决定哪些键算齐。
   // 两边漂移会让新 key 永远取不到 Card 文案，所以提示词纳入 sourceFiles，改动必须触发重审。
   sourceFiles: ["src/services/personality/registry.ts", "src/services/personality/loader.ts", "src/services/personality/card-manage.ts", "src/services/personality/stages-cache.ts", "src/services/personality/stages-file.ts", "src/services/personality/stages-prompt.md", "src/services/tool/registry.ts"],
-  sourceHash: "028786bb1230901c3068096335b58249810fdb945453ee29afa6a8a58b7a3637",
+  sourceHash: "7957ee4601a203f7f26ea12335ebcb88b63553738b8af8abf6e6974c226c4d27",
   coverage: [
     { id: "pc-01", feature: "Card 解析", description: "importUserCard 把 Card markdown 解析成 PersonalityCard：frontmatter 的 id/name/version 与各区块的 sections 都要落到字段上，source 恒为 runtime，hash 非空", why: "人格卡系统基础", layer: "unit", depth: "shallow", scenarios: ["card-parse"] },
     { id: "pc-02", feature: "注册表的非法切换守卫", description: "switchPersonality(null) 与切换到不存在的人格都返回 ok:false 并给出原因，且失败的切换不得改动 activeId（拒绝必须原子）", why: "人格切换失败回滚是运行时核心约束", layer: "unit", depth: "shallow", scenarios: ["card-registry-guard"] },
