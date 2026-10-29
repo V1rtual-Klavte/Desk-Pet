@@ -30,7 +30,6 @@ export function validateMemoryQualityDataset(cases = MEMORY_QUALITY_CASES) {
     if (!Array.isArray(gold?.extractGoldFactIds) || !Array.isArray(gold?.extractForbiddenFactIds))
       errors.push(`${item.caseId}: 提取 gold 不完整`)
     if (!gold?.requiredScope || !gold?.validAt || !gold?.answerRubric) errors.push(`${item.caseId}: scope/time/rubric 缺标注`)
-    if (gold?.requiredScope === "card" && !gold.requiredCardId) errors.push(`${item.caseId}: card scope 缺 cardId`)
     if (gold?.expectedAbstention && (gold.allowedEvidence.length !== 0 || gold.expectedFactIds.length !== 0))
       errors.push(`${item.caseId}: 拒答用例不能同时要求命中允许事实`)
     if (gold?.temporal && gold.temporal.mustRespectAsOf && !gold.temporal.statedTime)
@@ -194,7 +193,7 @@ export function scoreMemoryQualityOutcomes(cases, outcomes) {
       group: item.group, capability: item.capability, strategy: outcome.strategy, count: 0, completed: 0,
       answers: 0, correct: 0, abstained: 0, overrefusal: 0, forbiddenEvidence: 0,
       crossScopeLeak: 0, forbiddenAnswer: 0, candidate: emptyCounts(), selected: emptyCounts(),
-      candidateByScope: { user: emptyCounts(), card: emptyCounts(), session: emptyCounts() },
+      candidateByScope: { user: emptyCounts(), session: emptyCounts() },
       fallbackCount: 0, recallMs: [], rerankMs: [],
       extraction: emptyCounts(), firstAnswerMs: [], usageTokens: [], missingUsage: 0,
       cache: { hit: 0, miss: 0, unknown: 0 }, governanceViolations: 0,
@@ -208,15 +207,14 @@ export function scoreMemoryQualityOutcomes(cases, outcomes) {
     const allowed = new Set(gold.allowedEvidence)
     const forbidden = new Set(gold.forbiddenEvidence)
     const leakedEvidence = evidence.some(ref => forbidden.has(ref.factId) || gold.forbiddenSourceMessageIds.includes(ref.sourceMessageId))
-    const crossScopeLeak = evidence.some(ref => (ref.scope && !(gold.requiredScopes ?? [gold.requiredScope]).includes(ref.scope))
-      || (gold.requiredScope === "card" && ref.scope === "card" && ref.scopeId !== gold.requiredCardId))
+    const crossScopeLeak = evidence.some(ref => ref.scope && !(gold.requiredScopes ?? [gold.requiredScope]).includes(ref.scope))
     if (leakedEvidence) acc.forbiddenEvidence += 1
     if (crossScopeLeak) acc.crossScopeLeak += 1
     if (outcome.answerJudgment?.containsForbiddenFact === true || outcome.answerJudgment?.containsForgottenFact === true) acc.forbiddenAnswer += 1
     if (Array.isArray(outcome.candidateFactIds)) mergeCounts(acc.candidate, countsFromSets(gold.expectedFactIds, outcome.candidateFactIds))
     if (outcome.candidateFactIdsByScope && typeof outcome.candidateFactIdsByScope === "object") {
       const factScope = new Map([...item.fixture.activeFacts, ...(item.fixture.forgottenFacts ?? [])].map(fact => [fact.factId, fact.scope]))
-      for (const scope of ["user", "card", "session"]) {
+      for (const scope of ["user", "session"]) {
         const expectedForScope = gold.expectedFactIds.filter(id => factScope.get(id) === scope)
         mergeCounts(acc.candidateByScope[scope], countsFromSets(expectedForScope, outcome.candidateFactIdsByScope[scope] ?? []))
       }
@@ -247,7 +245,7 @@ export function scoreMemoryQualityOutcomes(cases, outcomes) {
       strategy: outcome.strategy, count: 0, complete: 0, answerCount: 0, correct: 0,
       overrefusal: 0, abstained: 0, fallbackCount: 0, recallMs: [], rerankMs: [],
       cache: { hit: 0, miss: 0, unknown: 0 },
-      candidate: emptyCounts(), candidateByScope: { user: emptyCounts(), card: emptyCounts(), session: emptyCounts() },
+      candidate: emptyCounts(), candidateByScope: { user: emptyCounts(), session: emptyCounts() },
       selected: emptyCounts(), extraction: emptyCounts(),
       firstAnswerMs: [], usageTokens: [], missingUsage: 0, governanceViolations: 0, forbiddenEvidence: 0, crossScopeLeak: 0, forbiddenAnswer: 0,
     }
@@ -264,7 +262,7 @@ export function scoreMemoryQualityOutcomes(cases, outcomes) {
     if (Array.isArray(outcome.candidateFactIds)) mergeCounts(global.candidate, countsFromSets(gold.expectedFactIds, outcome.candidateFactIds))
     if (outcome.candidateFactIdsByScope && typeof outcome.candidateFactIdsByScope === "object") {
       const factScope = new Map([...item.fixture.activeFacts, ...(item.fixture.forgottenFacts ?? [])].map(fact => [fact.factId, fact.scope]))
-      for (const scope of ["user", "card", "session"]) {
+      for (const scope of ["user", "session"]) {
         const expectedForScope = gold.expectedFactIds.filter(id => factScope.get(id) === scope)
         mergeCounts(global.candidateByScope[scope], countsFromSets(expectedForScope, outcome.candidateFactIdsByScope[scope] ?? []))
       }
@@ -501,9 +499,9 @@ export async function createMemoryQualityReviewTemplate(report) {
       gold: { rubric: item.gold.answerRubric, answerFacts: item.gold.answerFacts,
         expectedAbstention: item.gold.expectedAbstention, allowedEvidence: item.gold.allowedEvidence,
         forbiddenEvidence: item.gold.forbiddenEvidence,
-        sourceEvidence: item.fixture.sourceMessages.map(message => ({ id: message.id, text: message.text, scope: message.scope, cardId: message.cardId ?? null, createdAt: message.createdAt })),
+        sourceEvidence: item.fixture.sourceMessages.map(message => ({ id: message.id, text: message.text, scope: message.scope, createdAt: message.createdAt })),
         facts: goldIds.map(id => factsById.get(id) ?? { factId: id, content: null }),
-        scope: item.gold.requiredScope, scopesAllowed: item.gold.requiredScopes, cardId: item.gold.requiredCardId,
+        scope: item.gold.requiredScope, scopesAllowed: item.gold.requiredScopes,
         validAt: item.gold.validAt, temporal: item.gold.temporal ?? null },
       actual: outcome.strategy === "extraction"
         ? { candidates: outcome.extraction?.candidates ?? [], candidateCount: outcome.extraction?.candidateCount ?? null,

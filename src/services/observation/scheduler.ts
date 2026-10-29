@@ -76,7 +76,7 @@ function decisionTopicBrief(cardId: string | undefined) {
  * 记忆总闸关闭或没有活跃会话时都按「没有长期记忆」如实降级（debug 留痕）；前者与
  * 主回合的记忆投影、scanner 的机会来源同一口径。
  */
-async function decisionMemoryBrief(sessionId: string, cardId: string | undefined, signal: AbortSignal): Promise<string[]> {
+async function decisionMemoryBrief(sessionId: string, signal: AbortSignal): Promise<string[]> {
   if (!memoryConfig.enabled) {
     log.debug("记忆总闸关闭，决策输入不带长期记忆")
     return []
@@ -88,7 +88,7 @@ async function decisionMemoryBrief(sessionId: string, cardId: string | undefined
   try {
     const projections = await recallMemory({
       requestId: "observation-decision-" + crypto.randomUUID(),
-      sessionId, cardId, query: "", tokenBudget: DECISION_MEMORY_TOKEN_BUDGET,
+      sessionId, query: "", tokenBudget: DECISION_MEMORY_TOKEN_BUDGET,
       skipRerank: true, projectionFormat: "content", signal,
     })
     return projections.slice(0, DECISION_MEMORY_ITEM_LIMIT)
@@ -401,7 +401,7 @@ async function observeBatch(signal: AbortSignal, generation: number, admit: (res
   // 决策输入补齐：除了窗口与已知了解，还带上本地时间、Card 人设、画像、话题与长期记忆
   // （全部只读、有界；详见 ./decide 的常量与下方各自的截断）。没有决策名额时不做记忆读取。
   const card = getActiveCard()
-  const memoryBrief = slots > 0 ? await decisionMemoryBrief(getActiveSessionId(), card?.id, signal) : []
+  const memoryBrief = slots > 0 ? await decisionMemoryBrief(getActiveSessionId(), signal) : []
   if (signal.aborted || (!started && !force) || generation !== lifecycleGeneration || (!force && silentAccessFrequency() === "off")) {
     lastBatchExit = "generation_changed"
     return

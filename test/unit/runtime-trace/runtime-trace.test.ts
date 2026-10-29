@@ -67,16 +67,16 @@ describe("Runtime trace [trace-runtime]", () => {
     const context = createRuntimeTraceContext("session-test", "request-test")
     let observed: RuntimeTraceEvent | undefined
     unsubscribes.push(subscribeRuntimeTrace(event => { observed = event }))
-    const ids = Array.from({ length: 60 }, (_, index) => `card-${index}`)
+    const ids = Array.from({ length: 60 }, (_, index) => `candidate-${index}`)
     publishRuntimeTrace(context, "memory_recall_candidates", () => ({
       candidateIds: ids,
       candidateCount: ids.length,
-      candidateIdsByScope: { user: ["user-1"], card: ids, session: ["session-1"], conversation: ids, unexpected: ["must-drop"] },
+      candidateIdsByScope: { user: ["user-1"], session: ["session-1"], conversation: ids, unexpected: ["must-drop"] },
       rawContent: "must-drop",
     }))
 
     expect(observed?.payload.candidateIdsByScope, "scope split must stay structured and capped at the product query limit").toEqual({
-      user: ["user-1"], card: ids.slice(0, 50), session: ["session-1"], conversation: ids,
+      user: ["user-1"], session: ["session-1"], conversation: ids,
     })
     expect(observed?.payload.candidateCount).toBe(60)
     expect(JSON.stringify(observed), "unapproved nested fields entered the trace").not.toContain("must-drop")

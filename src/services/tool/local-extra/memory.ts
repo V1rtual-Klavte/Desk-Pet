@@ -22,7 +22,7 @@ import type { MemoryDraft, MemoryKind, MemoryScope, TemporalAnchor, WorkingState
 const log = createLogger("ToolMemory")
 
 const KINDS: MemoryKind[] = ["fact", "preference", "episode", "working"]
-const SCOPES: MemoryScope[] = ["user", "card", "session"]
+const SCOPES: MemoryScope[] = ["user", "session"]
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : ""
@@ -53,7 +53,7 @@ function temporalAnchor(value: unknown, name: string): TemporalAnchor | null | u
 const memoryQueryTool: ToolDef = defineTool({
   id: "local-memory-query",
   name: "memory_query",
-  description: "查询当前用户、当前 Card 与当前会话可见的长期记忆。只读，不会写入。",
+  description: "查询当前用户与当前会话可见的长期记忆。只读，不会写入。",
   parameters: {
     type: "object",
     properties: {
@@ -93,7 +93,7 @@ const memoryChangeTool: ToolDef = defineTool({
   id: "local-memory-change",
   name: "memory_change",
   description:
-    "按用户本轮明确指示记住、纠正或忘记长期记忆；不得替用户推测，来源由宿主绑定。用户明确表达了值得长期保留的内容（称呼、稳定偏好、画像级事实、重要约定）就**当场写入**，不要留给自动整理；一次性请求（查询、看看、猜猜、截图）、测试与调试、临时任务不写；拿不准就不写。记忆种类：fact 事实 / preference 稳定偏好 / episode 经历 / working 待办约定；范围：user 跨会话 / card 当前角色 / session 当前会话。",
+    "按用户本轮明确指示记住、纠正或忘记长期记忆；不得替用户推测，来源由宿主绑定。用户明确表达了值得长期保留的内容（称呼、稳定偏好、画像级事实、重要约定）就**当场写入**，不要留给自动整理；一次性请求（查询、看看、猜猜、截图）、测试与调试、临时任务不写；拿不准就不写。记忆种类：fact 事实 / preference 稳定偏好 / episode 经历 / working 待办约定；范围：user 跨会话 / session 当前会话。",
   parameters: {
     type: "object",
     properties: {
@@ -102,7 +102,7 @@ const memoryChangeTool: ToolDef = defineTool({
       itemId: { type: "string", description: "纠正、完成、取消或忘记时的目标条目 id；可直接用记忆块里的 `id@version` 形式" },
       kind: { type: "string", description: "记忆类型", enum: KINDS },
       scope: { type: "string", description: "记忆范围", enum: SCOPES },
-      scopeId: { type: "string", description: "Card 或会话范围的 ID" },
+      scopeId: { type: "string", description: "会话范围的会话 ID" },
       pinned: { type: "boolean", description: "是否置为核心画像（只用于称呼、稳定表达偏好）" },
       aliases: { type: "array", items: { type: "string" }, description: "可用于检索的别名" },
       importance: { type: "number", minimum: 0, maximum: 10, description: "重要性 0 到 10" },
@@ -174,11 +174,13 @@ const memoryChangeTool: ToolDef = defineTool({
       return { success: false, content: "", error: "aliases 必须是字符串数组" }
     }
     const kind = target?.draft.kind ?? ((KINDS as string[]).includes(text(params.kind)) ? text(params.kind) as MemoryKind : "fact")
-    const scope = target?.draft.scope ?? ((SCOPES as string[]).includes(text(params.scope)) ? text(params.scope) as MemoryScope : "user")
+    const requestedScope = text(params.scope)
+    if (supplied(params, "scope") && !(SCOPES as string[]).includes(requestedScope)) {
+      return { success: false, content: "", error: `未知记忆范围: ${requestedScope}` }
+    }
+    const scope = target?.draft.scope ?? ((SCOPES as string[]).includes(requestedScope) ? requestedScope as MemoryScope : "user")
     const scopeId = (target?.draft.scopeId ?? text(params.scopeId)) || undefined
-    if (scope === "card" && !scopeId) return { success: false, content: "", error: "Card 范围的记忆必须带 scopeId" }
     if (scope === "user" && scopeId) return { success: false, content: "", error: "user 范围的记忆不能带 scopeId" }
-    if (scope === "card" && scopeId !== source.cardId) return { success: false, content: "", error: "Card 范围必须与当前可信用户输入所属 Card 一致" }
     if (scope === "session" && scopeId && scopeId !== ctx.sessionId) return { success: false, content: "", error: "session 范围必须属于当前会话" }
     const eventAt = supplied(params, "eventAt") ? temporalAnchor(params.eventAt, "eventAt") : target?.draft.eventAt
     const dueAt = supplied(params, "dueAt") ? temporalAnchor(params.dueAt, "dueAt") : target?.draft.dueAt

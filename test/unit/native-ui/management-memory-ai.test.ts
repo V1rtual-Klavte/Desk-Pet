@@ -248,7 +248,7 @@ describe("memory_overview（库总览）", () => {
     })
   })
 
-  it("scope=card / session 补不出激活身份时如实拒绝（不静默查空列表）", async () => {
+  it("scope=card 已不是记忆范围，session 补不出活跃会话时如实拒绝（不静默查空列表）", async () => {
     await expect(dispatchHostRequest("memory_overview", { scope: "card" })).rejects.toMatchObject({
       code: "CONFIG",
     })

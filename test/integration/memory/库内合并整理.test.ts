@@ -185,7 +185,7 @@ describe("库内合并整理", () => {
       item("mem-working", "提醒买咖啡豆", { kind: "working", observedAt: 4_000 }),
       item("mem-expired", "过期的临时偏好", { expiresAt: now - 1_000, observedAt: 4_000 }),
       item("mem-alone", "孤立的经历", { kind: "episode", observedAt: 4_000 }),
-      item("mem-card", "Card 范围的互动", { scope: "card", scopeId: "card-a", observedAt: 4_000 }),
+      item("mem-session", "会话范围的互动", { scope: "session", scopeId: "session-a", observedAt: 4_000 }),
     ])
     harness.completePiText.mockResolvedValue({ text: '{"merges":[]}', usage: { input: 100, output: 10 } })
 

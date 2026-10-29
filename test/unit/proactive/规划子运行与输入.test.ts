@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => ({
   presence: { state: "idle", reason: "default", changedAt: 0, expiresAt: null } as unknown,
   behavior: null as unknown,
   memoryEnabled: true,
-  recallMemory: vi.fn(async (_request: { sessionId: string; cardId: string; targets: unknown }) => [] as unknown[]),
+  recallMemory: vi.fn(async (_request: { sessionId: string; targets: unknown }) => [] as unknown[]),
 }))
 
 vi.mock("@/services/personality", () => ({
@@ -307,9 +307,9 @@ describe("规划输入补齐", () => {
     mocks.memoryEnabled = true
     await planningInput([target], owner, now, new AbortController().signal)
     expect(mocks.recallMemory).toHaveBeenCalledTimes(1)
-    const request = mocks.recallMemory.mock.calls[0]?.[0] as { sessionId: string; cardId: string; targets: unknown }
+    const request = mocks.recallMemory.mock.calls[0]?.[0] as { sessionId: string; targets: unknown }
     expect(request.sessionId).toBe(owner.sessionId)
-    expect(request.cardId).toBe(owner.cardId)
+    expect("cardId" in request, "召回请求不应再携带 Card 身份").toBe(false)
     expect(request.targets).toEqual([{ id: "mem-1", version: 2 }])
   })
 })

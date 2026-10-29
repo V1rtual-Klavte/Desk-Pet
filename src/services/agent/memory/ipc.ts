@@ -116,7 +116,6 @@ export async function queryMemory(
 /** Read query candidates, pinned core and exact feedback targets from one scoped SQLite snapshot. */
 export async function getMemoryRecallCandidates(
   query: string,
-  cardId: string | undefined,
   sessionId: string,
   targets: Array<{ id: string; version: number }> = [],
   allowExpiredTargets = false,
@@ -127,7 +126,6 @@ export async function getMemoryRecallCandidates(
   if (!sessionId) throw new Error("记忆召回缺少当前会话身份")
   return getHostBridge().request("memory_recall_candidates", {
     query,
-    cardId: cardId ?? null,
     sessionId,
     limit: 50,
     targets,

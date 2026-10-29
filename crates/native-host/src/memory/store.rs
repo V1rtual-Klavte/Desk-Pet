@@ -573,7 +573,7 @@ fn validate_draft(draft: &Value) -> AppResult<()> {
     if !matches!(kind.as_str(), "fact" | "preference" | "episode" | "working") {
         return Err(AppError::Memory(format!("未知记忆类型: {kind}")));
     }
-    if !matches!(scope.as_str(), "user" | "card" | "session") {
+    if !matches!(scope.as_str(), "user" | "session") {
         return Err(AppError::Memory(format!("未知记忆范围: {scope}")));
     }
     if strings(draft, "sourceIds").is_empty() {
@@ -1213,7 +1213,6 @@ impl MemoryStore {
 
     fn pinned_on(
         conn: &Connection,
-        card_id: Option<&str>,
         session_id: &str,
         limit: i64,
     ) -> AppResult<Vec<Value>> {
@@ -1226,8 +1225,8 @@ impl MemoryStore {
              AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
              AND (i.valid_to IS NULL OR i.valid_to > ?1) \
              AND (i.expires_at IS NULL OR i.expires_at > ?1) \
-             AND (i.scope='user' OR (i.scope='session' AND i.scope_id=?2) OR (i.scope='card' AND i.scope_id=?3)) \
-             ORDER BY CASE i.scope WHEN 'user' THEN 0 WHEN 'card' THEN 1 ELSE 2 END, i.importance DESC, i.updated_at DESC, i.id LIMIT ?4",
+             AND (i.scope='user' OR (i.scope='session' AND i.scope_id=?2)) \
+             ORDER BY CASE i.scope WHEN 'user' THEN 0 ELSE 1 END, i.importance DESC, i.updated_at DESC, i.id LIMIT ?3",
             Self::ITEM_COLUMNS
         );
         let items = conn
@@ -1237,7 +1236,6 @@ impl MemoryStore {
                 params![
                     now,
                     session_id,
-                    card_id,
                     limit.clamp(LIMIT_MIN, QUERY_LIMIT_MAX)
                 ],
                 Self::row_to_item,
@@ -1482,7 +1480,6 @@ impl MemoryStore {
     pub fn recall_candidates(
         &self,
         query: &str,
-        card_id: Option<&str>,
         session_id: &str,
         limit: i64,
         targets: &[Value],
@@ -1490,7 +1487,6 @@ impl MemoryStore {
     ) -> AppResult<Value> {
         self.recall_candidates_with_event_time(
             query,
-            card_id,
             session_id,
             limit,
             targets,
@@ -1502,7 +1498,6 @@ impl MemoryStore {
     pub(crate) fn recall_candidates_with_event_time(
         &self,
         query: &str,
-        card_id: Option<&str>,
         session_id: &str,
         limit: i64,
         targets: &[Value],
@@ -1511,7 +1506,6 @@ impl MemoryStore {
     ) -> AppResult<Value> {
         self.recall_candidates_with_event_time_observed(
             query,
-            card_id,
             session_id,
             limit,
             targets,
@@ -1525,7 +1519,6 @@ impl MemoryStore {
     pub(crate) fn recall_candidates_with_event_time_observed(
         &self,
         query: &str,
-        card_id: Option<&str>,
         session_id: &str,
         limit: i64,
         targets: &[Value],
@@ -1550,12 +1543,6 @@ impl MemoryStore {
         let mut diagnostics = user_result.diagnostics;
         let mut ranks = user_result.ranks;
         let user = user_result.items;
-        let card = if let Some(card_id) = card_id {
-            let result = Self::query_on_with_event_time(&tx, query, Some("card"), Some(card_id), Some(session_id), limit, event_time, observe, entities)?;
-            diagnostics.add_assign(result.diagnostics);
-            ranks.extend(result.ranks);
-            result.items
-        } else { Vec::new() };
         let session_result = Self::query_on_with_event_time(&tx, query, Some("session"), Some(session_id), Some(session_id), limit, event_time, observe, entities)?;
         diagnostics.add_assign(session_result.diagnostics);
         ranks.extend(session_result.ranks);
@@ -1591,9 +1578,6 @@ impl MemoryStore {
                 let scope_id = opt_s(draft, "scopeId");
                 let owned = match scope.as_str() {
                     "user" => scope_id.is_none(),
-                    "card" => scope_id
-                        .as_deref()
-                        .is_some_and(|value| Some(value) == card_id),
                     "session" => scope_id.as_deref() == Some(session_id),
                     _ => false,
                 };
@@ -1605,7 +1589,6 @@ impl MemoryStore {
         targeted = Self::attach_sources(&tx, targeted)?;
         let mut candidates = user
             .iter()
-            .chain(&card)
             .chain(&session)
             .cloned()
             .collect::<Vec<_>>();
@@ -1627,11 +1610,11 @@ impl MemoryStore {
                 .then_with(|| i(right, "updatedAt").cmp(&i(left, "updatedAt")))
                 .then_with(|| s(left, "id").cmp(&s(right, "id")))
         });
-        let pinned = Self::pinned_on(&tx, card_id, session_id, QUERY_LIMIT_MAX)?;
+        let pinned = Self::pinned_on(&tx, session_id, QUERY_LIMIT_MAX)?;
         tx.commit().map_err(db_err)?;
         let mut snapshot = json!({
             "revision": revision,
-            "candidatesByScope": { "user": user, "card": card, "session": session },
+            "candidatesByScope": { "user": user, "session": session },
             "candidates": candidates,
             "pinned": pinned,
             "targeted": targeted,
@@ -1762,15 +1745,15 @@ impl MemoryStore {
                 return Err(AppError::Memory("聊天记住只能绑定唯一可信来源".into()));
             }
             let source_id = &source_ids[0];
-            let source: Option<(String, Option<String>, String, Option<String>)> = transaction.query_row(
-                "SELECT s.session_id,s.card_id,s.content_hash,s.evidence FROM memory_sources s \
+            let source: Option<(String, String, Option<String>)> = transaction.query_row(
+                "SELECT s.session_id,s.content_hash,s.evidence FROM memory_sources s \
                  WHERE s.source_id=?1 AND s.event_id=?2 AND s.origin='user' AND s.taint='trusted_user' \
                  AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id \
                    AND t.content_hash=s.content_hash AND t.effect='block_extraction')",
                 params![source_id, event_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             ).optional().map_err(db_err)?;
-            let (source_session, source_card, content_hash, evidence) =
+            let (source_session, content_hash, evidence) =
                 source.ok_or_else(|| AppError::Memory("可信来源不存在或已被遗忘".into()))?;
             let evidence =
                 evidence.ok_or_else(|| AppError::Memory("可信来源没有可用原话".into()))?;
@@ -1789,10 +1772,9 @@ impl MemoryStore {
                 opt_s(draft, "scopeId").as_deref(),
             ) {
                 ("user", None) => {}
-                ("card", Some(card_id)) if source_card.as_deref() == Some(card_id) => {}
                 _ => {
                     return Err(AppError::Memory(
-                        "记忆范围必须绑定当前来源所属用户或Card".into(),
+                        "聊天记住只能保存用户范围的记忆".into(),
                     ))
                 }
             }
@@ -1938,9 +1920,6 @@ impl MemoryStore {
                 }
                 let scope = s(draft, "scope");
                 let scope_id = opt_s(draft, "scopeId");
-                if scope == "card" && scope_id.is_none() {
-                    return Err(AppError::Memory("Card 范围的记忆必须带 scopeId".into()));
-                }
                 if scope == "user" && scope_id.is_some() {
                     return Err(AppError::Memory("user 范围的记忆不接受 scopeId".into()));
                 }

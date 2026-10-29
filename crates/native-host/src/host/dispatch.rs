@@ -950,7 +950,6 @@ impl NativeDispatcher {
             "memory_recall_candidates" => memory_commands::memory_recall_candidates(
                 self.memory()?,
                 arg_str(args, "query")?,
-                arg_opt_str(args, "cardId")?,
                 arg_str(args, "sessionId")?,
                 arg_opt_i64(args, "limit")?,
                 args.get("targets")

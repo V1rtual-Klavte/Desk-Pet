@@ -2198,8 +2198,8 @@ mod tests {
             &link,
             &published,
             "memory_overview",
-            |link| SettingsPortImpl::new(link).memory_overview(Some("card"), Some("card-1")),
-            |args| assert_eq!(args, &json!({ "scope": "card", "scopeId": "card-1" })),
+            |link| SettingsPortImpl::new(link).memory_overview(Some("session"), Some("session-1")),
+            |args| assert_eq!(args, &json!({ "scope": "session", "scopeId": "session-1" })),
             Ok(json!({ "revision": 3, "statusText": "库版本 revision 3" })),
         )
         .unwrap();

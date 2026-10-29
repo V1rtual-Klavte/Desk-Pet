@@ -1190,7 +1190,6 @@ export type HostCommandMap = {
   memory_recall_candidates: {
     args: {
       query: string
-      cardId?: string | null
       sessionId: string
       limit?: number | null
       targets?: MemoryRecallTarget[] | null
@@ -1675,10 +1674,10 @@ export type HostRequestMap = {
    * 记忆页：库总览（状态 + 条目 + 整理作业；数据来自既有 memory ipc 通道）。
    *
    * `scope`/`scopeId` 是可选范围筛选（透传既有 `memory_list` 的 scope 参数：
-   * user / card / session；不传 = 全部范围）。筛选只影响条目列表，不影响状态行。
+   * user / session；不传 = 全部范围）。筛选只影响条目列表，不影响状态行。
    */
   memory_overview: {
-    args: { scope?: "user" | "card" | "session" | null; scopeId?: string | null }
+    args: { scope?: "user" | "session" | null; scopeId?: string | null }
     result: MemoryOverviewPayload
   }
   /** 记忆页：条目详情 + 历史版本（含来源审计摘要）。 */

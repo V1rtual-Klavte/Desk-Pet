@@ -103,12 +103,11 @@ const forgetting = [
   ["偏好", "删除我喜欢语音消息的偏好", "喜欢语音消息", "我偏好哪种消息形式？"],
 ]
 
-const scopes = ["user", "card", "session", "user", "card"]
-const cards = ["card-amber", "card-lilac", "card-pine", "card-sand", "card-ink"]
+const scopes = ["user", "session", "user", "user", "session"]
 const variants = ["原句复述", "同义表达", "中文短词", "第三方隔离", "假设/无关干扰"]
 
 function fixtureFact(id, content, scope, sourceMessageId, validFrom = "2026-01-01T00:00:00Z", validUntil = null, scopeIdOverride) {
-  return { factId: id, content, scope, scopeId: scope === "card" ? scopeIdOverride ?? "card-amber" : scope === "session" ? "session-fixture" : null,
+  return { factId: id, content, scope, scopeId: scope === "session" ? scopeIdOverride ?? "session-fixture" : null,
     sourceMessageIds: [sourceMessageId], validFrom, validUntil }
 }
 
@@ -118,21 +117,19 @@ export const MEMORY_QUALITY_STRATEGIES = ["no-memory", "local", "always", "adapt
 function caseRow(group, index, capability, sourceText, factText, question, options = {}) {
   const caseId = `mq-${group}-${String(index + 1).padStart(2, "0")}`
   const scope = scopes[(index + (group === "forgetting" ? 1 : 0)) % scopes.length]
-  const cardId = scope === "card" ? cards[index % cards.length] : undefined
-  const primary = fixtureFact(`${caseId}-fact`, factText, scope, `${caseId}-source`, "2026-01-01T00:00:00Z", null, cardId)
-  const decoyScope = scope === "user" ? "card" : "user"
-  const decoy = fixtureFact(`${caseId}-decoy`, `第三方资料：同事称${factText}`, decoyScope, `${caseId}-third-party`,
-    "2026-01-01T00:00:00Z", null, "card-other")
+  const primary = fixtureFact(`${caseId}-fact`, factText, scope, `${caseId}-source`, "2026-01-01T00:00:00Z")
+  const decoy = fixtureFact(`${caseId}-decoy`, `第三方资料：同事称${factText}`, "user", `${caseId}-third-party`,
+    "2026-01-01T00:00:00Z")
   const sourceMessages = [
-    { id: `${caseId}-source`, role: "user", scope, cardId, text: sourceText, createdAt: primary.validFrom },
-    { id: `${caseId}-third-party`, role: "user", scope: decoyScope, cardId: decoyScope === "card" ? "card-other" : undefined,
+    { id: `${caseId}-source`, role: "user", scope, text: sourceText, createdAt: primary.validFrom },
+    { id: `${caseId}-third-party`, role: "user", scope: "user",
       text: `我同事说${factText}，这是同事的情况，不是我的事实。`, createdAt: "2026-01-02T00:00:00Z" },
     { id: `${caseId}-irrelevant`, role: "user", scope: "user", text: `无关备注：今天看到一只橘猫。${variants[index % variants.length]}`, createdAt: "2026-01-03T00:00:00Z" },
   ]
-  const allowedScopes = scope === "user" ? ["user"] : scope === "card" ? ["user", "card"] : ["user", "session"]
+  const allowedScopes = scope === "user" ? ["user"] : ["user", "session"]
   return {
     caseId, group, capability, variant: variants[index % variants.length],
-    fixture: { sessionId: `${caseId}-session`, cardId, sourceMessages, activeFacts: options.activeFacts ?? [primary, decoy],
+    fixture: { sessionId: `${caseId}-session`, sourceMessages, activeFacts: options.activeFacts ?? [primary, decoy],
       tombstones: options.tombstones ?? [], currentAt: "2026-10-02T12:00:00Z", emptyPriorConversation: true },
     question, gold: {
       allowedEvidence: options.allowedEvidence ?? [primary.factId],
@@ -141,7 +138,7 @@ function caseRow(group, index, capability, sourceText, factText, question, optio
       forbiddenSourceMessageIds: options.forbiddenSourceMessageIds ?? [decoy.sourceMessageIds[0]],
       expectedFactIds: options.expectedFactIds ?? [primary.factId],
       answerFacts: options.answerFacts ?? [factText], expectedAbstention: options.expectedAbstention ?? false,
-      requiredScope: scope, requiredScopes: allowedScopes, requiredCardId: cardId ?? null, validAt: "2026-10-02T12:00:00Z",
+      requiredScope: scope, requiredScopes: allowedScopes, validAt: "2026-10-02T12:00:00Z",
       extractGoldFactIds: options.extractGoldFactIds ?? [primary.factId],
       extractForbiddenFactIds: options.extractForbiddenFactIds ?? [decoy.factId],
       answerRubric: options.answerRubric ?? `仅在允许证据支持时回答：${factText}`,
@@ -173,8 +170,8 @@ for (let i = 0; i < 20; i += 1) {
   const caseId = `mq-correction-${String(i + 1).padStart(2, "0")}`
   const row = caseRow("correction", i, "memory-quality-correction", newValue, current, question)
   const old = fixtureFact(`${caseId}-old-fact`, oldValue, row.gold.requiredScope,
-    `${caseId}-old-source`, "2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z", row.gold.requiredCardId ?? undefined)
-  row.fixture.sourceMessages.unshift({ id: `${caseId}-old-source`, role: "user", scope: old.scope, cardId: row.fixture.cardId,
+    `${caseId}-old-source`, "2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
+  row.fixture.sourceMessages.unshift({ id: `${caseId}-old-source`, role: "user", scope: old.scope,
     text: oldValue, createdAt: old.validFrom })
   row.fixture.activeFacts = [old, ...row.fixture.activeFacts]
   row.gold.forbiddenEvidence.push(old.factId)
@@ -246,10 +243,9 @@ for (const row of cases.filter(item => item.group !== "forgetting")) {
     noAnswer(row, "朋友的昵称不能当作用户昵称")
   }
   if (ordinal === 10 && row.group === "address-preference") {
-    row.variant = "跨Card"
-    row.fixture.activeFacts[0].scopeId = "card-other"
-    row.fixture.sourceMessages[0].cardId = "card-other"
-    noAnswer(row, "该称呼仅属另一Card，当前Card不能复述")
+    row.variant = "跨会话"
+    row.fixture.activeFacts[0].scopeId = "session-other"
+    noAnswer(row, "该称呼仅属另一会话，当前会话不能复述")
   }
   if (ordinal === 12 && row.group === "temporal-episode") {
     row.variant = "时效过期"

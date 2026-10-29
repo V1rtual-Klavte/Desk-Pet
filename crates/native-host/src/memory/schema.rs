@@ -11,6 +11,7 @@
 use crate::error::{AppError, AppResult};
 use crate::rust_warn;
 use rusqlite::{Connection, OptionalExtension};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -1736,6 +1737,141 @@ fn backfill_conversation_suppressions(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
+/// 6 → 7：记忆范围收敛为 user/session，旧库的 card 条目并入跨会话 user 池。
+/// 引用这些条目的候选草稿与主动来源必须同事务改写，否则会被新范围校验判为失效。
+fn migrate_memory_scope(conn: &Connection, prior_version: Option<i64>) -> AppResult<()> {
+    if !prior_version.is_some_and(|value| value < 7) {
+        return Ok(());
+    }
+    let items = conn
+        .execute(
+            "UPDATE memory_items SET scope='user', scope_id=NULL WHERE scope='card'",
+            [],
+        )
+        .map_err(|error| sql_error("迁移 card 记忆条目失败", error))?;
+    let candidates = rewrite_card_candidate_drafts(conn)?;
+    let references = rewrite_card_memory_references(conn)?;
+    if items + candidates + references == 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE memory_meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'",
+        [],
+    )
+    .map_err(|error| sql_error("迁移后递增记忆 revision 失败", error))?;
+    // 在飞尝试的 refs 已改写且条目内容未变：对齐 revision，避免升级瞬间丢弃已生成的主动消息。
+    conn.execute(
+        "UPDATE proactive_attempts SET source_revision=(SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision') \
+         WHERE status IN ('reserved','generating','unresolved')",
+        [],
+    )
+    .map_err(|error| sql_error("迁移后对齐在飞主动尝试的 revision 失败", error))?;
+    Ok(())
+}
+
+fn rewrite_card_candidate_drafts(conn: &Connection) -> AppResult<usize> {
+    let rows = {
+        let mut statement = conn
+            .prepare("SELECT id,draft_json FROM memory_candidates WHERE status='prepared'")
+            .map_err(|error| sql_error("准备迁移记忆候选失败", error))?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| sql_error("读取待迁移记忆候选失败", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| sql_error("读取待迁移记忆候选失败", error))?
+    };
+    let mut rewritten = 0;
+    for (id, draft_json) in rows {
+        let Ok(mut draft) = serde_json::from_str::<Value>(&draft_json) else {
+            rust_warn!("记忆候选 {id} 的 draft_json 无法解析，保留原样等待发布校验拒绝");
+            continue;
+        };
+        if draft.get("scope").and_then(Value::as_str) != Some("card") {
+            continue;
+        }
+        let Some(object) = draft.as_object_mut() else {
+            continue;
+        };
+        object.insert("scope".to_owned(), Value::String("user".to_owned()));
+        object.remove("scopeId");
+        conn.execute(
+            "UPDATE memory_candidates SET draft_json=?2,payload_hash=?3 WHERE id=?1",
+            rusqlite::params![id, draft.to_string(), super::store::payload_hash(&draft)],
+        )
+        .map_err(|error| sql_error("改写记忆候选范围失败", error))?;
+        rewritten += 1;
+    }
+    Ok(rewritten)
+}
+
+fn rewrite_card_memory_references(conn: &Connection) -> AppResult<usize> {
+    let tasks = rewrite_memory_refs(
+        conn,
+        "SELECT id,source_refs_json FROM proactive_tasks WHERE state='active'",
+        "UPDATE proactive_tasks SET source_refs_json=?2 WHERE id=?1",
+    )?;
+    let attempts = rewrite_memory_refs(
+        conn,
+        "SELECT attempt_id,source_refs_json FROM proactive_attempts \
+         WHERE status IN ('reserved','generating','unresolved')",
+        "UPDATE proactive_attempts SET source_refs_json=?2 WHERE attempt_id=?1",
+    )?;
+    let evaluations = conn
+        .execute(
+            "DELETE FROM proactive_evaluations WHERE EXISTS(\
+             SELECT 1 FROM json_each(proactive_evaluations.source_refs_json) ref \
+             WHERE json_extract(ref.value,'$.kind')='memory' AND json_extract(ref.value,'$.scope')='card')",
+            [],
+        )
+        .map_err(|error| sql_error("清理引用 card 记忆的主动评估失败", error))?;
+    Ok(tasks + attempts + evaluations)
+}
+
+fn rewrite_memory_refs(conn: &Connection, select: &str, update: &str) -> AppResult<usize> {
+    let rows = {
+        let mut statement = conn
+            .prepare(select)
+            .map_err(|error| sql_error("准备迁移记忆来源引用失败", error))?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| sql_error("读取待迁移记忆来源引用失败", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| sql_error("读取待迁移记忆来源引用失败", error))?
+    };
+    let mut rewritten = 0;
+    for (id, refs_json) in rows {
+        let Ok(mut refs) = serde_json::from_str::<Vec<Value>>(&refs_json) else {
+            rust_warn!("主动来源 {id} 的 source_refs_json 无法解析，保留原样");
+            continue;
+        };
+        let mut changed = false;
+        for reference in &mut refs {
+            if reference.get("kind").and_then(Value::as_str) != Some("memory")
+                || reference.get("scope").and_then(Value::as_str) != Some("card")
+            {
+                continue;
+            }
+            let Some(object) = reference.as_object_mut() else {
+                continue;
+            };
+            object.insert("scope".to_owned(), Value::String("user".to_owned()));
+            object.remove("scopeId");
+            changed = true;
+        }
+        if !changed {
+            continue;
+        }
+        conn.execute(update, rusqlite::params![id, Value::Array(refs).to_string()])
+            .map_err(|error| sql_error("改写记忆来源引用失败", error))?;
+        rewritten += 1;
+    }
+    Ok(rewritten)
+}
+
 fn initialize_meta_values(conn: &Connection, fresh_database: bool) -> AppResult<()> {
     if fresh_database {
         for (key, value) in [
@@ -1968,6 +2104,7 @@ fn repair_transaction(
     expected: &Connection,
     plan: &RepairPlan,
     fresh_database: bool,
+    prior_version: Option<i64>,
     prior_meta_table: bool,
     prior_fence_table: bool,
     prior_inventory_marker: bool,
@@ -1977,6 +2114,7 @@ fn repair_transaction(
     repair_virtual_tables(conn, expected, plan)?;
     create_authoritative_objects(conn)?;
     initialize_meta_values(conn, fresh_database)?;
+    migrate_memory_scope(conn, prior_version)?;
     super::store::backfill_memory_search_projection(conn)?;
     crate::proactive::schema::initialize_rows(conn)?;
     crate::scheduler::schema::initialize_rows(conn)?;
@@ -2164,6 +2302,7 @@ pub fn ensure(
         &expected,
         &plan,
         fresh_database,
+        version,
         prior_meta_table,
         prior_fence_table,
         prior_inventory_marker,

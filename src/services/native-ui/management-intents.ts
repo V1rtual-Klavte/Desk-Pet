@@ -357,26 +357,21 @@ export async function memoryOverview(args: unknown): Promise<MemoryOverviewPaylo
   // 不静默回「全部范围」（界面显示的筛选必须与实际查询一致）。
   const rawScope = (args as { scope?: unknown } | null)?.scope
   const rawScopeId = (args as { scopeId?: unknown } | null)?.scopeId
-  if (rawScope !== undefined && rawScope !== null && rawScope !== "user" && rawScope !== "card" && rawScope !== "session") {
+  if (rawScope !== undefined && rawScope !== null && rawScope !== "user" && rawScope !== "session") {
     throw Object.assign(new Error(`memory_overview 未知 scope: ${String(rawScope)}`), { code: "CONFIG" })
   }
   if (rawScopeId !== undefined && rawScopeId !== null && typeof rawScopeId !== "string") {
     throw Object.assign(new Error("memory_overview 的 scopeId 必须是字符串"), { code: "CONFIG" })
   }
-  const scope = (rawScope ?? undefined) as "user" | "card" | "session" | undefined
+  const scope = (rawScope ?? undefined) as "user" | "session" | undefined
   let scopeId = rawScopeId ?? undefined
-  if (scope === "card" && !scopeId) {
-    // 界面按「当前角色」筛选时不带具体 id：由 Node 补当前激活 Card（唯一真相源）。
-    const { getActivePersonalityId } = await import("@/services/personality")
-    scopeId = getActivePersonalityId() ?? undefined
-  }
   if (scope === "session" && !scopeId) {
     const { getActiveSessionId } = await import("@/services/session")
     scopeId = getActiveSessionId()
   }
-  if ((scope === "card" || scope === "session") && !scopeId) {
-    // 补不出激活 id（没有激活卡/没有活跃会话）：如实拒绝，不静默查空列表。
-    throw Object.assign(new Error(`scope=${scope} 没有可用的 scopeId（没有激活 ${scope === "card" ? "Card" : "会话"}）`), { code: "CONFIG" })
+  if (scope === "session" && !scopeId) {
+    // 补不出活跃会话：如实拒绝，不静默查空列表。
+    throw Object.assign(new Error("scope=session 没有可用的 scopeId（没有活跃会话）"), { code: "CONFIG" })
   }
   const memory = await import("@/services/agent/memory")
   await memory.MemoryService.init()

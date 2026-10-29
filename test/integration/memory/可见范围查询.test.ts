@@ -39,14 +39,13 @@ describe("模型记忆查询的可见范围", () => {
     }])
   })
 
-  it("只查user、可信输入冻结的当前Card与当前session [memory-tool-card-scope]", async () => {
+  it("只查 user 与当前 session [memory-tool-visible-scope]", async () => {
     const rows = await queryMemoryVisibleToCurrentTurn("同一个关键词", "session-a", "event-a", 8)
     expect(mocks.resolveCurrentTrustedMemorySource).toHaveBeenCalledWith("session-a", "event-a")
     expect(mocks.queryMemory.mock.calls.map(([, options]) => [options.scope, options.scopeId])).toEqual([
-      ["user", undefined], ["session", "session-a"], ["card", "current-card"],
+      ["user", undefined], ["session", "session-a"],
     ])
-    expect(rows.map(row => row.id)).toEqual(["user:global", "session:session-a", "card:current-card"])
-    expect(rows.some(row => row.id.includes("other-card"))).toBe(false)
+    expect(rows.map(row => row.id)).toEqual(["user:global", "session:session-a"])
   })
 
   it("仅拒绝提醒不能借取消或纠正状态关闭事项 [memory-reminder-refusal-not-cancellation]", async () => {
@@ -70,13 +69,13 @@ describe("模型记忆查询的可见范围", () => {
     expect(mocks.applyMemoryChange).toHaveBeenCalledWith(expect.objectContaining({ action: "cancel", draft: expect.objectContaining({ workingState: "cancelled" }) }))
   })
 
-  it("没有可信输入Card时不发起任意Card查询", async () => {
-    mocks.resolveCurrentTrustedMemorySource.mockResolvedValue({})
-    await queryMemoryVisibleToCurrentTurn("关键词", "session-a", "event-a", 8)
-    expect(mocks.queryMemory.mock.calls.map(([, options]) => options.scope)).toEqual(["user", "session"])
+  it("没有可信来源时拒绝查询，不发任何 scope 查询", async () => {
+    mocks.resolveCurrentTrustedMemorySource.mockRejectedValue(new Error("没有可绑定的可信用户来源"))
+    await expect(queryMemoryVisibleToCurrentTurn("关键词", "session-a", "event-a", 8)).rejects.toThrow("可信")
+    expect(mocks.queryMemory).not.toHaveBeenCalled()
   })
 
-  it("执行memory_query工具时传入trusted event绑定的scope，而不接受模型选择Card", async () => {
+  it("执行memory_query工具时只查user与当前session，不接受模型选择范围", async () => {
     registerMemoryTools()
     const tool = getToolByName("memory_query")
     expect(tool, "内置memory_query工具未注册").toBeDefined()
@@ -89,9 +88,9 @@ describe("模型记忆查询的可见范围", () => {
       expect(result.success).toBe(true)
       expect(result.content).toContain("user")
       expect(result.content).toContain("session")
-      expect(result.content).toContain("card")
+      expect(result.content).not.toContain("current-card")
       expect(mocks.queryMemory.mock.calls.map(([, options]) => [options.scope, options.scopeId])).toEqual([
-        ["user", undefined], ["session", "session-a"], ["card", "current-card"],
+        ["user", undefined], ["session", "session-a"],
       ])
     } finally {
       unregister("local-memory-query")

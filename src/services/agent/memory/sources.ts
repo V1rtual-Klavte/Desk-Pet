@@ -107,7 +107,7 @@ export function trustedSourcesFromEntries(
       evidence: text.slice(0, EVIDENCE_CHARS),
       sourceLength: text.length,
       rawText: text,
-      // 投递时刻冻结的 Card 身份：缺了它这段经历只能留在 user 范围，不能事后反推。
+      // 投递时刻冻结的 Card 身份仅作来源溯源，事后不从「当前正在显示的 Card」反推。
       ...(mark.cardId ? { cardId: mark.cardId } : {}),
       eligibleForMemory: true,
       taint: "trusted_user",

@@ -2148,7 +2148,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     const memoryEvidenceDeadline = Date.now() + loopConfig.turnTimeoutMs
     // recall 走槽级取消信号：回合被停止时这次读取随之结束，旧代际的结果不会写进新投影。
     const memoryRequest: MemoryRecallRequest = {
-      requestId, sessionId: turnSessionId, cardId: card?.id, runGeneration: generation,
+      requestId, sessionId: turnSessionId, runGeneration: generation,
       query: userText, tokenBudget: 0,
       budget: deriveMemoryRecallBudget(windowTokens, memoryPurpose, 0),
       contextWindow: windowTokens, signal: slot.runSignal, traceContext,

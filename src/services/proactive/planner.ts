@@ -166,7 +166,7 @@ export async function planningInput(opportunities:Opportunity[],owner:ProactiveO
   // 关闭时不召回，evidence 按空降级（照常产出可判的规划输入，不报错）。
   if(targets.length&&!memoryConfig.enabled)log.debug("记忆总闸关闭，规划输入不带目标记忆证据")
   const projections=targets.length&&memoryConfig.enabled?await recallMemory({requestId:`planning-sources-${crypto.randomUUID()}`,sessionId:owner.sessionId,
-    cardId:owner.cardId,runGeneration:owner.runGeneration,query:"",purpose:"proactive",targets,allowExpiredTargets:true,
+    runGeneration:owner.runGeneration,query:"",purpose:"proactive",targets,allowExpiredTargets:true,
     tokenBudget:SOURCE_CONTEXT_BUDGET,projectionFormat:"content",signal}):[]
   // 输入补齐全部只读、当次冻结、有界预算（人设/变量池按各自 token 上限截断，画像只取就近小时）。
   // 记忆证据仍走运行时绑定的 targets → recallMemory：不给模型 memory_query（它硬需

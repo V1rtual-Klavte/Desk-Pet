@@ -819,29 +819,23 @@ const TOOLS_ACTIONS: &[Field] = &[
 // 分组与文案属于**共享层**责任：平台只按 `Section` 画分组线（渲染层不做 key→分组的映射，
 // 否则就是第二个定义点）。
 
-/// 记忆页：条目列表的范围筛选（四选一）。
+/// 记忆页：条目列表的范围筛选（三选一）。
 ///
-/// 说明：这里四个动作是**同一组互斥选项**，不是四个独立命令。平台将来若做成分段控件，
-/// 选中态要由记忆作用域快照决定 —— 目前仍是四个动作按钮（分段化需要一个能承载
+/// 说明：这里三个动作是**同一组互斥选项**，不是三个独立命令。平台将来若做成分段控件，
+/// 选中态要由记忆作用域快照决定 —— 目前仍是三个动作按钮（分段化需要一个能承载
 /// 「选项 + 当前值」的字段形态，是独立的一小批）。
 const MEMORY_SCOPE: &[Field] = &[
     Field {
         key: "action.memoryScopeAll",
         label: "全部",
         kind: FieldKind::Action,
-        help: "用户级、角色级、会话级的记忆都列出来",
+        help: "用户级、会话级的记忆都列出来",
     },
     Field {
         key: "action.memoryScopeUser",
         label: "仅用户级",
         kind: FieldKind::Action,
         help: "只列跨会话的长期事实",
-    },
-    Field {
-        key: "action.memoryScopeCard",
-        label: "仅当前角色",
-        kind: FieldKind::Action,
-        help: "只列属于当前激活角色的记忆",
     },
     Field {
         key: "action.memoryScopeSession",

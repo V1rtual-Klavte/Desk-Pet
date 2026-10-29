@@ -318,8 +318,9 @@ export async function tick(now=Date.now(),mode?:{remindersOnly:boolean}):Promise
       const decision:ProactiveDecision={kind:planned.kind,ruleId:selected.ruleId,opportunityFingerprints:eligible.map(item=>item.fingerprint),topicKey:planned.kind==="speak_now"?null:selected.topicKey??null,
         slot:day,validUntil:Math.min(...eligible.map(item=>item.validUntil))}
       if(planned.kind==="schedule"&&planned.nextCheckinAt) {
-        const scope=sourceRefs.some(ref=>ref.scope==="session")?"session":sourceRefs.some(ref=>ref.scope==="card")?"card":"user"
-        const task:ProactiveTask={id:await sha256Text(`${fingerprint}:followup`),version:1,scope,scopeId:scope==="session"?owner.sessionId:scope==="card"?owner.cardId:null,
+        // 记忆只有 user/session 两档；跟进任务仍绑定规划它的角色，避免 user 归属跨 Card 投递。
+        const scope=sourceRefs.some(ref=>ref.scope==="session")?"session":"card"
+        const task:ProactiveTask={id:await sha256Text(`${fingerprint}:followup`),version:1,scope,scopeId:scope==="session"?owner.sessionId:owner.cardId,
           sourceRefs,intent:{text:planned.intent,kind:"open_end_followup"},eventAt:null,dueAt:null,nextCheckinAt:planned.nextCheckinAt,
           validUntil:planned.nextCheckinAt+2*DAY_MS,timezone,recurrence:null,state:"active",createdAt:now,updatedAt:now}
         decision.taskDrafts=[task]

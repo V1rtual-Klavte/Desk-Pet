@@ -43,8 +43,6 @@ const log = createLogger("MemoryProvider")
 export interface MemoryRecallRequest {
   requestId: string
   sessionId: string
-  /** 当回合冻结的 Card 身份：card 范围的记忆只在它的 Card 里可见。 */
-  cardId?: string
   /** 主动消息只允许解引用调度器精确选定且仍为该版本的记忆。 */
   purpose?: "conversation" | "proactive"
   targets?: Array<{ id: string; version: number }>
@@ -421,9 +419,9 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
   const observe = Boolean(request.traceContext) && hasRuntimeTraceSubscribers()
   const readFactCandidates = (query: string, targetsForQuery: Array<{ id: string; version: number }>, allowExpired: boolean) => {
     if (eventTime || observe || retrievalPlan.entities.length) {
-      return getMemoryRecallCandidates(query, request.cardId, request.sessionId, targetsForQuery, allowExpired, eventTime, observe, retrievalPlan.entities)
+      return getMemoryRecallCandidates(query, request.sessionId, targetsForQuery, allowExpired, eventTime, observe, retrievalPlan.entities)
     }
-    return getMemoryRecallCandidates(query, request.cardId, request.sessionId, targetsForQuery, allowExpired)
+    return getMemoryRecallCandidates(query, request.sessionId, targetsForQuery, allowExpired)
   }
 
   // Start the original-query local reads before query rewriting. They become a safe,
@@ -727,7 +725,6 @@ async function recallSqliteMemory(request: MemoryRecallRequest): Promise<MemoryP
     candidateCount: currentCore.length + localDynamic.length + currentTargeted.length,
     candidateIdsByScope: {
       user: snapshot.candidatesByScope.user.map(item => item.id),
-      card: snapshot.candidatesByScope.card.map(item => item.id),
       session: snapshot.candidatesByScope.session.map(item => item.id),
       targeted: currentTargeted.map(item => item.id),
       conversation: (conversationSnapshot?.entries ?? []).map(entry => `conversation:${entry.sessionId}:${entry.entryId}:${entry.chunk}`),
@@ -984,7 +981,6 @@ function fuseMemorySnapshots(snapshots: readonly MemoryRecallCandidateSnapshot[]
     revision: base.revision,
     candidatesByScope: {
       user: fuse(compatible.map(snapshot => snapshot.candidatesByScope.user)),
-      card: fuse(compatible.map(snapshot => snapshot.candidatesByScope.card)),
       session: fuse(compatible.map(snapshot => snapshot.candidatesByScope.session)),
     },
     candidates: fuse(compatible.map(snapshot => snapshot.candidates)),

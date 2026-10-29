@@ -68,15 +68,19 @@ describe("direct-seed 装载计划", () => {
     expect(plan.memory).toHaveLength(4)
   })
 
-  it("card / session 作用域补上作用域 id，user 作用域不带 scopeId", () => {
+  it("session 作用域补上当前会话 id，user 作用域不带 scopeId", () => {
     const raw = seed()
-    raw.fixture.initialMemory[0].scope = "card"
-    raw.fixture.initialMemory[1].scope = "session"
+    raw.fixture.initialMemory[0].scope = "session"
 
     const plan = buildDirectSeedPlan(raw)
-    expect(plan.memory[0]).toMatchObject({ scope: "card", scopeId: "xiaoxue" })
-    expect(plan.memory[1]).toMatchObject({ scope: "session", scopeId: raw.fixture.initialSession.id })
-    expect(plan.memory[2]).not.toHaveProperty("scopeId")
+    expect(plan.memory[0]).toMatchObject({ scope: "session", scopeId: raw.fixture.initialSession.id })
+    expect(plan.memory[1]).not.toHaveProperty("scopeId")
+  })
+
+  it("card 不再是记忆作用域，fixture 直接拒绝", () => {
+    const raw = seed()
+    raw.fixture.initialMemory[0].scope = "card"
+    assertInvalid(raw, /scope 必须是 user \| session/)
   })
 
   it("fixture.profile=default 必须与 activeId=null 配对，具名 Profile 原样带出", () => {

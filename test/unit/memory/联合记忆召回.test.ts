@@ -96,7 +96,7 @@ function factSnapshot(items: MemoryItem[], revision = 7): MemoryRecallCandidateS
   const pinned = items.filter(item => item.draft.pinned)
   return {
     revision,
-    candidatesByScope: { user: items, card: [], session: [] },
+    candidatesByScope: { user: items, session: [] },
     candidates: items.filter(item => !item.draft.pinned),
     pinned,
     targeted: [],

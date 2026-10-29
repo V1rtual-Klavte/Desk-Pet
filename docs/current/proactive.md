@@ -37,7 +37,7 @@
 
 事项的 `eventAt/dueAt` 保存 day 或 minute 精度与 IANA 时区；`expiresAt` 只决定普通召回有效期。`workingState` 为 open/completed/cancelled。日期精度的临期窗口在前一日09–22点，跟进从该日期结束起48小时；分钟精度在发生前24小时和发生后48小时。观察事件按真实 `occurredAt` 归属周期（23:50 的事件跨午夜仍归前一天，窗口可延伸到次日），同日两次事件各有独立 period 身份和抽样。完成、取消、更正或遗忘会事务性关闭关联旧机会；没有用户结果证据不写现实成果。
 
-用户任务只有 `schedule_query`、`schedule_change` 两个工具，分别提供分页查询（id、状态、结果）与 propose/create/update/reschedule/snooze/complete/cancel/decline。内部 proactive、静默了解、dreaming 不在列表、上下文或可修改对象中；现有频率设置仍从设置窗或斜杠入口管理。旧模型工具名已删除。用户任务必须绑定当前会话或 Card（不接受 `scope=user`），查询同时核对冻结的 `session/Card/cardHash`；删除所属会话或 Card 时先取消在飞运行，再把对应 active 任务置为 invalidated，晚到结果不能按新 owner 交付。
+用户任务只有 `schedule_query`、`schedule_change` 两个工具，分别提供分页查询（id、状态、结果）与 propose/create/update/reschedule/snooze/complete/cancel/decline。内部 proactive、静默了解、dreaming 不在列表、上下文或可修改对象中；现有频率设置仍从设置窗或斜杠入口管理。旧模型工具名已删除。用户任务必须绑定当前会话或 Card（不接受 `scope=user`），查询同时核对冻结的 `session/Card/cardHash`；删除所属会话或 Card 时先取消在飞运行，再把对应 active 任务置为 invalidated，晚到结果不能按新 owner 交付。任务的 Card 归属只是交付与实际执行方：规划产生的跟进任务保持在规划时的 Card（有会话引用则随会话），避免跨 Card 交付；它不构成记忆范围——主动 memory 目标只来自 `user` 池与目标所属会话。
 
 任务定义保存在 `proactive_tasks.intent`，类型为 reminder 或 agent_job；`schedule` 保存时区、日历周期、固定点／窗口／已确认作息锚／真实观测事件、固定或随机次数、最小间隔、有效期及错过策略。次数以成功送达为准；随机次数和时间点每周期只抽一次并持久化，重启、重试和延后均沿用。一次性、日、周、月、年、跨午夜、DST 与月末均由用户任务日历单点解释；观察事件缺失时不降级成固定时刻。
 

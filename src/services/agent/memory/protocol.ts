@@ -61,7 +61,10 @@ export interface ConversationSearchResult {
   entries: Array<ConversationSearchEntry>
 }
 
-export type MemoryScope = "user" | "card" | "session"
+export type MemoryScope = "user" | "session"
+
+/** 主动任务的归属范围：任务仍可绑定某个 Card 投递；记忆本身只有 user/session 两档。 */
+export type ProactiveScope = MemoryScope | "card"
 
 export type MemoryKind = "fact" | "preference" | "episode" | "working"
 
@@ -95,7 +98,7 @@ export interface ProactiveSourceRef {
   id: string
   version: number
   revision: number
-  scope: MemoryScope
+  scope: ProactiveScope
   scopeId: string | null
   fingerprint: string
   validUntil: number | null
@@ -111,7 +114,7 @@ export interface ProactiveOwner {
 export interface ProactiveTask {
   id: string
   version: number
-  scope: MemoryScope
+  scope: ProactiveScope
   scopeId: string | null
   sourceRefs: Array<ProactiveSourceRef>
   intent: Record<string, unknown>
@@ -128,7 +131,7 @@ export interface ProactiveTask {
 
 export interface ProactiveTaskDraft {
   id: string
-  scope: MemoryScope
+  scope: ProactiveScope
   scopeId: string | null
   sourceRefs: Array<ProactiveSourceRef>
   intent: Record<string, unknown>
@@ -413,7 +416,7 @@ export interface MemoryRecallDiagnostics {
 
 export interface MemoryRecallCandidateSnapshot {
   revision: number
-  candidatesByScope: { "user": Array<MemoryItem>; "card": Array<MemoryItem>; "session": Array<MemoryItem> }
+  candidatesByScope: { "user": Array<MemoryItem>; "session": Array<MemoryItem> }
   candidates: Array<MemoryItem>
   pinned: Array<MemoryItem>
   targeted: Array<MemoryItem>

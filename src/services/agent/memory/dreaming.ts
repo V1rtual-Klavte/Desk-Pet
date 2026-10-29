@@ -111,11 +111,11 @@ export interface DreamingOutcome {
 const REVIEW_SYSTEM_PROMPT = [
   "你负责把用户本人说过的话整理成长期记忆候选。",
   "只输出 JSON，不要解释，不要 markdown 代码块。",
-  '输出形如 {"candidates":[{"sourceIds":["..."],"content":"...","summary":"...","kind":"fact|preference|episode|working","scope":"user|card|session","aliases":["..."],"pinned":false,"importance":0-10,"confidence":0-1,"supersedesIds":["已有条目 id"],"reason":"..."}]}。',
+  '输出形如 {"candidates":[{"sourceIds":["..."],"content":"...","summary":"...","kind":"fact|preference|episode|working","scope":"user|session","aliases":["..."],"pinned":false,"importance":0-10,"confidence":0-1,"supersedesIds":["已有条目 id"],"reason":"..."}]}。',
   "规则：",
   "1. 只记录用户本人的陈述。朋友的偏好、假设、举例、引用、翻译内容都不算用户事实。",
   "2. 每条候选必须带至少一个来源 id，且只能用输入里出现过的 id。",
-  "3. 记忆种类与范围：kind 取 fact=用户陈述的事实 / preference=稳定偏好 / episode=具体经历 / working=明确待办或约定；scope 取 user=跨会话适用（缺省）/ card=只属于当前角色的互动 / session=只属于当前会话。",
+  "3. 记忆种类与范围：kind 取 fact=用户陈述的事实 / preference=稳定偏好 / episode=具体经历 / working=明确待办或约定；scope 取 user=跨会话适用（缺省，所有角色共享）/ session=只属于当前会话。",
   "4. 称呼、稳定的表达偏好可以置 pinned=true；一次性的经历或临时安排置 false。",
   "5. 有明显时效的说法写 expiresAt（毫秒时间戳，可省略）；不要把临时状态写成永久偏好。",
   "6. kind=working 只用于用户明确的待办或约定（临时让你做的事不算），必须带 workingState：open|completed|cancelled（拿不准就 open）。",
@@ -145,7 +145,7 @@ function stable(value: unknown): string {
 }
 
 const KINDS = new Set(["fact", "preference", "episode", "working"])
-const SCOPES = new Set(["user", "card", "session"])
+const SCOPES = new Set(["user", "session"])
 const WORKING_STATES = new Set(["open", "completed", "cancelled"])
 
 /** 单次 Review 的超时：随输出预算放大（按每分钟至少 8k tokens 估），30s 起、180s 封顶。 */
@@ -211,13 +211,12 @@ export function parseReviewCandidates(
       ? record.aliases.filter((alias): alias is string => typeof alias === "string").slice(0, 8)
       : []
     const pinned = record.pinned === true
+    // 只有称呼类的稳定事实才允许 pinned，避免模型把所有东西都塞进核心画像。
     // kind=working 必须带状态：模型漏写时默认 open（条目不关闭），非法值不猜测完成态。
     const workingState = kind === "working"
       ? (typeof record.workingState === "string" && WORKING_STATES.has(record.workingState) ? record.workingState : "open")
       : undefined
     const eventAt = kind === "episode" || kind === "working" ? parseEventAnchor(record.eventAt) : undefined
-    // 只有称呼类的稳定事实才允许 pinned，避免模型把所有东西都塞进核心画像。
-    const cardId = batch.find(source => resolvedSourceIds.includes(source.sourceId))?.cardId
     // 替换目标：只认 existing 里、kind/scope 一致的那一条（Rust 发布口还会复核范围/类别）。
     const requestedSupersede = Array.isArray(record.supersedesIds)
       ? record.supersedesIds.filter((id): id is string => typeof id === "string")
@@ -240,7 +239,6 @@ export function parseReviewCandidates(
         summary: typeof record.summary === "string" && record.summary.trim() ? record.summary.trim() : content.slice(0, DRAFT_SUMMARY_CHARS),
         kind: kind as MemoryDraft["kind"],
         scope: scope as MemoryDraft["scope"],
-        ...(scope === "card" && cardId ? { scopeId: cardId } : {}),
         aliases,
         pinned: pinned && kind === "fact",
         importance: typeof record.importance === "number" ? Math.min(10, Math.max(0, record.importance)) : 5,
@@ -254,11 +252,6 @@ export function parseReviewCandidates(
       },
       ...(typeof record.reason === "string" ? { reason: record.reason.slice(0, 400) } : {}),
     })
-    // card 范围的候选必须能落到具体 Card，否则降级成 user 范围而不是编一个 scopeId。
-    const last = out[out.length - 1]!
-    if (last.draft.scope === "card" && !last.draft.scopeId) {
-      last.draft.scope = "user"
-    }
   }
   // 整批都是「与在库条目重复」不是失败：这是判重生效后的正常空结果，水位照常推进；
   // 只有形状/来源非法才让批次失败并保留来源待下次重审。

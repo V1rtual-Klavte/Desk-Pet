@@ -387,10 +387,10 @@ fn fts_only_hits_keep_scope_expiry_and_version_boundaries() {
         0,
         &draft("用户喜欢CAFÉ", vec!["fts-source"]),
     );
-    let mut card = draft("其他Card喜欢CAFÉ", vec!["fts-source"]);
-    card["scope"] = json!("card");
-    card["scopeId"] = json!("other-card");
-    add(&store, "fts-card", 1, &card);
+    let mut other_session = draft("其他会话喜欢CAFÉ", vec!["fts-source"]);
+    other_session["scope"] = json!("session");
+    other_session["scopeId"] = json!("s2");
+    add(&store, "fts-other-session", 1, &other_session);
     let mut expired = draft("已过期CAFÉ", vec!["fts-source"]);
     expired["validTo"] = json!(1_000i64);
     add(&store, "fts-expired", 2, &expired);
@@ -410,11 +410,11 @@ fn fts_only_hits_keep_scope_expiry_and_version_boundaries() {
     assert_eq!(
         hits.len(),
         1,
-        "FTS must find the live user fact while excluding card and expired facts"
+        "FTS must find the live user fact while excluding other sessions and expired facts"
     );
     assert_eq!(hits[0]["draft"]["content"], json!("用户喜欢CAFÉ"));
     assert!(store
-        .query("café", Some("card"), Some("active-card"), Some("s1"), 50)
+        .query("café", Some("session"), Some("s1"), Some("s1"), 50)
         .unwrap()
         .is_empty());
     let id = hits[0]["id"].as_str().unwrap();
@@ -459,10 +459,10 @@ fn query_filters_scope_and_expiry() {
         0,
         &draft("用户养了一只叫团子的猫", vec!["src-1"]),
     );
-    let mut card_draft = draft("用户在糖糖这里喜欢被叫老板", vec!["src-2"]);
-    card_draft["scope"] = json!("card");
-    card_draft["scopeId"] = json!("v1rtual");
-    add(&store, "op-2", 1, &card_draft);
+    let mut session_draft = draft("用户在另一会话里喜欢被叫老板", vec!["src-2"]);
+    session_draft["scope"] = json!("session");
+    session_draft["scopeId"] = json!("s2");
+    add(&store, "op-2", 1, &session_draft);
     let mut expiring = draft("用户这周在出差", vec!["src-1"]);
     expiring["expiresAt"] = json!(1_000i64);
     add(&store, "op-3", 2, &expiring);
@@ -479,11 +479,11 @@ fn query_filters_scope_and_expiry() {
             .query("老板", Some("user"), None, None, 10)
             .unwrap()
             .is_empty(),
-        "user 范围查询返回了 card 范围的记忆"
+        "user 范围查询返回了 session 范围的记忆"
     );
     assert_eq!(
         store
-            .query("老板", Some("card"), Some("v1rtual"), None, 10)
+            .query("老板", Some("session"), Some("s2"), None, 10)
             .unwrap()
             .len(),
         1
@@ -503,23 +503,17 @@ fn pinned_core_is_read_without_query_and_bound_to_current_scopes_and_revision() 
     store
         .register_sources(&[
             source("core-user", "core-user-entry", "core-user-hash"),
-            source("core-card", "core-card-entry", "core-card-hash"),
-            source("core-other", "core-other-entry", "core-other-hash"),
             source("core-session", "core-session-entry", "core-session-hash"),
+            source("core-other", "core-other-entry", "core-other-hash"),
             source("core-expired", "core-expired-entry", "core-expired-hash"),
         ])
         .unwrap();
     let mut user = draft("核心称呼是小澄", vec!["core-user"]);
     user["pinned"] = json!(true);
     add(&store, "core-user-add", 0, &user);
-    let mut card = draft("当前Card称呼是老板", vec!["core-card"]);
-    card["scope"] = json!("card");
-    card["scopeId"] = json!("current-card");
-    card["pinned"] = json!(true);
-    add(&store, "core-card-add", 1, &card);
-    let mut other = draft("其它Card秘密称呼是主管", vec!["core-other"]);
-    other["scope"] = json!("card");
-    other["scopeId"] = json!("other-card");
+    let mut other = draft("其它会话秘密称呼是主管", vec!["core-other"]);
+    other["scope"] = json!("session");
+    other["scopeId"] = json!("s2");
     other["pinned"] = json!(true);
     add(&store, "core-other-add", 2, &other);
     let mut session = draft("当前会话核心事项", vec!["core-session"]);
@@ -533,14 +527,7 @@ fn pinned_core_is_read_without_query_and_bound_to_current_scopes_and_revision() 
     add(&store, "core-expired-add", 4, &expired);
 
     let snapshot = store
-        .recall_candidates(
-            "一个完全无关的天气问题",
-            Some("current-card"),
-            "s1",
-            50,
-            &[],
-            false,
-        )
+        .recall_candidates("一个完全无关的天气问题", "s1", 50, &[], false)
         .unwrap();
     assert!(
         snapshot["candidates"].as_array().unwrap().is_empty(),
@@ -552,11 +539,10 @@ fn pinned_core_is_read_without_query_and_bound_to_current_scopes_and_revision() 
         .map(|item| item["draft"]["content"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert!(texts.contains(&"核心称呼是小澄"));
-    assert!(texts.contains(&"当前Card称呼是老板"));
     assert!(texts.contains(&"当前会话核心事项"));
     assert!(!texts
         .iter()
-        .any(|text| text.contains("其它Card") || text.contains("过期")));
+        .any(|text| text.contains("其它会话") || text.contains("过期")));
     assert_eq!(
         snapshot["revision"],
         json!(store.status().unwrap().revision),
@@ -779,7 +765,6 @@ fn exact_feedback_targets_allow_expiry_but_enforce_version_and_owner_scope() {
     store
         .register_sources(&[
             source("target-user", "target-user-entry", "target-user-hash"),
-            source("target-card", "target-card-entry", "target-card-hash"),
             source(
                 "target-session",
                 "target-session-entry",
@@ -800,19 +785,6 @@ fn exact_feedback_targets_allow_expiry_but_enforce_version_and_owner_scope() {
             Some(&user),
         )
         .unwrap();
-    let mut card = draft("当前Card事项", vec!["target-card"]);
-    card["scope"] = json!("card");
-    card["scopeId"] = json!("current-card");
-    store
-        .apply_change(
-            "target-card-add",
-            1,
-            "add",
-            Some("target-card-id"),
-            None,
-            Some(&card),
-        )
-        .unwrap();
     let mut session = draft("当前session事项", vec!["target-session"]);
     session["scope"] = json!("session");
     session["scopeId"] = json!("s1");
@@ -826,9 +798,9 @@ fn exact_feedback_targets_allow_expiry_but_enforce_version_and_owner_scope() {
             Some(&session),
         )
         .unwrap();
-    let mut other = draft("其它Card事项", vec!["target-other"]);
-    other["scope"] = json!("card");
-    other["scopeId"] = json!("other-card");
+    let mut other = draft("其它会话事项", vec!["target-other"]);
+    other["scope"] = json!("session");
+    other["scopeId"] = json!("s2");
     store
         .apply_change(
             "target-other-add",
@@ -842,13 +814,12 @@ fn exact_feedback_targets_allow_expiry_but_enforce_version_and_owner_scope() {
 
     let targets = vec![
         json!({"id":"target-user-id","version":1}),
-        json!({"id":"target-card-id","version":1}),
         json!({"id":"target-session-id","version":1}),
         json!({"id":"target-other-id","version":1}),
         json!({"id":"target-user-id","version":2}),
     ];
     let snapshot = store
-        .recall_candidates("", Some("current-card"), "s1", 50, &targets, true)
+        .recall_candidates("", "s1", 50, &targets, true)
         .unwrap();
     let ids = snapshot["targeted"]
         .as_array()
@@ -856,10 +827,7 @@ fn exact_feedback_targets_allow_expiry_but_enforce_version_and_owner_scope() {
         .iter()
         .map(|item| item["id"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(
-        ids,
-        ["target-user-id", "target-card-id", "target-session-id"]
-    );
+    assert_eq!(ids, ["target-user-id", "target-session-id"]);
     assert!(snapshot["candidates"].as_array().unwrap().is_empty());
 }
 
@@ -3633,7 +3601,7 @@ fn reminder_suppression_migrates_from_v5_but_missing_current_ledger_fails_closed
     {
         let conn = fixture.store.lock().unwrap();
         let version: i64 = conn.query_row("SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='schema_version'", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, SCHEMA_VERSION);
         conn.execute("INSERT INTO proactive_reminder_suppressions VALUES ('item-a','decline-a',1)", []).unwrap();
     }
     fixture.ensure().unwrap();
@@ -3644,6 +3612,140 @@ fn reminder_suppression_migrates_from_v5_but_missing_current_ledger_fails_closed
     }
     let error = fixture.ensure().expect_err("lost refusal state cannot be reconstructed");
     assert!(matches!(error, AppError::Memory(message) if message.contains("proactive_reminder_suppressions")));
+}
+
+#[test]
+fn schema_v7_moves_card_memories_and_references_into_the_user_pool() {
+    let fixture = RepairFixture::new();
+    let card_ref = json!({"kind":"memory","id":"legacy-card","version":1,"revision":1,"scope":"card","scopeId":"card-a","fingerprint":"legacy-card:1","validUntil":null});
+    let variable_ref = json!({"kind":"variable","id":"card-a:亲密度","version":1,"revision":1,"scope":"card","scopeId":"card-a","fingerprint":"var:1","validUntil":null});
+    let stale_ref = json!({"kind":"memory","id":"gone-card-item","version":1,"revision":1,"scope":"card","scopeId":"card-a","fingerprint":"gone:1","validUntil":null});
+    {
+        let conn = fixture.store.lock().unwrap();
+        conn.execute(
+            "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,created_at,updated_at) \
+             VALUES ('legacy-card',1,'active','旧角色专属称呼','旧角色专属称呼','fact','card','card-a','[]',0,5.0,0.5,1,1)",
+            [],
+        )
+        .unwrap();
+        let mut candidate = draft("旧角色的候选", vec!["legacy-source"]);
+        candidate["scope"] = json!("card");
+        candidate["scopeId"] = json!("card-a");
+        conn.execute(
+            "INSERT INTO memory_candidates(id,job_id,status,draft_json,source_ids_json,payload_hash,base_revision,reason,created_at) \
+             VALUES ('legacy-candidate','legacy-job','prepared',?1,?2,?3,0,NULL,1)",
+            rusqlite::params![
+                candidate.to_string(),
+                json!(["legacy-source"]).to_string(),
+                super::store::payload_hash(&candidate)
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO proactive_tasks(id,version,scope,scope_id,source_refs_json,intent_json,timezone,state,created_at,updated_at,operation_id) \
+             VALUES ('legacy-task',1,'card','card-a',?1,'{}','UTC','active',1,1,'op-legacy-task')",
+            [json!([card_ref, variable_ref]).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO proactive_attempts(attempt_id,request_id,kind,status,owner_json,source_refs_json,source_fingerprint,source_revision,control_revision,occurrence_ids_json,local_date,session_id,reserved_tokens,created_at,updated_at) \
+             VALUES ('legacy-attempt','legacy-request','expression','generating','{}',?1,'fp',0,0,'[]','2026-10-29','s1',0,1,1)",
+            [json!([card_ref, variable_ref]).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO proactive_evaluations(fingerprint,rule_id,source_refs_json,decision_json,source_revision,created_at) \
+             VALUES ('legacy-evaluation','rule',?1,'{}',0,1)",
+            [json!([stale_ref]).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE memory_meta SET value='6' WHERE key='schema_version'",
+            [],
+        )
+        .unwrap();
+    }
+    fixture.ensure().expect("v6 库应原地升级");
+
+    let conn = fixture.store.lock().unwrap();
+    let (scope, scope_id): (String, Option<String>) = conn
+        .query_row(
+            "SELECT scope,scope_id FROM memory_items WHERE id='legacy-card'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(scope, "user");
+    assert_eq!(scope_id, None);
+
+    let (draft_json, stored_hash): (String, String) = conn
+        .query_row(
+            "SELECT draft_json,payload_hash FROM memory_candidates WHERE id='legacy-candidate'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let rewritten: Value = serde_json::from_str(&draft_json).unwrap();
+    assert_eq!(rewritten["scope"], json!("user"));
+    assert!(
+        rewritten.get("scopeId").is_none(),
+        "候选草稿不得保留 Card scopeId"
+    );
+    assert_eq!(
+        stored_hash,
+        super::store::payload_hash(&rewritten),
+        "改写后的候选必须重算 payload_hash"
+    );
+
+    let task_refs: Value = serde_json::from_str(
+        &conn
+            .query_row(
+                "SELECT source_refs_json FROM proactive_tasks WHERE id='legacy-task'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(task_refs[0]["scope"], json!("user"));
+    assert!(task_refs[0].get("scopeId").is_none());
+    assert_eq!(
+        task_refs[1]["scope"],
+        json!("card"),
+        "非记忆来源仍保留 Card 归属"
+    );
+
+    let (attempt_refs, attempt_revision): (String, i64) = conn
+        .query_row(
+            "SELECT source_refs_json,source_revision FROM proactive_attempts WHERE attempt_id='legacy-attempt'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let attempt_refs: Value = serde_json::from_str(&attempt_refs).unwrap();
+    assert_eq!(attempt_refs[0]["scope"], json!("user"));
+    assert_eq!(
+        attempt_revision, 1,
+        "在飞尝试的 source_revision 必须对齐迁移后的 revision"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT COUNT(*) FROM proactive_evaluations WHERE fingerprint='legacy-evaluation'",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "引用 card 记忆的过期评估必须清理"
+    );
+    let revision: i64 = conn
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(revision, 1, "迁移只递增一次 revision");
 }
 
 #[test]

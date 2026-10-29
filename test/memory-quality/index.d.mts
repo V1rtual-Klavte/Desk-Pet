@@ -8,12 +8,11 @@ export type MemoryQualityCase = {
   question: string
   fixture: {
     sessionId: string
-    cardId?: string
     currentAt: string
     emptyPriorConversation: true
-    sourceMessages: Array<{ id: string; role: "user"; text: string; scope: "user" | "card" | "session"; createdAt: string; cardId?: string }>
-    activeFacts: Array<{ factId: string; content: string; scope: "user" | "card" | "session"; scopeId: string | null; sourceMessageIds: string[]; validFrom: string; validUntil: string | null }>
-    forgottenFacts?: Array<{ factId: string; content: string; scope: "user" | "card" | "session"; scopeId: string | null; sourceMessageIds: string[]; validFrom: string; validUntil: string | null }>
+    sourceMessages: Array<{ id: string; role: "user"; text: string; scope: "user" | "session"; createdAt: string }>
+    activeFacts: Array<{ factId: string; content: string; scope: "user" | "session"; scopeId: string | null; sourceMessageIds: string[]; validFrom: string; validUntil: string | null }>
+    forgottenFacts?: Array<{ factId: string; content: string; scope: "user" | "session"; scopeId: string | null; sourceMessageIds: string[]; validFrom: string; validUntil: string | null }>
     tombstones: Array<Record<string, unknown>>
   }
   gold: {
@@ -24,9 +23,8 @@ export type MemoryQualityCase = {
     expectedFactIds: string[]
     answerFacts: string[]
     expectedAbstention: boolean
-    requiredScope: string
-    requiredScopes: Array<"user" | "card" | "session">
-    requiredCardId: string | null
+    requiredScope: "user" | "session"
+    requiredScopes: Array<"user" | "session">
     validAt: string
     extractGoldFactIds: string[]
     extractForbiddenFactIds: string[]

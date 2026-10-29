@@ -83,7 +83,6 @@ pub fn memory_query(
 pub fn memory_recall_candidates(
     state: &MemoryState,
     query: String,
-    card_id: Option<String>,
     session_id: String,
     limit: Option<i64>,
     targets: Option<Vec<Value>>,
@@ -97,7 +96,6 @@ pub fn memory_recall_candidates(
         .transpose()?;
     state.0.recall_candidates_with_event_time_observed(
         &query,
-        card_id.as_deref(),
         &session_id,
         limit.unwrap_or(RECALL_LIMIT_DEFAULT),
         targets.as_deref().unwrap_or(&[]),

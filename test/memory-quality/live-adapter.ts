@@ -14,8 +14,7 @@ import { estimateContextTokens } from "@/services/context/budget"
 import { completePiText } from "@/services/engine/harness"
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
 import { publishedUiEventRecords } from "../host/ui-event-tap"
-import { createNewSession, getActiveSessionId } from "@/services/session"
-import { getActiveCard } from "@/services/personality"
+import { createNewSession } from "@/services/session"
 import { listAll, register, unregister } from "@/services/tool"
 import { standardSetup } from "../host/standard-setup"
 import { parseRerankIds } from "@/services/agent/memory"
@@ -85,8 +84,7 @@ type QualityCase = {
   question: string
   fixture: {
     sessionId: string
-    cardId?: string
-    sourceMessages: Array<{ id: string; role: "user"; text: string; scope: MemoryScope; createdAt: string; cardId?: string }>
+    sourceMessages: Array<{ id: string; role: "user"; text: string; scope: MemoryScope; createdAt: string }>
     activeFacts: Array<{ factId: string; content: string; scope: MemoryScope; scopeId: string | null; sourceMessageIds: string[]; validFrom: string; validUntil: string | null }>
     forgottenFacts?: Array<{ factId: string; content: string; scope: MemoryScope; scopeId: string | null; sourceMessageIds: string[]; validFrom: string; validUntil: string | null }>
     currentAt: string
@@ -97,7 +95,6 @@ type QualityCase = {
     extractGoldFactIds: string[]
     extractForbiddenFactIds: string[]
     requiredScopes: MemoryScope[]
-    requiredCardId: string | null
     supersededFactIds?: string[]
     forgottenFactId?: string
   }
@@ -135,18 +132,16 @@ function requiredTime(value: string): number {
   return ms
 }
 
-function scopeForFixture(scope: MemoryScope, cardId: string | undefined, currentCardId: string): { scope: MemoryScope; scopeId?: string } {
-  if (scope === "card") return { scope, scopeId: cardId === "card-other" ? cardId : currentCardId }
-  if (scope === "session") return { scope, scopeId: getActiveSessionId() }
+function scopeForFixture(scope: MemoryScope, scopeId: string | undefined, activeSessionId: string): { scope: MemoryScope; scopeId?: string } {
+  if (scope === "session") return { scope, scopeId: scopeId === "session-other" ? scopeId : activeSessionId }
   return { scope }
 }
 
 function sourceForFixture(input: QualityCase["fixture"]["sourceMessages"][number], sessionId: string,
-  index: number, cardId: string): MemorySource {
+  index: number): MemorySource {
   return {
     sourceId: `${sessionId}:${input.id}`, sessionId, entryId: input.id, eventId: `fixture-${input.id}`,
     seq: index + 1, contentHash: "", evidence: input.text, sourceLength: input.text.length,
-    ...(input.scope === "card" ? { cardId: (input as typeof input & { cardId?: string }).cardId === "card-other" ? "card-other" : cardId } : {}),
     eligibleForMemory: true, taint: "trusted_user", origin: "user",
     observedAt: requiredTime(input.createdAt),
   }
@@ -185,7 +180,6 @@ function memoryItemsToProjections(items: MemoryItem[], map: Map<string, string>)
 async function lookupCandidates(request: MemoryRecallRequest): Promise<Record<MemoryScope, MemoryItem[]>> {
   return {
     user: await queryMemory(request.query, { scope: "user", limit: 50, sessionId: request.sessionId }),
-    card: request.cardId ? await queryMemory(request.query, { scope: "card", scopeId: request.cardId, limit: 50, sessionId: request.sessionId }) : [],
     session: await queryMemory(request.query, { scope: "session", scopeId: request.sessionId, limit: 50, sessionId: request.sessionId }),
   }
 }
@@ -243,11 +237,11 @@ function rerankDuration(events: unknown[]): number | undefined {
   return measured ? total : undefined
 }
 
-async function seedFrozenFixture(caseDef: QualityCase, sessionId: string, currentCardId: string, factIds: Map<string, string>): Promise<void> {
+async function seedFrozenFixture(caseDef: QualityCase, sessionId: string, factIds: Map<string, string>): Promise<void> {
   const { revision: initialRevision } = await memoryStatus()
   let revision = initialRevision
   const sourceByMessage = new Map(caseDef.fixture.sourceMessages.map((message, index) => [message.id,
-    sourceForFixture(message, sessionId, index, currentCardId)]))
+    sourceForFixture(message, sessionId, index)]))
   const sources = [...sourceByMessage.values()]
   // 口径注记：产品对未截断的 rawText 计算 contentHash，evidence 只是 ≤2000 字符的截断片段（sources.ts）；
   // 此处直接对 evidence 自算，夹具消息短于 2000 字符时与产品口径相等——依赖夹具前提，不是协议约束。
@@ -261,7 +255,7 @@ async function seedFrozenFixture(caseDef: QualityCase, sessionId: string, curren
   const superseded = new Set(caseDef.gold.supersededFactIds ?? [])
   const inserted = new Map<string, MemoryItem>()
   for (const fact of caseDef.fixture.activeFacts) {
-    const mappedScope = scopeForFixture(fact.scope, fact.scopeId ?? undefined, currentCardId)
+    const mappedScope = scopeForFixture(fact.scope, fact.scopeId ?? undefined, sessionId)
     const sourceIds = fact.sourceMessageIds.map(sourceIdFor)
     const draft = makeDraft(fact.content,
       caseDef.capability === "memory-quality-temporal-episode" ? "episode"
@@ -284,7 +278,7 @@ async function seedFrozenFixture(caseDef: QualityCase, sessionId: string, curren
   // Forget fixtures use the same real source registration, transaction and tombstone path as the product.
   for (const forgotten of caseDef.fixture.forgottenFacts ?? []) {
     const sourceIds = forgotten.sourceMessageIds.map(sourceIdFor)
-    const mappedScope = scopeForFixture(forgotten.scope, forgotten.scopeId ?? undefined, currentCardId)
+    const mappedScope = scopeForFixture(forgotten.scope, forgotten.scopeId ?? undefined, sessionId)
     await applyMemoryChange({ operationId: `mq-seed-forget-${crypto.randomUUID()}`, baseRevision: revision, action: "add", actor: "internal",
       draft: makeDraft(forgotten.content, "fact", mappedScope.scope, mappedScope.scopeId, sourceIds,
         requiredTime(forgotten.validFrom), forgotten.validUntil ? requiredTime(forgotten.validUntil) : undefined,
@@ -298,7 +292,7 @@ async function seedFrozenFixture(caseDef: QualityCase, sessionId: string, curren
   }
 }
 
-async function actualPromptEvidence(traceEvents: unknown[], factIds: Map<string, string>, actualCardId: string, fixtureCardId?: string): Promise<Array<{ factId: string; sourceMessageId?: string; scope?: string; scopeId?: string }>> {
+async function actualPromptEvidence(traceEvents: unknown[], factIds: Map<string, string>, activeSessionId: string): Promise<Array<{ factId: string; sourceMessageId?: string; scope?: string; scopeId?: string }>> {
   const events = traceEvents as Array<{ kind?: string; payload?: Record<string, unknown> }>
   const recalls = events.filter(event => event.kind === "memory_recall_rendered")
   if (!recalls.length) throw new Error("missing memory_recall_rendered trace; the real prompt evidence is unobservable")
@@ -314,7 +308,8 @@ async function actualPromptEvidence(traceEvents: unknown[], factIds: Map<string,
       const itemId = sourceId.split("@")[0] ?? ""
       const item = itemById.get(itemId)
       if (!item || !factIds.has(itemId)) throw new Error(`trace refers to unknown Rust memory item ${sourceId}`)
-      evidence.push({ factId: factIds.get(itemId)!, scope: item.draft.scope, scopeId: item.draft.scope === "card" && item.draft.scopeId === actualCardId ? fixtureCardId : item.draft.scopeId,
+      evidence.push({ factId: factIds.get(itemId)!, scope: item.draft.scope,
+        scopeId: item.draft.scope === "session" && item.draft.scopeId === activeSessionId ? "session-fixture" : item.draft.scopeId,
         sourceMessageId: item.draft.sourceIds[0]?.split(":").slice(-1)[0] })
     }
   }
@@ -402,11 +397,9 @@ export function createLiveMemoryQualityAdapter(): {
         // written by this isolated job rather than reviving the removed approval API.
         const candidates: MemoryItem[] = dreaming.publishedCount > 0 ? await memoryList(undefined, undefined, 500) : []
         const jobSources = dreaming.jobId ? await memoryJobSources(dreaming.jobId) : []
-        const currentCardId = getActiveCard()?.id
         const candidateRows = candidates.map(candidate => ({ content: candidate.draft.content, kind: candidate.draft.kind,
           scope: candidate.draft.scope,
-          scopeId: candidate.draft.scope === "card" && candidate.draft.scopeId === currentCardId ? caseDef.fixture.cardId ?? "<active-card>"
-            : candidate.draft.scope === "session" && candidate.draft.scopeId === active.id ? "session-fixture" : candidate.draft.scopeId,
+          scopeId: candidate.draft.scope === "session" && candidate.draft.scopeId === active.id ? "session-fixture" : candidate.draft.scopeId,
           sourceIds: candidate.draft.sourceIds.map((id: string) => messageBySource.get(id) ?? id), rawSourceIds: candidate.draft.sourceIds }))
         // Semantic candidate-to-gold mapping is an independent human annotation input.
         // Keep unmatched candidates counted as false positives; never call the tested model to judge itself.
@@ -440,11 +433,9 @@ export function createLiveMemoryQualityAdapter(): {
         "ai.memory.dreaming.tier": "off" })
       await flushConfig()
       installMemoryProvider(sqliteMemoryProvider)
-      const actualCardId = getActiveCard()?.id ?? ""
-      if (!actualCardId) throw new Error("active Card unavailable for scoped memory evaluation")
       const activeSession = await createNewSession()
       const factIds = new Map<string, string>()
-      await seedFrozenFixture(caseDef, activeSession.id, actualCardId, factIds)
+      await seedFrozenFixture(caseDef, activeSession.id, factIds)
       const seededItemCount = (await memoryStatus()).itemCount
       const seededItems = await memoryList(undefined, undefined, 500)
       const fixtureFingerprint = await sha256(stable(seededItems.map(item => ({
@@ -452,7 +443,7 @@ export function createLiveMemoryQualityAdapter(): {
         content: item.draft.content,
         kind: item.draft.kind,
         scope: item.draft.scope,
-        scopeId: item.draft.scope === "session" ? "<session>" : item.draft.scope === "card" ? (item.draft.scopeId === actualCardId ? "<active-card>" : item.draft.scopeId) : null,
+        scopeId: item.draft.scope === "session" ? (item.draft.scopeId === activeSession.id ? "<session>" : item.draft.scopeId) : null,
         validFrom: item.draft.validFrom ?? null,
         validTo: item.draft.validTo ?? null,
         forgotten: item.status === "forgotten",
@@ -503,7 +494,7 @@ export function createLiveMemoryQualityAdapter(): {
         firstDeliveredTextDeltaMs = firstDelta === undefined ? undefined : firstDelta.publishedAt - start
         if (result.outcome !== "succeeded" || result.persistFailed) throw new Error(`question turn failed or was not committed: ${result.failure?.message ?? result.outcome}`)
         if (result.toolCallsMade !== 0) throw new Error("question turn bypassed quality tool isolation")
-        const evidenceUsed = await actualPromptEvidence(traces, factIds, actualCardId, caseDef.fixture.cardId)
+        const evidenceUsed = await actualPromptEvidence(traces, factIds, activeSession.id)
         observation.selectedFactIds = evidenceUsed.map(item => item.factId)
         if (strategy === "local" || strategy === "adaptive") {
           const candidateTrace = (traces as Array<{ kind?: string; payload?: Record<string, unknown> }>)
@@ -512,7 +503,7 @@ export function createLiveMemoryQualityAdapter(): {
             throw new Error("memory_recall_candidates trace is missing; candidate Recall@50 is unobservable")
           const byScope = candidateTrace.payload.candidateIdsByScope as Record<string, unknown> | undefined
           if (!byScope) throw new Error("memory_recall_candidates omitted per-scope top-50 candidate lists")
-          observation.candidateFactIdsByScope = Object.fromEntries(["user", "card", "session"].map(scope => [scope,
+          observation.candidateFactIdsByScope = Object.fromEntries(["user", "session"].map(scope => [scope,
             Array.isArray(byScope[scope]) ? (byScope[scope] as string[]).map(id => factIds.get(id) ?? id) : []]))
           observation.candidateMemoryIds = Object.values(byScope).flatMap(ids => Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [])
           observation.candidateFactIds = observation.candidateMemoryIds.map(id => factIds.get(id) ?? id)

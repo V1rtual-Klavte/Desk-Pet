@@ -16,7 +16,7 @@ export const DIRECT_SEED_FIXTURE_SCHEMA_VERSION = 4
 
 const MESSAGE_ROLES = ["user", "assistant"] as const
 const MEMORY_KINDS = ["fact", "preference", "episode", "working"] as const
-const MEMORY_SCOPES = ["user", "card", "session"] as const
+const MEMORY_SCOPES = ["user", "session"] as const
 
 export interface DirectSeedMessage {
   key: string
@@ -28,7 +28,7 @@ export interface DirectSeedMessage {
 export interface DirectSeedMemory {
   key: string
   kind: "fact" | "preference" | "episode" | "working"
-  scope: "user" | "card" | "session"
+  scope: "user" | "session"
   scopeId?: string
   content: string
   validFromMs: number
@@ -111,7 +111,7 @@ function parseSession(raw: unknown): DirectSeedPlan["session"] {
   return { id, title, messages }
 }
 
-function parseMemory(raw: unknown, sessionId: string, cardId: string, messageByKey: Map<string, DirectSeedMessage>): DirectSeedMemory[] {
+function parseMemory(raw: unknown, sessionId: string, messageByKey: Map<string, DirectSeedMessage>): DirectSeedMemory[] {
   if (raw === undefined || raw === null) return []
   if (!Array.isArray(raw)) fail("fixture.initialMemory 必须是数组")
   const seen = new Set<string>()
@@ -141,7 +141,7 @@ function parseMemory(raw: unknown, sessionId: string, cardId: string, messageByK
       key,
       kind,
       scope,
-      ...(scope === "card" ? { scopeId: cardId } : scope === "session" ? { scopeId: sessionId } : {}),
+      ...(scope === "session" ? { scopeId: sessionId } : {}),
       content,
       validFromMs,
       validUntilMs,
@@ -187,7 +187,7 @@ export function buildDirectSeedPlan(raw: unknown): DirectSeedPlan {
   if (clockMs < messages[messages.length - 1]!.atMs) fail("fixture.clock 早于最后一条 fixture 消息")
 
   const messageByKey = new Map(messages.map(message => [message.key, message]))
-  const memory = parseMemory(fixture.initialMemory, session.id, cardId, messageByKey)
+  const memory = parseMemory(fixture.initialMemory, session.id, messageByKey)
   // 初始可信来源 = 全部用户消息（与产品整理看到的水位口径一致）；助手台词只进会话正文。
   const sourceMessages: DirectSeedSourceMessage[] = messages
     .map((message, index) => ({ message, seq: index + 1 }))

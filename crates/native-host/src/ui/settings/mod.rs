@@ -330,7 +330,7 @@ pub trait SettingsPort: Send + Sync {
 
     /// 记忆页：库总览（状态 + 条目 + 整理作业）。
     ///
-    /// `scope`/`scope_id` 是可选范围筛选（user/card/session；card/session 的具体 id
+    /// `scope`/`scope_id` 是可选范围筛选（user/session；session 的具体 id
     /// 由 Node 补激活值），只影响条目列表。
     fn memory_overview(
         &self,
@@ -1330,7 +1330,7 @@ pub struct SettingsUi {
     memory_change_in_flight: AtomicBool,
     /// 本批：行编辑文档（V1RTUAL / 阶段文案 / 音效 / MCP / 只读预览）。
     document: Mutex<Option<DocumentState>>,
-    /// 本批：记忆范围筛选（None = 全部；值域 user/card/session，card/session 的 id 由 Node 补激活值）。
+    /// 本批：记忆范围筛选（None = 全部；值域 user/session，session 的 id 由 Node 补激活值）。
     memory_scope: Mutex<Option<String>>,
     /// 本批：文档保存/加载在途（同一时刻只跑一个，避免连点并发写同一文件）。
     document_in_flight: AtomicBool,
@@ -1620,10 +1620,6 @@ impl SettingsUi {
             }
             "action.memoryScopeUser" => {
                 self.set_memory_scope(Some("user"));
-                Ok(())
-            }
-            "action.memoryScopeCard" => {
-                self.set_memory_scope(Some("card"));
                 Ok(())
             }
             "action.memoryScopeSession" => {
@@ -3346,7 +3342,6 @@ impl SettingsUi {
             .unwrap_or_default();
         let scope = match Self::lock(&self.memory_scope).as_deref() {
             Some("user") => "筛选：仅用户级　",
-            Some("card") => "筛选：仅当前角色　",
             Some("session") => "筛选：仅当前会话　",
             _ => "",
         };

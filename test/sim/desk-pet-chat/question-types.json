@@ -91,7 +91,7 @@
       "id": "scope",
       "family": "memory",
       "name": "记忆作用域",
-      "goal": "user / card / session 三种 scope 不串用，切换 Card 或会话后行为正确",
+      "goal": "user / session 两种 scope 不串用，切换会话后行为正确",
       "capabilities": ["memory", "session"]
     },
     {
