@@ -47,9 +47,11 @@ import {
   applyJudgeVerdicts,
   checkDriverNoOracleLeak,
   formatJudgePacket,
+  latestJudgePacket,
   latestJudgeGrade,
   loadJudgingContext,
   prepareJudgePacket,
+  projectJudgeView,
   readJudgePacket,
   readJudgingRecords,
   recordSpotCheck,
@@ -400,6 +402,8 @@ interface AttemptOptions {
   omitTrace?: string[];
   runDir?: string;
   trialId?: string;
+  /** 模拟宿主入库时裁掉驱动消息尾部空白（上游原文常以换行结尾）。 */
+  trimDriverText?: boolean;
 }
 
 interface SealedAttempt {
@@ -469,7 +473,7 @@ async function sealAttempt(world: World, options: AttemptOptions = {}): Promise<
     const session = sessionFor(step.id);
     dialogue.append({
       role: "user",
-      text: step.text,
+      text: options.trimDriverText ? step.text.replace(/\s+$/u, "") : step.text,
       sessionId: session,
       entryId: `${step.id}-u`,
       at: nextAt(),
@@ -690,6 +694,27 @@ function driftWorld(world: World) {
   world.entry.case.title = `${world.entry.case.title}（已漂移）`;
 }
 
+/** 外部适配用例的来源结构：驱动与历史逐字来自上游，不为内部词表改写。 */
+function externalize(entry: CaseEntry, driver: DriverStep[]) {
+  entry.case.source = {
+    kind: "external",
+    ref: "上游原文",
+    excerpt: "Upstream conversation text.",
+    note: "外部数据集适配，驱动文本保持上游原文",
+    upstream: {
+      dataset: "ScaleAI/MultiChallenge",
+      id: "upstream-question-1",
+      revision: "670fd81f270314d0f8f82b34fcfe2187fd28f699",
+      split: "test",
+      sha256: HASH_B,
+      license: "CC-BY-4.0",
+      protocol: "adapted",
+      adaptationNotes: ["上游历史作为 fixture 语境"],
+    },
+  };
+  entry.case.driver = driver;
+}
+
 async function preparedWorld(options: WorldOptions = {}) {
   const world = makeWorld(options);
   const prepared = await prepare(world);
@@ -815,6 +840,153 @@ describe("判分包冻结与隐私", () => {
       }),
       "driver.oracle-leak",
     );
+  });
+
+  it("外部适配用例的上游原文含通用英文词不算泄露并冻结成功", async () => {
+    const upstreamText = "I said I was training for a gold cup race — how often do I run now?";
+    const withUpstreamText = (driver: DriverStep[]) => driver.map((step) =>
+      step.id === "ask-history" && step.kind === "message" ? { ...step, text: upstreamText } : step,
+    );
+    const external = makeWorld();
+    externalize(external.entry, withUpstreamText(DEFAULT_DRIVER));
+    expect(checkDriverNoOracleLeak({ dataset: external.dataset, caseEntry: external.entry }).ok).toBe(true);
+    const prepared = await prepare(external, { name: "external" });
+    expect(prepared.packet.packet.fixtureContext).not.toBeNull();
+
+    const internal = makeWorld();
+    internal.entry.case.driver = withUpstreamText(DEFAULT_DRIVER);
+    const leak = checkDriverNoOracleLeak({ dataset: internal.dataset, caseEntry: internal.entry });
+    expect(leak.ok).toBe(false);
+    expect(leak.violations.some((item) => item.stepId === "ask-history" && item.term === "gold")).toBe(true);
+  });
+
+  it("外部适配用例仍拒绝驱动文本泄露运行器注入的标识", async () => {
+    const world = makeWorld();
+    const caseId = world.entry.caseId;
+    externalize(world.entry, DEFAULT_DRIVER.map((step) =>
+      step.id === "ask-history" && step.kind === "message"
+        ? { ...step, text: `Please continue the case ${caseId}.` }
+        : step,
+    ));
+    const leak = checkDriverNoOracleLeak({ dataset: world.dataset, caseEntry: world.entry });
+    expect(leak.ok).toBe(false);
+    expect(leak.violations.map((item) => item.stepId)).toContain("ask-history");
+
+    const attempt = await sealAttempt(world, { name: "external-leak" });
+    assertJudgingError(
+      () => prepareJudgePacket({
+        runDir: attempt.runDir,
+        attemptDir: attempt.attemptDir,
+        dataset: world.dataset,
+        caseEntry: world.entry,
+        now: PREPARED,
+      }),
+      "driver.oracle-leak",
+    );
+  });
+
+  it("判分视图按取证窗口内联原文，窗口外只留元数据", async () => {
+    const world = makeWorld({
+      probes: [
+        {
+          id: "p-reply-only",
+          after: "ask-history",
+          window: "last-assistant",
+          rubric: "answer.fact-recall",
+          questionType: "temporal",
+          polarity: "required",
+          critical: true,
+          difficulty: 3,
+          description: "只按被问回合的回复判定当前频率",
+        },
+      ],
+    });
+    const prepared = await prepare(world, { name: "view" });
+    const packet = prepared.packet.packet;
+    const { view, body } = projectJudgeView({
+      packet,
+      packetSha256: prepared.packet.packetSha256,
+      now: REPORTED,
+    });
+    const rowFor = (seq: number) => view.timeline.find((row) => row.seq === seq);
+    const windowSeqs = packet.rules[0]?.window.messageSeqs ?? [];
+    const outside = packet.timeline.find((message) => (
+      message.origin === "assistant" && !windowSeqs.includes(message.seq)
+    ));
+
+    expect(view.kind).toBe("chat-judge-view");
+    expect(view.packetId).toBe(packet.packetId);
+    expect(view.packetSha256).toBe(prepared.packet.packetSha256);
+    // 判分员要能核对身份、绑定与被测模型，视图必须原样带上这些字段
+    expect(view.attemptId).toBe(packet.attemptId);
+    expect(view.caseId).toBe(packet.caseId);
+    expect(view.suiteId).toBe(packet.suiteId);
+    expect(view.manifestSha256).toBe(packet.manifestSha256);
+    expect(view.bindings).toEqual(packet.bindings);
+    expect(view.versions).toEqual(packet.versions);
+    expect(view.underTest).toEqual(packet.underTest);
+    expect(view.verdictFormat.packetSha256).toBe(prepared.packet.packetSha256);
+    expect(view.viewSha256).toBe(hashCanonical(body));
+    expect(view.rules).toEqual(packet.rules);
+    expect(view.allowedEvidenceRefs).toEqual(packet.allowedEvidenceRefs);
+    expect(windowSeqs.length).toBeGreaterThan(0);
+    for (const seq of windowSeqs) expect(rowFor(seq)?.text).toBeDefined();
+    expect(outside).toBeDefined();
+    expect(outside ? rowFor(outside.seq)?.textOmitted : true).toBe(true);
+    expect(outside ? rowFor(outside.seq)?.text : "有原文").toBeUndefined();
+    // 驱动回合是每条规则的问题本身，必须带原文
+    for (const message of packet.timeline.filter((item) => item.origin === "driver")) {
+      expect(rowFor(message.seq)?.text).toBe(message.text);
+    }
+    expect(view.state).toBeUndefined();
+    expect(view.deliverables).toBeUndefined();
+    expect(view.artifacts).toBeUndefined();
+    expect(view.projection.omittedSections.map((item) => item.section)).toEqual([
+      "state", "deliverables", "artifacts",
+    ]);
+  });
+
+  it("规则取证状态时判分视图携带状态与产物说明", async () => {
+    const { prepared } = await preparedWorld();
+    const packet = prepared.packet.packet;
+    const { view } = projectJudgeView({
+      packet,
+      packetSha256: prepared.packet.packetSha256,
+      now: REPORTED,
+    });
+    expect(view.state).toEqual(packet.state);
+    expect(view.projection.omittedSections.map((item) => item.section)).toEqual(["deliverables", "artifacts"]);
+    expect(latestJudgePacket({ runDir: prepared.runDir }).packet.packetId).toBe(packet.packetId);
+  });
+
+  it("驱动消息尾部空白被宿主裁掉时仍能对上步骤", async () => {
+    const driver = DEFAULT_DRIVER.map((step) => (
+      step.id === "ask-history" && step.kind === "message"
+        ? { ...step, text: `${ASK_HISTORY_TEXT} \n` }
+        : step
+    ));
+    const world = makeWorld({
+      driver,
+      probes: [
+        {
+          id: "p-reply-only",
+          after: "ask-history",
+          window: "last-assistant",
+          rubric: "answer.fact-recall",
+          questionType: "temporal",
+          polarity: "required",
+          critical: true,
+          difficulty: 3,
+          description: "只按被问回合的回复判定当前频率",
+        },
+      ],
+    });
+    const prepared = await prepare(world, { name: "trim", trimDriverText: true });
+    const packet = prepared.packet.packet;
+
+    expect(packet.skippedRules).toEqual([]);
+    expect(packet.rules).toHaveLength(1);
+    expect(packet.rules[0]?.window.messageSeqs.length).toBeGreaterThan(0);
   });
 
   it("读取判分包时拒绝哈希篡改、路径穿越与缺失文件", async () => {

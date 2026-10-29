@@ -196,6 +196,11 @@ function addedSessionIds({ before, after, messages }) {
     .map((session) => session.sessionId);
 }
 
+/** 上游原文常以换行结尾，宿主入库时裁掉尾部空白；步骤匹配按裁尾后的原文比较。 */
+function driverMatchKey(text) {
+  return String(text).replace(/\s+$/u, "");
+}
+
 function mapDriverSteps({ caseEntry, messages, before, after }) {
   const driverMessages = messages.filter((message) => message.origin === "driver");
   const listedSteps = caseEntry.case.driver;
@@ -208,7 +213,7 @@ function mapDriverSteps({ caseEntry, messages, before, after }) {
     if (step.kind === "message") {
       let matchIndex = -1;
       for (let index = messageCursor; index < driverMessages.length; index += 1) {
-        if (driverMessages[index].text === step.text) {
+        if (driverMatchKey(driverMessages[index].text) === driverMatchKey(step.text)) {
           matchIndex = index;
           break;
         }
@@ -453,7 +458,9 @@ export function checkDriverNoOracleLeak({ dataset, caseEntry }) {
     caseEntry.binding.driverHash,
     caseEntry.binding.fixtureHash,
     ...caseEntry.case.userRole.mustNotReveal,
-    ...INTERNAL_TERMS,
+    // 外部用例的驱动文本逐字来自上游，不能为避开内部词改写；gold／dataset 这类通用英文
+    // 词在上游原文里属于正常内容，只对内部编写用例检查 INTERNAL_TERMS。
+    ...(caseEntry.case.source.kind === "external" ? [] : INTERNAL_TERMS),
   ].filter((value) => typeof value === "string" && value.trim().length > 0);
   const violations = [];
   for (const step of caseEntry.case.driver) {
@@ -677,6 +684,102 @@ export function readJudgePacket({ runDir, packetId }) {
     fail("packet.hash", "判分包自身哈希不匹配");
   }
   return { packet, packetPath, packetSha256 };
+}
+
+const JUDGE_VIEW_KIND = "chat-judge-view";
+const JUDGE_VIEW_SCHEMA_VERSION = 1;
+
+/**
+ * 判分包的读取视图：只在规则的取证窗口内联对话原文，其余回合保留元数据并标注截断；
+ * 状态与产物只在规则确实取证时携带。判定字段全部原样继承，权威仍是原 packet 的
+ * packetSha256 —— 视图不改写规则、不新增判定，只减少判分员需要读的字节。
+ */
+export function projectJudgeView({ packet, packetSha256, now }) {
+  if (!isRecord(packet) || packet.kind !== "chat-judge-packet") fail("view.packet", "视图需要 chat-judge-packet");
+  assertIsoTimestamp(now, "now");
+  assertIsoTimestamp(packet.createdAt, "packet.createdAt");
+  const rules = Array.isArray(packet.rules) ? packet.rules : [];
+  const timeline = Array.isArray(packet.timeline) ? packet.timeline : [];
+  const requiredSeqs = new Set();
+  let needsState = false;
+  let needsArtifact = false;
+  for (const rule of rules) {
+    for (const seq of rule.window?.messageSeqs ?? []) requiredSeqs.add(seq);
+    if (rule.window?.mode === "state") needsState = true;
+    if (rule.window?.mode === "artifact" || rule.deliverableId) needsArtifact = true;
+  }
+  // 驱动回合是每条规则的问题本身，正文不内联会让判分员看不到被问的是什么。
+  for (const message of timeline) {
+    if (message?.origin === "driver") requiredSeqs.add(message.seq);
+  }
+  const omittedSections = [];
+  if (!needsState) omittedSections.push({ section: "state", reason: "没有规则以状态为取证窗口" });
+  if (!needsArtifact) omittedSections.push({ section: "deliverables", reason: "没有规则取证据交付产物" });
+  if (!needsArtifact) omittedSections.push({ section: "artifacts", reason: "没有规则取证据交付产物" });
+  const body = {
+    schemaVersion: JUDGE_VIEW_SCHEMA_VERSION,
+    kind: JUDGE_VIEW_KIND,
+    packetId: packet.packetId,
+    packetSha256,
+    viewAt: now,
+    createdAt: packet.createdAt,
+    attemptId: packet.attemptId,
+    caseId: packet.caseId,
+    suiteId: packet.suiteId,
+    trialId: packet.trialId,
+    manifestSha256: packet.manifestSha256,
+    datasetHash: packet.datasetHash,
+    bindings: packet.bindings,
+    versions: packet.versions,
+    underTest: packet.underTest,
+    case: packet.case,
+    fixtureContext: packet.fixtureContext ?? null,
+    rules: packet.rules,
+    skippedRules: packet.skippedRules,
+    timeline: timeline.map((message) => (
+      requiredSeqs.has(message.seq)
+        ? { ...message }
+        : {
+          seq: message.seq,
+          role: message.role,
+          origin: message.origin,
+          sessionId: message.sessionId,
+          entryId: message.entryId,
+          at: message.at,
+          textOmitted: true,
+        }
+    )),
+    allowedEvidenceRefs: packet.allowedEvidenceRefs,
+    instructions: [
+      ...packet.instructions,
+      `视图按规则取证窗口内联对话原文；textOmitted=true 的回合只保留元数据，需要原文时以 packetSha256 对应的原判分包为准。${needsState ? "" : " 本视图未携带状态快照。"}`,
+      "回填 verdicts 时 packetId 与 packetSha256 仍取本视图顶层的同名字段（即原判分包）。",
+    ],
+    verdictFormat: { ...packet.verdictFormat, packetSha256 },
+    projection: {
+      inlinedSeqs: [...requiredSeqs].sort((left, right) => left - right),
+      omittedSections,
+    },
+  };
+  if (needsState) body.state = packet.state;
+  if (needsArtifact) {
+    if (packet.deliverables) body.deliverables = packet.deliverables;
+    if (packet.artifacts) body.artifacts = packet.artifacts;
+  }
+  return { view: { ...body, viewSha256: hashCanonical(body) }, body };
+}
+
+export function latestJudgePacket({ runDir }) {
+  const packetDir = join(runDir, PACKET_DIR);
+  if (!existsSync(packetDir)) fail("packet.missing", `判分包目录不存在：${packetDir}`);
+  const ids = readdirSync(packetDir)
+    .filter((name) => name.endsWith(".packet.json"))
+    .map((name) => name.slice(0, -".packet.json".length))
+    .filter((id) => PACKET_ID_PATTERN.test(id))
+    .sort();
+  if (ids.length === 0) fail("packet.missing", `判分包目录为空：${packetDir}`);
+  const latest = ids.at(-1);
+  return readJudgePacket({ runDir, packetId: latest });
 }
 
 export function prepareJudgePacket({ runDir, attemptDir, dataset, caseEntry, now = new Date().toISOString() }) {

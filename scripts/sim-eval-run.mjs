@@ -17,6 +17,7 @@
  *   node scripts/sim-eval-run.mjs compare --run-id <id> [--baseline <evaluationRunId>] [--json]
  *   node scripts/sim-eval-run.mjs holdout --case <caseId> [--json]
  *   node scripts/sim-eval-run.mjs judge prepare --run-id <id> [--attempt-id <id>] [--json]
+ *   node scripts/sim-eval-run.mjs judge view --run-id <id> [--packet-id <id>] [--json]
  *   node scripts/sim-eval-run.mjs judge apply --run-id <id> --verdicts <file.json> [--json]
  *   node scripts/sim-eval-run.mjs review show --run-id <id> [--attempt-id <id>] [--json]
  *   node scripts/sim-eval-run.mjs review spotcheck --run-id <id> --checks <file.json>
@@ -31,7 +32,8 @@
  * 推进固定时钟、发送用户消息并等待检查点，进度写 driver-progress.json（可续跑，in-flight 不重放）；
  * finish 按驱动结果结束试次、收口采集、写对话证据、封存 attempt 并生成同源报告；batch 先冻结
  * trials.json 再串行执行多个独立试次（每个试次独立运行根与 attempt，失败占位不替换）；
- * judge prepare 只冻结判分包，judge apply 只校验并记录外部 coding-agent judge 的裁决；review spotcheck 只记录
+ * judge prepare 只冻结判分包，judge view 只从已冻结判分包派生按取证窗口精简的读取件（判定字段
+ * 原样继承，权威仍是原 packet 哈希），judge apply 只校验并记录外部 coding-agent judge 的裁决；review spotcheck 只记录
  * 用户本人的可选抽查；compare 只比较两次运行的固定条件；holdout 只报告留出用例的使用记录；
  * stop 只写 `stop.request`，宿主自己走产品退出序列并留下 exit.json；宿主没走完退出序列时
  * rescue 把已落盘的草稿按中断封存（不冒充完成），让证据有终点、repair 可继续。
@@ -65,8 +67,9 @@ import {
   readTrialPlan, sealChatAttempt, setChatRunPhase, verifySealedAttempt,
 } from "../test/sim/desk-pet-chat/evidence.mjs"
 import {
-  applyJudgeVerdicts, formatJudgePacket, JUDGE_PROMPT_VERSION, JUDGE_RUBRIC_VERSION, latestJudgeGrade, loadJudgingContext,
-  prepareJudgePacket, readJudgingRecords, recordSpotCheck, summarizeAttemptStatus,
+  applyJudgeVerdicts, formatJudgePacket, JUDGE_PROMPT_VERSION, JUDGE_RUBRIC_VERSION, latestJudgeGrade,
+  latestJudgePacket, loadJudgingContext, prepareJudgePacket, projectJudgeView, readJudgePacket,
+  readJudgingRecords, recordSpotCheck, summarizeAttemptStatus,
 } from "../test/sim/desk-pet-chat/judging.mjs"
 import { pruneChatRuns, writeChatReport } from "../test/sim/desk-pet-chat/report.mjs"
 import {
@@ -223,16 +226,20 @@ export function parseCardMeta(raw) {
 }
 
 /**
- * 运行期 CONFIG 覆盖：激活目标 Card / Profile，并关掉主动与静默了解。
+ * 运行期 CONFIG 覆盖：激活目标 Card / Profile，并关掉主动、静默了解与拟人化。
  * 自动记忆整理（dreaming）保持开启 —— 纠正轮的自动抽取是 case 的真实链路。
+ * 拟人化默认关闭（2026-10-28 用户裁定）：分泡与标点清洗改写的是展示文本，
+ * 会让「不超过 N 句」这类句数／长度观感偏离模型原样，判分读到的也就不是模型本身；
+ * 需要测拟人化链路时用 `--humanizer` 显式打开。
  */
-export function buildRunOverrides({ cardId, profileId, mcpServers, turnTimeoutMs }) {
+export function buildRunOverrides({ cardId, profileId, mcpServers, turnTimeoutMs, humanizerEnabled = false }) {
   if (typeof cardId !== "string" || cardId.trim() === "") throw new Error("覆盖缺少 Card id")
   return {
     ai: {
       personality: { active: cardId },
       proactive: { frequency: "off" },
       silentAccess: { frequency: "off" },
+      humanizer: { enabled: humanizerEnabled === true },
       ...(turnTimeoutMs ? { loop: { turnTimeoutMs } } : {}),
     },
     ...(mcpServers ? { tools: { mcp: { servers: mcpServers } } } : {}),
@@ -496,6 +503,18 @@ function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex")
 }
 
+/**
+ * 输入身份里的 CONFIG 哈希排除 `general.popup.fixedPosition`：宿主退出时会把窗口落点写回同一份
+ * 隔离 CONFIG，位置不进入任何回合行为，却会把一次正常采集误判成输入漂移（integrity=inconclusive）。
+ * 其余字段（模型、端点、阈值、卡与资源引用等）逐项照常绑定。
+ */
+export function stableConfigHash(configPath) {
+  const config = parseYaml(readFileSync(configPath, "utf8")) ?? {}
+  const popup = config?.general?.popup
+  if (popup && typeof popup === "object") delete popup.fixedPosition
+  return `sha256:${createHash("sha256").update(JSON.stringify(config)).digest("hex")}`
+}
+
 function gitOutput(args, repoRoot = REPO_ROOT) {
   const result = spawnSync("git", args, { cwd: repoRoot, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
   if (result.error) throw new Error(`git ${args.join(" ")} 失败：${result.error.message}`)
@@ -562,7 +581,7 @@ function inputHashes({ state }) {
     datasetHash: datasetInputHash(dataset, entry),
     fixtureHash: entry.binding.fixtureHash,
     cardHash: `sha256:${sha256File(join(REPO_ROOT, state.card.stagedPath))}`,
-    configHash: `sha256:${sha256File(state.configPath)}`,
+    configHash: stableConfigHash(state.configPath),
     specHash: state.hashes.specHash,
     contentHash: state.hashes.contentHash,
     driverHash: state.hashes.driverHash,
@@ -1104,10 +1123,17 @@ async function prepare(options) {
   mkdirSync(paths.controlDir, { recursive: true })
   const stagedInputs = stageExternalAssets(entry.case.source.upstream?.assets, { repoRoot, dataRoot: paths.dataRoot })
   if (externalEnvironment) writeJsonAtomic(join(runDir, "external-environment.json"), externalEnvironment)
+  // 修复沿用原运行的拟人化开关，保证对照只差本次修复；新运行默认关闭，显式 --humanizer 才打开。
+  const humanizerEnabled = repairing
+    ? Boolean(parseYaml(readFileSync(repairing.state.configPath, "utf8"))?.ai?.humanizer?.enabled ?? true)
+    : options.humanizer === true
+  if (repairing && options.humanizer === true && humanizerEnabled !== true) {
+    throw new Error("修复必须沿用原运行的拟人化开关；原运行未开启，不能为本次修复打开")
+  }
   const configText = buildSyntheticConfig({
     repoRoot,
     overrides: buildRunOverrides({
-      cardId: card.id, profileId,
+      cardId: card.id, profileId, humanizerEnabled,
       ...(externalMcpServer ? { mcpServers: [externalMcpServer], turnTimeoutMs: Math.max(DRIVER_MESSAGE_WAIT_MS, authorization.budget.minutes * 60000) } : {}),
     }),
   })
@@ -1572,7 +1598,7 @@ async function waitForStopQuiet(pid, paths, timeoutMs) {
 
 // ── drive ──
 
-/** 驱动传输层只走控制通道：时钟、消息、会话、宿主方法、上下文用量、记忆水位与工具确认。 */
+/** 驱动传输层只走控制通道：时钟、消息、会话、宿主方法、上下文用量、记忆水位、工具确认与提问应答。 */
 function driverTransport(paths, identity, messageTimeoutMs = DRIVER_MESSAGE_WAIT_MS, externalEnvironment = false) {
   if (typeof identity?.trialId !== "string" || identity.trialId === "") {
     throw new Error("驱动传输缺少 trialId；不能发送没有试次身份的消息")
@@ -1647,6 +1673,23 @@ function driverTransport(paths, identity, messageTimeoutMs = DRIVER_MESSAGE_WAIT
       }
       throw new Error(`未知确认动作：${String(action?.action)}`)
     },
+    async choice(action) {
+      if (action?.action === "query") {
+        const event = await sendBridgeCommand(paths, { type: "choice" }, ["choice"], 30_000)
+        return { pending: event.pending ?? [] }
+      }
+      if (action?.action === "cancel") {
+        const event = await sendBridgeCommand(paths, { type: "choice", action: "cancel" }, ["choice"], 30_000)
+        if (event.requestId !== action.requestId || event.action !== "cancel") {
+          throw new Error(
+            `提问回执与请求不一致：requestId=${String(event.requestId)} action=${String(event.action)}`
+            + `（期望 ${action.requestId} / cancel）`,
+          )
+        }
+        return { resolved: true, requestId: event.requestId, action: "cancel" }
+      }
+      throw new Error(`未知提问动作：${String(action?.action)}`)
+    },
   }
 }
 
@@ -1708,7 +1751,8 @@ async function drive(runId) {
       `driven ${runId}`,
       `  driver: ${final.status} ${final.completed}/${final.total ?? driverPackage.driver.length} 步`
         + ` · 检查点 ${checkpoints} 个已满足`
-        + `${final.confirmations ? ` · 工具确认 ${final.confirmations} 次` : ""}`,
+        + `${final.confirmations ? ` · 工具确认 ${final.confirmations} 次` : ""}`
+        + `${final.questions ? ` · 反问取消 ${final.questions} 次` : ""}`,
       `  clock: ${final.clockBase} → ${final.lastClock}`,
       `  usage: messages=${final.usage.messages}/${progress.budget.messages}`
         + ` tokens=${final.usage.tokens}/${progress.budget.tokens}`
@@ -1986,7 +2030,8 @@ async function finish(runId, options = {}) {
       `  evidence: test/reports/chat/${chat.evaluationRunId}/attempts/${chat.attemptId}`,
       `  driver: ${driver.status} ${driver.completed}/${driver.total ?? state.driver.steps} 步`
         + ` · outcome=${outcome.status}${closeReason ? `（${closeReason}）` : ""}`
-        + `${driver.confirmations ? ` · 工具确认 ${driver.confirmations} 次` : ""}`,
+        + `${driver.confirmations ? ` · 工具确认 ${driver.confirmations} 次` : ""}`
+        + `${driver.questions ? ` · 反问取消 ${driver.questions} 次` : ""}`,
       `  outcome: ${outcome.status} / integrity=${sealed.status}`,
       `  dialogue: ${finished.dialogue.messageCount} 条 / 会话 ${finished.dialogue.sessions.join(", ") || "（无）"}`,
       ...(sealed.manifest.deliverables.length > 0
@@ -2196,7 +2241,7 @@ function resolveSlotRunId({ evaluationRunId, index, previousSlots }) {
   }
 }
 
-async function runBatchSlot({ slot, runDir, evaluationRunId, entry, authorizationPath, cardPath, baseline, datasetRoot }) {
+async function runBatchSlot({ slot, runDir, evaluationRunId, entry, authorizationPath, cardPath, baseline, datasetRoot, humanizer }) {
   const existing = findAttemptByTrialId(runDir, entry.caseId, slot.trialId)
   if (existing) {
     const attemptDir = join(runDir, "attempts", existing.attemptId)
@@ -2241,6 +2286,7 @@ async function runBatchSlot({ slot, runDir, evaluationRunId, entry, authorizatio
     "--run-id", runId, "--evaluation-run-id", evaluationRunId, "--trial-id", slot.trialId,
   ]
   if (datasetRoot) args.push("--dataset-root", datasetRoot)
+  if (humanizer) args.push("--humanizer")
   if (baseline) args.push("--baseline", baseline.evaluationRunId)
   if (runChild(args) !== 0) throw new Error(`trial ${slot.trialId} prepare 失败；批量中止（已保留现场）`)
   if (runChild(["start", "--run-id", runId]) !== 0) {
@@ -2402,7 +2448,7 @@ async function batch(options = {}) {
     try {
       Object.assign(slot, await runBatchSlot({
         slot, runDir, evaluationRunId, entry, authorizationPath, cardPath, baseline,
-        datasetRoot: dataset.root,
+        datasetRoot: dataset.root, humanizer: options.humanizer === true,
       }))
     } catch (error) {
       record.status = "blocked"
@@ -2640,6 +2686,45 @@ function judgePrepare(runId, options) {
   ].join("\n"))
 }
 
+/** 判分视图：从已冻结的判分包派生精简读取件，不改判定字段，也不覆盖已有视图。 */
+function judgeView(runId, options) {
+  const { state } = loadState(runId)
+  const source = options.packetId
+    ? readJudgePacket({ runDir: state.chat.runDir, packetId: options.packetId })
+    : latestJudgePacket({ runDir: state.chat.runDir })
+  const now = nowIso()
+  const { view } = projectJudgeView({ packet: source.packet, packetSha256: source.packetSha256, now })
+  const viewPath = source.packetPath.replace(/\.packet\.json$/, ".view.json")
+  if (existsSync(viewPath)) {
+    throw new Error(`判分视图已存在，拒绝覆盖：${relative(REPO_ROOT, viewPath)}`)
+  }
+  writeFileSync(viewPath, `${JSON.stringify(view, null, 2)}\n`, { flag: "wx" })
+  const packetBytes = readFileSync(source.packetPath).length
+  const viewBytes = readFileSync(viewPath).length
+  if (options.json) {
+    console.log(JSON.stringify({
+      runId,
+      attemptId: source.packet.attemptId,
+      packetId: source.packet.packetId,
+      packetPath: relative(REPO_ROOT, source.packetPath),
+      packetSha256: source.packetSha256,
+      viewPath: relative(REPO_ROOT, viewPath),
+      viewSha256: view.viewSha256,
+      packetBytes,
+      viewBytes,
+      inlinedSeqs: view.projection.inlinedSeqs,
+      omittedSections: view.projection.omittedSections.map((item) => item.section),
+    }, null, 2))
+    return
+  }
+  console.log([
+    `packet: ${relative(REPO_ROOT, source.packetPath)}（${packetBytes} 字节）`,
+    `view:   ${relative(REPO_ROOT, viewPath)}（${viewBytes} 字节）`,
+    `内联回合: ${view.projection.inlinedSeqs.length}；省略段落: ${view.projection.omittedSections.map((item) => item.section).join("、") || "（无）"}`,
+    `next: 判分员按 view 逐条裁决，回填 verdicts 的 packetId 与 packetSha256 取 view 顶层同名字段`,
+  ].join("\n"))
+}
+
 function judgeApply(runId, options) {
   const { paths, state } = loadState(runId)
   const { dataset, entry } = loadCaseContext(state)
@@ -2847,8 +2932,9 @@ function reportCommand(runId, options) {
 
 function judgeCommand(runId, action, options) {
   if (action === "prepare") return judgePrepare(runId, options)
+  if (action === "view") return judgeView(runId, options)
   if (action === "apply") return judgeApply(runId, options)
-  throw new Error(`未知 judge 子命令：${String(action)}；可用 prepare|apply`)
+  throw new Error(`未知 judge 子命令：${String(action)}；可用 prepare|view|apply`)
 }
 
 function reviewCommand(runId, action, options) {
@@ -3100,6 +3186,7 @@ function parseArgs(argv) {
     "--trial-id": "trialId",
     "--trials": "trials",
     "--attempt-id": "attemptId",
+    "--packet-id": "packetId",
     "--baseline": "baselineId",
     "--repair-of": "repairOf",
     "--reason": "reason",
@@ -3109,7 +3196,7 @@ function parseArgs(argv) {
     "--reviewer-name": "reviewerName",
     "--notes": "notes",
   }
-  const flags = new Set(["--json", "--interrupted"])
+  const flags = new Set(["--json", "--interrupted", "--humanizer"])
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--help" || arg === "-h") return { help: true }
@@ -3131,17 +3218,18 @@ function parseArgs(argv) {
 const USAGE = [
   "用法：",
   "  node scripts/sim-eval-run.mjs prepare --case <caseId> --card <card.md> --authorization <auth.json>",
-  "      [--run-id <id>] [--evaluation-run-id <id>] [--trial-id <id>] [--baseline <evaluationRunId>]",
+  "      [--run-id <id>] [--evaluation-run-id <id>] [--trial-id <id>] [--baseline <evaluationRunId>] [--humanizer]",
   "  node scripts/sim-eval-run.mjs prepare --repair-of <runId> [--run-id <id>] [--trial-id <id>]",
   "  node scripts/sim-eval-run.mjs start --run-id <id>",
   "  node scripts/sim-eval-run.mjs drive --run-id <id>",
   "  node scripts/sim-eval-run.mjs status --run-id <id>",
   "  node scripts/sim-eval-run.mjs finish --run-id <id> [--interrupted --reason <text>]",
   "  node scripts/sim-eval-run.mjs batch --case <caseId> --card <card.md> --authorization <auth.json>",
-  "      [--trials <n>] [--evaluation-run-id <id>] [--baseline <evaluationRunId>]",
+  "      [--trials <n>] [--evaluation-run-id <id>] [--baseline <evaluationRunId>] [--humanizer]",
   "  node scripts/sim-eval-run.mjs compare --run-id <id> [--baseline <evaluationRunId>] [--json]",
   "  node scripts/sim-eval-run.mjs holdout --case <caseId> [--json]",
   "  node scripts/sim-eval-run.mjs judge prepare --run-id <id> [--attempt-id <id>] [--json]",
+  "  node scripts/sim-eval-run.mjs judge view --run-id <id> [--packet-id <id>] [--json]",
   "  node scripts/sim-eval-run.mjs judge apply --run-id <id> --verdicts <file.json> [--attempt-id <id>] [--json]",
   "  node scripts/sim-eval-run.mjs review show --run-id <id> [--attempt-id <id>] [--json]",
   "  node scripts/sim-eval-run.mjs review spotcheck --run-id <id> --checks <file.json>",
@@ -3155,11 +3243,14 @@ const USAGE = [
   "已开始但结果未知的步骤不重放；finish 只按驱动结果收口，驱动未完成时必须显式",
   "--interrupted --reason。batch 先在运行组冻结 trials.json，再按计划串行准备、启动、驱动与",
   "封存每个试次；失败或不完整的试次保持占位，不自动替换，也不自动判分。",
+  "新运行的合成 CONFIG 默认关闭拟人化（ai.humanizer.enabled=false），评测读到的就是模型原样；",
+  "需要测拟人化链路本身时加 --humanizer，修复沿用原运行的开关。",
   "compare 只比较两次运行的固定条件，holdout 只报告留出使用记录。",
   "stop 只写 stop.request 并核对宿主留下的 exit.json（flush 未完成、强杀、中断都会报出）；",
   "宿主没走完退出序列时 rescue 把已落盘的草稿按中断封存，证据保持 inconclusive。",
   "",
-  "judge prepare 只冻结判分包；judge apply 只校验并记录独立 coding-agent judge 的回填裁决，",
+  "judge prepare 只冻结判分包；judge view 只为已冻结的判分包写出精简读取件，不改变判定要求；",
+  "judge apply 只校验并记录独立 coding-agent judge 的回填裁决，",
   "运行器不调用模型 API、不读取 judge 凭据。review spotcheck 只记录用户本人的可选抽查，",
   "不改变自动判分，也不阻塞流程。",
 ].join("\n")

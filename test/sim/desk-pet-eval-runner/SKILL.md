@@ -9,23 +9,24 @@ description: Use when 用户要运行 V1rtual-Desk-Pet 结构化聊天评测、�
 
 本 Skill 只执行已冻结的 case，不写题、不改 oracle、不替 judge 判分。当前实现状态与未完成项只在[未完成总表 §12](../../../docs/plans/active/未完成工作与已知缺口.md)维护，历史验收记录见[归档契约](../../../docs/history/implementation/聊天评测闭环执行契约-2026-10-26归档.md)与[测试 README](../../README.md)；本文件只写稳定操作契约，不记录某次运行结果。
 
-运行器不调用模型 API、不读取 judge 凭据、不替 judge 作判断。`judge prepare` 只冻结判分包；`judge apply` 只校验外部回填裁决并追加记录。
+运行器不调用模型 API、不读取 judge 凭据、不替 judge 作判断。`judge prepare` 只冻结判分包；`judge view` 只从已冻结判分包派生按取证窗口精简的读取件（判定字段与哈希绑定原样继承）；`judge apply` 只校验外部回填裁决并追加记录。
 
 结构化驱动会真实启动 app 并调用模型，但消息文本来自冻结 driver。它不是 `desk-pet-chat` 的自主聊天，不能声称聊天 Skill 已被运行；自然聊天记录也不能替代结构化证据或探针判分。
 
 ## 命令
 
 ```bash
-node scripts/desk-pet-chat.mjs eval prepare --case <caseId> --card <card.md> --authorization <auth.json> [--baseline <evaluationRunId>]
+node scripts/desk-pet-chat.mjs eval prepare --case <caseId> --card <card.md> --authorization <auth.json> [--baseline <evaluationRunId>] [--humanizer]
 node scripts/desk-pet-chat.mjs eval prepare --repair-of <runId> [--run-id <id>]
 node scripts/desk-pet-chat.mjs eval start --run-id <id>
 node scripts/desk-pet-chat.mjs eval drive --run-id <id>
 node scripts/desk-pet-chat.mjs eval status --run-id <id>
 node scripts/desk-pet-chat.mjs eval finish --run-id <id> [--interrupted --reason <text>]
-node scripts/desk-pet-chat.mjs eval batch --case <caseId> --card <card.md> --authorization <auth.json> [--trials <n>] [--evaluation-run-id <id>] [--baseline <evaluationRunId>]
+node scripts/desk-pet-chat.mjs eval batch --case <caseId> --card <card.md> --authorization <auth.json> [--trials <n>] [--evaluation-run-id <id>] [--baseline <evaluationRunId>] [--humanizer]
 node scripts/desk-pet-chat.mjs eval compare --run-id <id> [--baseline <evaluationRunId>] [--json]
 node scripts/desk-pet-chat.mjs eval holdout --case <caseId> [--json]
 node scripts/desk-pet-chat.mjs eval judge prepare --run-id <id> [--attempt-id <id>] [--json]
+node scripts/desk-pet-chat.mjs eval judge view --run-id <id> [--packet-id <id>] [--json]
 node scripts/desk-pet-chat.mjs eval judge apply --run-id <id> --verdicts <file.json> [--attempt-id <id>] [--json]
 node scripts/desk-pet-chat.mjs eval review show --run-id <id> [--attempt-id <id>] [--json]
 node scripts/desk-pet-chat.mjs eval review spotcheck --run-id <id> --checks <file.json> [--attempt-id <id>] [--grade-id <id>] [--reviewer-name <name>] [--notes <text>] [--json]
@@ -42,9 +43,9 @@ node scripts/desk-pet-chat.mjs capture sessions
 
 ## 操作语义
 
-- `prepare` 只在 `test/.tmp/sim-eval-<id>/` 建隔离根，写入合成 CONFIG、显式给出的 Card、`seed.json`、`clock.json`、授权文件与 `driver-package.json`；`--card` 与 `--authorization` 必须由调用方提供，不读取真实 CONFIG、凭据或用户 Card。授权文件声明用例范围、用途、`isolated` 数据范围、模型、预算（`trials > 0`、`repairs >= 0`）与是否留出，留出布尔必须等于用途。
+- `prepare` 只在 `test/.tmp/sim-eval-<id>/` 建隔离根，写入合成 CONFIG、显式给出的 Card、`seed.json`、`clock.json`、授权文件与 `driver-package.json`；`--card` 与 `--authorization` 必须由调用方提供，不读取真实 CONFIG、凭据或用户 Card。合成 CONFIG 默认关闭拟人化（`ai.humanizer.enabled=false`，分泡会改写句数与长度观感）；需要测拟人化链路本身时加 `--humanizer`，`batch` 同样接受，`prepare --repair-of` 沿用原运行开关、不能为修复单方面打开。授权文件声明用例范围、用途、`isolated` 数据范围、模型、预算（`trials > 0`、`repairs >= 0`）与是否留出，留出布尔必须等于用途。
 - `start` 只接受 debug 构建，设置 `DESKPET_SIM_EVAL=1` / `DESKPET_SIM_EVAL_RUN_DIR` 拉起宿主，依次核对 `ready.json`、控制通道 ready 与 `seed-report`：pid 必须是本次子进程、`runDir`／`dataRoot`／`controlDir` 必须同源、运行模式必须是 development，控制通道时钟必须与运行根 `clock.json` 一致，fixture／会话／消息数／记忆数必须与 `runner.json` 一致；核对通过后建 attempt 并开始 trace 采集。
-- `drive` 只按驱动包推进：每步先复核授权指纹与请求模型，再推进固定时钟、发送消息或执行 host 步骤、等待检查点；进度写入 `driver-progress.json`，中断后用同一命令续跑，已完成、已阻塞或有 in-flight 的进度拒绝续跑；消息／分钟／已知 token 预算在下一步副作用前到界阻塞，未知用量记 unknown 不记零。每个消息步骤生成唯一 `operationId`，回执必须原样回带 `caseId`／`trialId`／`sessionId`／`generation`／`stepId` 与 `requestId`；缺身份、错组或会话／代际不一致直接失败，排队回复按同一 `requestId` 的 run 分支取回，不回落到最后一条助手消息。采集期间手动写入的 `chat` 消息没有 drive 身份，会被拒绝。消息里的 `{{dataRoot}}` 只在发送时渲染为隔离数据根，驱动包装载到宿主时保留原样。case 声明 `toolApproval: "allow-once"` 时，驱动在消息在飞期间轮询单槽确认并只允许一次，确认记录（`requestId`／工具名／效果类／决定／时间）随进度持久化；未声明时不轮询确认通道，也不能把驱动确认冒充用户自然确认。驱动失败写 blocked，不自动重放已完成副作用。手工触发步骤只接受 `sim_proactive_tick`／`sim_task_deliver`：前者调用主动 tick 并只记录本次产生的 `proactive_*` 事件，后者走任务组件的创建与交付；回执必须带 `manualPath=sim-component`，任务还必须 `created`／`delivered` 为 true，否则本步阻塞。这是组件入口证据，不代表自然受理、调度或实际 UI 显示；采集器只把显式绑定的活跃会话用于归属，未绑定会话的迟到事件仍是 orphan。
+- `drive` 只按驱动包推进：每步先复核授权指纹与请求模型，再推进固定时钟、发送消息或执行 host 步骤、等待检查点；进度写入 `driver-progress.json`，中断后用同一命令续跑，已完成、已阻塞或有 in-flight 的进度拒绝续跑；消息／分钟／已知 token 预算在下一步副作用前到界阻塞，未知用量记 unknown 不记零。每个消息步骤生成唯一 `operationId`，回执必须原样回带 `caseId`／`trialId`／`sessionId`／`generation`／`stepId` 与 `requestId`；缺身份、错组或会话／代际不一致直接失败，排队回复按同一 `requestId` 的 run 分支取回，不回落到最后一条助手消息。采集期间手动写入的 `chat` 消息没有 drive 身份，会被拒绝。消息里的 `{{dataRoot}}` 只在发送时渲染为隔离数据根，驱动包装载到宿主时保留原样。case 声明 `toolApproval: "allow-once"` 时，驱动在消息在飞期间轮询单槽确认并只允许一次；未声明时驱动同样轮询并一律拒绝，桌宠得不到工具只能在对话里作答。确认记录（`requestId`／工具名／效果类／决定／时间）随进度持久化，同一回合被拒超过三次以 `driver.confirm-loop` 中止，不让确认把回合挂到消息超时。被测模型在回合里反问用户时，驱动同样在消息在飞期间轮询提问通道并一律取消（`requestId`／选项数／`cancel`／时间进进度），取消后模型只能按已有信息作答，同一回合连续取消超过三次以 `driver.question-loop` 中止；查询与取消之间提问被产品侧收回会让下一次重试再取消，同一请求连续两次取消失败才算故障。驱动确认与取消都只是评测驱动代答，不能冒充用户自然确认或自然回答。驱动失败写 blocked，不自动重放已完成副作用。手工触发步骤只接受 `sim_proactive_tick`／`sim_task_deliver`：前者调用主动 tick 并只记录本次产生的 `proactive_*` 事件，后者走任务组件的创建与交付；回执必须带 `manualPath=sim-component`，任务还必须 `created`／`delivered` 为 true，否则本步阻塞。这是组件入口证据，不代表自然受理、调度或实际 UI 显示；采集器只把显式绑定的活跃会话用于归属，未绑定会话的迟到事件仍是 orphan。
 - `memory_extraction_end` 检查点在消息副作用之前抓取作业基线，只把基线之外的新抽取作业算作本步触发；新作业必须到达终态（`completed`／`failed`／`cancelled`）且 `pendingSources=0`、`activeJobs=0` 稳定后才满足。空水位 `0/0`（没有任何新作业）不算抽取结束，超时以“没有发现新抽取作业”或未收口作业明细收口。检查点只证明抽取作业发生并结束，不证明抽取内容正确——内容仍由状态探针与 judge 判定。
 - `finish` 只按驱动结果收口：驱动未完成时必须显式 `--interrupted --reason <text>`，不能补写完成边界；随后结束试次、收口采集、写 dialogue、补声明会话、按 case 声明捕获交付产物（只读复制到 `artifacts/`，逐项记 delivered／missing／oversized／invalid，符号链接与越界路径拒绝采集）、封存 attempt 并生成同源报告。产物缺失或超限只作为交付规则证据，不改变证据完整性。
 - `compare` 只比较两次运行的固定条件（case／fixture／driver／模型／宿主／版本），代码／Card／配置等目标变化只记录，缺失固定字段记为不可比；`holdout` 只报告某个 case 被哪些保留运行引用（含在途与待审），不产生质量结论。
@@ -54,6 +55,7 @@ node scripts/desk-pet-chat.mjs capture sessions
 - `rescue` 只用于宿主没有走完退出序列（崩溃、被强杀）的现场：宿主仍活着（先 `stop`）或 attempt 已封存都拒绝；只把已落盘的 `manifest.json.pending` 按 `interrupted` 封存，缺对话、缺 trace 封口、缺 `exit.json` 写进 issues，封存结果保持 incomplete/inconclusive，不冒充完成；封存后可 `prepare --repair-of`。救援后不再重放原驱动。
 - `status` 只读现有证据，不修复、不重启、不清理失败现场；`capture status|sessions` 通过开发控制通道核对本次采集的范围与来源，不读取真实用户会话。
 - `judge prepare` 只在证据完整、执行完成、数据集绑定未漂移且驱动无 oracle 泄漏时冻结判分包（规则、对话、状态、产物哈希与允许的证据引用）；不调用模型，也不写判分。判分包为 schema 3（`chat-judge@5`）：按 case 声明携带交付产物的封存状态与受限内容（单文件 4 KiB、整包 16 KiB），超限截断并标注；二进制、哈希不符或预算耗尽只保留原因；`deliverable:<id>` 是可引用的证据，缺失产物仍可冻结并由裁决判失败。
+- `judge view` 只读已冻结判分包并写出 `<packetId>.view.json`：内联规则取证窗口内的助手回复与全部驱动回合，窗口外回合留元数据并标 `textOmitted`，没有规则取状态或产物时不带 `state`／`deliverables`／`artifacts`（原因在 `projection.omittedSections`）；`case`、`fixtureContext`、规则、引用白名单原样继承，顶层带原 `packetSha256`，判定权威与绑定不变。缺省取该运行最新的判分包，已存在的视图拒绝覆盖，可 `--packet-id` 指定。
 - `judge apply` 只接收外部 coding-agent judge 回填的 `verdicts` JSON，校验覆盖、绑定、证据引用、异构性与 prompt 版本后追加 `grades/`；不合规硬失败，不修正、不补写裁决。
 - `review show` 展示判分、规则对照与“未抽查”标记；`review spotcheck` 只接受用户本人填写的抽查记录，追加 `reviews/`，不阻塞也不改写判分。
 - `report` 从同一证据集合重建“结论卡→检查对照→时间线→原始证据”四层报告；报告不反向定义 oracle，也不成为业务真相。产物窗口的规则按封存产物取证，原始证据列出每个交付产物的封存状态与原因。驱动包含手工触发时，结论卡注明 `sim_proactive_tick`／`sim_task_deliver` 是评测驱动直接调用的组件入口，不代表自然受理、调度或实际 UI 显示。
@@ -63,7 +65,7 @@ node scripts/desk-pet-chat.mjs capture sessions
 - **谁判**：由用户在本轮明确指定的独立 coding-agent 会话（Claude Code／Codex／Qoder 等）读取冻结判分包并逐条裁决。judge 模型必须与被测模型异构；平台与模型由用户选定，不沿用历史运行的默认值，也不复用已作废判分里的 judge。
 - **谁不能判**：驱动本 attempt 的会话、冻结或执行 runner 的同一会话、任何临时 API 客户端、SDK／curl 脚本或直接 provider 调用都不能充当 judge。不得使用被测 endpoint／凭据，不得读取 `test/eval-models.local.json` 或其他 judge 凭据。
 - **用户未指定就停**：没有明确指定 judge 平台与模型时，不要自行挑模型、不要复用上一轮 judge、不要因为“模型名不同”就开判；先向用户确认。
-- **裁判只看判分包**：judge 只读 `judge-packets/<packetId>.packet.json`，不读仓库源码、测试、`dataset review`、历史判分、报告或 gold；不得修改证据或判分包。
+- **裁判只看判分包**：judge 只读 `judge-packets/<packetId>.packet.json`，或 `judge view` 为它写出的精简读取件 `<packetId>.view.json` —— 两者判定要求相同，视图顶层 `packetSha256` 就是原判分包，回填裁决用它；视图里 `textOmitted` 的回合需要原文时回到原判分包读，不猜测。不读仓库源码、测试、`dataset review`、历史判分、报告或 gold；不得修改证据、判分包或视图。
 - **身份如实填写**：`judge.identity.platform` 必须是实际 coding-agent 宿主，`model` 是实际模型，`promptVersion` 等于判分包版本；不得伪造。
 - **机械校验的边界**：runner 校验 packet 绑定、规则覆盖、证据引用、prompt 版本、模型名异构，并要求 `judge.platform` 属于 coding-agent 白名单（`claude-code`／`codex`／`qoder`）；API 客户端回填会被 `judge apply` 拒绝，平台不在白名单的历史判分不算权威。它仍无法证明 judge 是独立会话，也无法验证平台自述；这些由用户选择与本流程保证。独立性无法确认时，不应用裁决，不产生有效判分。
 - **重判**：`judge apply` 追加新判分，报告与 `status` 采用最新判分；旧判分保留在封存证据中，不覆盖、不删除，也不能手工改分。
@@ -73,7 +75,7 @@ node scripts/desk-pet-chat.mjs capture sessions
 - **全部规则统一由独立 coding-agent judge 判定**：没有权威分流，也不存在 runner 自带的确定性内容判定。题型（`questionType`）、`critical` 与 `difficulty` 只用于报告分组、覆盖统计与分层，不决定由谁判分。
 - **runner 只核运行有效性**：证据完整、执行完成、探针窗口可用、oracle 未泄漏进驱动、数据集绑定未漂移。这些前置条件只决定“能否判分”，不产生任何探针分数。
 - **声明式期望，通用 rubric**：事实、频率、时间关系、主语别名、跨会话来源与禁止项只在探针 `expectation` 声明一次；rubric 注册表不复制单个 case 的内容词表。未知 rubric、缺失或多余的 expectation 直接失败，不静默通过。
-- **判分包是判分唯一输入**：包含规则、对话、状态、产物哈希、按声明携带的交付产物状态与受限内容，以及允许的证据引用，不包含仓库源码、测试期望、历史判分或 gold。judge 不得修改证据或判分包；内容缺失、被截断或为二进制时，不得按未出现内容猜测。
+- **判分包是判分唯一输入**（其 `judge view` 读取件等价）：包含规则、对话、状态、产物哈希、按声明携带的交付产物状态与受限内容，以及允许的证据引用，不包含仓库源码、测试期望、历史判分或 gold。judge 不得修改证据或判分包；内容缺失、被截断或为二进制时，不得按未出现内容猜测。
 - **裁决格式**：每个 `ruleId` 恰好一条 `pass` / `fail` / `inconclusive`，理由非空；`pass` / `fail` 至少引用一条 `allowedEvidenceRefs`，`inconclusive` 可说明缺失或冲突证据。漏项、重复、未知规则、引用越界、packetId／packetSha256／caseId／promptVersion 不匹配都硬失败。
 - **聚合规则**：单个 attempt 内所有适用规则均为 `pass` 才通过；任一 `fail` 判失败，任一非 `pass`（含窗口不可用）判 inconclusive；证据不完整或执行未完成时一律 inconclusive。用户抽查不参与聚合。多个 attempt 时报告按冻结计划给出 critical `pass^k`：全部计划试次都通过才算通过，任一 `fail` 即失败；缺试次、证据不完整、执行未完成、未判分、judge 身份不一致或 pass/fail 无证据引用都保持 inconclusive；非 critical 规则只展示分布。
 - **跳过规则由 runner 记录**：窗口不可用的规则不交给 judge，运行器直接记为 inconclusive 并说明原因。

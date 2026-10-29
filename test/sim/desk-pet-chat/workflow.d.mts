@@ -65,7 +65,7 @@ export interface DriverStepRecord {
 }
 
 export interface DriverProgress {
-  schemaVersion: 2;
+  schemaVersion: 3;
   caseId: string;
   revision: number;
   specHash: string;
@@ -90,17 +90,36 @@ export interface DriverProgress {
   };
   steps: DriverStepRecord[];
   confirmations: DriverConfirmationRecord[];
+  questions: DriverQuestionRecord[];
   totalSteps?: number;
   lastUsageStepId?: string;
 }
+
+export type ConfirmationDecision = "allow_once" | "deny";
 
 export interface DriverConfirmationRecord {
   stepId: string;
   requestId: string;
   toolName: string;
   effectClass: string;
-  decision: "allow_once";
+  decision: ConfirmationDecision;
   at: string;
+}
+
+/** 驱动对被测模型反问的处置记录：结构化评测没有可答的用户，一律取消。 */
+export type QuestionAction = "cancel";
+
+export interface DriverQuestionRecord {
+  stepId: string;
+  requestId: string;
+  optionCount: number;
+  action: QuestionAction;
+  at: string;
+}
+
+export interface PendingQuestion {
+  requestId: string;
+  optionCount: number;
 }
 
 export interface DriverSummary {
@@ -114,6 +133,7 @@ export interface DriverSummary {
   clockBase: string;
   lastClock: string;
   confirmations: number;
+  questions: number;
   usage: {
     messages: number;
     tokens: number;
@@ -145,11 +165,16 @@ export interface DriverTransport {
   context(): Promise<Record<string, unknown>>;
   memoryState(): Promise<Record<string, unknown>>;
   confirm?(action: ConfirmAction): Promise<Record<string, unknown>>;
+  choice?(action: ChoiceAction): Promise<Record<string, unknown>>;
 }
 
 export type ConfirmAction =
   | { action: "query" }
-  | { action: "resolve"; requestId: string; decision: "allow_once" };
+  | { action: "resolve"; requestId: string; decision: ConfirmationDecision };
+
+export type ChoiceAction =
+  | { action: "query" }
+  | { action: "cancel"; requestId: string };
 
 export interface PendingConfirmation {
   requestId: string;
@@ -237,7 +262,7 @@ export class WorkflowError extends Error {
 }
 
 export const WORKFLOW_SCHEMA_VERSION: 1;
-export const DRIVER_PROGRESS_SCHEMA_VERSION: 2;
+export const DRIVER_PROGRESS_SCHEMA_VERSION: 3;
 export const AUTHORIZATION_SCHEMA_VERSION: 1;
 export const AUTHORIZATION_DATA_SCOPE: "isolated";
 export const DRIVER_PROGRESS_FILE: string;
@@ -245,8 +270,10 @@ export const DRIVER_PACKAGE_FILE: string;
 export const AUTHORIZATION_FILE: string;
 export const CLOCK_FILE: string;
 export const TOOL_APPROVAL_VALUES: readonly ["allow-once"];
-export const CONFIRMATION_DECISION_VALUES: readonly ["allow_once"];
+export const CONFIRMATION_DECISION_VALUES: readonly ConfirmationDecision[];
 export const DRIVER_CONFIRM_POLL_MS: number;
+export const DRIVER_DENIAL_LIMIT: number;
+export const DRIVER_QUESTION_CANCEL_LIMIT: number;
 export const DRIVER_STATUSES: readonly DriverStatus[];
 export const DRIVER_STEP_STATUSES: readonly DriverStepStatus[];
 export const CHECKPOINT_WAITS: readonly CheckpointWait[];
@@ -267,6 +294,7 @@ export function validateDriverPackage(raw: unknown): DriverPackage;
 export function validateSyncPoints(raw: unknown): CheckpointSpec[];
 export function renderDriverText(text: string, options?: { dataRoot?: string }): string;
 export function readPendingConfirmation(response: unknown): PendingConfirmation | null;
+export function readPendingQuestion(response: unknown): PendingQuestion | null;
 export function createDriverProgress(input: {
   driverPackage: DriverPackage;
   driverHash: string;

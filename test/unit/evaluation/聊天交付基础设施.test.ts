@@ -34,11 +34,14 @@ import {
   verifySealedAttempt,
 } from "../../sim/desk-pet-chat/evidence.mjs"
 import {
+  DRIVER_DENIAL_LIMIT,
   DRIVER_PROGRESS_SCHEMA_VERSION,
+  DRIVER_QUESTION_CANCEL_LIMIT,
   WorkflowError,
   createDriverProgress,
   executeDriver,
   readDriverProgress,
+  readPendingQuestion,
   renderDriverText,
 } from "../../sim/desk-pet-chat/workflow.mjs"
 import {
@@ -558,15 +561,31 @@ describe("聊天驱动交付确认", () => {
       && snapshot.confirmations?.length === 1)).toBe(true)
   })
 
-  it("未声明工具确认时不轮询确认通道 [chat-driver-confirm-skip]", async () => {
+  it("未声明工具确认时驱动拒绝确认并写入进度 [chat-driver-confirm-deny]", async () => {
     const pkg = workflowPackage([{ id: "hello", kind: "message", text: "你好", at: AT }])
     const progress = workflowProgress([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    const events: string[] = []
     const confirmCalls: any[] = []
+    let resolved = false
+    let capturedOperation: any = null
+    let releaseMessage: (value: any) => void = () => {}
+    const messageGate = new Promise(resolve => { releaseMessage = resolve })
     const transport = baseTransport({
-      message: async (_text: string, operation: any) => messageReply(operation),
+      message: async (_text: string, operation: any) => {
+        capturedOperation = operation
+        const response = await messageGate
+        events.push("message:returned")
+        return response
+      },
       confirm: async (action: any) => {
-        confirmCalls.push(action)
-        expect.fail("不应调用确认通道")
+        confirmCalls.push(structuredClone(action))
+        if (action.action === "query") return resolved
+          ? { pending: null }
+          : { pending: { requestId: "req-9", toolName: "bash", effectClass: "exclusive_effect" } }
+        resolved = true
+        events.push(`confirm:${action.decision}`)
+        releaseMessage(messageReply(capturedOperation))
+        return { resolved: true }
       },
     })
     const summary = await executeDriver({
@@ -577,15 +596,186 @@ describe("聊天驱动交付确认", () => {
       sleep: async () => {},
     })
     expect(summary.status).toBe("completed")
-    expect(confirmCalls).toEqual([])
-    expect(progress.confirmations).toEqual([])
+    expect(events.indexOf("confirm:deny")).toBeLessThan(events.indexOf("message:returned"))
+    expect(progress.confirmations).toEqual([
+      {
+        stepId: "hello",
+        requestId: "req-9",
+        toolName: "bash",
+        effectClass: "exclusive_effect",
+        decision: "deny",
+        at: expect.stringMatching(/^2026-10-27T\d{2}:00:00\.000\+08:00$/),
+      },
+    ])
+    expect(confirmCalls.filter(call => call.action === "resolve")).toHaveLength(1)
+  })
+
+  it("同一回合被拒超过上限时中止驱动，不硬等消息超时 [chat-driver-confirm-loop]", async () => {
+    const pkg = workflowPackage([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    const progress = workflowProgress([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    let round = 0
+    const transport = baseTransport({
+      // 消息永不结算：每次查询都抛出一个新的确认请求，模拟被拒后反复重试同一工具。
+      message: () => new Promise(() => {}),
+      confirm: async (action: any) => (action.action === "query"
+        ? { pending: { requestId: `req-${round += 1}`, toolName: "bash", effectClass: "exclusive_effect" } }
+        : { resolved: true }),
+    })
+    let caught: any = null
+    try {
+      await executeDriver({
+        progress,
+        driverPackage: pkg,
+        transport,
+        now: () => Date.parse(AT),
+        sleep: async () => {},
+      })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught, "期望 WorkflowError driver.confirm-loop").toBeInstanceOf(WorkflowError)
+    expect(caught.code).toBe("driver.confirm-loop")
+    expect(progress.confirmations).toHaveLength(DRIVER_DENIAL_LIMIT)
+    expect(progress.status).toBe("blocked")
+  })
+
+  it("被测模型反问时驱动取消提问并在消息结算前写入进度 [chat-driver-question-cancel]", async () => {
+    const pkg = workflowPackage([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    const progress = workflowProgress([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    const events: string[] = []
+    const choiceCalls: any[] = []
+    let asked = false
+    let capturedOperation: any = null
+    let releaseMessage: (value: any) => void = () => {}
+    const messageGate = new Promise(resolve => { releaseMessage = resolve })
+    const transport = baseTransport({
+      confirm: async () => ({ pending: null }),
+      message: async (_text: string, operation: any) => {
+        capturedOperation = operation
+        const response = await messageGate
+        events.push("message:returned")
+        return response
+      },
+      choice: async (action: any) => {
+        choiceCalls.push(structuredClone(action))
+        if (action.action === "query") return asked ? { pending: [] } : { pending: [{ requestId: "q-1", options: ["a", "b"] }] }
+        asked = true
+        events.push("choice:cancel")
+        releaseMessage(messageReply(capturedOperation))
+        return { requestId: action.requestId, action: "cancel" }
+      },
+    })
+    const snapshots: any[] = []
+    const summary = await executeDriver({
+      progress,
+      driverPackage: pkg,
+      transport,
+      now: () => Date.parse(AT),
+      sleep: async () => {},
+      onProgress: (draft: any) => { snapshots.push(structuredClone(draft)) },
+    })
+
+    expect(summary.status).toBe("completed")
+    expect(events.indexOf("choice:cancel")).toBeLessThan(events.indexOf("message:returned"))
+    expect(progress.questions).toEqual([
+      {
+        stepId: "hello",
+        requestId: "q-1",
+        optionCount: 2,
+        action: "cancel",
+        at: expect.stringMatching(/^2026-10-27T\d{2}:00:00\.000Z$/),
+      },
+    ])
+    expect(choiceCalls.filter(call => call.action === "cancel")).toHaveLength(1)
+    // 取消记录同样要在 inFlight 阶段落盘，崩溃后能看出回合是被反问卡住的。
+    expect(snapshots.some(snapshot => snapshot.inFlight?.stepId === "hello"
+      && snapshot.questions?.length === 1)).toBe(true)
+  })
+
+  it("提问在查询与取消之间被收回时下一次重试成功 [chat-driver-question-race]", async () => {
+    const pkg = workflowPackage([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    const progress = workflowProgress([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    let capturedOperation: any = null
+    let releaseMessage: (value: any) => void = () => {}
+    const messageGate = new Promise(resolve => { releaseMessage = resolve })
+    let cancelAttempts = 0
+    let queries = 0
+    const transport = baseTransport({
+      confirm: async () => ({ pending: null }),
+      message: async (_text: string, operation: any) => {
+        capturedOperation = operation
+        return messageGate
+      },
+      choice: async (action: any) => {
+        if (action.action === "query") {
+          queries += 1
+          return queries <= 2 ? { pending: [{ requestId: "q-2", options: [] }] } : { pending: [] }
+        }
+        cancelAttempts += 1
+        if (cancelAttempts === 1) throw new Error("当前没有待答提问")
+        releaseMessage(messageReply(capturedOperation))
+        return { requestId: action.requestId, action: "cancel" }
+      },
+    })
+    const summary = await executeDriver({
+      progress,
+      driverPackage: pkg,
+      transport,
+      now: () => Date.parse(AT),
+      sleep: async () => {},
+    })
+    expect(summary.status).toBe("completed")
+    expect(progress.questions).toHaveLength(1)
+    expect(progress.questions[0]?.requestId).toBe("q-2")
+  })
+
+  it("同一回合反问取消超过上限时中止驱动 [chat-driver-question-loop]", async () => {
+    const pkg = workflowPackage([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    const progress = workflowProgress([{ id: "hello", kind: "message", text: "你好", at: AT }])
+    let round = 0
+    const transport = baseTransport({
+      confirm: async () => ({ pending: null }),
+      // 消息永不结算：模型被取消后继续反问，每次都抛出新的提问请求。
+      message: () => new Promise(() => {}),
+      choice: async (action: any) => (action.action === "query"
+        ? { pending: [{ requestId: `q-${round += 1}`, options: ["a"] }] }
+        : { requestId: action.requestId, action: "cancel" }),
+    })
+    let caught: any = null
+    try {
+      await executeDriver({
+        progress,
+        driverPackage: pkg,
+        transport,
+        now: () => Date.parse(AT),
+        sleep: async () => {},
+      })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught, "期望 WorkflowError driver.question-loop").toBeInstanceOf(WorkflowError)
+    expect(caught.code).toBe("driver.question-loop")
+    expect(progress.questions).toHaveLength(DRIVER_QUESTION_CANCEL_LIMIT)
+    expect(progress.status).toBe("blocked")
+  })
+
+  it("提问查询回执只取队首，空队列读成无提问 [chat-question-readback]", () => {
+    expect(readPendingQuestion({ pending: [{ requestId: "q-1", options: ["a", "b", "c"] }] }))
+      .toEqual({ requestId: "q-1", optionCount: 3 })
+    expect(readPendingQuestion({ pending: [{ requestId: "q-2" }] })).toEqual({ requestId: "q-2", optionCount: 0 })
+    expect(readPendingQuestion({ pending: [] })).toBeNull()
+    expect(readPendingQuestion({ pending: null })).toBeNull()
+    expect(readPendingQuestion({})).toBeNull()
+    expectWorkflowError(() => readPendingQuestion(null), "schema.invalid")
+    expectWorkflowError(() => readPendingQuestion({ pending: [{ options: [] }] }), "schema.invalid")
   })
 
   it("进度按新 schema 往返读取确认记录并校验字段 [chat-confirm-progress]", () => {
     const steps = [{ id: "hello", kind: "message", text: "你好", at: AT }]
     const progress = workflowProgress(steps)
-    expect(DRIVER_PROGRESS_SCHEMA_VERSION).toBe(2)
+    expect(DRIVER_PROGRESS_SCHEMA_VERSION).toBe(3)
     expect(progress.confirmations).toEqual([])
+    expect(progress.questions).toEqual([])
     progress.confirmations.push({
       stepId: "hello",
       requestId: "req-1",
@@ -594,12 +784,23 @@ describe("聊天驱动交付确认", () => {
       decision: "allow_once",
       at: AT,
     })
+    progress.questions.push({ stepId: "hello", requestId: "q-1", optionCount: 2, action: "cancel", at: AT })
     const restored = readDriverProgress(JSON.parse(JSON.stringify(progress)))
     expect(restored.confirmations).toEqual(progress.confirmations)
+    expect(restored.questions).toEqual(progress.questions)
 
     const broken = JSON.parse(JSON.stringify(progress))
     broken.confirmations[0].decision = "allow_always"
     expectWorkflowError(() => readDriverProgress(broken), "driver.confirm-record")
+
+    const picked = JSON.parse(JSON.stringify(progress))
+    picked.questions[0].action = "answer"
+    expectWorkflowError(() => readDriverProgress(picked), "driver.question-record")
+    const repeated = JSON.parse(JSON.stringify(progress))
+    repeated.questions.push({ ...repeated.questions[0] })
+    expectWorkflowError(() => readDriverProgress(repeated), "driver.question-record")
+    delete repeated.questions
+    expectWorkflowError(() => readDriverProgress(repeated), "driver.question-record")
   })
 })
 

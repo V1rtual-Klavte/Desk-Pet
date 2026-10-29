@@ -90,6 +90,7 @@ node scripts/desk-pet-chat.mjs eval batch --case saturday-companionship --card <
 node scripts/desk-pet-chat.mjs eval compare --run-id <id> [--baseline <evalRunId>] [--json]
 node scripts/desk-pet-chat.mjs eval holdout --case saturday-companionship [--json]
 node scripts/desk-pet-chat.mjs eval judge prepare --run-id <id> [--attempt-id <id>] [--json]
+node scripts/desk-pet-chat.mjs eval judge view --run-id <id> [--packet-id <id>] [--json]
 node scripts/desk-pet-chat.mjs eval judge apply --run-id <id> --verdicts <file.json> [--json]
 node scripts/desk-pet-chat.mjs eval review show --run-id <id> [--attempt-id <id>] [--json]
 node scripts/desk-pet-chat.mjs eval review spotcheck --run-id <id> --checks <file.json> [--reviewer-name <name>] [--notes <text>] [--json]
@@ -107,8 +108,10 @@ case 的 `questionTypes` 必须等于探针题型并集；探针观察窗口限�
 需要真实交付的 case 可声明 `deliverables`（`id`／`role`／数据根内相对路径／可选 `maxBytes`，需 `tools` 宿主能力），
 并配 `delivery.artifact-exists`（只判存在与完整，不带词表）或 `delivery.artifact-content`（至少声明包含或不包含之一）
 探针，窗口固定为 `artifact`；交付路径只进 oracle 绑定，不进驱动包。消息步骤可用唯一占位符 `{{dataRoot}}`
-指向隔离数据根：驱动包保留占位符原样，发送时渲染。声明 `precondition.toolApproval: "allow-once"` 时，
-驱动在消息在飞期间轮询单槽确认并只允许一次，确认记录随进度持久化。
+指向隔离数据根：驱动包保留占位符原样，发送时渲染。消息在飞期间驱动始终轮询单槽确认：声明
+`precondition.toolApproval: "allow-once"` 时只允许一次，未声明时一律拒绝（桌宠只能在对话里作答），
+被测模型在回合里反问用户（`ask_user`）时驱动同样轮询并一律取消提问（评测没有真人可答），
+两类应答记录都随进度持久化，同一回合被拒超过三次以 `driver.confirm-loop`、连续取消超过三次以 `driver.question-loop` 中止。
 题型注册表是 [`desk-pet-chat/question-types.json`](desk-pet-chat/question-types.json)，共 7 个家族、24 个题型，
 每个产品分类至少被一个题型覆盖。`review` 给人看完整候选、题型与判分方式、装载方式、难度分布与审批差异；`driver` 只输出
 `schemaVersion`／`caseId`／`revision`／`specHash`／`userRole`／`driver`，不含题型、probes、oracle、检查点、证据或评分。
@@ -173,6 +176,7 @@ node scripts/desk-pet-chat.mjs dataset external smoke
 5. 运行、冻结判分包和独立 judge 分开执行；读取过 oracle／审阅包的会话不驱动同一题，驱动会话也不能替自己判分。尚未判分、环境失败和模型答错分别报告，不补写成功。
 
 `eval` 命令在 `test/.tmp/sim-eval-<id>` 建隔离运行根，要求显式 `--card`，不读真实 CONFIG；
+合成 CONFIG 默认关闭拟人化（`ai.humanizer.enabled=false`，2026-10-28 用户裁定：分泡与标点清洗会改写句数／长度观感，判分读到的应是模型原样），需要测拟人化链路时加 `--humanizer`，`batch` 同样接受，`prepare --repair-of` 沿用原运行的开关；
 `prepare` 冻结授权与时钟，`start` 核验时钟一致并开始采集，`drive` 按驱动包逐步推进并持久化进度、中断后从同一进度续跑且不重放未知副作用，
 `finish` 收口采集并封存，`stop` 只写 `stop.request`。`.instance.lock` 按设计保留，锁由 OS 在进程退出时释放。
 封存时按 case 声明把数据根内交付产物复制成只读证据（`artifacts/deliverable-<id><ext>`），逐项记录
@@ -183,6 +187,8 @@ delivered／missing／oversized／invalid；符号链接与越过数据根的路
 `batch` 在同一 evaluationRun 下串行执行冻结的 N 个试次：首次运行把 `trialIds`、计划总数与授权指纹写入 `trials.json`，`--trials` 是计划总数（含已有 attempt，默认授权预算），之后不可改写；每个槽位用确定性派生的子运行 id 走 `prepare → start → drive`，`drive` 失败按中断封存后继续，未封存或失败的槽位保持占位、不替换不自动判分。计划外 trialId、重放已有 trialId 或事后补建计划都会硬失败。
 `judge prepare` 只对已封存完整证据冻结判分包（含 rubric、驱动、证据引用与判分说明），交给独立 coding-agent judge 逐条裁决；`judge apply` 只校验回填裁决并追加 `grades/`，缺项、重复、未知规则、证据引用无效、判分平台不在 coding-agent 白名单（`claude-code`／`codex`／`qoder`）、判分者与被测模型同源或 packet 哈希不符都会硬失败；平台不在白名单的历史判分不算权威，报告不据其声称独立 judge。runner 不调用模型 API、不读取 judge 凭据。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞也不改写判分。`report` 从同一证据重建四层报告；存在冻结计划或多个 attempt 时先给多 trial 聚合（试次表、规则矩阵、critical `pass^k`、非 critical 分布、judge 身份、证据引用齐备性），再按 attempt 展开。
 判分包为 packet schema 3（`chat-judge@5`）：按 case 声明携带交付产物的封存状态与受限内容，单文件 4 KiB、整包 16 KiB 预算，超限截断并标注；二进制、哈希不符或预算耗尽只保留原因，`deliverable:<id>` 是可引用的证据，缺失产物仍可冻结判分包并由裁决判失败。
+`judge view` 只为已冻结的判分包写出 `<packetId>.view.json` 精简读取件：按规则的取证窗口内联被取证的助手回复与全部驱动回合，窗口外回合保留 seq／角色／会话与 `textOmitted` 标记；没有规则取状态或产物时不带 `state`／`deliverables`／`artifacts`，省略原因写在 `projection.omittedSections`。判分要求、规则、证据引用白名单与 `case`／`fixtureContext` 原样继承，视图顶层带上原 `packetSha256`，回填 verdicts 仍用它，权威与哈希绑定不变；判分员读得到的字节按窗口收敛（最宽的固定历史用例 224,888 → 65,880 字节），原判分包不受影响，已存在的视图拒绝覆盖。
+驱动泄露守卫按来源分流：外部适配用例的驱动与用户台词逐字来自上游，不能为避开词表改写，因此只检查运行器注入的标识（caseId／套件／fixture／家族、探针与证据与检查点 id、四个哈希、`mustNotReveal`）；`probe`／`gold`／`dataset` 这类内部通用词只对内部编写用例生效，否则上游原文里正常出现的英文词会被误判为泄露。
 全部探针统一由独立 coding-agent judge 判定；用户抽查只用于核对，
 不会产生或改写 pass/fail，也不能替代 case 的 gold 审批。
 `--authorization` 冻结用例、用途、模型／数据范围、trial 与修复预算与 holdout 一致性；`drive` 调用前复核授权指纹与请求模型。
@@ -196,7 +202,7 @@ delivered／missing／oversized／invalid；符号链接与越过数据根的路
 测试分类的唯一真相源是 [`desk-pet-chat/categories.json`](desk-pet-chat/categories.json)；
 题型与家族的真相源是 [`desk-pet-chat/question-types.json`](desk-pet-chat/question-types.json)。
 不带 `--run` 打印步骤与证据，带 `--run` 只跑可自动化的组件类别，聊天/plan/tools 由 Claude 驱动。
-轮数与分类都由调用方显式指定，不设默认上限。拟人化默认开启来测：先用 `humanize status`
+轮数与分类都由调用方显式指定，不设默认上限。自然聊天演练默认开启拟人化来测（与结构化 `eval` 的默认关闭相反）：先用 `humanize status`
 确认，不是 `true` 就 `humanize on`，收尾按原值恢复；评分与 trace 判据见 skill 的「拟人化检测」。
 上下文与压缩用 `context` 查看占用，手动压缩走 `chat_slash_command` 的 `/compact`；
 弹窗用 `choice` / `confirm` 应答，判据见 skill 的「上下文与压缩」。

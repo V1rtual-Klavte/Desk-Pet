@@ -234,9 +234,9 @@ node scripts/desk-pet-chat.mjs cmd proactive
   已在跑上一批时再触发只会提示，不会并发。
 - 写报告前先看 `understanding` / `memory_overview` / `proactive-state` 三份快照，别只信对话文本。
 
-## 拟人化检测（默认开启）
+## 拟人化检测（自然聊天默认开启）
 
-测试默认开着 `ai.humanizer.enabled`。开始前先确认：
+自然聊天演练默认开着 `ai.humanizer.enabled`（结构化 `eval` 运行器反过来默认关闭，见 [运行与判分 Skill](../desk-pet-eval-runner/SKILL.md)）。开始前先确认：
 
 ```bash
 node scripts/desk-pet-chat.mjs humanize status

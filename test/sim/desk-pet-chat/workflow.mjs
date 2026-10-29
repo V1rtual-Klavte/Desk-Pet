@@ -18,7 +18,7 @@ import {
  */
 
 export const WORKFLOW_SCHEMA_VERSION = 1;
-export const DRIVER_PROGRESS_SCHEMA_VERSION = 2;
+export const DRIVER_PROGRESS_SCHEMA_VERSION = 3;
 export const AUTHORIZATION_SCHEMA_VERSION = 1;
 export const AUTHORIZATION_DATA_SCOPE = "isolated";
 export const DRIVER_PROGRESS_FILE = "driver-progress.json";
@@ -26,8 +26,12 @@ export const DRIVER_PACKAGE_FILE = "driver-package.json";
 export const AUTHORIZATION_FILE = "authorization.json";
 export const CLOCK_FILE = "clock.json";
 export const TOOL_APPROVAL_VALUES = Object.freeze(["allow-once"]);
-export const CONFIRMATION_DECISION_VALUES = Object.freeze(["allow_once"]);
+export const CONFIRMATION_DECISION_VALUES = Object.freeze(["allow_once", "deny"]);
 export const DRIVER_CONFIRM_POLL_MS = 250;
+/** 未声明 toolApproval 的用例由驱动拒绝确认；同一回合连续被拒超过这个次数就中止，不硬等消息超时。 */
+export const DRIVER_DENIAL_LIMIT = 3;
+/** 被测模型在回合里反问用户时驱动一律取消提问；同一回合连续取消超过这个次数就中止，不硬等消息超时。 */
+export const DRIVER_QUESTION_CANCEL_LIMIT = 3;
 
 export const DRIVER_STATUSES = Object.freeze(["pending", "running", "completed", "blocked"]);
 export const DRIVER_STEP_STATUSES = Object.freeze(["completed", "failed"]);
@@ -391,6 +395,20 @@ export function readPendingConfirmation(response) {
   };
 }
 
+/** 提问查询的回执：没有待答提问时返回 null（只取队首，与宿主单槽应答一致）。 */
+export function readPendingQuestion(response) {
+  assertRecord(response, "choice.query");
+  const pending = response.pending;
+  if (pending === null || pending === undefined) return null;
+  if (!Array.isArray(pending) || pending.length === 0) return null;
+  const head = pending[0];
+  assertRecord(head, "choice.pending");
+  return {
+    requestId: assertText(head.requestId, "choice.pending.requestId"),
+    optionCount: Array.isArray(head.options) ? head.options.length : 0,
+  };
+}
+
 export function createDriverProgress({ driverPackage, driverHash, budget, clockBase, startedAt }) {
   assertPattern(driverHash, HASH_PATTERN, "driverHash");
   assertInstant(clockBase, "clockBase");
@@ -427,6 +445,7 @@ export function createDriverProgress({ driverPackage, driverHash, budget, clockB
     },
     steps: [],
     confirmations: [],
+    questions: [],
   };
 }
 
@@ -434,7 +453,7 @@ export function readDriverProgress(raw) {
   assertExactKeys(raw, "driverProgress", [
     "schemaVersion", "caseId", "revision", "specHash", "driverHash", "clockBase", "index",
     "status", "inFlight", "blocked", "createdAt", "updatedAt", "budget", "usage", "steps",
-    "confirmations",
+    "confirmations", "questions",
   ], ["totalSteps", "lastUsageStepId"]);
   if (raw.totalSteps !== undefined) assertPositiveInteger(raw.totalSteps, "driverProgress.totalSteps");
   if (raw.lastUsageStepId !== undefined) assertPattern(raw.lastUsageStepId, CASE_ID_PATTERN, "driverProgress.lastUsageStepId");
@@ -538,6 +557,19 @@ export function readDriverProgress(raw) {
     if (confirmedRequests.has(item.requestId)) fail("driver.confirm-record", `${label}.requestId 重复：${item.requestId}`);
     confirmedRequests.add(item.requestId);
   }
+  if (!Array.isArray(raw.questions)) fail("driver.question-record", "driverProgress.questions 必须是数组");
+  const cancelledRequests = new Set();
+  for (const [index, item] of raw.questions.entries()) {
+    const label = `driverProgress.questions[${index}]`;
+    assertExactKeys(item, label, ["stepId", "requestId", "optionCount", "action", "at"]);
+    assertPattern(item.stepId, CASE_ID_PATTERN, `${label}.stepId`);
+    assertText(item.requestId, `${label}.requestId`);
+    assertNonNegativeInteger(item.optionCount, `${label}.optionCount`);
+    if (item.action !== "cancel") fail("driver.question-record", `${label}.action 只能是 cancel：${String(item.action)}`);
+    assertInstant(item.at, `${label}.at`);
+    if (cancelledRequests.has(item.requestId)) fail("driver.question-record", `${label}.requestId 重复：${item.requestId}`);
+    cancelledRequests.add(item.requestId);
+  }
   return raw;
 }
 
@@ -603,6 +635,7 @@ export function driverSummary(progress) {
     clockBase: progress.clockBase,
     lastClock: progress.steps.at(-1)?.clock?.base ?? progress.clockBase,
     confirmations: progress.confirmations.length,
+    questions: progress.questions.length,
     usage: {
       messages: progress.usage.messages,
       tokens: progress.usage.tokens,
@@ -826,11 +859,13 @@ async function satisfyCheckpoint({ checkpoint, record, transport, now, sleep, me
 }
 
 /**
- * 消息在飞期间轮询单槽确认请求：只按声明自动允许一次，并在确认后立即把记录写进进度，
- * 保证崩溃或阻塞时能从现场看出工具调用是否被驱动放行。确认通道故障立即中止，不等消息超时。
+ * 消息在飞期间轮询单槽确认请求，按本次策略代用户答复（声明 allow-once 放行一次，其余一律拒绝），
+ * 并轮询提问请求一律取消（评测没有真人可答，取消后模型只能按已有信息作答）。
+ * 两类应答都即时写进进度，保证崩溃或阻塞时能从现场看出是被驱动放行、拒绝还是取消。
+ * 确认与提问通道故障立即中止，不等消息超时。
  */
-async function messageWithAutoConfirm({
-  text, operation, transport, progress, onProgress, stepId, now, sleep, confirmPollMs,
+async function messageWithInteractionPolicy({
+  text, operation, transport, progress, onProgress, stepId, now, sleep, confirmPollMs, decision,
 }) {
   let settled = false;
   const done = transport.message(text, operation).then(
@@ -839,23 +874,60 @@ async function messageWithAutoConfirm({
   );
   let failPoll;
   const pollFailure = new Promise((_, reject) => { failPoll = reject; });
+  const cancelFailures = new Map();
   const poll = (async () => {
     while (!settled) {
       try {
         const pending = readPendingConfirmation(await transport.confirm({ action: "query" }));
         if (pending && !progress.confirmations.some((item) => item.requestId === pending.requestId)) {
-          await transport.confirm({ action: "resolve", requestId: pending.requestId, decision: "allow_once" });
+          if (decision === "deny"
+            && progress.confirmations.filter((item) => item.decision === "deny").length >= DRIVER_DENIAL_LIMIT) {
+            fail(
+              "driver.confirm-loop",
+              `步骤 ${stepId} 的被拒工具连续重试超过 ${DRIVER_DENIAL_LIMIT} 次；最后请求 ${pending.toolName}（${pending.effectClass}）`,
+            );
+          }
+          await transport.confirm({ action: "resolve", requestId: pending.requestId, decision });
           const at = new Date(now()).toISOString();
           progress.confirmations.push({
             stepId,
             requestId: pending.requestId,
             toolName: pending.toolName,
             effectClass: pending.effectClass,
-            decision: "allow_once",
+            decision,
             at,
           });
           progress.updatedAt = at;
           await onProgress(progress);
+        }
+        if (typeof transport.choice === "function") {
+          const question = readPendingQuestion(await transport.choice({ action: "query" }));
+          if (question && !progress.questions.some((item) => item.requestId === question.requestId)) {
+            if (progress.questions.filter((item) => item.stepId === stepId).length >= DRIVER_QUESTION_CANCEL_LIMIT) {
+              fail(
+                "driver.question-loop",
+                `步骤 ${stepId} 的反问连续取消超过 ${DRIVER_QUESTION_CANCEL_LIMIT} 次；最后提问 ${question.requestId}`,
+              );
+            }
+            let cancelled = true;
+            try {
+              await transport.choice({ action: "cancel", requestId: question.requestId });
+            } catch (error) {
+              // 查询与取消之间提问可能已被产品侧收回；同一请求再失败一次才中止，避免协议错位被静默吞掉。
+              const failures = (cancelFailures.get(question.requestId) ?? 0) + 1;
+              cancelFailures.set(question.requestId, failures);
+              if (failures >= 2) throw error;
+              cancelled = false;
+            }
+            if (cancelled) {
+              const at = new Date(now()).toISOString();
+              progress.questions.push({
+                stepId, requestId: question.requestId, optionCount: question.optionCount, action: "cancel", at,
+              });
+              progress.updatedAt = at;
+              await onProgress(progress);
+            }
+          }
         }
       } catch (error) {
         failPoll(error);
@@ -950,8 +1022,8 @@ export async function executeDriver({
     let record;
     try {
       response = step.kind === "message"
-        ? await (toolApproval === "allow-once"
-          ? messageWithAutoConfirm({
+        ? await (toolApproval === "allow-once" || typeof transport.confirm === "function"
+          ? messageWithInteractionPolicy({
             text: renderDriverText(step.text, { dataRoot }),
             operation,
             transport,
@@ -961,6 +1033,7 @@ export async function executeDriver({
             now,
             sleep,
             confirmPollMs,
+            decision: toolApproval === "allow-once" ? "allow_once" : "deny",
           })
           : transport.message(renderDriverText(step.text, { dataRoot }), operation))
         : await executeHostStep(step, transport);

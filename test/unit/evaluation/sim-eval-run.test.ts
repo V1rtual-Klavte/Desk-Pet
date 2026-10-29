@@ -86,17 +86,22 @@ describe("run-id 与运行根", () => {
 })
 
 describe("运行期 CONFIG 覆盖", () => {
-  it("Card/主动/静默了解落在 ai 下，Profile 落在顶层 appearance", () => {
+  it("Card/主动/静默了解/拟人化落在 ai 下，Profile 落在顶层 appearance [chat-run-humanizer-default]", () => {
     const overrides = runner.buildRunOverrides({ cardId: cardId, profileId: null })
     expect(overrides).toEqual({
       ai: {
         personality: { active: cardId },
         proactive: { frequency: "off" },
         silentAccess: { frequency: "off" },
+        humanizer: { enabled: false },
       },
     })
     expect(overrides).not.toHaveProperty("appearance")
     expect(overrides.ai).not.toHaveProperty("appearance")
+
+    // 用户显式要求测拟人化时才打开（2026-10-28 口径：测试默认关闭，分泡不干扰句数/长度观察）。
+    expect(runner.buildRunOverrides({ cardId: cardId, profileId: null, humanizerEnabled: true }).ai)
+      .toHaveProperty("humanizer", { enabled: true })
 
     const withProfile = runner.buildRunOverrides({ cardId: cardId, profileId: "profile2" })
     expect(withProfile.appearance).toEqual({ activeProfile: "profile2" })
@@ -117,6 +122,7 @@ describe("运行期 CONFIG 覆盖", () => {
     expect(config.ai.personality.active).toBe(cardId)
     expect(config.ai.proactive.frequency).toBe("off")
     expect(config.ai.silentAccess.frequency).toBe("off")
+    expect(config.ai.humanizer.enabled).toBe(false)
     expect(config.appearance.activeProfile).toBe("profile2")
     expect(config.ai.model).toBeTruthy()
   })

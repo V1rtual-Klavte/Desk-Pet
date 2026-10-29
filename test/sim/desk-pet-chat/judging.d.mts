@@ -202,6 +202,52 @@ export interface JudgePacket {
   verdictFormat: Record<string, unknown>;
 }
 
+/** 判分视图里的一条回合：窗口外的原文以 textOmitted 标注，只留定位用的元数据。 */
+export interface JudgeViewRow {
+  seq: number;
+  role: string;
+  origin: string;
+  sessionId: string;
+  entryId: string;
+  at: number;
+  text?: string;
+  textOmitted?: boolean;
+}
+
+export interface JudgeView {
+  schemaVersion: 1;
+  kind: "chat-judge-view";
+  packetId: string;
+  packetSha256: string;
+  viewAt: string;
+  createdAt: string;
+  attemptId: string;
+  caseId: string;
+  suiteId: string;
+  trialId: string | null;
+  manifestSha256: string;
+  datasetHash: string;
+  bindings: JudgePacket["bindings"];
+  versions: JudgePacket["versions"];
+  underTest: JudgePacket["underTest"];
+  case: JudgePacket["case"];
+  fixtureContext: JudgePacket["fixtureContext"];
+  rules: JudgePacketRule[];
+  skippedRules: SkippedJudgeRule[];
+  timeline: JudgeViewRow[];
+  allowedEvidenceRefs: string[];
+  instructions: string[];
+  verdictFormat: Record<string, unknown>;
+  projection: {
+    inlinedSeqs: number[];
+    omittedSections: Array<{ section: string; reason: string }>;
+  };
+  state?: JudgePacket["state"];
+  artifacts?: JudgePacket["artifacts"];
+  deliverables?: JudgePacketDeliverable[];
+  viewSha256: string;
+}
+
 export interface JudgeVerdictInput {
   ruleId: string;
   verdict: JudgeVerdict;
@@ -328,6 +374,15 @@ export function readJudgePacket(options: { runDir: string; packetId: string }): 
   packet: JudgePacket;
   packetPath: string;
   packetSha256: string;
+};
+export function latestJudgePacket(options: { runDir: string }): {
+  packet: JudgePacket;
+  packetPath: string;
+  packetSha256: string;
+};
+export function projectJudgeView(options: { packet: JudgePacket; packetSha256: string; now: string }): {
+  view: JudgeView;
+  body: Omit<JudgeView, "viewSha256">;
 };
 export function prepareJudgePacket(options: {
   runDir: string;

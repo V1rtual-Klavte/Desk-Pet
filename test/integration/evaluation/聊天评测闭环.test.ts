@@ -8,6 +8,7 @@
 // 因此本测试不产生 clock.json，也不冒充跨天或调度类证据。
 import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { initChat, resetAgentRuntimeForTest, sendMessage } from "@/services/agent/runner"
@@ -73,7 +74,7 @@ import {
   validateSyncPoints,
 } from "../../sim/desk-pet-chat/workflow.mjs"
 // @ts-expect-error TS7016：脚本没有类型声明，测试只借用同一实现的源码身份算法。
-import { computeSourceHash } from "../../../scripts/sim-eval-run.mjs"
+import { computeSourceHash, stableConfigHash } from "../../../scripts/sim-eval-run.mjs"
 
 const CASE_ID = "w5-loop-smoke"
 const SUITE_ID = "w5-loop"
@@ -760,4 +761,40 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       await resetPiSessionLayerForTest()
     }
   }, 60_000)
+})
+
+describe("输入身份里的 CONFIG 哈希", () => {
+  it("宿主写回的窗口位置不改输入哈希，其余字段照常绑定 [eval-config-identity]", () => {
+    const dir = mkdtempSync(join(tmpdir(), "desk-pet-config-hash-"))
+    try {
+      const configPath = join(dir, "CONFIG.yaml")
+      const written = (x: number, endpoint: string) => writeFileSync(configPath, [
+        "general:",
+        "  popup:",
+        "    mode: fixed",
+        "    defaultSize:",
+        "      w: 673",
+        "      h: 444",
+        "    fixedPosition:",
+        `      x: ${x}`,
+        "      'y': 212",
+        "ai:",
+        "  provider:",
+        "    active: deepseek",
+        `    endpoint: ${endpoint}`,
+        "",
+      ].join("\n"))
+
+      written(355, "https://api.deepseek.com")
+      const before = stableConfigHash(configPath)
+      // 退出时窗口落点被宿主写回：输入身份不能因此漂移
+      written(252, "https://api.deepseek.com")
+      expect(stableConfigHash(configPath)).toBe(before)
+      // 真正影响回合行为的字段仍要进绑定
+      written(252, "https://other.example.com")
+      expect(stableConfigHash(configPath)).not.toBe(before)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
