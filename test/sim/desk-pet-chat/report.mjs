@@ -56,6 +56,17 @@ function clip(value, limit = TEXT_MAX_CHARS) {
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
 }
 
+function replyEvidenceLine(reply) {
+  const toolCalls = reply.toolCallCount === undefined || reply.toolCallCount === null
+    ? "toolCallCount=unknown"
+    : `toolCallCount=${reply.toolCallCount}`;
+  if (reply.replyEvidence?.availability !== "available") {
+    return `    - ${toolCalls}；生成原文：unavailable（${reply.replyEvidence?.reason ?? "missing-persisted-evidence"}；不从最终正文回填）`;
+  }
+  const evidence = reply.replyEvidence.evidence;
+  return `    - ${toolCalls}；生成原文（仅归因，${evidence.outcome}；humanizer=${evidence.humanizerEnabled}；transformation=${evidence.transformation}）：${clip(evidence.generatedText)}`;
+}
+
 function hashPrefix(value) {
   return typeof value === "string" && value.length > 19 ? `${value.slice(0, 19)}…` : (value ?? "未知");
 }
@@ -167,6 +178,7 @@ function renderCheck({ check, probe, context, spot }) {
       lines.push("  - 实际：");
       for (const reply of window.replies.slice(0, ASSISTANT_CAP)) {
         lines.push(`    - [${reply.sessionId}:${reply.entryId}] ${clip(reply.text)}`);
+        if (reply.role === "assistant") lines.push(replyEvidenceLine(reply));
       }
       if (window.replies.length > ASSISTANT_CAP) lines.push(`    - …另有 ${window.replies.length - ASSISTANT_CAP} 条，见原始证据`);
     }
@@ -175,6 +187,7 @@ function renderCheck({ check, probe, context, spot }) {
     lines.push("  - 实际（全部助手回复）：");
     for (const reply of replies.slice(0, ASSISTANT_CAP)) {
       lines.push(`    - [${reply.sessionId}:${reply.entryId}] ${clip(reply.text)}`);
+      lines.push(replyEvidenceLine(reply));
     }
     if (replies.length > ASSISTANT_CAP) lines.push(`    - …另有 ${replies.length - ASSISTANT_CAP} 条，见原始证据`);
   }
@@ -228,7 +241,10 @@ function renderTimeline(timeline) {
       at: Number(message.at) || 0,
       order: 0,
       seq: message.seq,
-      line: `- #${message.seq} ${message.role}（${message.origin}）[${message.sessionId}:${message.entryId}]：${clip(message.text)}`,
+      line: [
+        `- #${message.seq} ${message.role}（${message.origin}）[${message.sessionId}:${message.entryId}]：${clip(message.text)}`,
+        ...(message.role === "assistant" ? [replyEvidenceLine(message)] : []),
+      ].join("\n"),
     })),
     ...timeline.events.map((record) => ({
       at: Number(record.event?.createdAt) || 0,

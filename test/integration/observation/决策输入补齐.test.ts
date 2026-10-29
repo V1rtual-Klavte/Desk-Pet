@@ -256,11 +256,11 @@ describe("静默了解决策输入补齐", () => {
       expect(decisionText.includes("长期记忆丁"), "超出条数上限的记忆进入了提示").toBe(false)
       expect(decisionText.includes("x".repeat(401)), "单条记忆超过了字符上限").toBe(false)
 
-      // 运行时绑定：召回身份来自活跃会话与激活 Card，空 query 且不重排
+      // 运行时绑定：召回身份来自活跃会话（记忆范围已收敛为 user/session），空 query 且不重排
       expect(memoryRequests.length, "决策没有走召回端口取长期记忆").toBe(1)
       const request = memoryRequests[0]!
       expect(request.requestId).toMatch(/^observation-decision-/)
-      expect(request).toMatchObject({ sessionId: "session-decide-01", cardId: "card-decide-01", query: "", tokenBudget: 256, skipRerank: true })
+      expect(request).toMatchObject({ sessionId: "session-decide-01", query: "", tokenBudget: 256, skipRerank: true })
 
       // 预算不越界：预留是有限的正数（上界由各块截断共同保证）
       const reservation = budget.reserve.mock.calls.find(([value]) => value.kind === "observation")?.[0]

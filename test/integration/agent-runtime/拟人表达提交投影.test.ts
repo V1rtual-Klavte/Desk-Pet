@@ -89,12 +89,12 @@ describe("拟人表达原生提交", () => {
       const assistant = context.messages.find(message => message.role === "assistant")
       if (assistant) {
         historyText = assistant.content.flatMap(part => part.type === "text" ? [part.text] : []).join("|")
-        historyFieldLeaked = Object.prototype.hasOwnProperty.call(assistant, "deskpetRawVisibleText")
+        historyFieldLeaked = Object.prototype.hasOwnProperty.call(assistant, "deskpetReplyEvidence")
       }
       return fakeText("<<SILENT>>")
     }
     const provider = installFakeProvider([
-      fakeText(`第一泡。<<SPLIT>>第二泡。\n<RUNTIME_DATA>\n${VARIABLE}: 已写入\n</RUNTIME_DATA>`),
+      fakeText(`  第一泡。<<SPLIT>>第二泡。 \r\n<RUNTIME_DATA>\r\n${VARIABLE}: 已写入\r\n</RUNTIME_DATA>\r\n  `),
       silenceReply, fakeText("<<SILENT>>"), imageReply,
       fakeToolCall("read", { path: taskPath }), fakeText("<<SILENT>>"),
     ])
@@ -110,8 +110,8 @@ describe("拟人表达原生提交", () => {
 
       const silence = await runPiAgentTurn({ sessionId, userText: "没有可回应内容。",
         userPrompt: userInputMessage("没有可回应内容。", ""), unansweredCount: 0, isActiveMessage: false })
-      expect(historyText, "Provider 历史应看到未拆原文（含标点），而不是拟人化泡").toBe("第一泡。\n第二泡。")
-      expect(historyFieldLeaked, "自定义原文标注不得进入 Provider 上下文").toBe(false)
+      expect(historyText, "Provider 历史应看到拟人化前完整句读，而不是展示短泡").toBe("  第一泡。\n第二泡。 \r\n\r\n  ")
+      expect(historyFieldLeaked, "取证元数据不得进入 Provider 上下文").toBe(false)
       expect(silence.silent, "纯 SILENT 应提交合法空结果").toBe(true)
       expect(silence.committedAssistantEntryId, "空结果仍须绑定原生助手条目").toBeTruthy()
 
@@ -121,6 +121,13 @@ describe("拟人表达原生提交", () => {
         userPrompt: userInputMessage("再次没有可回应内容。", ""), unansweredCount: 0, isActiveMessage: false })
       expect(repeatedSilence.silent, "从已提交助手元数据重建后，连续第二次沉默仍须被拒绝").not.toBe(true)
       expect(repeatedSilence.reply, "重启后的第二次沉默应改用 Card 短回复").toBe(FALLBACK_STAGES.fallbacks.silentRejected)
+      const fallbackEntry = (await sessionEntries(sessionId))
+        .find(entry => entry.type === "message" && entry.id === repeatedSilence.committedAssistantEntryId)
+      const fallbackEvidence = fallbackEntry?.type === "message"
+        ? (fallbackEntry.message as { deskpetReplyEvidence?: { outcome?: string; generatedText?: string } }).deskpetReplyEvidence
+        : undefined
+      expect(fallbackEvidence?.outcome, "沉默护栏拒绝后应标成兜底交付").toBe("fallback")
+      expect(fallbackEvidence?.generatedText, "兜底控制标记剥除后不得恢复正文").toBe("")
 
       const imageTurn = await runPiAgentTurn({ sessionId, userText: "请看这张图片。",
         userPrompt: userInputMessage("请看这张图片。", "image-event", undefined, [imagePath]),
@@ -135,8 +142,16 @@ describe("拟人表达原生提交", () => {
       const splitEntry = assistantEntries.find(entry => entry.id === first.committedAssistantEntryId)
       expect(splitEntry?.type === "message" && splitEntry.message.role === "assistant" ? splitEntry.message.content.filter(part => part.type === "text").map(part => part.text) : [],
         "JSONL 中的多泡必须与运行期 parts 同形").toEqual(["第一泡", "第二泡"])
-      expect(splitEntry?.type === "message" ? (splitEntry.message as { deskpetRawVisibleText?: string }).deskpetRawVisibleText : undefined,
-        "JSONL 需保留拟人化前原文供后续请求使用").toBe("第一泡。\n第二泡。")
+      const splitEvidence = splitEntry?.type === "message"
+        ? (splitEntry.message as { deskpetReplyEvidence?: { schemaVersion: number; generatedText: string; outcome: string; humanizerEnabled: boolean; transformation: string } }).deskpetReplyEvidence
+        : undefined
+      expect(splitEvidence, "JSONL 需将生成原文与实际展示正文保存在同一消息").toEqual({
+        schemaVersion: 1,
+        generatedText: "  第一泡。\n第二泡。 \r\n\r\n  ",
+        outcome: "delivered",
+        humanizerEnabled: true,
+        transformation: "formatting",
+      })
       const silentEntry = assistantEntries.find(entry => entry.id === silence.committedAssistantEntryId)
       expect(silentEntry?.type === "message" && silentEntry.message.role === "assistant" ? silentEntry.message.content.filter(part => part.type === "text") : [],
         "沉默条目应保持空可见正文").toEqual([])
@@ -144,6 +159,11 @@ describe("拟人表达原生提交", () => {
         ? silentEntry.message as unknown as { deskpetSilent?: boolean } : undefined
       expect(silentMetadata?.deskpetSilent,
         "空条目需保留可核验沉默语义").toBe(true)
+      const silentEvidence = silentEntry?.type === "message"
+        ? (silentEntry.message as { deskpetReplyEvidence?: { outcome?: string; generatedText?: string } }).deskpetReplyEvidence
+        : undefined
+      expect(silentEvidence?.outcome, "沉默消息须标成未交付").toBe("silent")
+      expect(silentEvidence?.generatedText, "沉默控制标记剥除后不得恢复正文").toBe("")
       expect((await messagesFromEntries(entries, sessionId)).some(message => message.eventId === silence.committedAssistantEntryId),
         "会话重读不得显示空白沉默气泡").toBe(false)
 

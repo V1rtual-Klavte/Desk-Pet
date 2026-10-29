@@ -1774,13 +1774,14 @@ fn rewrite_card_candidate_drafts(conn: &Connection) -> AppResult<usize> {
         let mut statement = conn
             .prepare("SELECT id,draft_json FROM memory_candidates WHERE status='prepared'")
             .map_err(|error| sql_error("准备迁移记忆候选失败", error))?;
-        statement
+        let rows = statement
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|error| sql_error("读取待迁移记忆候选失败", error))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| sql_error("读取待迁移记忆候选失败", error))?
+            .map_err(|error| sql_error("读取待迁移记忆候选失败", error))?;
+        rows
     };
     let mut rewritten = 0;
     for (id, draft_json) in rows {
@@ -1834,13 +1835,14 @@ fn rewrite_memory_refs(conn: &Connection, select: &str, update: &str) -> AppResu
         let mut statement = conn
             .prepare(select)
             .map_err(|error| sql_error("准备迁移记忆来源引用失败", error))?;
-        statement
+        let rows = statement
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(|error| sql_error("读取待迁移记忆来源引用失败", error))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| sql_error("读取待迁移记忆来源引用失败", error))?
+            .map_err(|error| sql_error("读取待迁移记忆来源引用失败", error))?;
+        rows
     };
     let mut rewritten = 0;
     for (id, refs_json) in rows {

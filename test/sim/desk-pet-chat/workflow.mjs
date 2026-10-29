@@ -453,8 +453,7 @@ export function readDriverProgress(raw) {
   assertExactKeys(raw, "driverProgress", [
     "schemaVersion", "caseId", "revision", "specHash", "driverHash", "clockBase", "index",
     "status", "inFlight", "blocked", "createdAt", "updatedAt", "budget", "usage", "steps",
-    "confirmations", "questions",
-  ], ["totalSteps", "lastUsageStepId"]);
+  ], ["totalSteps", "lastUsageStepId", "confirmations", "questions"]);
   if (raw.totalSteps !== undefined) assertPositiveInteger(raw.totalSteps, "driverProgress.totalSteps");
   if (raw.lastUsageStepId !== undefined) assertPattern(raw.lastUsageStepId, CASE_ID_PATTERN, "driverProgress.lastUsageStepId");
   if (raw.schemaVersion !== DRIVER_PROGRESS_SCHEMA_VERSION) {

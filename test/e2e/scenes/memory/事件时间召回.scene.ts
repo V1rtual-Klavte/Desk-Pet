@@ -76,7 +76,6 @@ export const 事件时间召回: SceneDef = {
 
             const snapshot = await getMemoryRecallCandidates(
               "南山步道旅行",
-              undefined,
               trialIdentity,
               [],
               false,

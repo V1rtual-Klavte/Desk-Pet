@@ -61,7 +61,7 @@ describe("memory quality dataset and score", () => {
 
   it("rejects incomplete scope and evidence annotations [mq-dataset-required-gold]", () => {
     const item = structuredClone(MEMORY_QUALITY_CASES[0]!)
-    item.gold.requiredScope = ""
+    item.gold.requiredScope = "" as never
     item.gold.allowedSourceMessageIds = null as never
     expect(validateMemoryQualityDataset([item])).toEqual(expect.arrayContaining([
       expect.stringContaining("scope/time/rubric 缺标注"),

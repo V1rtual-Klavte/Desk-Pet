@@ -1,3 +1,7 @@
+// 2026-10-29 记忆范围收敛定向复核（承 9e304157）：sourceFiles 中 host/types.ts 仅记忆命令
+// 线形状变化（memory_recall_candidates 去 cardId、memory_overview scope 收敛、记忆范围
+// 枚举），更新命令的名字、参数与 Node 请求面隔离未变；up-01 未修订覆盖点，仅按当前源码
+// 刷新 sourceHash。
 // 2026-10-24 契约覆盖复核批次（analyze）：up-01 的 `native-update-command-map` 原用例只
 // 断言测试替身回传的响应（D2 风险），补 HostCommandMap 三命令的参数/结果类型断言；
 // 运行面仍只验证取用口透传与 Node 请求面隔离（真实更新流程在 Rust UpdatePort）。
@@ -97,7 +101,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "b86eeb8f1e847f358e926360b139c9917f5c2ad024e1d130179280d5708757e8",
+  sourceHash: "aa6ab4c5b9359feaf6aefe19ba18f4ed1408aa818a86c919cfc93603b995203e",
   coverage: [
     {
       id: "up-01",

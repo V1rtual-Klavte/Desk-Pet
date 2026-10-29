@@ -57,14 +57,15 @@ export function hasLlmWritableCardVars(card: PersonalityCard | null | undefined)
   return card?.sections.variableDefs.some(def => def.scope === "card" && def.updateBy === "llm") ?? false
 }
 
-export function parseRuntimeData(raw: string): ParsedRuntime {
+export function parseRuntimeData(raw: string, options: { preserveWhitespace?: boolean } = {}): ParsedRuntime {
   const match = raw.match(RUNTIME_RE)
   if (!match) return { text: raw, runtime: { vars: {} }, hasBlock: false }
 
   const block = match[1]
   const beforeBlock = raw.slice(0, match.index)
   const afterBlock = raw.slice(match.index! + match[0].length)
-  const text = (beforeBlock + afterBlock).trim()
+  const extracted = beforeBlock + afterBlock
+  const text = options.preserveWhitespace ? extracted : extracted.trim()
 
   const vars: Record<string, string> = {}
 

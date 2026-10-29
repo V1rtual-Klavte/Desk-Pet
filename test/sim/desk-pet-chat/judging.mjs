@@ -19,10 +19,10 @@ import {
 import { CHAT_GRADER_VERSION, appendGrade, appendReview, hashBytes, verifySealedAttempt } from "./evidence.mjs";
 
 export const JUDGING_SCHEMA_VERSION = 1;
-/** packet 3：固定历史作为 fixtureContext 冻结，和本次实际生成的对话分开。 */
-export const JUDGE_PACKET_SCHEMA_VERSION = 3;
+/** packet 4：固定历史与本次生成回复的原文归因证据都与最终交付正文分开冻结。 */
+export const JUDGE_PACKET_SCHEMA_VERSION = 4;
 export const VERDICTS_SCHEMA_VERSION = 1;
-export const JUDGE_PROMPT_VERSION = "chat-judge@5";
+export const JUDGE_PROMPT_VERSION = "chat-judge@6";
 export const JUDGE_RUBRIC_VERSION = JUDGE_PROMPT_VERSION;
 export const JUDGE_AUTHORITY = "coding-agent-judge";
 /** 只有这些执行平台的回填才算 coding-agent 权威；API 客户端跑同样的 prompt 也不算。 */
@@ -125,11 +125,25 @@ function readDialogue(attemptDir) {
     if (record.seq !== expectedSeq) issues.push(`dialogue 序号不连续：期望 ${expectedSeq}，实际 ${String(record.seq)}`);
     expectedSeq += 1;
     if (!["user", "assistant"].includes(record.role)) issues.push(`dialogue 第 ${String(record.seq)} 条角色非法`);
-    if (typeof record.text !== "string" || !record.text.trim()) issues.push(`dialogue 第 ${String(record.seq)} 条正文为空`);
+    if (typeof record.text !== "string" || (record.role === "user" && !record.text.trim())) {
+      issues.push(`dialogue 第 ${String(record.seq)} 条正文为空`);
+    }
+    if (record.textParts !== undefined && (!Array.isArray(record.textParts)
+      || record.textParts.some(part => typeof part !== "string")
+      || record.textParts.join("\n") !== record.text)) {
+      issues.push(`dialogue 第 ${String(record.seq)} 条 textParts 与最终正文不一致`);
+    }
+    if (record.toolCallCount !== undefined && record.toolCallCount !== null
+      && (!Number.isSafeInteger(record.toolCallCount) || record.toolCallCount < 0)) {
+      issues.push(`dialogue 第 ${String(record.seq)} 条 toolCallCount 非法`);
+    }
     if (!["fixture", "driver", "assistant"].includes(record.origin)) {
       issues.push(`dialogue 第 ${String(record.seq)} 条来源非法`);
     }
     if (!Number.isSafeInteger(record.at)) issues.push(`dialogue 第 ${String(record.seq)} 条时间非法`);
+    if (record.role === "assistant" && record.replyEvidence === undefined) {
+      record.replyEvidence = { availability: "unavailable", reason: "missing-persisted-evidence" };
+    }
     messages.push(record);
   }
   return { messages, issues };
@@ -422,7 +436,11 @@ function buildDeliverables({ context, caseEntry }) {
 }
 
 function allowedEvidenceRefs({ context, deliverables, fixtureContext }) {
-  const refs = context.messages.map(dialogueRef);
+  const refs = context.messages.flatMap((message) => [
+    dialogueRef(message),
+    ...(message.role === "assistant" && message.replyEvidence?.availability === "available"
+      ? [`${dialogueRef(message)}:generated`] : []),
+  ]);
   for (const message of fixtureContext?.messages ?? []) refs.push(`fixture:${message.id}`);
   for (const name of ["before", "after", "capture"]) {
     if (context[name]) refs.push(`state:${name}`);
@@ -624,6 +642,9 @@ function buildPacket({ context, datasetHash, caseEntry, packetId, now }) {
       entryId: message.entryId,
       at: message.at,
       text: message.text,
+      textParts: message.textParts,
+      toolCallCount: message.toolCallCount,
+      ...(message.role === "assistant" ? { replyEvidence: message.replyEvidence } : {}),
     })),
     state: {
       before: context.before,
@@ -640,6 +661,10 @@ function buildPacket({ context, datasetHash, caseEntry, packetId, now }) {
     instructions: [
       "fixtureContext 是锁定的预置历史，只作目标回合的语境；不得当作被测模型本次生成、在线记忆抽取或任务完成的证据。fixture:<id> 引用保持此来源。",
       "你是独立评测裁判，不是被测产品，也不能读取被测仓库的源码、测试期望或历史判分。",
+      "产品规则只按最终交付的对话正文（timeline[].text）判定；replyEvidence.evidence.generatedText 只用于解释生成到交付之间的处理，不改变产品判定。",
+      "raw/generated 引用只用于归因。原文正确而最终正文错误，产品规则仍判 fail；最终正文已足以判定时，原文缺失只影响归因。不得按行数、气泡数推断句数。",
+      "toolCallCount 只标识助手消息含有工具调用；text 为空时它仍是空回复过程，不把工具调用当成用户可见答案。",
+      "记得过去说过某事，不代表仍然认同或当前仍然如此；按目标回合的最终交付正文和规则要求的证据判断。",
       "只依据本包内的对话、状态、产物与规则判定；不补写证据，不修改任何文件。",
       "逐条判定 rules；skippedRules 不需要判定，运行器会记为 inconclusive。",
       "pass 表示规则要求满足；对 forbidden 规则，pass 表示未出现被禁止的行为。",
@@ -687,7 +712,7 @@ export function readJudgePacket({ runDir, packetId }) {
 }
 
 const JUDGE_VIEW_KIND = "chat-judge-view";
-const JUDGE_VIEW_SCHEMA_VERSION = 1;
+const JUDGE_VIEW_SCHEMA_VERSION = 2;
 
 /**
  * 判分包的读取视图：只在规则的取证窗口内联对话原文，其余回合保留元数据并标注截断；
@@ -696,6 +721,7 @@ const JUDGE_VIEW_SCHEMA_VERSION = 1;
  */
 export function projectJudgeView({ packet, packetSha256, now }) {
   if (!isRecord(packet) || packet.kind !== "chat-judge-packet") fail("view.packet", "视图需要 chat-judge-packet");
+  if (packet.schemaVersion !== JUDGE_PACKET_SCHEMA_VERSION) fail("view.packet-schema", "旧 schema 判分包不能按当前口径生成视图");
   assertIsoTimestamp(now, "now");
   assertIsoTimestamp(packet.createdAt, "packet.createdAt");
   const rules = Array.isArray(packet.rules) ? packet.rules : [];
@@ -747,12 +773,27 @@ export function projectJudgeView({ packet, packetSha256, now }) {
           entryId: message.entryId,
           at: message.at,
           textOmitted: true,
+          ...(message.toolCallCount === undefined ? {} : { toolCallCount: message.toolCallCount }),
+          ...(message.role === "assistant" ? {
+            replyEvidence: message.replyEvidence?.availability === "available"
+              ? {
+                availability: "available",
+                generatedTextOmitted: true,
+                evidence: {
+                  schemaVersion: message.replyEvidence.evidence.schemaVersion,
+                  outcome: message.replyEvidence.evidence.outcome,
+                  humanizerEnabled: message.replyEvidence.evidence.humanizerEnabled,
+                  transformation: message.replyEvidence.evidence.transformation,
+                },
+              }
+              : message.replyEvidence,
+          } : {}),
         }
     )),
     allowedEvidenceRefs: packet.allowedEvidenceRefs,
     instructions: [
       ...packet.instructions,
-      `视图按规则取证窗口内联对话原文；textOmitted=true 的回合只保留元数据，需要原文时以 packetSha256 对应的原判分包为准。${needsState ? "" : " 本视图未携带状态快照。"}`,
+      `视图只在规则取证窗口内联最终正文与完整生成原文；textOmitted=true 的回合不携带正文，仅保留处理状态，需要原文时以 packetSha256 对应的原判分包为准。${needsState ? "" : " 本视图未携带状态快照。"}`,
       "回填 verdicts 时 packetId 与 packetSha256 仍取本视图顶层的同名字段（即原判分包）。",
     ],
     verdictFormat: { ...packet.verdictFormat, packetSha256 },
@@ -914,6 +955,10 @@ export function validateJudgeVerdicts({ packet, verdicts }) {
     for (const ref of refs) {
       if (!allowedRefs.has(ref)) fail("verdict.evidence-ref", `${label}.evidenceRefs 不在允许引用中：${ref}`);
     }
+    if (verdict.verdict !== "inconclusive" && refs.length > 0
+      && refs.every(ref => ref.startsWith("dialogue:") && ref.endsWith(":generated"))) {
+      fail("verdict.evidence-generated-only", `${label} 的 pass/fail 不能只引用生成原文；必须同时引用至少一条最终交付或状态证据`);
+    }
     if (verdict.verdict !== "inconclusive" && refs.length === 0) {
       fail("verdict.evidence-required", `${label} 判 ${verdict.verdict} 至少需要一条证据引用`);
     }
@@ -948,8 +993,16 @@ function evidenceForRef(ref, { context, byRef, packet }) {
     return { ref, excerpt: `预置历史 ${message.role}：${excerpt(message.content)}` };
   }
   if (ref.startsWith("dialogue:")) {
-    const message = byRef.get(ref);
+    const generated = ref.endsWith(":generated");
+    const baseRef = generated ? ref.slice(0, -":generated".length) : ref;
+    const message = byRef.get(baseRef);
     if (!message) fail("verdict.evidence-ref", `对话引用不存在：${ref}`);
+    if (generated) {
+      if (message.role !== "assistant" || message.replyEvidence?.availability !== "available") {
+        fail("verdict.evidence-ref", `生成正文引用不可用：${ref}`);
+      }
+      return { ref, excerpt: excerpt(message.replyEvidence.evidence.generatedText) };
+    }
     return { ref, excerpt: excerpt(message.text) };
   }
   if (ref === "trace:trace.jsonl") return { ref, excerpt: "trace.jsonl 事件流" };
@@ -1061,7 +1114,8 @@ export function applyJudgeVerdicts({
   if (packet.caseId !== caseEntry.caseId || packet.suiteId !== caseEntry.suiteId) {
     fail("judge.packet-case", "判分包与当前 case 不匹配");
   }
-  if (packet.versions.graderVersion !== CHAT_GRADER_VERSION
+  if (packet.schemaVersion !== JUDGE_PACKET_SCHEMA_VERSION
+    || packet.versions.graderVersion !== CHAT_GRADER_VERSION
     || packet.versions.judgePromptVersion !== JUDGE_PROMPT_VERSION
     || packet.versions.rubricVersion !== JUDGE_RUBRIC_VERSION) {
     fail("judge.packet-version", "判分包版本与当前判分口径不一致，请重新 prepare");
@@ -1428,6 +1482,18 @@ export function formatJudgePacket({ packet }) {
   lines.push("");
   for (const message of packet.timeline) {
     lines.push(`- #${message.seq} ${message.role}（${message.origin}）[${message.sessionId}:${message.entryId}]：${message.text}`);
+    if (message.textParts?.length) lines.push(`  - text parts：${JSON.stringify(message.textParts)}`);
+    if (message.toolCallCount !== undefined && message.toolCallCount !== null) {
+      lines.push(`  - toolCallCount：${message.toolCallCount}（工具调用数，不是可见正文）`);
+    }
+    if (message.role === "assistant") {
+      if (message.replyEvidence?.availability === "available") {
+        const evidence = message.replyEvidence.evidence;
+        lines.push(`  - 生成原文（仅归因，${evidence.outcome}）：${evidence.generatedText}`);
+      } else {
+        lines.push("  - 生成原文：unavailable（缺少同条持久消息证据，不从最终正文回填）");
+      }
+    }
   }
   lines.push("");
   lines.push("## 证据引用");

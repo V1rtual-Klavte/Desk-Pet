@@ -1,3 +1,5 @@
+// 2026-10-29 共享状态静态复核：harness-slot.ts 仅删除专用 completedReply 字段，
+// JSONL提交、帧写入、折叠与恢复方法未改；新增回复元数据按既有message持久形态保存，测试未运行。
 // 2026-10-24 故障槽恢复批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口新增故障槽
 // 显式恢复（recoverFaulted → dispose），harness-slot.ts 新增 isFaulted/recoverFaulted，open()
 // 仍不静默重建故障槽。会话 JSONL 帧、折叠、事务、保留与文件夹具未改，hs-* 未修订覆盖点，
@@ -86,7 +88,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/engine/harness/harness-slot.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加内存字段，JSONL 条目 schema 未变；定向复核后刷新。
-  sourceHash: "5978776e01860f6502b420640e3e222c027deeed8a8d3986e3021162c045005d",
+  sourceHash: "f51972fe78963e257c9457ac521fce4ce81c2e4f2e20543097638cccc6f20875",
   coverage: [
     {
       id: "hs-11",

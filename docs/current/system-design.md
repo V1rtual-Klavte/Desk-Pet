@@ -59,7 +59,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 | native-ui | Node ↔ 原生宿主数据流：状态推送（快捷键/字体/主题/舞台/聊天列/图片预览/摆位尺寸/自动呼出/音效/顶栏文本/揭示进度/权限确认）、宿主请求应答（设置读写、编辑器 I/O、聊天与会话意图、决策动作、管理面）、会话投影帧组装的唯一入口 | [native-ui/](../../src/services/native-ui/)、[session-projection.ts](../../src/services/native-ui/session-projection.ts)、[host-requests.ts](../../src/services/native-ui/host-requests.ts) |
 | images | 原图路径准入、预览与请求投影；聊天图片自动预览开关的 Node 侧消费（出厂开启，缺键按关处理；占位零预读、只按可见加载）；read/请求链路的图片处理端口见[工具系统](tool-system.md) | [images/](../../src/services/images/) |
 | observation | 截图／手边文件的可验证了解、带立场的对话参与度，独立派生域（原生实现见 [observation_cmd.rs](../../crates/native-host/src/commands/observation_cmd.rs)） | [observation/](../../src/services/observation/) |
-| personality / reply | Card（加载切换 + 设置页的增删改查、导入导出与作者模版）、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
+| personality / reply | Card（加载切换 + 设置页的增删改查、导入导出与作者模版）、变量与阶段文案；回复元数据解析、生成正文取证与效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/)、[evidence.ts](../../src/services/reply/evidence.ts) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | Pi 原生 Skill 清单（目录指纹驱动刷新）与披露块 | [skill/](../../src/services/skill/) |
 | profile / audio | 外观资源与导入导出；音效事件/预设与设置分配，Node 将音效图编译为 WAV，通过 HostBridge 交给原生宿主播放 | [profile/](../../src/services/profile/)、[audio/](../../src/services/audio/) |

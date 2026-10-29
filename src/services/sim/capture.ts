@@ -23,6 +23,8 @@ import type { MemoryItem, MemoryStatusSnapshot } from "@/services/agent/memory"
 import { laneMessageText } from "@/services/engine/runtime"
 import { getSimEvalRunContext } from "./run-context"
 import type { SimEvalRunContext } from "./run-context"
+import { isDeskpetReplyEvidence } from "@/services/reply"
+import type { DeskpetReplyEvidence } from "@/services/reply"
 import type {
   SimCaptureTrialSpec, SimCaptureTrialStatus, SimTraceCaptureResult, SimTraceRecorder,
 } from "./trace-recorder"
@@ -41,6 +43,13 @@ export interface SimCaptureMessage {
   seq: number
   role: "user" | "assistant"
   text: string
+  /** 原生持久消息中的 text part，逐项保留，不合并、不 trim。 */
+  textParts: string[]
+  /** 仅用于区分空正文的工具中间轮；不是助手可见正文。 */
+  toolCallCount: number | null
+  /** 只接受同一已提交 assistant message 上的共享 runtime 证据。 */
+  replyEvidence?: { availability: "available"; evidence: DeskpetReplyEvidence }
+    | { availability: "unavailable"; reason: "missing-persisted-evidence" | "invalid-persisted-evidence" }
   at: number
   origin: SimCaptureOrigin
 }
@@ -419,8 +428,40 @@ async function readSessionSnapshot(
         if (entry.type !== "message") continue
         const role = entry.message.role
         if (role !== "user" && role !== "assistant") continue
-        const text = laneMessageText(entry.message).trim()
-        if (!text) {
+        const text = laneMessageText(entry.message)
+        const textParts = typeof (entry.message as { content?: unknown }).content === "string"
+          ? [(entry.message as { content: string }).content]
+          : Array.isArray((entry.message as { content?: unknown }).content)
+            ? ((entry.message as { content: Array<{ type?: string; text?: unknown }> }).content)
+              .filter(part => part.type === "text" && typeof part.text === "string")
+              .map(part => part.text as string)
+            : []
+        const persistedReplyEvidence = role === "assistant"
+          ? (entry.message as { deskpetReplyEvidence?: unknown }).deskpetReplyEvidence
+          : undefined
+        const hasPersistedReplyEvidence = role === "assistant"
+          && Object.prototype.hasOwnProperty.call(entry.message, "deskpetReplyEvidence")
+        const validReplyEvidence = isDeskpetReplyEvidence(persistedReplyEvidence)
+          ? { availability: "available" as const, evidence: persistedReplyEvidence }
+          : hasPersistedReplyEvidence
+            ? { availability: "unavailable" as const, reason: "invalid-persisted-evidence" as const }
+            : { availability: "unavailable" as const, reason: "missing-persisted-evidence" as const }
+        const persistedContent = (entry.message as { content?: unknown }).content
+        const toolCallCount = Array.isArray(persistedContent)
+          ? persistedContent.filter(part => part.type === "toolCall").length
+          : typeof persistedContent === "string" ? 0 : null
+        if (Array.isArray(persistedContent) || typeof persistedContent === "string") {
+          const joinedParts = typeof persistedContent === "string" ? persistedContent : textParts.join("\n")
+          if (joinedParts !== text) {
+            issues.push(`会话 ${sessionId} 的消息 ${entry.id} text parts 与最终正文不一致`)
+            complete = false
+          }
+        }
+        if (hasPersistedReplyEvidence && validReplyEvidence.availability !== "available") {
+          issues.push(`会话 ${sessionId} 的消息 ${entry.id} reply evidence 结构非法`)
+          complete = false
+        }
+        if (!text && role === "user") {
           // assistant 工具轮没有可见回复，正文由 trace 承担；用户纯图片消息无法进入
           // 文本对话证据，必须显式标不完整而不是当作没发生。
           if (role === "user") {
@@ -435,7 +476,9 @@ async function readSessionSnapshot(
           continue
         }
         messages.push({
-          sessionId, entryId: entry.id, seq: entry.seq, role, text, at: entry.timestamp, origin: "fixture",
+          sessionId, entryId: entry.id, seq: entry.seq, role, text, textParts, toolCallCount,
+          ...(role === "assistant" ? { replyEvidence: validReplyEvidence } : {}),
+          at: entry.timestamp, origin: "fixture",
         })
       }
       if (page.length < SESSION_PAGE_SIZE) break
@@ -467,7 +510,6 @@ async function readSessionSnapshot(
     }
   }
 }
-
 async function readSnapshot(context: SimEvalRunContext): Promise<SimCaptureSnapshot> {
   const capturedAt = new Date().toISOString()
   const issues: string[] = []
@@ -543,7 +585,10 @@ function attributeOrigins(
       issues.push(`既有消息在采集中消失：${message.sessionId}/${message.entryId}`)
       continue
     }
-    if (current.text !== message.text || current.at !== message.at) {
+    if (current.text !== message.text || current.at !== message.at
+      || JSON.stringify(current.textParts) !== JSON.stringify(message.textParts)
+      || current.toolCallCount !== message.toolCallCount
+      || JSON.stringify(current.replyEvidence) !== JSON.stringify(message.replyEvidence)) {
       issues.push(`既有消息在采集中被改写：${message.sessionId}/${message.entryId}`)
     }
   }

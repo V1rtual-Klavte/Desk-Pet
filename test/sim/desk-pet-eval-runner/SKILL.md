@@ -54,11 +54,17 @@ node scripts/desk-pet-chat.mjs capture sessions
 - `stop` 只写 `stop.request`，由宿主走产品退出序列并移除 ready，未完成采集以中断状态收口。宿主在 flush 之后把真实关停结果写进运行根 `exit.json`（pid、Node flush、强杀／中断），`stop` 核对它与本次宿主绑定、flush 完成且非强杀非中断，缺失或不干净都会报问题并以非零退出码结束；`finish` 收口时会把这些关停问题写进摘要与退出码。停止条件是进程退出且 ready 消失。`.instance.lock` 文件按设计保留（OS 在进程退出时释放锁，删除文件会引入 unlink 竞争），无残留判据是无宿主进程、无 ready、锁未被持有且真实数据根未变。不要 kill 进程来“收尾”。
 - `rescue` 只用于宿主没有走完退出序列（崩溃、被强杀）的现场：宿主仍活着（先 `stop`）或 attempt 已封存都拒绝；只把已落盘的 `manifest.json.pending` 按 `interrupted` 封存，缺对话、缺 trace 封口、缺 `exit.json` 写进 issues，封存结果保持 incomplete/inconclusive，不冒充完成；封存后可 `prepare --repair-of`。救援后不再重放原驱动。
 - `status` 只读现有证据，不修复、不重启、不清理失败现场；`capture status|sessions` 通过开发控制通道核对本次采集的范围与来源，不读取真实用户会话。
-- `judge prepare` 只在证据完整、执行完成、数据集绑定未漂移且驱动无 oracle 泄漏时冻结判分包（规则、对话、状态、产物哈希与允许的证据引用）；不调用模型，也不写判分。判分包为 schema 3（`chat-judge@5`）：按 case 声明携带交付产物的封存状态与受限内容（单文件 4 KiB、整包 16 KiB），超限截断并标注；二进制、哈希不符或预算耗尽只保留原因；`deliverable:<id>` 是可引用的证据，缺失产物仍可冻结并由裁决判失败。
+- `judge prepare` 只在证据完整、执行完成、数据集绑定未漂移且驱动无 oracle 泄漏时冻结判分包（规则、对话、状态、产物哈希与允许的证据引用）；不调用模型，也不写判分。判分包为 schema 4（`chat-judge@6`，`chat-grader@4`）：按 case 声明携带交付产物的封存状态与受限内容（单文件 4 KiB、整包 16 KiB），超限截断并标注；二进制、哈希不符或预算耗尽只保留原因；`deliverable:<id>` 是可引用的证据，缺失产物仍可冻结并由裁决判失败。
 - `judge view` 只读已冻结判分包并写出 `<packetId>.view.json`：内联规则取证窗口内的助手回复与全部驱动回合，窗口外回合留元数据并标 `textOmitted`，没有规则取状态或产物时不带 `state`／`deliverables`／`artifacts`（原因在 `projection.omittedSections`）；`case`、`fixtureContext`、规则、引用白名单原样继承，顶层带原 `packetSha256`，判定权威与绑定不变。缺省取该运行最新的判分包，已存在的视图拒绝覆盖，可 `--packet-id` 指定。
 - `judge apply` 只接收外部 coding-agent judge 回填的 `verdicts` JSON，校验覆盖、绑定、证据引用、异构性与 prompt 版本后追加 `grades/`；不合规硬失败，不修正、不补写裁决。
 - `review show` 展示判分、规则对照与“未抽查”标记；`review spotcheck` 只接受用户本人填写的抽查记录，追加 `reviews/`，不阻塞也不改写判分。
 - `report` 从同一证据集合重建“结论卡→检查对照→时间线→原始证据”四层报告；报告不反向定义 oracle，也不成为业务真相。产物窗口的规则按封存产物取证，原始证据列出每个交付产物的封存状态与原因。驱动包含手工触发时，结论卡注明 `sim_proactive_tick`／`sim_task_deliver` 是评测驱动直接调用的组件入口，不代表自然受理、调度或实际 UI 显示。
+
+## 生成正文与交付证据
+
+- 对话证据以同一已提交消息的身份绑定最终 `text`／`textParts` 与 `replyEvidence`。available 声明剥内部协议后的生成正文及处理状态，缺少持久取证则为 unavailable；不以最终正文、旧原文字段或未封存会话补造原文。空助手工具轮与沉默保留空正文和明确状态，工具调用数仅按同条持久消息派生且缺失保持未知，不复制参数、不伪造作答。
+- 产品判分始终看最终交付，生成正文仅帮助解释生成和展示差异；原文正确、最终错误仍判产品失败。换行、气泡、编号与句数分别核对，不能把行数当句数；记得过去说过什么不等于必须继续认同。
+- 最终正文足够判断时，缺原文仅限制归因；只有判断实际需要的证据不足才判 inconclusive。精简视图必须保留取证窗口内的生成／交付证据和允许引用，不能读源码或活动会话来补齐。旧封存与旧判分不改写，正式重判须冻结新 packet 并追加 grade。
 
 ## 判分执行者与独立性
 

@@ -1,8 +1,9 @@
 import type { CaseEntry, Dataset, ProbeSpec } from "./dataset.mjs";
 import type { ChatAttemptManifest, GradeRecord, ReviewRecord, SealedVerification } from "./evidence.mjs";
+import type { CapturedReplyEvidence } from "./evidence.mjs";
 
 export const JUDGING_SCHEMA_VERSION: 1;
-export const JUDGE_PACKET_SCHEMA_VERSION: 3;
+export const JUDGE_PACKET_SCHEMA_VERSION: 4;
 export const DELIVERABLE_CONTENT_MAX_BYTES: number;
 export const DELIVERABLE_CONTENT_TOTAL_MAX_BYTES: number;
 export const VERDICTS_SCHEMA_VERSION: 1;
@@ -138,7 +139,7 @@ export interface JudgePacketDeliverable {
 }
 
 export interface JudgePacket {
-  schemaVersion: 3;
+  schemaVersion: 4;
   kind: "chat-judge-packet";
   packetId: string;
   packetSha256: string;
@@ -189,6 +190,9 @@ export interface JudgePacket {
     entryId: string;
     at: number;
     text: string;
+    textParts?: string[];
+    toolCallCount?: number | null;
+    replyEvidence?: CapturedReplyEvidence;
   }>;
   state: {
     before: Record<string, unknown> | null;
@@ -211,11 +215,18 @@ export interface JudgeViewRow {
   entryId: string;
   at: number;
   text?: string;
+  textParts?: string[];
+  toolCallCount?: number | null;
+  replyEvidence?: CapturedReplyEvidence | {
+    availability: "available";
+    generatedTextOmitted: true;
+    evidence: Omit<import("../../../src/services/reply/evidence").DeskpetReplyEvidence, "generatedText">;
+  };
   textOmitted?: boolean;
 }
 
 export interface JudgeView {
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: "chat-judge-view";
   packetId: string;
   packetSha256: string;

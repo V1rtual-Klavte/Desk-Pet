@@ -404,6 +404,15 @@ interface AttemptOptions {
   trialId?: string;
   /** 模拟宿主入库时裁掉驱动消息尾部空白（上游原文常以换行结尾）。 */
   trimDriverText?: boolean;
+  replyEvidence?: Record<string, {
+    schemaVersion: 1;
+    generatedText: string;
+    outcome: "delivered" | "silent" | "fallback" | "cancelled" | "error";
+    humanizerEnabled: boolean;
+    transformation: "none" | "formatting";
+  }>;
+  replyTextOverrides?: Record<string, string>;
+  legacyDialogue?: boolean;
 }
 
 interface SealedAttempt {
@@ -480,17 +489,32 @@ async function sealAttempt(world: World, options: AttemptOptions = {}): Promise<
       origin: "driver",
     });
     for (const [index, text] of (DEFAULT_REPLIES[step.id] ?? []).entries()) {
+      const entryId = `${step.id}-a${index + 1}`;
       dialogue.append({
         role: "assistant",
-        text,
+        text: options.replyTextOverrides?.[entryId] ?? text,
+        ...(options.replyEvidence?.[entryId] ? {
+          replyEvidence: { availability: "available" as const, evidence: options.replyEvidence[entryId] },
+        } : {}),
         sessionId: session,
-        entryId: `${step.id}-a${index + 1}`,
+        entryId,
         at: nextAt(),
         origin: "assistant",
       });
     }
   }
   dialogue.close();
+  if (options.legacyDialogue) {
+    const path = join(started.attemptDir, "dialogue.jsonl");
+    const legacy = readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => {
+      const record = JSON.parse(line);
+      delete record.textParts;
+      delete record.toolCallCount;
+      delete record.replyEvidence;
+      return JSON.stringify(record);
+    }).join("\n");
+    writeFileSync(path, `${legacy}\n`);
+  }
 
   const trace = createTraceWriter(started.attemptDir);
   const buffer = new BoundedTraceBuffer({ maxEvents: 128, maxBytes: 65536, maxChunkBytes: 32768 });
@@ -740,6 +764,7 @@ describe("判分包冻结与隐私", () => {
     const { packet } = prepared.packet;
 
     expect(packet.kind).toBe("chat-judge-packet");
+    expect(packet.schemaVersion).toBe(4);
     expect(packet.rules.map((rule) => rule.ruleId)).toEqual(defaultProbes().map((probe) => probe.id));
     expect(packet.rules).toHaveLength(9);
     expect(packet.skippedRules).toEqual([]);
@@ -766,6 +791,118 @@ describe("判分包冻结与隐私", () => {
       packetId: packet.packetId,
       caseId: world.entry.caseId,
     });
+  });
+
+  it("raw 与 final 按同一条目分别引用；raw 正确不改变 final 的失败判定，视图和报告保留归因证据 [chat-judge-reply-evidence-attribution]", async () => {
+    const world = makeWorld();
+    const generatedText = "你现在每周跑一次。\n你以前跑得勤。";
+    const finalText = "第一句。第二句。第三句。第四句。第五句。第六句。第七句。";
+    const prepared = await prepare(world, {
+      name: "reply-evidence",
+      replyEvidence: {
+        "ask-history-a1": {
+          schemaVersion: 1,
+          generatedText,
+          outcome: "delivered",
+          humanizerEnabled: true,
+          transformation: "formatting",
+        },
+      },
+      replyTextOverrides: { "ask-history-a1": finalText },
+    });
+    const reply = prepared.packet.packet.timeline.find(message => message.entryId === "ask-history-a1");
+    expect(reply).toMatchObject({
+      text: finalText,
+      textParts: [finalText],
+      replyEvidence: { availability: "available", evidence: { generatedText } },
+    });
+    const finalRef = `dialogue:${SESSION_B}:ask-history-a1`;
+    const generatedRef = `${finalRef}:generated`;
+    expect(prepared.packet.packet.allowedEvidenceRefs).toContain(finalRef);
+    expect(prepared.packet.packet.allowedEvidenceRefs).toContain(generatedRef);
+    expect(prepared.packet.packet.instructions.join("\n")).toContain("不得按行数、气泡数推断句数");
+
+    const { view } = projectJudgeView({
+      packet: prepared.packet.packet,
+      packetSha256: prepared.packet.packetSha256,
+      now: REPORTED,
+    });
+    const viewReply = view.timeline.find(message => message.entryId === "ask-history-a1");
+    expect(viewReply?.text).toBe(finalText);
+    expect(viewReply?.replyEvidence).toMatchObject({
+      availability: "available", evidence: { generatedText },
+    });
+
+    const rule = prepared.packet.packet.rules[0]!;
+    const attributionRule = prepared.packet.packet.rules[1]!;
+    const applied = apply(world, prepared, verdictsFor(prepared.packet.packet, {
+      perRule: {
+        [rule.ruleId]: { verdict: "fail", evidenceRefs: [finalRef] },
+        [attributionRule.ruleId]: { verdict: "pass", evidenceRefs: [finalRef, generatedRef] },
+      },
+    }));
+    expect(statusFor(world, prepared).overall.status).toBe("fail");
+    expect(applied.checks.find(check => check.ruleId === attributionRule.ruleId)?.evidence).toContainEqual(
+      expect.objectContaining({ ref: generatedRef, excerpt: expect.stringContaining("你现在每周跑一次。 你以前跑得勤。") }),
+    );
+    const report = reportFor(world, prepared);
+    expect(report).toContain(finalText);
+    expect(report).toContain("你现在每周跑一次。 你以前跑得勤。");
+    expect(report).toContain("仅归因");
+    expect(report).toContain("toolCallCount=0");
+  });
+
+  it("pass 与 fail 不能只引用 raw generated evidence [chat-judge-generated-only-evidence-rejected]", async () => {
+    const world = makeWorld();
+    const prepared = await prepare(world, {
+      name: "generated-only-reference",
+      replyEvidence: {
+        "ask-history-a1": {
+          schemaVersion: 1,
+          generatedText: "原始生成文本",
+          outcome: "delivered",
+          humanizerEnabled: true,
+          transformation: "formatting",
+        },
+      },
+    });
+    const packet = prepared.packet.packet;
+    const rule = packet.rules[0]!;
+    const generatedRef = `dialogue:${SESSION_B}:ask-history-a1:generated`;
+
+    for (const verdict of ["pass", "fail"] as const) {
+      expect(() => validateJudgeVerdicts({
+        packet,
+        verdicts: verdictsFor(packet, {
+          perRule: { [rule.ruleId]: { verdict, evidenceRefs: [generatedRef] } },
+        }),
+      })).toThrow(/pass\/fail 不能只引用生成原文/);
+    }
+    const inconclusive = validateJudgeVerdicts({
+      packet,
+      verdicts: verdictsFor(packet, {
+        perRule: { [rule.ruleId]: { verdict: "inconclusive", evidenceRefs: [generatedRef] } },
+      }),
+    });
+    expect(inconclusive.verdicts.find(verdict => verdict.ruleId === rule.ruleId)?.verdict).toBe("inconclusive");
+  });
+
+  it("旧封存对话读取为 raw unavailable，不从 final 或 deskpetRawVisibleText 补造证据 [chat-judge-reply-evidence-legacy]", async () => {
+    const world = makeWorld();
+    const prepared = await prepare(world, { name: "legacy-dialogue", legacyDialogue: true });
+    const reply = prepared.packet.packet.timeline.find(message => message.entryId === "ask-history-a1");
+    expect(reply?.toolCallCount).toBeUndefined();
+    expect(reply?.replyEvidence).toEqual({
+      availability: "unavailable",
+      reason: "missing-persisted-evidence",
+    });
+    expect(prepared.packet.packet.allowedEvidenceRefs).not.toContain(
+      `dialogue:${SESSION_B}:ask-history-a1:generated`,
+    );
+    expect(prepared.packet.packet.allowedEvidenceRefs).toContain(`dialogue:${SESSION_B}:ask-history-a1`);
+    apply(world, prepared, verdictsFor(prepared.packet.packet));
+    expect(statusFor(world, prepared).overall.status).toBe("pass");
+    expect(reportFor(world, prepared)).toContain("生成原文：unavailable");
   });
 
   it("未封存、trace 不完整与执行失败都不能冻结判分包", async () => {
@@ -903,18 +1040,32 @@ describe("判分包冻结与隐私", () => {
     });
     const prepared = await prepare(world, { name: "view" });
     const packet = prepared.packet.packet;
+    const windowSeqs = packet.rules[0]?.window.messageSeqs ?? [];
+    const outside = packet.timeline.find((message) => (
+      message.origin === "assistant" && !windowSeqs.includes(message.seq)
+    ));
+    const omittedGeneratedText = "OUTSIDE_WINDOW_GENERATED_TEXT_MUST_NOT_LEAK";
+    if (outside) {
+      outside.replyEvidence = {
+        availability: "available",
+        evidence: {
+          schemaVersion: 1,
+          generatedText: omittedGeneratedText,
+          outcome: "delivered",
+          humanizerEnabled: true,
+          transformation: "formatting",
+        },
+      };
+    }
     const { view, body } = projectJudgeView({
       packet,
       packetSha256: prepared.packet.packetSha256,
       now: REPORTED,
     });
     const rowFor = (seq: number) => view.timeline.find((row) => row.seq === seq);
-    const windowSeqs = packet.rules[0]?.window.messageSeqs ?? [];
-    const outside = packet.timeline.find((message) => (
-      message.origin === "assistant" && !windowSeqs.includes(message.seq)
-    ));
 
     expect(view.kind).toBe("chat-judge-view");
+    expect(view.schemaVersion).toBe(2);
     expect(view.packetId).toBe(packet.packetId);
     expect(view.packetSha256).toBe(prepared.packet.packetSha256);
     // 判分员要能核对身份、绑定与被测模型，视图必须原样带上这些字段
@@ -934,6 +1085,13 @@ describe("判分包冻结与隐私", () => {
     expect(outside).toBeDefined();
     expect(outside ? rowFor(outside.seq)?.textOmitted : true).toBe(true);
     expect(outside ? rowFor(outside.seq)?.text : "有原文").toBeUndefined();
+    if (outside) {
+      expect(rowFor(outside.seq)?.replyEvidence).toMatchObject({
+        availability: "available", generatedTextOmitted: true,
+        evidence: { outcome: "delivered", transformation: "formatting" },
+      });
+      expect(JSON.stringify(view)).not.toContain(omittedGeneratedText);
+    }
     // 驱动回合是每条规则的问题本身，必须带原文
     for (const message of packet.timeline.filter((item) => item.origin === "driver")) {
       expect(rowFor(message.seq)?.text).toBe(message.text);
@@ -944,6 +1102,11 @@ describe("判分包冻结与隐私", () => {
     expect(view.projection.omittedSections.map((item) => item.section)).toEqual([
       "state", "deliverables", "artifacts",
     ]);
+    expect(() => projectJudgeView({
+      packet: { ...packet, schemaVersion: 3 } as any,
+      packetSha256: prepared.packet.packetSha256,
+      now: REPORTED,
+    })).toThrow(/旧 schema 判分包不能按当前口径生成视图/);
   });
 
   it("规则取证状态时判分视图携带状态与产物说明", async () => {

@@ -266,7 +266,7 @@ describe("聊天证据完整性", () => {
     expect(attempt.issues.join("\n")).toContain("orphan");
   });
 
-  it("对话只允许白名单正文，隐藏思维链字段被拒绝", () => {
+  it("对话只允许白名单正文，隐藏思维链与旧 raw 字段被拒绝且 parts 必须同源 [chat-evidence-reply-evidence-whitelist]", () => {
     const reportsDir = makeRoot();
     const runDir = makeRun(reportsDir, "run-hidden-cot");
     const started = beginChatAttempt({
@@ -281,6 +281,35 @@ describe("聊天证据完整性", () => {
       role: "user", text: "你好", sessionId: "session-1", entryId: "entry-1",
       at: Date.parse(START), origin: "driver", reasoning: "hidden chain",
     } as any)).toThrow(/白名单/);
+    expect(() => writer.append({
+      role: "assistant", text: "最终正文", sessionId: "session-1", entryId: "entry-2",
+      at: Date.parse(START) + 1, origin: "assistant", deskpetRawVisibleText: "不可信旧字段",
+    } as any)).toThrow(/白名单/);
+    expect(() => writer.append({
+      role: "assistant", text: "最终正文", textParts: ["另一段"],
+      sessionId: "session-1", entryId: "entry-3", at: Date.parse(START) + 2, origin: "assistant",
+    } as any)).toThrow(/textParts 与最终正文不一致/);
+    expect(() => writer.append({
+      role: "assistant", text: "最终正文", sessionId: "session-1", entryId: "entry-4",
+      at: Date.parse(START) + 3, origin: "assistant",
+      replyEvidence: { availability: "available", evidence: {
+        schemaVersion: 1, generatedText: "生成文本", outcome: "delivered",
+        humanizerEnabled: false, transformation: "none", privateThought: "hidden",
+      } },
+    } as any)).toThrow(/replyEvidence 结构非法/);
+    expect(() => writer.append({
+      role: "assistant", text: "最终正文", sessionId: "session-1", entryId: "entry-null-evidence",
+      at: Date.parse(START) + 3, origin: "assistant", replyEvidence: null,
+    } as any)).toThrow(/replyEvidence 结构非法/);
+    expect(() => writer.append({
+      role: "assistant", text: "最终正文", sessionId: "session-1", entryId: "entry-5",
+      at: Date.parse(START) + 4, origin: "assistant", toolCallCount: -1,
+    } as any)).toThrow(/toolCallCount 必须是非负整数或 null/);
+    const unknownToolCount = writer.append({
+      role: "assistant", text: "最终正文", sessionId: "session-1", entryId: "entry-6",
+      at: Date.parse(START) + 5, origin: "assistant", toolCallCount: null,
+    } as any);
+    expect(unknownToolCount.toolCallCount).toBeNull();
     writer.close();
   });
 
@@ -309,6 +338,34 @@ describe("聊天证据完整性", () => {
     writeFileSync(join(extra.attemptDir, "unexpected.txt"), "tamper");
     expect(verifySealedAttempt(extra.attemptDir).status).toBe("inconclusive");
     expect(verifySealedAttempt(extra.attemptDir).issues.join("\n")).toContain("未声明文件");
+  });
+
+  it("封存后的 generatedText 改动被哈希核验发现 [chat-evidence-reply-evidence-tamper]", async () => {
+    const reportsDir = makeRoot();
+    const messages = defaultMessages(["session-1"]).map(message => message.role === "assistant" ? {
+      ...message,
+      replyEvidence: {
+        availability: "available" as const,
+        evidence: {
+          schemaVersion: 1 as const,
+          generatedText: "冻结生成原文",
+          outcome: "delivered" as const,
+          humanizerEnabled: true,
+          transformation: "formatting" as const,
+        },
+      },
+    } : message);
+    const attempt = await makeCompleteAttempt(makeRun(reportsDir, "run-raw-tampered"), { messages });
+    const dialoguePath = join(attempt.attemptDir, "dialogue.jsonl");
+    chmodSync(dialoguePath, 0o644);
+    const rows = readFileSync(dialoguePath, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+    const assistant = rows.find(row => row.role === "assistant");
+    assistant.replyEvidence.evidence.generatedText = "封存后被改写";
+    writeFileSync(dialoguePath, `${rows.map(row => JSON.stringify(row)).join("\n")}\n`);
+
+    const verification = verifySealedAttempt(attempt.attemptDir);
+    expect(verification.status).toBe("inconclusive");
+    expect(verification.issues.join("\n")).toContain("哈希不匹配");
   });
 
   it("失败重跑创建新 attempt，旧证据与 manifest 哈希保持不变", async () => {

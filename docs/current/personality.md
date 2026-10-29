@@ -54,7 +54,9 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 拟人提示词对所有问题都先保证准确回答，并保留必要事实、用户限制、条件、结论与步骤；简短、口语、分泡和避免文档腔都不能删减答案必需内容，只省去无关背景。
 
-提交前先剥离 RUNTIME_DATA，再把 SPLIT 标记转为同一助手条目的多个 text part；分隔 token 即使粘在正文旁或带空格、大小写变化，也会在代码围栏和行内代码之外归一化处理，task 回复只剥标记、不拆泡。原文留底与最终落盘文本精确配对，变量仍从原始正文解析。实时推送与重载共享分段，标记不进入下一次请求或压缩正文。
+提交前先剥离 RUNTIME_DATA，再把 SPLIT 标记转为同一助手条目的多个 text part；分隔 token 即使粘在正文旁或带空格、大小写变化，也会在代码围栏和行内代码之外归一化处理，task 回复只剥标记、不拆泡。最终可见正文与分段以助手消息的 content 为唯一真相源，宿主不根据记忆线索追加或替换答案。变量仍从结算原始正文解析，实时推送与重载共享分段。
+
+同一助手消息的 `deskpetReplyEvidence` 保存剥除 RUNTIME_DATA、解码真实分泡控制标记后且展示变换前的 `generatedText`，并声明 `schemaVersion`、`outcome`（delivered／silent／fallback／cancelled／error）、`humanizerEnabled` 与 `transformation`（none／formatting）。真实 SPLIT 解码为正文分隔、SILENT 被剥离，代码中的字面标记保留；生成正文在撇号归一、标点清洗、合行与展示分泡前冻结，后续不改写；不保存思考、工具参数或完整 Prompt。只有已成功交付且仅经过排版的消息可用生成正文恢复后续历史的完整句读，沉默、兜底、取消和错误不能恢复未交付内容。取证标注在 Provider 请求投影前移除；缺标注的历史按实际已提交正文处理，不从旧原文字段推断取证资格。采集与判分的处理状态只用于解释生成和展示差异，产品判分仍依据最终交付正文。
 
 ## 回复与写入
 

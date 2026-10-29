@@ -71,7 +71,7 @@ function decisionTopicBrief(cardId: string | undefined) {
 }
 
 /**
- * 长期记忆只读入口：空 query 走召回端口的 core（pinned）路径，身份用运行时卡与会话
+ * 长期记忆只读入口：空 query 走召回端口的 core（pinned）路径，身份只用运行时会话
  * （运行时绑定，不接受模型参数造证据）；关闭重排，保证决策批不产生第二次模型调用。
  * 记忆总闸关闭或没有活跃会话时都按「没有长期记忆」如实降级（debug 留痕）；前者与
  * 主回合的记忆投影、scanner 的机会来源同一口径。

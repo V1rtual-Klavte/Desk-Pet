@@ -122,9 +122,10 @@ describe("本地与adaptive召回选择", () => {
     })
     const input = { ...request(), targets: [{ id: "expired-target", version: 1 }], allowExpiredTargets: true }
     const rows = await sqliteMemoryProvider.recall(input)
-    // 精确目标模式不扩展检索：事实查询用空 query 只取核心画像与指定目标（mm-51）。
+    // 精确目标模式不扩展检索：只发一次空 query 的基础事实读取，后续不重排。
     const recallArgs = mocks.recallCandidates.mock.calls[0]
-    expect(recallArgs).toEqual(["", "session", input.targets, true])
+    expect(recallArgs?.slice(0, 4)).toEqual(["", "session", input.targets, true])
+    expect(mocks.recallCandidates).toHaveBeenCalledTimes(1)
     expect(mocks.completePiText).not.toHaveBeenCalled()
     expect(rows.map(row => row.sourceId)).toEqual(["expired-target@1"])
     expect(input.readRevision).toBe(10)

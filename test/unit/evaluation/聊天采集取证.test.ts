@@ -109,8 +109,14 @@ function makeRoot() {
   return root
 }
 
-function messageEntry(id: string, seq: number, role: "user" | "assistant", text: string, at: number) {
-  return { id, seq, type: "message", timestamp: at, message: { role, text } }
+function messageEntry(
+  id: string, seq: number, role: "user" | "assistant", text: string, at: number,
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    id, seq, type: "message", timestamp: at,
+    message: { role, text, content: [{ type: "text", text }], ...extra },
+  }
 }
 
 function memoryItem(id: string, version = 1) {
@@ -197,6 +203,130 @@ function stopRecorder(recorder: SimTraceRecorder) {
 }
 
 describe("聊天采集取证", () => {
+  it("按已提交消息身份分别采集最终正文、text parts 与冻结生成证据，不修整原文 [chat-capture-reply-evidence-provenance]", async () => {
+    const evidence = {
+      schemaVersion: 1,
+      generatedText: "第一行  原样\r\n第二行",
+      outcome: "delivered",
+      humanizerEnabled: true,
+      transformation: "formatting",
+    } as const
+    const finalText = " 第一行 \r\n第二行。 "
+    const harness = await createHarness({
+      sessions: [{ id: "session-evidence" }],
+      entries: {
+        "session-evidence": [messageEntry(
+          "assistant-1", 1, "assistant", finalText, 1000,
+          { content: [
+            { type: "text", text: " 第一行 \r" },
+            { type: "text", text: "第二行。 " },
+          ], deskpetReplyEvidence: evidence },
+        )],
+      },
+    })
+    const started = await harness.manager.start({ ...startOptions(), attemptDir: harness.attemptDir })
+    expect(started.complete).toBe(true)
+    await harness.manager.beginTrial(CASE_ID, TRIAL_ID)
+    await harness.manager.endTrial(CASE_ID, TRIAL_ID)
+    const finished = await harness.manager.finish({ status: "completed" })
+    stopRecorder(harness.recorder)
+
+    expect(finished.dialogue.messages).toContainEqual(expect.objectContaining({
+      sessionId: "session-evidence",
+      entryId: "assistant-1",
+      text: finalText,
+      textParts: [" 第一行 \r", "第二行。 "],
+      toolCallCount: 0,
+      replyEvidence: { availability: "available", evidence },
+    }))
+  })
+
+  it("旧 raw-visible 元数据不作取证；缺失 evidence 明确 unavailable，空工具/沉默消息保留状态 [chat-capture-reply-evidence-missing]", async () => {
+    const harness = await createHarness({
+      sessions: [{ id: "session-old" }],
+      entries: {
+        "session-old": [
+          messageEntry("old-reply", 1, "assistant", "最后展示文本", 1000, { deskpetRawVisibleText: "不可信旧字段" }),
+          messageEntry("silent-reply", 2, "assistant", "", 1001, {
+            content: [],
+            deskpetReplyEvidence: {
+              schemaVersion: 1, generatedText: "", outcome: "silent",
+              humanizerEnabled: false, transformation: "none",
+            },
+          }),
+          messageEntry("tool-reply", 3, "assistant", "", 1002, {
+            content: [{ type: "toolCall", id: "tool-1", name: "read", arguments: {} }],
+            deskpetReplyEvidence: {
+              schemaVersion: 1, generatedText: "", outcome: "delivered",
+              humanizerEnabled: false, transformation: "none",
+            },
+          }),
+        ],
+      },
+    })
+    await harness.manager.start({ ...startOptions(), attemptDir: harness.attemptDir })
+    await harness.manager.beginTrial(CASE_ID, TRIAL_ID)
+    await harness.manager.endTrial(CASE_ID, TRIAL_ID)
+    const finished = await harness.manager.finish({ status: "completed" })
+    stopRecorder(harness.recorder)
+
+    expect(finished.dialogue.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entryId: "old-reply", text: "最后展示文本", replyEvidence: {
+        availability: "unavailable", reason: "missing-persisted-evidence",
+      } }),
+      expect.objectContaining({ entryId: "silent-reply", text: "", textParts: [], replyEvidence: {
+        availability: "available", evidence: expect.objectContaining({ outcome: "silent", generatedText: "" }),
+      } }),
+      expect.objectContaining({
+        entryId: "tool-reply", text: "", textParts: [], toolCallCount: 1,
+        replyEvidence: { availability: "available", evidence: expect.objectContaining({ outcome: "delivered" }) },
+      }),
+    ]))
+  })
+
+  it("存在但结构非法的持久 evidence 会明确报错并阻断完整采集 [chat-capture-reply-evidence-invalid]", async () => {
+    const harness = await createHarness({
+      sessions: [{ id: "session-invalid" }],
+      entries: {
+        "session-invalid": [messageEntry("bad-evidence", 1, "assistant", "回答", 1000, {
+          deskpetReplyEvidence: { schemaVersion: 1, generatedText: 7 },
+        })],
+      },
+    })
+    const started = await harness.manager.start({ ...startOptions(), attemptDir: harness.attemptDir })
+    expect(started.complete).toBe(false)
+    expect(started.issues.join("\n")).toContain("reply evidence 结构非法")
+    await harness.manager.beginTrial(CASE_ID, TRIAL_ID)
+    await harness.manager.endTrial(CASE_ID, TRIAL_ID)
+    const finished = await harness.manager.finish({ status: "completed" })
+    stopRecorder(harness.recorder)
+    expect(finished.complete).toBe(false)
+    expect(finished.dialogue.messages[0]?.replyEvidence).toEqual({
+      availability: "unavailable", reason: "invalid-persisted-evidence",
+    })
+  })
+
+  it("text parts 与持久最终正文不一致时不封为完整证据 [chat-capture-final-parts-mismatch]", async () => {
+    const harness = await createHarness({
+      sessions: [{ id: "session-mismatch" }],
+      entries: { "session-mismatch": [messageEntry("mismatch", 1, "assistant", "最后提交正文", 1000, {
+        content: [{ type: "text", text: "其他正文" }],
+        deskpetReplyEvidence: {
+          schemaVersion: 1, generatedText: "原生成文本", outcome: "delivered",
+          humanizerEnabled: false, transformation: "none",
+        },
+      })] },
+    })
+    const started = await harness.manager.start({ ...startOptions(), attemptDir: harness.attemptDir })
+    expect(started.complete).toBe(false)
+    expect(started.issues.join("\n")).toContain("text parts 与最终正文不一致")
+    await harness.manager.beginTrial(CASE_ID, TRIAL_ID)
+    await harness.manager.endTrial(CASE_ID, TRIAL_ID)
+    const finished = await harness.manager.finish({ status: "completed" })
+    stopRecorder(harness.recorder)
+    expect(finished.complete).toBe(false)
+  })
+
   it("跨会话按 seq 游标读到尾部，并把驱动新消息归为 driver/assistant", async () => {
     const seed = [
       messageEntry("seed-user", 1, "user", "早上好", 1000),

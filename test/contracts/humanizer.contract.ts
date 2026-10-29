@@ -1,3 +1,8 @@
+// 2026-10-29 hz-05 改按精确保留空白的取证 helper；旧补写退出不改变现有分泡算法。
+// 静态复核与测试修订完成后计算 hash；本轮不运行测试。
+// 2026-10-29 验收批次：humanizerEvidenceText 解码 SPLIT 时沿用输入换行风格（CRLF 文本不混入
+// 裸 LF），与 hz-05「保留既有 CRLF」对齐；分泡、沉默与揭示链路未改。sourceHash 按当前源码复算。
+// 2026-10-29 集中验收（补记）：hz-05 用例实际执行通过（含 CRLF 与句中 SPLIT），按当前源码复算哈希。
 // 2026-10-24 故障槽恢复批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口新增故障槽
 // 显式恢复，harness-slot.ts 新增 isFaulted/recoverFaulted；分泡解析、沉默护栏、逐泡揭示与
 // 顶栏所有权释放链路未改，hz-* 未修订覆盖点，仅按当前源码刷新 sourceHash。
@@ -153,7 +158,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "e68a98ea026acd7a16072ff838d1431b195b33424f55c915ad57de138d7021f9",
+  sourceHash: "b84ab61e7cbfea8f29316999946dde08df4d3db170891ebf152187087dd6cadd",
   coverage: [
     {
       id: "hz-01",
@@ -191,12 +196,12 @@ export const humanizerContract: ModuleContract = {
     { id: "hz-04", feature: "生产入口分泡与顶栏所有权", description: "真实 sendMessage 提交的普通聊天多泡正文进入逐泡揭示：生成期 Card typing 文案由顶栏状态通道持有、首泡揭示时释放；提交后首个揭示状态为 held（不整条全显）、第二泡按泡间节奏延后、停止立即全显并回收瞬态状态；带工具调用的中间回合，其可见台词同样经过拟人变换（toolCall part 原样保留）。组件渲染的 DOM 证据随 WebView 退役，本点只承担服务级链路", why: "调度器单测不能证明真实生产入口（runner/runtime）消费了瞬态揭示与阶段所有权通道，也不能证明工具轮可见台词没有绕过拟人化", layer: "e2e", depth: "deep", scenarios: ["humanizer-real-component-reveal"] },
     {
       id: "hz-05",
-      feature: "请求视图保留拟人化前原文",
-      description: "历史助手正文进请求前只摘掉 SPLIT/SILENT 控制标记，保留模型原始标点与换行；围栏与行内代码里的字面标记保持原样；展示侧仍用拟人化 parts",
+      feature: "生成正文剥协议与逐字取证",
+      description: "生成正文取证将代码之外的 SPLIT 解码为换行并剥离 SILENT，保留原始标点、既有CRLF、首尾空白与换行，SPLIT两侧词语不得黏连；围栏与行内代码里的字面标记保持原样；历史恢复资格与持久字段归 agent-runtime ar-24，展示侧仍用既有 parts",
       why: "2026-10-21 实机：历史里只剩无标点短泡时，模型把它们当风格范例，连续产出无法切分的连写长串",
       layer: "unit",
       depth: "shallow",
-      scenarios: ["humanizer-raw-visible-text"],
+      scenarios: ["humanizer-evidence-freeze"],
     },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: false },

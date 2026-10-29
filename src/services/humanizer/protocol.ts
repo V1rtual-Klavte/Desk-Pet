@@ -387,22 +387,17 @@ function normalizeSplitMarkers(text: string): string {
   }).join("\n")
 }
 
-/**
- * 请求视图用的历史原文：只去掉控制标记，保留模型原始标点与换行，不剥标点、不切泡。
- *
- * 2026-10-21 实机：历史里只留拟人化后的短泡，会让模型把自己的历史当成无标点短句范例，
- * 连续产出无法切分的连写长串。原文进请求、拟人化泡只给展示侧看。
- */
-export function humanizerRawVisibleText(input: string): string {
-  const text = normalizeSplitMarkers(input.replace(/\r\n/g, "\n"))
-  return text
-    .split("\n")
-    .filter(line => line.trim() !== HUMANIZER_SPLIT_MARKER)
-    .join("\n")
-    .replaceAll(HUMANIZER_SPLIT_MARKER, "")
-    .replaceAll(HUMANIZER_SILENT_MARKER, "")
-    .replaceAll(LITERAL_SPLIT_MARKER, HUMANIZER_SPLIT_MARKER)
-    .trim()
+/** Decode real control tokens for evidence while preserving generated punctuation and whitespace. */
+export function humanizerEvidenceText(input: string): string {
+  // 解码出的 SPLIT 只跟随标记相邻换行的风格：句中标记保持 LF；标记后紧跟 CRLF
+  // （按行切片后表现为行尾 `\r`）时沿用 CRLF，不因为文末有 CRLF 就改同一行的断句。
+  return mapProseOutsideCode(input, segment => segment.replace(/<<\s*(SPLIT|SILENT)\s*>>/giu,
+    (marker, control: string, offset: number, text: string) => {
+      if (control.toUpperCase() === "SILENT") return ""
+      const before = text.slice(0, offset)
+      const after = text.slice(offset + marker.length)
+      return before.endsWith("\r") || after.startsWith("\r") ? "\r\n" : "\n"
+    }))
 }
 
 export interface HumanizerOptions {

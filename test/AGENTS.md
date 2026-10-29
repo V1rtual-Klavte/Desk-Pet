@@ -101,6 +101,8 @@
   旧格式 `.ideal.md` 只由用户编写、不被清理；结构化数据集的 silver 可由代理起草，gold 只能按上述审批边界产生，见 [ideal-traces/README.md](ideal-traces/README.md)。
 - **LoCoMo 终态归档**：诊断、试跑和重跑证据保存在 `test/.tmp/`；只有用户明确认定为终态的结果才能放入 `test/reports/bench/final/`。完整跑完、judge 判分或代码门禁通过都不能代替用户认定；目前没有用户认定的 LoCoMo 终态结果。
 
+结构化聊天评测的助手证据同时保留最终正文／分段与生成正文资格、处理状态；判分以最终交付为准，生成正文只辅助归因。字段、可引用证据与判分版本必须沿采集、封存、packet／view、报告和类型声明同步，规则详见 [README](README.md) 与 [runner Skill](sim/desk-pet-eval-runner/SKILL.md)。
+
 ## 维护义务（改了什么 → 必须同步什么）
 
 公开通用评测的来源 `external` 绑定固定 revision、输入哈希、上游身份、许可与适配范围；本地哈希不能证明其来自所声明的上游。导入不自动产生 gold 或质量分数，题面驱动与 oracle 隔离。固定历史保留角色且只测目标回合，Judge 的 `fixtureContext` 与本次实际对话分开，不能据此声称完成在线记忆抽取。缺附件装载、环境或 verifier 的题显式阻塞，不把元数据准备冒充可执行接入。`--dataset-root` 随运行固化供续跑与判分复用；格式以 [sim/README](sim/README.md) 为准。

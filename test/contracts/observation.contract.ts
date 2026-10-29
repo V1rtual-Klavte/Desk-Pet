@@ -1,3 +1,7 @@
+// 2026-10-29 集中验收（补记）：barrel 与 scheduler 注释变更复核后 ob-* 未修订，L2/L3 全绿；
+// sourceHash 按当前源码复算。
+// 2026-10-29 共享 barrel 静态复核：memory/index.ts 只移除无本域消费者的答案补写导出，
+// ob-01..12 的观察、来源准入、TTL与清除调用保持；补写反例由 memory/mm-83 持有，测试未运行。
 // 2026-10-27 调度有界关停（定向复核）：sourceFiles 中 scheduler/kernel.ts 的 stop 改为取消后
 // 有界等待并返回未收敛作业清单，job 抛错只留痕；观察批与静默了解的作业语义未变，
 // ob-* 覆盖点未修订，仅按当前源码刷新 sourceHash。
@@ -346,7 +350,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "b772927523b15a062521cce69d937e6dfba573a5e1b091cf08a17a59f6dfc159",
+  sourceHash: "277da70e5031d91d1624f3624541a580a936cabd4de3fb3c8dfa07622fd47133",
   coverage: [
     {
       id: "ob-01",

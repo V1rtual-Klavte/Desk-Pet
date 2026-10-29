@@ -1,3 +1,8 @@
+// 2026-10-29 记忆范围收敛定向复核（承 9e304157）：sourceFiles 中 host/types.ts 的
+// memory_recall_candidates 参数移除 cardId、memory_overview 的 scope 收敛为 user|session；
+// native-ui/management-intents.ts 拒绝 scope:"card" 并按会话补 scopeId。现有 L2
+// management-memory-ai.test.ts 覆盖 card／无效 scope 拒绝与自动填充（无 caseId 锚点），
+// nui-* 覆盖点未修订；记忆范围语义归 memory.contract.ts。sourceHash 按当前源码复算。
 // 2026-10-27 Harness 关停序列扩展（定向复核）：src/harness/main.ts 的 flushForShutdown 增加
 // 业务调度器有界停止结果（未收敛作业进 flush detail）与 sim 采集关停（未走 finish 的 trace
 // 按中断封口），属评测证据域的退出证据生产，由 evaluation 契约 eval-10 持有场景；nui-33 的
@@ -245,7 +250,7 @@ export const nativeUiContract: ModuleContract = {
     // 推送仍带旧层，而 L3 的「舞台快照与回读同构」用例会红，hash 不算上它就漏判。
     "src/services/profile/loader.ts",
   ],
-  sourceHash: "343a87735e3b125ef9779a7ad1395ac987ca1878875adc4bbe3e9422cc971223",
+  sourceHash: "58d3edad3364512d93a4fc13b05f3261649aac01bd703d15b329d2670a47caf8",
   coverage: [
     {
       id: "nui-34",

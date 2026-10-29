@@ -1,3 +1,5 @@
+// 2026-10-29 共享解析器静态复核：generator.ts 仅新增取证专用 preserveWhitespace 可选项，
+// 工具/回复既有调用仍用默认解析；权限、执行、变量解析与工具结果路由未变，测试未运行。
 // 2026-10-27 DeepSeek Fetch：te-46 覆盖错误与在途取消，te-47 覆盖 Router 20秒取消和参数/结果日志脱敏；其余分派与许可语义不变。
 // 2026-10-24 子代理团队角度批次：agent_spawn 的 team 模式新增可选 angles（2–3 个自定义
 // 分析角度；缺省取默认角度前两个），angles 只对 team 有效且在派发前校验；部分角度失败时
@@ -257,7 +259,7 @@ export const toolExecutionContract: ModuleContract = {
     // 都从这里取值；改值 = 改线协议。同名常量表服务宿主/UI/Node 多个域。
     "src/services/host/event-names.ts",
   ],
-  sourceHash: "11dc2ac701f4eb00f609a9bf9950834d38f1b06bb3c1c3b990d394bf234e1839",
+  sourceHash: "596a4b008fd3cdff19edc536f6d949cae54eba9cd1bc9f389805816d514fb137",
   coverage: [
     {"id": "te-46", "feature": "DeepSeek Fetch 协议与错误/取消语义", "description": "公开 HTTP(S) URL 预检、POST /v1/tools/fetch 与 Bearer、Markdown 结果；403 安全拒绝不冒充401认证失败，402余额与404正文不可用分别提示，在途请求透传取消信号并返回cancelled", "why": "错误可归因且取消确实到达网络请求", "layer": "unit", "depth": "deep", "scenarios": ["web-fetch-error-semantics", "web-fetch-inflight-cancel"]},
     {"id": "te-47", "feature": "Fetch 的 Router 超时与日志投影", "description": "实际 web_fetch handler 经 Router 的20秒死线取消在途Fetch并记timeout；参数日志剥离URL查询与fragment，完成日志仅记字符数，完整来源仍在结果中", "why": "全链日志不能绕过专用日志脱敏，超时不能只结束外层而留下网络请求", "layer": "integration", "depth": "deep", "scenarios": ["web-fetch-router-redaction", "web-fetch-router-timeout"]},

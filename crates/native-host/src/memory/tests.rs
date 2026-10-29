@@ -515,16 +515,16 @@ fn pinned_core_is_read_without_query_and_bound_to_current_scopes_and_revision() 
     other["scope"] = json!("session");
     other["scopeId"] = json!("s2");
     other["pinned"] = json!(true);
-    add(&store, "core-other-add", 2, &other);
+    add(&store, "core-other-add", 1, &other);
     let mut session = draft("当前会话核心事项", vec!["core-session"]);
     session["scope"] = json!("session");
     session["scopeId"] = json!("s1");
     session["pinned"] = json!(true);
-    add(&store, "core-session-add", 3, &session);
+    add(&store, "core-session-add", 2, &session);
     let mut expired = draft("过期核心称呼", vec!["core-expired"]);
     expired["pinned"] = json!(true);
     expired["expiresAt"] = json!(1_000i64);
-    add(&store, "core-expired-add", 4, &expired);
+    add(&store, "core-expired-add", 3, &expired);
 
     let snapshot = store
         .recall_candidates("一个完全无关的天气问题", "s1", 50, &[], false)
@@ -595,7 +595,7 @@ fn event_time_recall_filters_half_open_ranges_and_calendar_dates() {
         .expect("合法事件范围被拒绝");
     let ranged = store
         .recall_candidates_with_event_time_observed(
-            "旅行纪念日", None, "s1", 50, &[], false, Some(&range), true, &[],
+            "旅行纪念日", "s1", 50, &[], false, Some(&range), true, &[],
         )
         .expect("事件范围召回失败");
     let ranged_items = ranged["candidates"].as_array().unwrap();
@@ -612,7 +612,7 @@ fn event_time_recall_filters_half_open_ranges_and_calendar_dates() {
     }))
     .expect("合法日历日期被拒绝");
     let dated = store
-        .recall_candidates_with_event_time("旅行纪念日", None, "s1", 50, &[], false, Some(&day))
+        .recall_candidates_with_event_time("旅行纪念日", "s1", 50, &[], false, Some(&day))
         .expect("事件日期召回失败");
     assert_eq!(dated["candidates"].as_array().unwrap().len(), 1);
     assert_eq!(
@@ -791,7 +791,7 @@ fn exact_feedback_targets_allow_expiry_but_enforce_version_and_owner_scope() {
     store
         .apply_change(
             "target-session-add",
-            2,
+            1,
             "add",
             Some("target-session-id"),
             None,
@@ -804,7 +804,7 @@ fn exact_feedback_targets_allow_expiry_but_enforce_version_and_owner_scope() {
     store
         .apply_change(
             "target-other-add",
-            3,
+            2,
             "add",
             Some("target-other-id"),
             None,

@@ -1,3 +1,5 @@
+import type { DeskpetReplyEvidence } from "../../../src/services/reply";
+
 export const CHAT_EVIDENCE_SCHEMA_VERSION: 1;
 export const CHAT_RUN_SCHEMA_VERSION: 1;
 export const CHAT_ATTEMPT_SCHEMA_VERSION: 1;
@@ -90,6 +92,9 @@ export interface StartedChatAttempt {
 export interface DialogueMessageInput {
   role: "user" | "assistant";
   text: string;
+  textParts?: string[];
+  toolCallCount?: number | null;
+  replyEvidence?: CapturedReplyEvidence;
   sessionId: string;
   entryId: string;
   at: number | string;
@@ -100,11 +105,18 @@ export interface DialogueRecord {
   seq: number;
   role: "user" | "assistant";
   text: string;
+  textParts?: string[];
+  toolCallCount?: number | null;
+  replyEvidence?: CapturedReplyEvidence;
   sessionId: string;
   entryId: string;
   at: number;
   origin: DialogueOrigin;
 }
+
+export type CapturedReplyEvidence =
+  | { availability: "available"; evidence: DeskpetReplyEvidence }
+  | { availability: "unavailable"; reason: "missing-persisted-evidence" | "invalid-persisted-evidence" };
 
 export interface DialogueWriter {
   path: string;

@@ -18,7 +18,7 @@ export const CHAT_ATTEMPT_SCHEMA_VERSION = 1;
 export const CHAT_TRIAL_PLAN_SCHEMA_VERSION = 1;
 export const DELIVERABLE_MAX_BYTES = 64 * 1024;
 /** 判分语义与聚合规则的版本；改动判定口径必须递增，旧判分继续绑定旧版本。 */
-export const CHAT_GRADER_VERSION = "chat-grader@3";
+export const CHAT_GRADER_VERSION = "chat-grader@4";
 export const CHAT_RETENTION_MAX_GROUPS = 5;
 export const CHAT_RETENTION_MAX_BYTES = 200 * 1024 * 1024;
 export const CHAT_RUN_PHASES = Object.freeze([
@@ -32,7 +32,7 @@ const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 const ATTEMPT_ID_PATTERN = /^\d{4}$/;
 const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/;
 const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
-const DIALOGUE_KEYS = new Set(["seq", "role", "text", "sessionId", "entryId", "at", "origin"]);
+const DIALOGUE_KEYS = new Set(["seq", "role", "text", "textParts", "toolCallCount", "replyEvidence", "sessionId", "entryId", "at", "origin"]);
 const TRACE_MANIFEST = "trace.manifest.json";
 const DIALOGUE_FILE = "dialogue.jsonl";
 const TRACE_FILE = "trace.jsonl";
@@ -425,6 +425,23 @@ export function extendChatAttemptSessions({ attemptDir, sessionIds }) {
   return next;
 }
 
+function validReplyEvidence(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (value.availability === "unavailable") {
+    return ["missing-persisted-evidence", "invalid-persisted-evidence"].includes(value.reason)
+      && Object.keys(value).every(key => ["availability", "reason"].includes(key));
+  }
+  if (value.availability !== "available" || Object.keys(value).some(key => !["availability", "evidence"].includes(key))) return false;
+  const evidence = value.evidence;
+  return evidence && typeof evidence === "object" && !Array.isArray(evidence)
+    && evidence.schemaVersion === 1
+    && typeof evidence.generatedText === "string"
+    && ["delivered", "silent", "fallback", "cancelled", "error"].includes(evidence.outcome)
+    && typeof evidence.humanizerEnabled === "boolean"
+    && ["none", "formatting"].includes(evidence.transformation)
+    && Object.keys(evidence).every(key => ["schemaVersion", "generatedText", "outcome", "humanizerEnabled", "transformation"].includes(key));
+}
+
 export function createDialogueWriter(attemptDir) {
   const path = join(attemptDir, DIALOGUE_FILE);
   const fd = openSync(path, "wx");
@@ -438,7 +455,10 @@ export function createDialogueWriter(attemptDir) {
     if (extra.length) fail("dialogue.keys", `对话正文只允许白名单字段，拒绝：${extra.join(", ")}`);
     const role = message.role;
     if (role !== "user" && role !== "assistant") fail("dialogue.role", `未知角色：${String(role)}`);
-    if (typeof message.text !== "string" || !message.text.trim()) fail("dialogue.text", "对话正文不能为空");
+    if (role === "user" && message.replyEvidence !== undefined) fail("dialogue.reply-evidence", "用户消息不能携带 assistant replyEvidence");
+    if (typeof message.text !== "string" || (role === "user" && !message.text.trim())) {
+      fail("dialogue.text", "用户消息正文不能为空");
+    }
     assertId(message.sessionId, "dialogue.sessionId");
     if (typeof message.entryId !== "string" || !message.entryId) fail("dialogue.entryId", "对话条目必须带稳定 entryId");
     const at = typeof message.at === "string" ? Date.parse(message.at) : message.at;
@@ -448,9 +468,25 @@ export function createDialogueWriter(attemptDir) {
     lastAt = at;
     seq += 1;
     const record = {
-      seq, role, text: message.text, sessionId: message.sessionId, entryId: message.entryId,
-      at, origin: message.origin,
+      seq, role, text: message.text, textParts: message.textParts === undefined ? [message.text] : message.textParts,
+      toolCallCount: message.toolCallCount === undefined ? 0 : message.toolCallCount,
+      ...(role === "assistant" ? {
+        replyEvidence: message.replyEvidence === undefined
+          ? { availability: "unavailable", reason: "missing-persisted-evidence" }
+          : message.replyEvidence,
+      } : {}),
+      sessionId: message.sessionId, entryId: message.entryId, at, origin: message.origin,
     };
+    if (!Array.isArray(record.textParts) || record.textParts.some(part => typeof part !== "string")) {
+      fail("dialogue.parts", "textParts 必须是字符串数组");
+    }
+    if (record.textParts.join("\n") !== record.text) fail("dialogue.parts", "textParts 与最终正文不一致");
+    if (record.toolCallCount !== null && (!Number.isSafeInteger(record.toolCallCount) || record.toolCallCount < 0)) {
+      fail("dialogue.tool-calls", "toolCallCount 必须是非负整数或 null");
+    }
+    if (role === "assistant" && !validReplyEvidence(record.replyEvidence)) {
+      fail("dialogue.reply-evidence", "assistant replyEvidence 结构非法");
+    }
     writeSync(fd, `${JSON.stringify(record)}\n`);
     return record;
   }
@@ -629,10 +665,30 @@ function readDialogueRecords(path) {
     if (entryIds.has(entryKey)) issues.push(`dialogue 条目重复引用：${record.sessionId}/${record.entryId}`);
     entryIds.add(entryKey);
     if (!["user", "assistant"].includes(record.role)) issues.push(`dialogue 第 ${record.seq} 条角色非法`);
-    if (typeof record.text !== "string" || !record.text.trim()) issues.push(`dialogue 第 ${record.seq} 条正文为空`);
+    if (typeof record.text !== "string" || (record.role === "user" && !record.text.trim())) {
+      issues.push(`dialogue 第 ${record.seq} 条正文为空`);
+    }
     if (!DIALOGUE_ORIGINS.includes(record.origin)) issues.push(`dialogue 第 ${record.seq} 条来源非法`);
     if (!Number.isSafeInteger(record.at) || record.at < lastAt) issues.push(`dialogue 第 ${record.seq} 条时间非法或倒退`);
     else lastAt = record.at;
+    if (record.role === "assistant" && record.replyEvidence === undefined) {
+      record.replyEvidence = { availability: "unavailable", reason: "missing-persisted-evidence" };
+    }
+    if (record.textParts !== undefined && (!Array.isArray(record.textParts)
+      || record.textParts.some(part => typeof part !== "string")
+      || record.textParts.join("\n") !== record.text)) {
+      issues.push(`dialogue 第 ${record.seq} 条 textParts 非法`);
+    }
+    if (record.toolCallCount !== undefined && record.toolCallCount !== null
+      && (!Number.isSafeInteger(record.toolCallCount) || record.toolCallCount < 0)) {
+      issues.push(`dialogue 第 ${record.seq} 条 toolCallCount 非法`);
+    }
+    if (record.role === "user" && record.replyEvidence !== undefined) {
+      issues.push(`dialogue 第 ${record.seq} 条用户消息不应携带 replyEvidence`);
+    }
+    if (record.role === "assistant" && !validReplyEvidence(record.replyEvidence)) {
+      issues.push(`dialogue 第 ${record.seq} 条 replyEvidence 非法`);
+    }
     messages.push(record);
   }
   const sessions = [...new Set(messages.map((message) => message.sessionId))].filter(Boolean);

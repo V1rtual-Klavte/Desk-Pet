@@ -1,3 +1,9 @@
+// 2026-10-29 回复取证与撤销补写：ar-24 静态复核 afterResponse、历史恢复与正常变量配对，
+// 新 evidence.ts 与 generator.ts 保留空白解析为实际定义点；专用补写状态退出，记忆反例归 mm-83。
+// 本轮按用户要求只写测试与静态审查，未运行门禁。
+// 2026-10-29 验收批次：humanizerEvidenceText 补 CRLF 保真（SPLIT 解码沿用输入换行风格），
+// ar-42 场景不变；协议剥离、历史恢复与变量写入语义未改。sourceHash 按当前源码复算。
+// 2026-10-29 集中验收（补记）：L1/L2/L3 全绿后按当前源码复算哈希；ar-24/ar-42 用例实际执行通过。
 // 2026-10-27 Slash 命令表层纳入（B5「有实现无覆盖」批次）：sourceFiles 新增 engine/slash 的
 // 查找/注册核心与内置 /help、/clear（registry/types/index、commands/index|help|clear）——
 // 此前它们只有实现：preProcess 的唯一执行入口与下拉搜索全靠约定。本批新增 ar-38（L2 五条：
@@ -315,6 +321,9 @@ export const agentRuntimeContract: ModuleContract = {
     // 流式过滤起始标签、ar-24 的协议剥离与 ar-25/ar-37 点名的区块名都从这里取值，
     // 改值 = 改协议（库内消费点见文件头清单）。
     "src/services/reply/protocol.ts",
+    // ar-24: generated-visible evidence validation and whitespace-preserving protocol parsing.
+    "src/services/reply/evidence.ts",
+    "src/services/reply/generator.ts",
     "src/services/images/request.ts",
     "src/services/images/paths.ts",
     "src/services/session/manager.ts",
@@ -325,12 +334,13 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "5f77d824f8c2b08ae33f2929db8498e937f5c459afb93f4fd83a89921440f551",
+  sourceHash: "e7ea0be46bc8b2523d93779ab99d8da54e474511643ee3698af054f821ade64a",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
   // (ar-16/ar-26/ar-34/ar-37). Domain-specific transformations stay covered by their owning modules.
   coverage: [
+    {"id": "ar-42", "feature": "协议剥离时精确保留生成正文空白", "description": "parseRuntimeData以同一正则和变量解析入口支持显式preserveWhitespace取证；默认展示解析的trim行为保持，取证模式仅去内部协议块，保留首尾空白与CRLF，不复制第二套协议定义。", "why": "协议解析阶段的trim也会损失生成证据，不能在后续采集阶段伪称原文完整。", "layer": "unit", "depth": "deep", "scenarios": ["reply-runtime-data-evidence-whitespace"]},
     {
       id: "ar-41", feature: "统一子运行 owner、产物验收与工具证据",
       description: "runPiSubAgent 是 fork/team、Plan、主动规划和定时工作的唯一内核。host 必须给定 conversation/plan/proactive/scheduled owner；预取消和过期 deadline 在 Provider 前返回 cancelled/timed_out。maxToolCalls 只表示工具调用次数，保留各业务默认上限。运行状态 completed 与业务 success 分离：空正文、非法 JSON 或治理中止没有成功兜底。必需能力缺失不开工，定时任务明确要求的思考档位不受模型支持时拒绝；resolved 记录模型/provider/期望档位与映射适配、deadline 和冻结工具名。定时任务持久授权不足：有确认面板时通过 interactive 权限模式弹窗，用户批准后继续执行；无面板时以 needs_input 收口，不打开用户确认；父取消中止正在执行的工具。工具证据来自真实 after_tool 回执，只提取有界安全 URL、获取时间及同一 JSON 对象中的 URL/发布日期配对；助手自报来源不进证据。失败的非只读工具回执（afterTool 与 onChildToolResult 两路）标记 unconfirmedEffects —— 写盘 / 进程 / 外部效果在失败回执前都可能已经生效，通用 outputContract 可据此拒绝非空正文（计划侧的验收与展示归 planner pl-06/pl-07）。audit.runId 与 host owner 一致；team 使用 2–3 个分析角度（缺省取默认角度前两个，自定义角度按顺序标为「角度 N」并在派发前校验非空且不重复），成员按角度并行、runId 带序号，lead 必须按角度逐项汇总且不得补写未完成角度；team 保留全部成员状态，单个角度失败不拖垮整体，success = lead.success && 至少一个可用角度，全部角度失败或 lead 空结果都不能包装成功。MCP 按本 run 借用并在所有收尾路径释放（真实连接生命周期仍由 tool-execution 的相关 L4 契约验证）。",
@@ -576,7 +586,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-24",
       feature: "拟人表达的提交与请求投影",
-      description: "启用拟人表达后，after_response 先剥离 RUNTIME_DATA 再把代码外的 SPLIT token（含粘连、空格/大小写变体；casual 流无标记时空行分段同效，单个换行与围栏内空行不分，代码前后正文照常分泡）写成同一原生助手条目的多个 text part，原始配对仍使变量写入落池；合法 casual SILENT 写成 completed 空助手条目并带可核验语义标记，读模型与后续 Provider 请求省略它，跨进程连续沉默护栏从该原生标记重建；用户图片只以 deskpetImagePaths 元数据落盘，请求投影才读文件形成真实 image part，base64 不进入原始 JSONL；task 流由计划/任务步骤上下文决定（普通聊天的工具调用不改变 flow，仍是 casual），task 输出的 SILENT 改为 Card 短回复且不启动 casual 揭示",
+      description: "启用拟人表达后，after_response 先剥离 RUNTIME_DATA 再把代码外的 SPLIT token（含粘连、空格/大小写变体；casual 流无标记时空行分段同效，单个换行与围栏内空行不分，代码前后正文照常分泡）写成同一原生助手条目的多个 text part，原始配对仍使变量写入落池；同一助手消息 deskpetReplyEvidence 冻结剥内部协议后、展示变换前的生成正文及处理状态，最终content仍为交付正文真相源；仅成功交付且纯排版消息可恢复完整句读，沉默/兜底/取消/错误不复活原文，缺失或旧字段不推断取证资格，取证元数据不进入Provider；合法 casual SILENT 写成 completed 空助手条目并带可核验语义标记，读模型与后续 Provider 请求省略它，跨进程连续沉默护栏从该原生标记重建；用户图片只以 deskpetImagePaths 元数据落盘，请求投影才读文件形成真实 image part，base64 不进入原始 JSONL；task 流由计划/任务步骤上下文决定（普通聊天的工具调用不改变 flow，仍是 casual），task 输出的 SILENT 改为 Card 短回复且不启动 casual 揭示",
       why: "拟人标记、空白沉默与图片字节必须只改变请求/展示视图，不能破坏变量通道或把 transient 表达数据变成第二份持久事实",
       layer: "integration",
       depth: "deep",

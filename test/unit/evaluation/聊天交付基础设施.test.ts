@@ -604,7 +604,7 @@ describe("聊天驱动交付确认", () => {
         toolName: "bash",
         effectClass: "exclusive_effect",
         decision: "deny",
-        at: expect.stringMatching(/^2026-10-27T\d{2}:00:00\.000\+08:00$/),
+        at: expect.stringMatching(/^2026-10-27T\d{2}:00:00\.000Z$/),
       },
     ])
     expect(confirmCalls.filter(call => call.action === "resolve")).toHaveLength(1)
@@ -712,7 +712,7 @@ describe("聊天驱动交付确认", () => {
           return queries <= 2 ? { pending: [{ requestId: "q-2", options: [] }] } : { pending: [] }
         }
         cancelAttempts += 1
-        if (cancelAttempts === 1) throw new Error("当前没有待答提问")
+        if (cancelAttempts === 1) return Promise.reject(new Error("当前没有待答提问"))
         releaseMessage(messageReply(capturedOperation))
         return { requestId: action.requestId, action: "cancel" }
       },
@@ -889,7 +889,7 @@ describe("聊天判分包交付产物", () => {
     const world = await sealedForJudging({ "deliverables/shopping-list.md": content })
     const packet = preparedPacket(world)
 
-    expect(JUDGE_PROMPT_VERSION).toBe("chat-judge@5")
+    expect(JUDGE_PROMPT_VERSION).toBe("chat-judge@6")
     expect(packet.deliverables).toEqual([
       expect.objectContaining({
         id: "shopping-list",

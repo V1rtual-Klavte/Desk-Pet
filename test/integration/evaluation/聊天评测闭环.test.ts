@@ -21,11 +21,14 @@ import {
   createNewSession,
   getActiveSessionId,
   getSessions,
+  readPiSessionEntriesOnce,
   readVisibleSessionTranscript,
   resetPiSessionLayerForTest,
 } from "@/services/session"
 import { installSimClock, resetSimClockForTest, setSimClockBase } from "@/services/sim/clock"
 import { createSimTraceRecorder } from "@/services/sim/trace-recorder"
+import { laneMessageText } from "@/services/engine/runtime"
+import type { DeskpetReplyEvidence } from "@/services/reply"
 import { fakeText, installFakeProvider, lastRequestText } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { standardSetup } from "../../host/standard-setup"
@@ -75,6 +78,14 @@ import {
 } from "../../sim/desk-pet-chat/workflow.mjs"
 // @ts-expect-error TS7016：脚本没有类型声明，测试只借用同一实现的源码身份算法。
 import { computeSourceHash, stableConfigHash } from "../../../scripts/sim-eval-run.mjs"
+
+function requirePersistedEntry(
+  entry: Awaited<ReturnType<typeof readPiSessionEntriesOnce>>[number] | undefined,
+  label: string,
+) {
+  if (!entry) throw new Error(`W5 集成测试找不到持久条目：${label}`)
+  return entry
+}
 
 const CASE_ID = "w5-loop-smoke"
 const SUITE_ID = "w5-loop"
@@ -563,6 +574,9 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       const transcriptRows: Array<{
         role: "user" | "assistant"
         text: string
+        textParts?: string[]
+        toolCallCount?: number | null
+        replyEvidence?: { availability: "available"; evidence: DeskpetReplyEvidence }
         sessionId: string
         entryId: string
         at: number
@@ -573,20 +587,42 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       for (const sessionId of [sessionBefore, sessionAfter]) {
         const transcript = await readVisibleSessionTranscript(sessionId)
         expect(transcript.error).toBeUndefined()
+        const persistedEntries = await readPiSessionEntriesOnce(sessionId, { order: "asc", limit: 10_000 })
+        const persistedById = new Map(persistedEntries.map(entry => [entry.id, entry]))
         visibleCounts.set(sessionId, transcript.messages.length)
         transcriptChunks.push(`# ${sessionId}`)
         transcriptChunks.push(...transcript.messages.map(message => `${message.role}: ${message.text}`))
         transcriptChunks.push("")
         for (const message of transcript.messages) {
           if (message.role !== "user" && message.role !== "assistant") continue
-          if (!message.text.trim()) continue
+          if (message.role === "user" && !message.text.trim()) continue
+          const persisted = requirePersistedEntry(persistedById.get(message.id), `${sessionId}/${message.id}`)
+          // 问候/系统提示是投影可见的自定义条目，采集只收 message 条目；两者不能混算。
+          if (persisted.type !== "message") continue
           if (message.role === "assistant") {
+            const storedMessage = persisted.message
+            const content = (storedMessage as { content: Array<{ type: string; text?: string }> }).content
+            const textParts = content
+              .filter(part => part.type === "text" && typeof part.text === "string")
+              .map(part => part.text as string)
+            const toolCallCount = content.filter(part => part.type === "toolCall").length
+            const replyEvidence = (storedMessage as { deskpetReplyEvidence?: unknown }).deskpetReplyEvidence
+            expect(replyEvidence).toMatchObject({
+              schemaVersion: 1,
+              generatedText: expect.any(String),
+              outcome: "delivered",
+              humanizerEnabled: expect.any(Boolean),
+              transformation: expect.stringMatching(/^(none|formatting)$/),
+            })
             transcriptRows.push({
               role: "assistant",
-              text: message.text,
+              text: laneMessageText(storedMessage),
+              textParts,
+              toolCallCount,
+              replyEvidence: { availability: "available", evidence: replyEvidence as DeskpetReplyEvidence },
               sessionId,
-              entryId: message.eventId ?? message.id,
-              at: message.timestamp,
+              entryId: persisted.id,
+              at: persisted.timestamp,
               origin: "assistant",
             })
             continue
@@ -598,13 +634,25 @@ describe("聊天评测闭环（L3 合成用例）", () => {
             role: "user",
             text: message.text,
             sessionId,
-            entryId: message.eventId ?? message.id,
-            at: message.timestamp,
+            entryId: persisted.id,
+            at: persisted.timestamp,
             origin: isDriver ? "driver" : "fixture",
           })
         }
       }
       expect(driverCursor).toBe(DRIVER_TEXTS.length)
+      const responseM1 = await readRequestResponse(sessionBefore, driverOperations[0]!.operationId)
+      const responseM2 = await readRequestResponse(sessionAfter, driverOperations[1]!.operationId)
+      const rowM1 = transcriptRows.find(row => row.entryId === responseM1?.assistantEntryId)
+      const rowM2 = transcriptRows.find(row => row.entryId === responseM2?.assistantEntryId)
+      expect(rowM1).toMatchObject({
+        sessionId: sessionBefore, text: REPLY_M1,
+        replyEvidence: { availability: "available", evidence: { generatedText: REPLY_M1 } },
+      })
+      expect(rowM2).toMatchObject({
+        sessionId: sessionAfter, text: REPLY_M2,
+        replyEvidence: { availability: "available", evidence: { generatedText: REPLY_M2 } },
+      })
       transcriptRows.sort((left, right) => left.at - right.at)
       const dialogue = createDialogueWriter(attemptDir)
       for (const row of transcriptRows) dialogue.append(row)
@@ -695,6 +743,16 @@ describe("聊天评测闭环（L3 合成用例）", () => {
       expect(prepared.packet.rules[0]?.window.messageSeqs).toHaveLength(1)
       expect(prepared.packet.rules[1]?.window.messageSeqs).toHaveLength(1)
       expect(prepared.packet.rules[2]?.window.messageSeqs?.length ?? 0).toBeGreaterThanOrEqual(2)
+      const assistantEntries = new Set(transcriptRows
+        .filter(row => row.role === "assistant")
+        .map(row => row.entryId))
+      const packetAssistant = prepared.packet.timeline.find(message => assistantEntries.has(message.entryId))
+      expect(packetAssistant).toMatchObject({
+        role: "assistant",
+        textParts: expect.any(Array),
+        toolCallCount: expect.any(Number),
+        replyEvidence: { availability: "available", evidence: { generatedText: expect.any(String) } },
+      })
 
       const context = loadJudgingContext({ attemptDir, caseEntry: entry })
       expect(context.evidenceStatus).toBe("complete")

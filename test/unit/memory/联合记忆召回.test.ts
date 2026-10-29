@@ -754,11 +754,10 @@ describe("联合记忆召回", () => {
       rerankMode: "adaptive",
     }))
 
-    expect(fake.getFacts.mock.calls[0]?.slice(0, 5)).toEqual([
-      "", undefined, "session-a", [{ id: targeted.id, version: targeted.version }], true,
+    expect(fake.getFacts.mock.calls[0]?.slice(0, 4)).toEqual([
+      "", "session-a", [{ id: targeted.id, version: targeted.version }], true,
     ])
-    expect(fake.getFacts.mock.calls[0]?.[5]).toBeUndefined()
-    expect(fake.getFacts.mock.calls[0]?.[6]).toBe(false)
+    expect(fake.getFacts.mock.calls[0]?.[4]).toBeUndefined()
     expect(fake.getConversation).not.toHaveBeenCalled()
     expect(fake.complete).not.toHaveBeenCalled()
     expect(result.map(item => item.sourceId)).toEqual(["targeted-fact@2"])
@@ -773,7 +772,7 @@ describe("联合记忆召回", () => {
       rerankMode: "adaptive",
     }))
 
-    expect(fake.getFacts).toHaveBeenCalledWith("", undefined, "session-a", [], false)
+    expect(fake.getFacts).toHaveBeenCalledWith("", "session-a", [], false)
     expect(fake.getConversation).not.toHaveBeenCalled()
     expect(result.map(item => item.sourceId)).toEqual(["core@2"])
     expect(result[0]?.tier).toBe("core")

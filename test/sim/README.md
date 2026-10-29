@@ -186,8 +186,10 @@ delivered／missing／oversized／invalid；符号链接与越过数据根的路
 宿主没走完退出序列（崩溃、被强杀）时用 `rescue` 把已落盘的 attempt 草稿按中断封存：宿主仍活着或 attempt 已封存都拒绝，缺对话、缺 trace 封口、缺 `exit.json` 进 issues，封存结果保持 incomplete/inconclusive，绝不冒充完成；封存后可按 `prepare --repair-of` 重新采集。
 `batch` 在同一 evaluationRun 下串行执行冻结的 N 个试次：首次运行把 `trialIds`、计划总数与授权指纹写入 `trials.json`，`--trials` 是计划总数（含已有 attempt，默认授权预算），之后不可改写；每个槽位用确定性派生的子运行 id 走 `prepare → start → drive`，`drive` 失败按中断封存后继续，未封存或失败的槽位保持占位、不替换不自动判分。计划外 trialId、重放已有 trialId 或事后补建计划都会硬失败。
 `judge prepare` 只对已封存完整证据冻结判分包（含 rubric、驱动、证据引用与判分说明），交给独立 coding-agent judge 逐条裁决；`judge apply` 只校验回填裁决并追加 `grades/`，缺项、重复、未知规则、证据引用无效、判分平台不在 coding-agent 白名单（`claude-code`／`codex`／`qoder`）、判分者与被测模型同源或 packet 哈希不符都会硬失败；平台不在白名单的历史判分不算权威，报告不据其声称独立 judge。runner 不调用模型 API、不读取 judge 凭据。`review show` 展示判分、证据引用与未抽查标记；`review spotcheck` 只记录用户本人的可选抽查，不阻塞也不改写判分。`report` 从同一证据重建四层报告；存在冻结计划或多个 attempt 时先给多 trial 聚合（试次表、规则矩阵、critical `pass^k`、非 critical 分布、judge 身份、证据引用齐备性），再按 attempt 展开。
-判分包为 packet schema 3（`chat-judge@5`）：按 case 声明携带交付产物的封存状态与受限内容，单文件 4 KiB、整包 16 KiB 预算，超限截断并标注；二进制、哈希不符或预算耗尽只保留原因，`deliverable:<id>` 是可引用的证据，缺失产物仍可冻结判分包并由裁决判失败。
+判分包为 packet schema 4（`chat-judge@6`，`chat-grader@4`）：按 case 声明携带交付产物的封存状态与受限内容，单文件 4 KiB、整包 16 KiB 预算，超限截断并标注；二进制、哈希不符或预算耗尽只保留原因，`deliverable:<id>` 是可引用的证据，缺失产物仍可冻结判分包并由裁决判失败。
 `judge view` 只为已冻结的判分包写出 `<packetId>.view.json` 精简读取件：按规则的取证窗口内联被取证的助手回复与全部驱动回合，窗口外回合保留 seq／角色／会话与 `textOmitted` 标记；没有规则取状态或产物时不带 `state`／`deliverables`／`artifacts`，省略原因写在 `projection.omittedSections`。判分要求、规则、证据引用白名单与 `case`／`fixtureContext` 原样继承，视图顶层带上原 `packetSha256`，回填 verdicts 仍用它，权威与哈希绑定不变；判分员读得到的字节按窗口收敛（最宽的固定历史用例 224,888 → 65,880 字节），原判分包不受影响，已存在的视图拒绝覆盖。
+
+助手对话行携带最终 `text`／`textParts`、工具调用数 `toolCallCount` 和 `replyEvidence`：available 中是同一已提交消息冻结的生成正文、拟人化开关、变换与交付状态，缺持久取证则标 unavailable。纯工具轮和沉默允许空助手正文，不能伪造回答；用户空文本仍按原采集缺口处理。采集与封存不 trim 或合行正文。判分包和精简视图保留窗口内的两种正文及可用引用，生成正文仅用于归因，最终交付才决定产品判分；行数／气泡数不代替句数，原文正确而展示错误仍是产品失败。旧封存和判分保持旧口径，新版本不自动重判旧结果。
 驱动泄露守卫按来源分流：外部适配用例的驱动与用户台词逐字来自上游，不能为避开词表改写，因此只检查运行器注入的标识（caseId／套件／fixture／家族、探针与证据与检查点 id、四个哈希、`mustNotReveal`）；`probe`／`gold`／`dataset` 这类内部通用词只对内部编写用例生效，否则上游原文里正常出现的英文词会被误判为泄露。
 全部探针统一由独立 coding-agent judge 判定；用户抽查只用于核对，
 不会产生或改写 pass/fail，也不能替代 case 的 gold 审批。
