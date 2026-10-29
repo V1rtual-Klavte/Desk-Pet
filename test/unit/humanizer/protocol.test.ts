@@ -238,6 +238,31 @@ describe("humanizer protocol", () => {
     expect(transform("写成 `a;b` 就行").parts).toEqual(["写成 `a;b` 就行"])
   })
 
+  it("keeps English apostrophes inside words in both flows [humanizer-english-apostrophe]", () => {
+    // 2026-10-28 实机：弯撇号既在细切边界集合又在装饰标点集合，`It’s` 裂成 `It` + 换行 + `s`，
+    // 英文回复被拆碎后「不超过三句话」这类逐句判据失真。撇号先收成 ASCII `'` 再分泡/清洗。
+    const contractions = "It’s important to note that the user’s preference was already stated. I’ll keep it that way."
+    expect(transformHumanizerText(contractions, "casual", { split: "fine" }).parts)
+      .toEqual(["It's important to note that the user's preference was already stated. I'll keep it that way."])
+    // 细切档仍在自然边界（破折号）分泡，但不在缩写里分泡；复数所有格 `users’` 也不下刀。
+    expect(transformHumanizerText("Don’t worry — I’ve already checked the plan. Let’s keep going.", "casual", { split: "fine" }).parts)
+      .toEqual(["Don't worry", "I've already checked the plan. Let's keep going."])
+    expect(transformHumanizerText("Don’t worry — I’ve already checked the plan. Let’s keep going.", "casual", { split: "normal" }).parts)
+      .toEqual(["Don't worry I've already checked the plan. Let's keep going."])
+    expect(transformHumanizerText("I think the team’s plan is fine, but we should double-check the users’ feedback before shipping. Don’t you agree?", "casual", { split: "fine" }).parts)
+      .toEqual(["I think the team's plan is fine", "but we should double-check the users' feedback before shipping. Don't you agree?"])
+    // task 流同样保留撇号（只清洗装饰标点，不减句子）。
+    expect(transform("Don’t you agree? The user’s reply was clear.", "task").parts)
+      .toEqual(["Don't you agree? The user's reply was clear."])
+    // 中文单/双引号不是撇号：左边不是拉丁字母，照旧按装饰标点收掉。
+    expect(transform("‘测试’的用法里中文引号还是要被收掉的，别担心").parts)
+      .toEqual(["测试的用法里中文引号还是要被收掉的，别担心"])
+    // 代码里的弯引号是内容，不改写（围栏与行内代码原样）。
+    expect(transform("看这段\n```ts\nconst a = `It’s here`\n```").parts)
+      .toEqual(["看这段\n```ts\nconst a = `It’s here`\n```"])
+    expect(transform("写成 `It’s` 就行").parts).toEqual(["写成 `It’s` 就行"])
+  })
+
   it("splits long punctuation-free casual replies without cutting connective words [humanizer-connective-split]", () => {
     // 2026-10-21 用户规则：整段只用空格断句时，按中英边界空格兜底分泡
     // （2026-10-20 的「没有标点宁可留长泡」已被实机一大段黏成一泡推翻）。

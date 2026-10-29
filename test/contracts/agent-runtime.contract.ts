@@ -266,6 +266,9 @@ import type { ModuleContract } from "../host/types"
 // 并移除该标注；请求装配、取消与提交路径语义不变，本域覆盖描述未受影响，sourceHash 按当前源码复算。
 // 2026-10-21 提示词措辞微调（本批刷新）：HUMANIZER_PROMPT「可适当」→「可少量」，行为面未变，
 // sourceHash 按当前源码复算。
+// 2026-10-28 英文撇号归一（本批刷新）：sourceFiles 中 humanizer/protocol.ts 在分泡与装饰清洗前
+// 把拉丁字母/数字之间的弯单撇号收成 ASCII `'`（此前 `It’s` 被裂成 `It` + 换行 + `s`）；
+// 本域覆盖面未变（表达分泡归 humanizer hz-01），sourceHash 按当前源码复算。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -322,7 +325,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "f0981313a70368dc5d69b4355d2ea95ba8f1bc29d9d8072a357b8f06d899c7b6",
+  sourceHash: "5f77d824f8c2b08ae33f2929db8498e937f5c459afb93f4fd83a89921440f551",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection

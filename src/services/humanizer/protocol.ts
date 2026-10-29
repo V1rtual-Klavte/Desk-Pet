@@ -121,6 +121,13 @@ const DECOR_PUNCTUATION = /[—–―…“”‘’「」『』《》〈〉]/gu
 /// 冒号参与长句分泡（见 splitByCommas），ASCII `:` 保留给 URL/时间/对象字面量。
 /// 问号/叹号不在此列 —— 它们保留。围栏代码块与行内代码原样保留。
 const PROSE_SEPARATOR = /[；;、：]/gu
+/// 英文缩写与所有格里的弯撇号（`It’s` / `user’s`）同时落在 `FINE_SENTENCE_PATTERN` 的边界集合
+/// 和 `DECOR_PUNCTUATION` 的删除集合里：细切档把 `’` 当分泡边界，装饰清理再把它删掉，于是 `It’s`
+/// 裂成 `It` + 换行 + `s`（2026-10-28 实机：MultiChallenge 英文回复被拆成 31 行，「不超过三句话」
+/// 这类逐句判据直接失真）。夹在拉丁字母/数字之间的弯单引号是撇号，先收成 ASCII `'`
+/// （`It’s`、`l’été`、复数所有格 `users’ data`）；左边要求拉丁字母/数字，所以中文引号
+/// （`‘测试’的`）不算，原样交回装饰清理。
+const WORD_APOSTROPHE = /(?<=[\p{Script=Latin}\p{N}])[\u2018\u2019](?=\s?[\p{Script=Latin}\p{N}])/gu
 /// 列表项起始：阿拉伯数字/中文数字/圈号/项目符号。数字后的点必须不是小数点
 /// （`1.5` 不算列表），后面可以是空格或直接接正文。
 /// 列表起始只认**带分隔符**的编号（`1.` `1、`）与项目符号：裸数字 + 空格会把
@@ -157,8 +164,8 @@ function stripProseSeparators(segment: string): string {
   return output.replace(/[ \t]{2,}/gu, " ")
 }
 
-/** 去掉装饰标点；围栏代码块与行内代码（成对反引号）原样保留。 */
-function stripDecorPunctuation(text: string): string {
+/** 逐段变换正文，围栏代码块与行内代码（成对反引号）原样保留。 */
+function mapProseOutsideCode(text: string, transform: (segment: string) => string): string {
   let inFence = false
   return text.split("\n").map((line) => {
     if (/^\s*```/.test(line)) {
@@ -168,9 +175,19 @@ function stripDecorPunctuation(text: string): string {
     if (inFence) return line
     return line
       .split(/(`[^`]*`)/u)
-      .map((segment, index) => (index % 2 === 1 ? segment : stripProseSeparators(segment)))
+      .map((segment, index) => (index % 2 === 1 ? segment : transform(segment)))
       .join("")
   }).join("\n")
+}
+
+/** 撇号归一，在分泡与装饰清理之前做；代码内容不动。 */
+function normalizeWordApostrophes(text: string): string {
+  return mapProseOutsideCode(text, segment => segment.replace(WORD_APOSTROPHE, "'"))
+}
+
+/** 去掉装饰标点；围栏代码块与行内代码原样保留。 */
+function stripDecorPunctuation(text: string): string {
+  return mapProseOutsideCode(text, stripProseSeparators)
 }
 
 function splitByCommas(text: string): string[] {
@@ -402,7 +419,7 @@ export function transformHumanizerText(
   flow: HumanizerFlow = "casual",
   options: HumanizerOptions = {},
 ): HumanizedText {
-  const text = normalizeSplitMarkers(input.replace(/\r\n/g, "\n"))
+  const text = normalizeWordApostrophes(normalizeSplitMarkers(input.replace(/\r\n/g, "\n")))
   // 同一段文本的粒度稳定（哈希决定），不同文本约 60% 走细切；
   // 测试可用 options.split 固定成 normal/fine。
   casualLimits = flow === "casual" &&
