@@ -5,7 +5,7 @@
 // 归属 L2 的依据：纯常量值核对（无 IPC、无落盘、无回合）；断言的是「事件名常量的字符串
 // 值与 Rust 侧按名分发的字节相同」—— 事件名是跨语言线协议的一部分，改名必须同时改 Rust
 // （`crates/native-host/src/ui/chat/events.rs` 的 `ChatEvent::from_wire`、
-// `ui/chat/intents.rs` 的 `RECEIPT_*`、`ui/ports.rs` 的 `HOST_REQUEST_EVENT`），
+// `ui/chat/intents.rs` 的 `RECEIPT_*`、`ui/ports/mod.rs` 的 `HOST_REQUEST_EVENT`），
 // 否则事件静默无人消费。
 //
 // 期望值在表里逐字写死、不从常量互相推导：常量漂移时本文件先红（不是 change-detector
@@ -62,7 +62,7 @@ const WIRE_NAMES: Array<[string, string]> = [
   [UI_RECEIPT_PLAN_STEP_DECISION, "deskpet-plan-step-decision"],
   [UI_RECEIPT_CHOICE_RESOLVED, "deskpet-choice-resolved"],
   [UI_RECEIPT_PERMISSION_CONFIRM_RESOLVED, "deskpet-permission-confirm-resolved"],
-  // 宿主 → Node 请求通道（Rust ui/ports.rs 的同名常量）
+  // 宿主 → Node 请求通道（Rust ui/ports/mod.rs 的同名常量）
   [HOST_REQUEST_EVENT, "deskpet-host-request"],
 ]
 

@@ -5,7 +5,7 @@
 // 模型偶发不按指令附带 RUNTIME_DATA 区块（见 docs/current/personality.md「回复与写入」），
 // 缺区块那一轮的角色变量就静默不更新。这里把「上一回合违约」记成会话级挂起状态，
 // 由 Harness 在下一回合的请求上下文里补一句极短提醒；检测与补救的接线点见
-// `engine/harness/runtime.ts` 的 settleMainTurn 与 runPiAgentTurn 的 buildPrompt 调用处。
+// `engine/runtime/settlement.ts` 的 settleMainTurn 与 `engine/runtime/turn.ts` 的 runPiAgentTurn 的 buildPrompt 调用处。
 
 import { RUNTIME_DATA_TAG } from "./protocol"
 

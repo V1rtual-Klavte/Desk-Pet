@@ -179,7 +179,7 @@ function contextUsagePercent(basis: number): number {
  */
 export async function restoreLastRequestStats(): Promise<void> {
   if (debug.lastContextUsage !== null) return
-  // 动态 import 断开 debug ↔ session / harness 的静态环（runtime.ts 与 session 侧都静态
+  // 动态 import 断开 debug ↔ session / harness 的静态环（runtime/turn.ts 与 session 侧都静态
   // import 本模块；与 repo.ts 的「动态 import 避免静态环」同一手法）。
   const [{ readLastConversationPromptTokens }, { getActiveSessionId }] = await Promise.all([
     import("@/services/engine/harness/request-stats"),

@@ -1,5 +1,5 @@
 // 排队视图、向活动回合投递与暂停输入归还：lane 持久 inbox 的产品侧只读入口。
-// 纯搬移自 harness/runtime.ts（T1.6 拆入 runtime 编排层），不改变行为。
+// 由原回合运行模块拆入 runtime 编排层（T1.6），不改变行为。
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { laneMessageText } from "@/services/engine/protocol"

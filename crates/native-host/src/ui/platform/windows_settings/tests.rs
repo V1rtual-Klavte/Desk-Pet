@@ -1,4 +1,4 @@
-//! Windows 设置窗的纯逻辑单测（自 `windows_settings.rs` 拆出；本模块只在 Windows 编译，
+//! Windows 设置窗的纯逻辑单测（自原 `windows_settings` 单文件拆出；本模块只在 Windows 编译，
 //! 由 CI 的 verify (windows-latest) 执行 —— 见 AGENTS §2）。
 
 use super::*;

@@ -1,5 +1,5 @@
 // 计划执行相位与统一收尾（PLAN-15 / PLAN-10 / FIX-34 / FIX-35）。
-// 纯搬移自 harness/runtime.ts（T1.6 拆入 runtime 编排层），不改变行为。
+// 由原回合运行模块拆入 runtime 编排层（T1.6），不改变行为。
 
 import { publishRuntimeTrace, sha256Text } from "@/services/engine/protocol"
 import type { RuntimeTraceContext } from "@/services/engine/protocol"
@@ -24,7 +24,7 @@ import { createLogger } from "@/services/logger"
 const log = createLogger("PiRuntime")
 
 // 计划结算原语与「确认未成立」归宿说明：显式命令相位（plan-phase）与恢复入口共享。
-// 原为独立模块（T1.6 拆分产物），纯搬移自 harness/runtime.ts，不改变行为。
+// 原为独立模块（T1.6 拆分产物），由原回合运行模块搬移，不改变行为。
 
 /**
  * 计划结算原语（写盘降级 / 收尾 / 取消与用户拒绝归宿）：与模型提议入口

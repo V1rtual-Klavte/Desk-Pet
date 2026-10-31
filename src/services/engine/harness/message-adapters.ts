@@ -1,5 +1,5 @@
 // Pi 消息形态适配：阶梯条目/投影、RUNTIME_DATA 剥离、主动/注记/观测消息构造与读回映射。
-// 纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语），不改变行为。
+// 由原回合运行模块抽出（T1.5），不改变行为。
 
 import type { AgentMessage, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import { contentText } from "@earendil-works/pi-ai"

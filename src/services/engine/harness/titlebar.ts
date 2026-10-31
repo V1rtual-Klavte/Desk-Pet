@@ -1,5 +1,5 @@
 // 过程状态 UI 事件的唯一发送面与顶栏 owner：阶段提示、工具过程文案、代际清扫、首条揭示释放，
-// 以及 best-effort UI 事件发布（流式增量、工具状态）。纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语）。
+// 以及 best-effort UI 事件发布（流式增量、工具状态）。由原回合运行模块抽出（T1.5）。
 
 import type { PiAgentTurnOutput } from "@/services/engine/state"
 import { formatError } from "@/services/error"
@@ -12,7 +12,7 @@ import type { SimpleStageKey } from "@/services/personality/stages-cache"
 import { getActiveSessionId } from "@/services/session/store"
 import { listTitlebarOwners, releaseTitlebarStatus, setTitlebarStatus } from "@/services/titlebar"
 
-// 日志分类沿用原 runtime.ts 的 PiRuntime：纯搬移，不改日志口径。
+// 日志分类沿用拆分前的 `PiRuntime`：纯搬移，不改日志口径。
 const log = createLogger("PiRuntime")
 
 /**

@@ -1,4 +1,4 @@
-//! Windows 设置窗的主题绘制、控件构建与通知浮层呈现（自 `windows_settings.rs` 拆出）。
+//! Windows 设置窗的主题绘制、控件构建与通知浮层呈现（自原 `windows_settings` 单文件拆出）。
 
 use super::*;
 use super::dialogs::{apply_theme_doc_dialog, paint_doc_dialog_background};

@@ -1,6 +1,6 @@
 // Pi AI gateway for V1rtual-Desk-Pet's OpenAI-compatible provider configuration.
 //
-// 这里是「V1rtual-Desk-Pet 配置 → pi-ai 调用」的唯一出口：主链路（runtime.ts）用
+// 这里是「V1rtual-Desk-Pet 配置 → pi-ai 调用」的唯一出口：主链路（`harness/slot.ts`）用
 // piStream，一次性文本调用（planner / 压缩 / 记忆 / 阶段文案）用 completePiText。
 // 两者共用同一套模型解析、reasoning 映射与网络防护。
 

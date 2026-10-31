@@ -152,7 +152,7 @@ function writeFixture(path: string, content: string): void {
 
 /**
  * 新建会话并写入 message 条目（与生产投递同形：图片只存路径，字段名
- * `deskpetImagePaths` 与 `engine/runtime/input-identity.ts::userInputMessage` 一致）。
+ * `deskpetImagePaths` 与 `engine/protocol/input-identity.ts::userInputMessage` 一致）。
  */
 async function seedSession(name: string, entryImagePaths: string[][]): Promise<string> {
   const summary = await createPiSession(name)

@@ -18,7 +18,7 @@
 export const HOST_EVENT_WINDOW_OBSERVED = "window-observed"
 /** 后台命令结束（Rust `commands/tool_exec/bash.rs` 的等待线程 emit；只投 Node）。 */
 export const HOST_EVENT_BASH_BACKGROUND_FINISHED = "bash-background-finished"
-/** 助手流式增量（Node `engine/harness/runtime.ts` 生产；Rust 分派见 `ui/chat/events.rs`）。 */
+/** 助手流式增量（Node `engine/harness/turn-sinks.ts` 生产；Rust 分派见 `ui/chat/events.rs`）。 */
 export const HOST_EVENT_ASSISTANT_STREAM = "deskpet-assistant-stream"
 /** 流式收尾（同 `HOST_EVENT_ASSISTANT_STREAM`）。 */
 export const HOST_EVENT_ASSISTANT_STREAM_END = "deskpet-assistant-stream-end"
@@ -67,6 +67,6 @@ export const UI_RECEIPT_PERMISSION_CONFIRM_RESOLVED = "deskpet-permission-confir
  * 宿主 → Node 请求的事件名（`HostRequestEnvelope` 经它投递）。
  *
  * 名称是**传输细节**（方法与载荷形状的唯一定义点在 `HostRequestMap`）；改名必须与
- * `crates/native-host/src/ui/ports.rs` 的同一常量同步。
+ * `crates/native-host/src/ui/ports/mod.rs` 的同一常量同步。
  */
 export const HOST_REQUEST_EVENT = "deskpet-host-request"

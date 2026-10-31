@@ -25,7 +25,7 @@
 // 6. 部分：Node 崩溃沿用监督器默认策略（换代际、回收旧句柄、按上限自动重启）；
 //    本波没有会话恢复钩子（W3/W4 接入），不驱动任何有副作用的操作。
 //
-// 命令面（W4）：完整 `HostCommandMap`（118 条）由 `host/dispatch.rs` 的
+// 命令面（W4）：完整 `HostCommandMap`（118 条）由 `host/dispatch/` 的
 // `NativeDispatcher` 承接；本文件的 `BootstrapDispatcher` 只多一层 `--smoke`
 // 试验信号（首次应答 `get_runtime_paths`），E2E 的 `E2eDispatcher` 只截
 // `e2e_options` / `e2e_trace` / `e2e_complete` 三条宿主级测试协议，其余全部委托 ——
@@ -647,7 +647,7 @@ fn log_shutdown_report(report: &ShutdownReport) {
 
 /// 引导分派器：W4 的完整命令矩阵（[`NativeDispatcher`]）加一层引导期职责 ——
 /// 首次应答 `get_runtime_paths` 时向 `--smoke` 发试验信号（响应内容与 Node 侧
-/// `RuntimePathsPayload` 逐字段同形，唯一构造点在 `host/dispatch.rs`）。
+/// `RuntimePathsPayload` 逐字段同形，唯一构造点在 `host/dispatch/`）。
 ///
 /// 除该信号外不存在任何分派特例：引导子集与「未接线」分支已随 W4 收敛，
 /// 未覆盖命令一律由 [`NativeDispatcher`] 如实报出（不静默忽略）。

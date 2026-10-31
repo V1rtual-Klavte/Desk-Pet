@@ -62,7 +62,7 @@ export class HarnessSlots {
   }
 
   /**
-   * 用户等待的回合预算豁免（`user-wait.ts` 的登记经模块级监听转发到这里）：把该会话的槽
+   * 用户等待的回合预算豁免（`state/user-wait.ts` 的登记经模块级监听转发到这里）：把该会话的槽
    * 与挂在它下面的子运行（计划步骤的子代理 / 带父槽归属的子运行）一起挂起回合墙钟 ——
    * 主回合与它正阻塞等待的那些子运行，都不该被用户思考的时间掐断。没有槽（该会话没在跑）
    * 时是 no-op；没有父槽归属的独立子运行（fork/team、主动规划）不在豁免范围 —— 它们不面向
@@ -310,7 +310,7 @@ export class HarnessSlots {
 
 export const harnessSlots = new HarnessSlots()
 
-// 用户等待的回合预算豁免（唯一接线点）：`user-wait.ts` 的登记每次开合都转发到相关槽。
+// 用户等待的回合预算豁免（唯一接线点）：`state/user-wait.ts` 的登记每次开合都转发到相关槽。
 // 模块级挂一次即可（单例常驻），不随 run 生命周期增删。
 onUserWaitChange((sessionId, waiting) => { harnessSlots.applyUserWait(sessionId, waiting) })
 

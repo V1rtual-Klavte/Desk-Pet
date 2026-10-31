@@ -3,7 +3,7 @@
 // ==========================================
 //
 // 真相源是 humanizer 调度器：本模块只把每次状态变化投影成 `deskpet-reveal-progress`
-// 的线载荷（形状 = `HostEventMap` 条目 = Rust `ui/chat/model.rs::RevealProgress`，
+// 的线载荷（形状 = `HostEventMap` 条目 = Rust `ui/chat/model/mod.rs::RevealProgress`，
 // 逐字段同名 camelCase），经既有 UI 事件端口（`@/services/host` 的 `publishUiEvent`）
 // 推给原生宿主；Rust 侧 `ChatUi::apply_reveal` 按 `revealed` 裁剪 `visible_parts`。
 // 节奏不在这里重算，也不缓存第二份状态（`typingStartedAt` 是调度器内部的计时原点，

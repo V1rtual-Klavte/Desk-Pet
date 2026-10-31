@@ -133,7 +133,7 @@ pub fn proactive_reconcile(
     state.0.proactive_reconcile(&request, &limits.resolve())
 }
 
-/// 辅助预留不再读档位投影（token 总量闸已撤，见 store.rs；唯一硬边界是请求携带的
+/// 辅助预留不再读档位投影（token 总量闸已撤，见 store/；唯一硬边界是请求携带的
 /// `dailyLimit` 与档位天花板常量），签名与 `proactive_query` 同形：不带 limits。
 pub fn proactive_auxiliary_budget_reserve(state: &MemoryState, request: Value) -> AppResult<Value> {
     state.0.proactive_auxiliary_budget_reserve(&request)

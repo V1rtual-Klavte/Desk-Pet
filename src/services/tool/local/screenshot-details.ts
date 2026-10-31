@@ -2,7 +2,7 @@
 // 截图工具的 details 契约（零依赖叶子）
 //
 // 写入方是 `screenshot` 工具的执行结果，读取方是运行内核的提交链
-// （engine/harness/runtime 的 afterTool / afterResponse）—— 两侧共用这一份形状判定，
+// （engine/harness 的 afterTool / afterResponse）—— 两侧共用这一份形状判定，
 // 不各自写一遍字符串键。`show_to_user` 的截图路径在这里被宿主取走，
 // 并入本回合提交的助手条目（`deskpetImagePaths`），供聊天里展示。
 //

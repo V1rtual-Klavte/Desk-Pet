@@ -1159,7 +1159,7 @@ fn layer_size(layer: &CALayer) -> (f64, f64) {
 ///
 /// **`-subviews` 没这个问题，别顺手去"修"**：`-[NSView subviews]` 返回的是**快照副本**
 /// （实测：4 个子视图边枚举边 `removeFromSuperview` 不炸），`-[CALayer sublayers]` 不是。
-/// 两者同名同形却不同行为，`macos_chat.rs` 里几处 `subviews().iter()` + 摘除的写法是安全的。
+/// 两者同名同形却不同行为，`macos_chat/` 里几处 `subviews().iter()` + 摘除的写法是安全的。
 /// objc2 的检查在**每次 `next()`**上（见 `objc2-foundation/src/iter.rs`），
 /// 所以「还剩 ≥2 项时改集合」必炸，恰好只剩 1 项时反而逃得掉 —— 别用单元素场景去试。
 fn remove_sublayers(layer: &CALayer, prefix: &str) {

@@ -1,5 +1,5 @@
 // 手动压缩一个会话的编排入口。
-// 纯搬移自 harness/runtime.ts（T1.6 拆入 runtime 编排层），不改变行为。
+// 由原回合运行模块拆入 runtime 编排层（T1.6），不改变行为。
 
 import { createRuntimeTraceContext } from "@/services/engine/protocol"
 import type { CompactionAuditSink } from "@/services/engine/protocol"

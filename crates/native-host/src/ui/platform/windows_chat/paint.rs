@@ -274,7 +274,7 @@ pub(super) unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
             );
         }
         // composer 的整块面（`--ibg`）先铺：macOS 侧它覆盖**待发送条 + 把手带 +
-        // 输入行**（`macos_chat.rs::relayout_panes` 的 `composer_top_from_bands`），
+        // 输入行**（`macos_chat/content/view.rs::relayout_panes` 的 `composer_top_from_bands`），
         // 把手带不再是独立的一条灰带 —— 它就是 composer 的上部（用户 2026-10-07
         // 实拍「输入框上面那个和 mac 根本不一样」）。条区内其它元素（待发送条、
         // 把手状态、箭头）都画在这块面之上，顺序不能反。
@@ -343,7 +343,7 @@ pub(super) unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
         if !rect_is_empty(&state.paint.input_bar) {
             let input_bar = win_rect_of(&state.paint.input_bar);
             // composer 上边线（设计稿 `.rail{border-top:1px solid var(--bare)}`）：
-            // macOS 用**亮边** `bar_edge` 贴住 composer 上沿（`macos_chat.rs` 的
+            // macOS 用**亮边** `bar_edge` 贴住 composer 上沿（`macos_chat/` 的
             // `apply_line(Top, bar_edge)`，用户规则「这个白边应该贴着下面」）。
             // 旧实现画的是 `input_bar_edge`（同主题下明显更深的灰蓝），实机上就是
             // 输入框上方那道扎眼的分隔线。

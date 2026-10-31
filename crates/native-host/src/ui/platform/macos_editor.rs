@@ -1531,7 +1531,7 @@ impl EditorContentController {
     ///
     /// 编辑器窗的委托是共享的 `UiController`（`macos.rs`，只处理主窗重排），本
     /// 控制器不接管委托（接管会连带丢掉 `windowShouldClose` 的未保存关闭确认），
-    /// 而是用通知观察者接自己窗口的 resize（与 `macos_chat.rs::observe_scroll`
+    /// 而是用通知观察者接自己窗口的 resize（与 `macos_chat/content/view.rs::observe_scroll`
     /// 同款）。通知中心不持有观察者，关闭时必须显式解除注册（见
     /// [`Self::unobserve_window_resize`]）。
     fn observe_window_resize(&self) {

@@ -1,5 +1,5 @@
 // 回合消费点：流式正文按消息落 UI，usage 按请求进统计（子运行 visible=false 不外推）。
-// 纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语），不改变行为。
+// 由原回合运行模块抽出（T1.5），不改变行为。
 
 import { createMessageId } from "@/services/agent/types"
 import { estimateContextTokens, estimateMessageTokens, ESTIMATE_DRIFT_WARN_RATIO } from "@/services/context"
@@ -15,7 +15,7 @@ import { RuntimeDataStreamFilter } from "./stream-text"
 import { emitStageHint, emitToolStageTitlebar, emitUiEvent } from "./titlebar"
 import type { TurnKernel } from "./turn-kernel"
 
-// 日志分类沿用原 runtime.ts 的 PiRuntime：纯搬移，不改日志口径。
+// 日志分类沿用拆分前的 `PiRuntime`：纯搬移，不改日志口径。
 const log = createLogger("PiRuntime")
 
 /**

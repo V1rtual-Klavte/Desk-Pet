@@ -241,7 +241,7 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 
 ### 机械变更的定向复核
 
-`sourceFiles` 按行为定义点归属，不按「测试跑过这个模块」扩张。共享 Harness 内核的审查 owner 是 `agent-runtime`：`agent/runner.ts`、`engine/harness/runtime.ts`、`slot.ts`、`model-gateway.ts` 的通用运行语义由它统一锚定。其它 Contract 只有在枢纽文件内确实定义了该域的行为、且已有 coverage 明确验证时才保留引用；就地注释点明对应 coverage ID 和函数/语义。例如 memory 的回合召回注入与 compaction window、humanizer 的生产消费链、图片路径/请求投影、主动上下文适配、观察 ingress 信号、会话旁路写入，都是各自 Contract 可保留的业务定义点。caseId 和 coverage 归属不因 sourceFiles 收窄而迁移。
+`sourceFiles` 按行为定义点归属，不按「测试跑过这个模块」扩张。共享 Harness 内核的审查 owner 是 `agent-runtime`：`agent/runner.ts`、`engine/runtime/turn.ts`、`engine/harness/slot.ts`、`engine/harness/model-gateway.ts` 的通用运行语义由它统一锚定。其它 Contract 只有在枢纽文件内确实定义了该域的行为、且已有 coverage 明确验证时才保留引用；就地注释点明对应 coverage ID 和函数/语义。例如 memory 的回合召回注入与 compaction window、humanizer 的生产消费链、图片路径/请求投影、主动上下文适配、观察 ingress 信号、会话旁路写入，都是各自 Contract 可保留的业务定义点。caseId 和 coverage 归属不因 sourceFiles 收窄而迁移。
 
 下列变化可做定向复核，但仍要贴着真实 diff 读源码、consumer 和对应 coverage/caseId；不能只刷新 hash：
 

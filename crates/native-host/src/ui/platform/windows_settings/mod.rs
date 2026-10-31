@@ -351,7 +351,7 @@ const REFRESH_MEMORY: i32 = 1;
 const REFRESH_SOUNDS: i32 = 2;
 
 /// `SetBkMode` 的 TRANSPARENT：windows-sys 里 `Gdi::TRANSPARENT` 是 u32，该 API 要 i32
-/// （与 `windows_chat.rs` 同款就地定义）。
+/// （与 `windows_chat/` 同款就地定义）。
 const TRANSPARENT: i32 = 1;
 
 fn wide(value: &str) -> Vec<u16> {

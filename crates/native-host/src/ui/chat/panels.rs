@@ -317,7 +317,7 @@ pub enum PanelAction {
     ///
     /// 入口 = **消息右键菜单**（气泡上的按钮已于 2026-10-05 按用户规则退场，
     /// 入口改由右键承接）；平台层只对用户消息挂项，判据 =
-    /// `model.rs::MessageSnapshot::remember_event_id`（不在平台层复刻）。
+    /// `model/mod.rs::MessageSnapshot::remember_event_id`（不在平台层复刻）。
     /// `event_id` 是被右键消息的 ingress 事件身份，Node 侧复核可信来源后提交
     /// （回执带 revision），失败如实拒绝、以中性通知呈现。
     RememberMessage {

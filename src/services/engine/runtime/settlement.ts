@@ -1,5 +1,5 @@
 // 主回合结算与崩溃恢复入口（§8.7.3）。
-// 纯搬移自 harness/runtime.ts（T1.6 拆入 runtime 编排层），不改变行为。
+// 由原回合运行模块拆入 runtime 编排层（T1.6），不改变行为。
 
 import { contentText } from "@earendil-works/pi-ai"
 import { inputEventId, userInputMessage } from "@/services/engine/protocol"

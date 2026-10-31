@@ -939,7 +939,7 @@ pub(super) unsafe fn layout_panes_for(state: &mut ChatWinState) {
         paint.handle_arrow = arrow_glyph;
         // 输入区底条（主题 `--ibg`）：**composer 的整块面**，上沿与 macOS
         // `composer_top_from_bands` 同源：**覆盖待发送条（若有）+ 把手带 + 输入行**
-        // 一整块（`macos_chat.rs::relayout_panes` 的注释「composer 从消息流下沿一直
+        // 一整块（`macos_chat/content/view.rs::relayout_panes` 的注释「composer 从消息流下沿一直
         // 铺到窗口底，一整块面」）。旧实现无条时从把手带**下沿**开始铺，带区落在
         // 面上之外 —— 实机就是「输入框上方多出一条灰带」（用户 2026-10-07 实拍）。
         let composer_top = if pending_h > 0 { pending_y } else { handle_y };

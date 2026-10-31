@@ -1607,7 +1607,7 @@ export class HarnessSlot {
   }
 
   /**
-   * 用户等待开合（`HarnessSlots` 按 `user-wait.ts` 的登记转发；见 `executeDrive` 的起表）：
+   * 用户等待开合（`HarnessSlots` 按 `state/user-wait.ts` 的登记转发；见 `executeDrive` 的起表）：
    * 等待期间挂起回合墙钟，等待结束按剩余预算续算。没有在飞 run 时只记状态 —— 下一次
    * `executeDrive` 起表时以挂起态起步。
    */
@@ -1627,7 +1627,7 @@ export class HarnessSlot {
   /**
    * 结束当前 assistant 消息的瞬时展示。
    *
-   * **每条消息边界都会调用**（含没有任何可见增量的消息）：消费侧（runtime.ts 的
+   * **每条消息边界都会调用**（含没有任何可见增量的消息）：消费侧（turn-sinks.ts 的
    * streamFilter）只在这里重置 RUNTIME_DATA 过滤器，早退会让「以 <RUNTIME_DATA>
    * 开头的消息」把过滤器永久停在 stopped，同回合后续消息的正文全部不再展示。
    * 实现方必须幂等：没有增量时清空一个空缓冲。

@@ -1,4 +1,4 @@
-//! Windows 设置窗的模态对话框：文档 / MCP 表单 / 输入弹窗（自 `windows_settings.rs` 拆出）。
+//! Windows 设置窗的模态对话框：文档 / MCP 表单 / 输入弹窗（自原 `windows_settings` 单文件拆出）。
 
 use super::*;
 use super::events::{edit_ctlcolor, on_ctlcolor, on_drawitem};

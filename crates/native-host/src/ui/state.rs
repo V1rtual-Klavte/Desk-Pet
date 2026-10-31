@@ -294,7 +294,7 @@ impl PlacementMode {
     /// `src/services/host/types.ts`：`{mode:"cursor"} | {mode:"fixed", x?, y?}`）。
     ///
     /// 返回 `None` = 载荷无效：未知 mode、`fixed` 只带一个坐标或坐标非有限值 ——
-    /// 调用方（`host/dispatch.rs`）报结构化 `CONFIG` 错误，不静默回退到默认模式。
+    /// 调用方（`host/dispatch/`）报结构化 `CONFIG` 错误，不静默回退到默认模式。
     /// `cursor` 模式忽略随行坐标；`fixed` 两个坐标都缺省 = [`Self::FixedAtCurrent`]。
     pub fn from_wire(mode: &str, x: Option<f64>, y: Option<f64>) -> Option<Self> {
         match mode {

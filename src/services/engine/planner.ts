@@ -366,7 +366,7 @@ export interface ExecutePlanConfig {
    * 计划级时限（FIX-34）：由调用方派生（`stepTimeoutMs × maxSteps`，§7 #33），
    * 在每步开始前与 `onStepDone` 之后各检查一次，命中按 `deadline` 中止。
    * **用户等待期不计入**（2026-10-06 用户裁决）：逐步门 / 失败询问上等用户决定的
-   * 时长从时钟里扣除（`user-wait.ts` 的累计等待），用户思考不该把计划推向「超过计划时限」。
+   * 时长从时钟里扣除（`state/user-wait.ts` 的累计等待），用户思考不该把计划推向「超过计划时限」。
    * 扣除只对 `sessionId` 在场的调用生效（提不出会话就没有等待可扣）。
    */
   deadlineAt?: number

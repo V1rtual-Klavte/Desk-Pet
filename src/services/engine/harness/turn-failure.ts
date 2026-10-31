@@ -1,4 +1,4 @@
-// 失败回合的展示文案与失败分类别名；纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语）。
+// 失败回合的展示文案与失败分类别名；由原回合运行模块抽出（T1.5）。
 
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import type { HarnessRunState, TurnFailure } from "@/services/engine/state"

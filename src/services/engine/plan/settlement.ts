@@ -1,10 +1,10 @@
 // ==========================================
 // 计划段共享结算原语 —— 写盘降级 / 收尾 / 取消与用户拒绝归宿
 //
-// 两条计划入口自 2026-10-06 起消费同一份实现（此前 `runtime.ts` 与 `proposal.ts` 各存
+// 两条计划入口自 2026-10-06 起消费同一份实现（此前 `runtime/turn.ts` 与 `runtime/plan-proposal.ts` 各存
 // 一份同形复刻，为避免一次引爆多份契约与并行冲突而复制；历史债务已清）：
-//   1. 显式命令入口：`engine/harness/runtime.ts` 的 `runPlanPhase`（完整 `--plan` 命令且开关启用时发起）；
-//   2. 模型提议入口：`engine/plan/proposal.ts` 的 `runProposedPlan`（propose_plan 工具发起）。
+//   1. 显式命令入口：`engine/runtime/plan-phase.ts` 的 `runPlanPhase`（完整 `--plan` 命令且开关启用时发起）；
+//   2. 模型提议入口：`engine/runtime/plan-proposal.ts` 的 `runProposedPlan`（propose_plan 工具发起）。
 //
 // 共享的是机制，不是语义：两条入口的对外归宿（`PlanPhaseOutcome` / `ProposedPlanOutcome`）、
 // 通知时机与文案差异都由调用方在参数里显式表达 ——

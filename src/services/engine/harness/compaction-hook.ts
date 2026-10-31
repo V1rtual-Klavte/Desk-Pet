@@ -1,5 +1,5 @@
 // 结构化摘要的 before_compaction 钩子与级 3 闸门装配（与投影共用同一份额度/地址目录）。
-// 纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语），不改变行为。
+// 由原回合运行模块抽出（T1.5），不改变行为。
 
 import { createCompactionSummaryMessage } from "@earendil-works/pi-agent-core"
 import type { AgentMessage, CompactResult, CompactionPreparation } from "@earendil-works/pi-agent-core"
@@ -18,7 +18,7 @@ import type { LadderGateInput } from "../compactor"
 import { applyLevels, isCompletedEmptyAssistant, toolResultLadderEntries } from "./message-adapters"
 import type { PiModel } from "./model-gateway"
 
-// 日志分类沿用原 runtime.ts 的 PiRuntime：纯搬移，不改日志口径。
+// 日志分类沿用拆分前的 `PiRuntime`：纯搬移，不改日志口径。
 const log = createLogger("PiRuntime")
 
 // ── 级 3 闸门的消息形态适配（T3.05）：级 1/2 是纯函数、零成本，压完装得下就不花摘要调用 ──

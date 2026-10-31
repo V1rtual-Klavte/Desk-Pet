@@ -87,7 +87,7 @@ const MAIN_CLASS: &str = "DeskPetMainWindow";
 const MAIN_WINDOW_CORNER_RADIUS: f64 = 10.0;
 
 /// `MINMAXINFO`（windows-sys 0.52 未登记；只用 minTrackSize；本地定义与
-/// `windows_chat.rs` 的同名结构各自守住自己的约束，不跨模块共享私有 FFI 形状）。
+/// `windows_chat/` 的同名结构各自守住自己的约束，不跨模块共享私有 FFI 形状）。
 #[repr(C)]
 struct MainMinMaxInfo {
     pt_reserved: POINT,

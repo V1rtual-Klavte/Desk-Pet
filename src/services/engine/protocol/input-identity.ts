@@ -110,11 +110,11 @@ export function inputSourceOf(message: unknown): InputSourceMark | undefined {
   }
 }
 
-/** 主动搭话的自定义消息类型：投递形状的唯一构造点是 pi/runtime.ts 的 `createActiveMessage`。 */
+/** 主动搭话的自定义消息类型：投递形状的唯一构造点是 `engine/harness/message-adapters.ts` 的 `createActiveMessage`。 */
 const ACTIVE_MESSAGE_CUSTOM_TYPE = "deskpet.active_message"
 
 /**
- * 尾随瞬时注记的自定义消息类型：构造点是 pi/runtime.ts 的 `createTurnNoteMessage`。
+ * 尾随瞬时注记的自定义消息类型：构造点是 `engine/harness/message-adapters.ts` 的 `createTurnNoteMessage`。
  *
  * 它由宿主在 `transform_context` 逐请求附加，**只存在于请求视图**，不落会话条目 ——
  * 因此必须与主动搭话一样归到瞬时输入，否则它的 token 会被记进 transcript 行，

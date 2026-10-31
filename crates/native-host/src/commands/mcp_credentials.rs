@@ -6,7 +6,7 @@
 //! （`src/services/tool/mcp/client.ts` 在建立连接前把未命中 env 的 `${VAR}` 逐个取回）；
 //! 其余命令只报「有没有设置」（status）与「删没删掉」（delete），错误文案只带坐标与变量名。
 //!
-//! 业务规则（空值拒绝、按服务器取名单）留在 `memory/store.rs`，本层只做参数收窄与转发。
+//! 业务规则（空值拒绝、按服务器取名单）留在 `memory/store/`，本层只做参数收窄与转发。
 
 use crate::error::AppResult;
 use crate::memory::MemoryState;

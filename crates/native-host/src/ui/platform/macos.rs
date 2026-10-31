@@ -241,7 +241,7 @@ define_class!(
     ///    产品是 Accessory 策略、无应用主菜单，这些键没有 key equivalent 可派发，
     ///    文本控件里按下去只会 beep（2026-10-07 用户实测：「设置里不能复制粘贴」）。
     ///
-    /// `pub(crate)`：W8a 的聊天窗（`platform/macos_chat.rs`）复用本窗口类与
+    /// `pub(crate)`：W8a 的聊天窗（`platform/macos_chat/`）复用本窗口类与
     /// [`new_window`]，不复制第二份 `canBecomeKeyWindow` 覆盖。
     #[unsafe(super(NSWindow))]
     #[thread_kind = MainThreadOnly]

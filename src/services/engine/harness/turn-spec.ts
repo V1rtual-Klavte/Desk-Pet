@@ -1,5 +1,5 @@
 // 每回合的 Harness 运行规格：权限、投影、观测与 UI/统计消费点在 createTurnSpec 一处接线；
-// 以及对话回合的工具面装配。纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语）。
+// 以及对话回合的工具面装配。由原回合运行模块抽出（T1.5）。
 
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { ActiveMessageRequest, ProactiveOwner, ProviderReservation } from "@/services/agent/types"
@@ -25,7 +25,7 @@ import type { FocusedMemoryEvidence } from "@/services/agent/memory"
 import type { TurnKernel } from "./turn-kernel"
 import { createTurnSinks } from "./turn-sinks"
 
-// 日志分类沿用原 runtime.ts 的 PiRuntime：纯搬移，不改日志口径。
+// 日志分类沿用拆分前的 `PiRuntime`：纯搬移，不改日志口径。
 const log = createLogger("PiRuntime")
 
 /**

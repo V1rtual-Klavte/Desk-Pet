@@ -81,7 +81,7 @@ presence只有 idle/working/resting 和有限短动作，不移动真实窗口�
 
 聊天入口：`/proactive on`（档位恢复出厂默认「高」，不记忆上次档位，只检查仍有效窗口、不堆积补发）、`/proactive off`（档位置「关」，即时取消在飞尝试与表现、保留约定暂停）、`/proactive status`（显示当前档位 + 今日送达 + 暂停中）、`/behavior clear`。画像清除先撤销SQLite中的派生资格，再排空采集队列、删除文件与RAM；旧样本不能恢复，启用监控时后续新样本继续采集。AI设置「主动陪伴」区提供主动消息档位与静默时间段，与斜杠命令读写同一份 CONFIG（档位不再是 SQLite 控制点，命令与设置同源）。拟人表达开关控制表达节奏，静默访问档位控制观察来源，两者独立于主动消息档位。
 
-开发证据出口：`ProactiveTrace` 的 debug 日志与 `subscribeRuntimeTrace` 只读订阅（`@/services/engine/runtime`；生产不订阅、不保留负载，测试适配器按需订阅）。事件经既有RuntimeTrace／logger发布，覆盖窗口观察与画像结算、机会、规划、claim、表达、反馈与事项治理，并给跳过原因（如静默、冷却、忙、视图过期、预算或 owner 变化）以及 tick／attempt／request 关联；不保存标题、应用身份、记忆正文、用户原话或完整Prompt，trace观察者不承担业务提交或取消资格。理想线路由用户撰写，审阅门禁与证据工具见[测试README](../../test/README.md)。
+开发证据出口：`ProactiveTrace` 的 debug 日志与 `subscribeRuntimeTrace` 只读订阅（`@/services/engine/protocol`；生产不订阅、不保留负载，测试适配器按需订阅）。事件经既有RuntimeTrace／logger发布，覆盖窗口观察与画像结算、机会、规划、claim、表达、反馈与事项治理，并给跳过原因（如静默、冷却、忙、视图过期、预算或 owner 变化）以及 tick／attempt／request 关联；不保存标题、应用身份、记忆正文、用户原话或完整Prompt，trace观察者不承担业务提交或取消资格。理想线路由用户撰写，审阅门禁与证据工具见[测试README](../../test/README.md)。
 
 ## 数据库
 

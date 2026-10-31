@@ -4,7 +4,7 @@
 
 ## 打开与文件
 
-- 打开点：**命令分派器惰性打开**（[host/dispatch.rs](../../crates/native-host/src/host/dispatch.rs) 的 `NativeDispatcher::memory()`）——第一条记忆命令到达时才打开；打开失败如实透出原错误（含 `MEMORY` 码），不缓存失败结论、下一条命令会重报同一个错误（不降级、不假成功）。`--smoke` 不触库。用短锁串行化并发首开。
+- 打开点：**命令分派器惰性打开**（[host/dispatch/mod.rs](../../crates/native-host/src/host/dispatch/mod.rs) 的 `NativeDispatcher::memory()`）——第一条记忆命令到达时才打开；打开失败如实透出原错误（含 `MEMORY` 码），不缓存失败结论、下一条命令会重报同一个错误（不降级、不假成功）。`--smoke` 不触库。用短锁串行化并发首开。
 - 打开参数：`busy_timeout = 750ms`；[memory/schema.rs](../../crates/native-host/src/memory/schema.rs) 的 `ensure` 设 `foreign_keys = ON`、`journal_mode = WAL`、`synchronous = NORMAL`。
 - 库文件：`memory.sqlite3`；`-wal` / `-shm` 是 WAL 模式的伴生文件（`paths::is_managed_memory_path` 一并纳管，通用文件工具不能绕过 MemoryStore 改写）。应用运行期间新结构和新数据先落 `-wal`；SQLite 会自动 checkpoint，主文件可能已部分合并，也可能仍有未合并内容——外部查看器排查时请带上伴生文件，或退出应用后再打开；只复制主文件可能看到不完整或空的库。
 - 写入并发：单连接（`MemoryStore` 持 `Mutex<Connection>`，锁中毒按恢复处理而非 panic），写入一律走事务；两侧各有 `operation_id` 幂等账本，提交结果未知时先查账、不盲重放。
@@ -12,7 +12,7 @@
 
 ## 建表点与版本策略
 
-- 生产建表点只有两个：记忆侧 [memory/schema.rs](../../crates/native-host/src/memory/schema.rs)、主动链侧 [proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)；记忆侧 `ensure` 建完自己的表后调用主动链侧的 `ensure`（`proactive/store.rs` 里的建表语句属于 `#[cfg(test)]` 夹具，不是生产路径）。
+- 生产建表点只有两个：记忆侧 [memory/schema.rs](../../crates/native-host/src/memory/schema.rs)、主动链侧 [proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)；记忆侧 `ensure` 建完自己的表后调用主动链侧的 `ensure`（`proactive/store/` 里的建表语句属于 `#[cfg(test)]` 夹具，不是生产路径）。
 - 版本：`MEMORY_SCHEMA_VERSION` 当前为 7，存于 `memory_meta.schema_version`；2026-10-29 从 6 递增，把记忆范围收敛为 `user | session`：旧库的 `card` 条目在结构修复事务内原地并入 `user` 池（`scope_id` 置空），`prepared` 候选的 `draft_json` 同步改写并重算 `payload_hash`，活动任务与在飞尝试的 memory 来源引用同事务改写，引用 card 记忆的过期主动评估删除，revision 递增一次并对齐在飞尝试的 `source_revision`；v6 新增按事项稳定 id 保存的提醒抑制账本，旧版本打开时在结构修复事务内补建；2026-10-18 从 4 递增，为 `conversation_index_entries` 增加 `search_text/event_at_ms/event_at_date`、`conversation_fts` 增加 `search_text`、新增 `conversation_index_terms` 与 `memory_job_covered_sources`，会话缓存按 v5 结构重建；2026-10-16 的 v4 为 `memory_items` 增加事件时间及规范化检索投影，并重建事实与会话 FTS 缓存。2026-10-05 频率档位批曾随 `proactive_control.enabled` 列删除从 2 递增。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。启动时以及恢复提交后的活动库，会用记忆侧与主动链侧现有 DDL 构造期望结构，事务内补齐可无损添加的字段/表/索引并搬回既有列数据；不可恢复的事实、来源或遗忘治理缺失会明确失败，未知未来 schema_version 永不降级。显式选择的备份仍须通过已有 schema_version 和必需表校验。**派生结论批（2026-10-06）不涉版本变更**：条目/来源类别 `origin` 不落额外列（由来源类别派生），旧库照常打开，无需重建。**助手引用溯源与原文引用闭包（2026-10-24）当时不升 schema_version（仍为 6）**：`conversation_index_entry_refs`、`conversation_index_entry_quote_refs` 与 staging 的 `memory_refs_json`/`quote_refs_json` 都属于可重建的会话缓存；旧库打开时补建新表，staging 形状不符的遗留批次按丢弃重建处理，JSONL 仍是可重放来源。
 - 既有库首次需要结构修复前，MemoryStore 通过 SQLite backup API 在 `memory/backups/` 预留 `memory-repair-*.sqlite3` 快照；修复事务失败会回滚且保留快照，修复完成后的重复打开不会重复备份。事实 `memory_fts` 从已接受的 `memory_items` 重建；会话 FTS 与索引行属于可重建缓存，JSONL 仍是聊天正文真相源。恢复也会在提交后复核活动库结构。
 - 若清理来源清单曾声明完整但 fence 丢失，或缺失记忆作业/墓碑/来源关系、主动控制/预算或提醒抑制账本（v6 引入）等核心持久状态，启动不会创建空表掩盖缺口；会保留原库与诊断快照并返回可诊断错误。唯一同版本新增的可选模块例外是 `mcp_credentials`：缺表时可恢复空结构并保留修复前快照，`rust_warn!` 会说明原凭据无法由数据库重建，需重新录入或从备份恢复；应用不会伪造或声称恢复凭据值。旧库没有会话索引元数据时，clear 时间从操作/墓碑账本恢复；没有完整会话清单时只开放可证明晚于 cutoff 的缓存，TS 后续 clear 会提交稳定 seq fence。

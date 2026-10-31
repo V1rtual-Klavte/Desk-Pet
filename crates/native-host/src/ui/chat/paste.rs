@@ -14,7 +14,7 @@
 //! （空/超大/格式/张数）同步完成并把中性文案交回调用方；解码/转码/写盘/授权/
 //! 清理放进 `deskpet-chat-paste` 工作线程，晚到失败走统一的中性通知位
 //! （`set_notice`）—— 与「拖入图片的准入在工作线程」是同一先例
-//! （`ui/platform/windows_chat.rs::handle_dropped_files`、`macos_chat.rs::commit_file_drop`）。
+//! （`ui/platform/windows_chat/input.rs::handle_dropped_files`、`macos_chat/input.rs::commit_file_drop`）。
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -102,7 +102,7 @@ fn admit_paste_request(bytes: &[u8], max_images: usize) -> Result<(), String> {
 /// 准入（单张 15 MiB，`CHAT_IMAGE_LIMITS`）作用于**最终落盘字节**：剪贴板给的常是未压缩
 /// 表示——Windows 的 `CF_DIB` 一张 4K 屏截图就 ≈33 MB，macOS 的 TIFF 动辄数十 MB——而它们
 /// 转码成 PNG 后可能只有几 MB。拿原始长度去卡，会把最常见的「粘贴一张截图」直接拒掉
-/// （2026-10-06 跨平台接线时发现）。平台层另有同量级的拷贝守卫（如 `windows_chat.rs` 的
+/// （2026-10-06 跨平台接线时发现）。平台层另有同量级的拷贝守卫（如 `windows_chat/mod.rs` 的
 /// `CLIPBOARD_COPY_LIMIT`），那句是「别把超大内存块拷进主线程」，与本条各管一段。
 const RAW_PAYLOAD_LIMIT: usize = 64 * 1024 * 1024;
 

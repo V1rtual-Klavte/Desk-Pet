@@ -27,7 +27,7 @@ const log = createLogger("PlanConfirm")
 /**
  * 确认归结。`confirmed: false` 的**五种**原因各有明确来源（PLAN-04 / PLAN-07；
  * 2026-10-06 起不再有 `timeout` —— 用户裁决选择类弹窗不留超时，等待期豁免回合墙钟，
- * 见 `user-wait.ts`）：`user` 面板取消；`session_switched` 切会话（含 `signal` 的 abort，
+ * 见 `state/user-wait.ts`）：`user` 面板取消；`session_switched` 切会话（含 `signal` 的 abort，
  * 用户停止回合走同一条）；`not_active` 会话被关闭；`emit_failed` 确认事件发射失败；
  * `ui_unavailable` 面板监听注册失败。
  */
@@ -78,7 +78,7 @@ export const planConfirmState = reactive<{
 
 /**
  * 待确认计划：planId → 结算句柄。跨会话可并发；同一会话同一时刻只允许一个计划。
- * `releaseWait` 是回合预算豁免的等待登记（`user-wait.ts`）：等用户拍板期间挂起该会话的
+ * `releaseWait` 是回合预算豁免的等待登记（`state/user-wait.ts`）：等用户拍板期间挂起该会话的
  * 回合墙钟与工具超时计时器，结算（任何原因）即 release。
  */
 interface ConfirmEntry {
@@ -190,7 +190,7 @@ function settleStepGate(planId: string, decision: "continue" | "abort"): boolean
 
 /**
  * 请求用户确认计划（会话键控）。**没有等待超时**（2026-10-06 用户裁决：选择类弹窗
- * 不留超时）—— 等待期间该会话的回合墙钟与工具超时停表（`user-wait.ts`），用户想多久
+ * 不留超时）—— 等待期间该会话的回合墙钟与工具超时停表（`state/user-wait.ts`），用户想多久
  * 想多久。非确认归宿只来自明确事件：`signal` 的 abort（用户停止回合 / 会话切换 / 回合
  * 失效）按 `session_switched`、事件发射失败按 `emit_failed`、`user` / `ui_unavailable`
  * 由面板 resolve、`not_active` 由会话关闭触发 —— 每一条都是显式可判定的逃生口。

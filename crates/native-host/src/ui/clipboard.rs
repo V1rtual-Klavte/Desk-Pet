@@ -72,7 +72,7 @@ fn utf16_units(text: &str) -> Vec<u16> {
 pub fn write_text(owner: HWND, text: &str) -> bool {
     // CF_UNICODETEXT（13）：windows-sys 0.52 只在 Win32_System_Ole 面登记该常量
     // （winuser.h 的裁剪格式号）。本模块只要这一个格式号，不为它开整个 Ole feature，
-    // 就地定义（与 `windows_chat.rs` 的既有做法一致）。
+    // 就地定义（与 `windows_chat/` 的既有做法一致）。
     const CF_UNICODETEXT: u32 = 13;
 
     if unsafe { OpenClipboard(owner) } == 0 {

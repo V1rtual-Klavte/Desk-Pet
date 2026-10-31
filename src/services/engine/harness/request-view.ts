@@ -1,5 +1,5 @@
 // 请求视图：逐请求 streamOptions、Provider payload 取参、投影 hook 与 RUNTIME_DATA 剥离/取证。
-// 纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语），不改变行为。
+// 由原回合运行模块抽出（T1.5），不改变行为。
 
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import { contentText } from "@earendil-works/pi-ai"
@@ -26,7 +26,7 @@ import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import type { TurnKernel } from "./turn-kernel"
 
-// 日志分类沿用原 runtime.ts 的 PiRuntime：纯搬移，不改日志口径。
+// 日志分类沿用拆分前的 `PiRuntime`：纯搬移，不改日志口径。
 const log = createLogger("PiRuntime")
 
 /**

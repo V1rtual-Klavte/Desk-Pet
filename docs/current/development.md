@@ -71,7 +71,7 @@ dev 与 release 的路径区分：
 
 ## IPC 与窗口入口
 
-Rust 命令落在 [commands/](../../crates/native-host/src/commands/)（按域分子模块），由 [dispatch.rs](../../crates/native-host/src/host/dispatch.rs) 统一分派。命令名与参数/结果形状是两侧共用的 schema：Rust 分派臂与 TS 的 [`HostCommandMap`](../../src/services/host/types.ts) 必须逐字一致，TS 调用点经 `getHostBridge().request(...)` 使用同一套名字。
+Rust 命令落在 [commands/](../../crates/native-host/src/commands/)（按域分子模块），由 [dispatch/](../../crates/native-host/src/host/dispatch/) 统一分派。命令名与参数/结果形状是两侧共用的 schema：Rust 分派臂与 TS 的 [`HostCommandMap`](../../src/services/host/types.ts) 必须逐字一致，TS 调用点经 `getHostBridge().request(...)` 使用同一套名字。
 
 签名、命令名、返回错误变化应沿调用链核对，TypeScript 不会发现字符串形式的注册遗漏。路径命令持有 AppPaths，返回 AppResult；会话正文使用独立原子写命令，普通文件写入语义不被悄悄改变。
 
@@ -114,7 +114,7 @@ Rust 对应日志宏位于 [macros.rs](../../crates/native-host/src/macros.rs)�
 
 [error/format.ts](../../src/services/error/format.ts) 处理 JS Error 与 Rust `{code,message}`。formatError 用于读取错误，errorCode 用于分支，summarizeError 用于持久化脱敏摘要；裸 String(e) 会丢失结构化信息。
 
-失败分类的唯一定义点是 [error/failure-kind.ts](../../src/services/error/failure-kind.ts)：生产回合（runtime.ts 以 `classifyTurnFailure` 名字 re-export）与 Live Test 的场景失败分类共用同一条正则表，状态码按独立数字匹配，测试侧只在结果落到 `unknown` 时叠加自己的 `configuration` 档。`admission` 由调用点写入（回合准入拒绝、lane 结构操作在飞），不来自文案分类。
+失败分类的唯一定义点是 [error/failure-kind.ts](../../src/services/error/failure-kind.ts)：生产回合（[turn-failure.ts](../../src/services/engine/harness/turn-failure.ts) 以 `classifyTurnFailure` 名字 re-export）与 Live Test 的场景失败分类共用同一条正则表，状态码按独立数字匹配，测试侧只在结果落到 `unknown` 时叠加自己的 `configuration` 档。`admission` 由调用点写入（回合准入拒绝、lane 结构操作在飞），不来自文案分类。
 
 `general.errors.overlay` 在报错时求值：auto 为 dev 显示、生产隐藏，always/never 显式覆盖。初始化前错误也能进入同一出口。Rust [AppError](../../crates/native-host/src/error.rs) 统一序列化错误，panic hook 记录位置。
 

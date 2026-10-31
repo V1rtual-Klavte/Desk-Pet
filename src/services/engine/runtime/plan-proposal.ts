@@ -2,7 +2,7 @@
 // 模型提议计划的执行相位 —— 计划机制的第二条入口（propose_plan 工具驱动）
 //
 // 计划链路有两条入口，共用同一批原语（确认通道、执行器、记录存储、面板事件）：
-//   1. 显式命令入口：`runtime.ts` 的 `runPlanPhase`（完整 `--plan` 命令且开关启用时由 harness
+//   1. 显式命令入口：`runtime/plan-phase.ts` 的 `runPlanPhase`（完整 `--plan` 命令且开关启用时由 harness
 //      发起，计划由 `generatePlan` 生成）；
 //   2. 模型提议入口：本模块（模型在回合中调用 `propose_plan`，计划由模型给出）。
 // 两条入口的差异只在「计划从哪来」与「结果去哪」：显式命令入口把 `formatStepResults`
@@ -16,7 +16,7 @@
 //   · 步骤产出 = `plan_step_result` 条目（`formatStepResults` 的「原文见 …」回读地址）；
 //   · 收尾 = `notifyPlanEnd` 收起面板 + 与显式命令入口同文的截止/中止系统消息。
 //
-// 写盘降级 / 收尾 / 取消与用户拒绝归宿原先在本模块与 `runtime.ts` 各存一份同形复刻，
+// 写盘降级 / 收尾 / 取消与用户拒绝归宿原先在本模块与 `runtime/plan-phase.ts` 各存一份同形复刻，
 // 2026-10-06 提取为 `./settlement.ts`：两条入口消费同一实现，对外行为与归宿不变；
 // 差异（日志通道 / traceContext / reason 取值域）都在共享原语的参数里显式表达。
 //
@@ -55,7 +55,7 @@ import type { PlanConfirmDeclineReason, PlanExecutionCancelReason } from "@/serv
 
 const log = createLogger("PlanProposal")
 
-/** 计划结算原语（写盘降级 / 收尾 / 取消与用户拒绝归宿）：与显式命令入口（runtime.ts::runPlanPhase）共享同一实现。 */
+/** 计划结算原语（写盘降级 / 收尾 / 取消与用户拒绝归宿）：与显式命令入口（runtime/plan-phase.ts::runPlanPhase）共享同一实现。 */
 const planSettlement = createPlanSettlement(log)
 
 export interface ProposedPlanInput {
@@ -96,7 +96,7 @@ export type ProposedPlanOutcome =
 const activeProposals = new Set<string>()
 
 /**
- * 计划 UI 事件发射（best-effort，与 `runtime.ts::emitUiEvent` 同款）：进度事件丢失
+ * 计划 UI 事件发射（best-effort，与 `harness/titlebar.ts::emitUiEvent` 同款）：进度事件丢失
  * 只降级界面显示，不改变计划执行与结算 —— 调用方不因 UI 不可达而失败。
  */
 async function emitPlanUiEvent<K extends NodeUiEventName>(event: K, payload: HostEventMap[K]): Promise<void> {
@@ -250,7 +250,7 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
         const index = plan.steps.findIndex(item => item.id === step.id) + 1
         pushSystemMessage(`计划第 ${index} 步已跳过：${reason}`, sessionId)
       },
-      // 工具解析报告（FIX-51，2026-10-06 收窄）：与显式命令入口 `runtime.ts::runPlanPhase`
+      // 工具解析报告（FIX-51，2026-10-06 收窄）：与显式命令入口 `runtime/plan-phase.ts::runPlanPhase`
       // 同一口径 —— 工具名不存在（真异常）发系统消息；未限定工具属例行情形，只留进度事件，
       // 不敲聊天（逐步系统消息是刷屏噪音）。放大到子代理时派生型工具会被剥离，按实际集合写。
       async onStepNotice(step, notice) {

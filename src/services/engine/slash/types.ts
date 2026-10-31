@@ -7,7 +7,7 @@
  *
  * 命令层只声明「要启动哪个技能」：那条 `role:"user"` 消息由 Harness 在 `accept` 内按技能文件
  * 构造并提交（含技能文件的绝对路径），命令层不构造正文、不写会话条目。字段与 Harness 技能支
- * （`HarnessAdmitSkillSpec`）同名同形，构造点（`runtime.ts` 的 `admitInput` 调用）由编译器做
+ * （`HarnessAdmitSkillSpec`）同名同形，构造点（`harness/slot.ts` 的 `admitInput` 调用）由编译器做
  * 最终核对 —— 这里不复制它的校验规则，也不留运行期约定。
  */
 export interface SlashSkillAdmission {

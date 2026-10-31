@@ -5,18 +5,18 @@
 // 用户报告（2026-10-06）：重启后面板显示「上下文 0%」，看起来像当前会话的上下文是空的。
 // 实时口径（`debug.ts` 的 `updateRequestStats`）只由对话请求刷新，进程内存一清就归零；
 // 真实读数其实已经持久在会话 JSONL 里：每次 Provider 回执落一档 `provider_usage` 快照
-// （`runtime.ts` 的 onUsage → `captureSnapshot`），其中的 `actualInputTokens` 就是这次
+// （`runtime/turn.ts` 的 onUsage → `captureSnapshot`），其中的 `actualInputTokens` 就是这次
 // 请求的真实输入量（input + cacheRead + cacheWrite，与 `context/budget.ts` 的
 // `totalInputTokens` 同源）。
 //
 // 本模块只做一件只读的事：取回「最近一次对话请求」的真实输入量。选取纪律与实时口径
-// 逐条对齐（两条链路回答的是同一个问题）——实时口径的写入点是 `runtime.ts` 的 `onUsage`
+// 逐条对齐（两条链路回答的是同一个问题）——实时口径的写入点是 `runtime/turn.ts` 的 `onUsage`
 // 收口，只认「主聊天回合（runPiAgentTurn）+ 非主动表达」。会话文件里同形落盘的
 // provider_usage 快照有四类，逐类排除：
 //   · 一次性文本调用（压缩/阶段/记忆/人设等，`completePiText`）：`request.purpose`
 //     是 "one_shot"/"compaction"（model-gateway.ts 的 oneShot 构造）；
 //   · 计划步骤子运行（`runPiSubAgent`，带 audit 时落进父会话）：requestId 前缀
-//     `sub-agent-`（该前缀的唯一生产者在 `runtime.ts` 的 runPiSubAgent；子运行不走
+//     `sub-agent-`（该前缀的唯一生产者在 `harness/subagent.ts` 的 runPiSubAgent；子运行不走
 //     主回合的 onUsage，实时口径从不显示它们的读数）；
 //   · 主动表达回合：agentMessages 全部是 origin "active"（captureSnapshot 按
 //     `transientUserInput` 逐条标 origin），与 onUsage 里 `!kernel.transientUserInput`

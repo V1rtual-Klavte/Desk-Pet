@@ -41,11 +41,11 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 `ai.memory.queryRewrite`（默认 `adaptive`，可取 `off`）与 `ai.memory.rerank`（默认 `off`，可取 `adaptive`）为统一检索技术参数，作用于用户事实、派生画像和会话原话，沿用记忆总时限与预算。它们不提供设置控件或 `settings_commit` 单独映射；编辑当前运行模式的完整 CONFIG 文件后重启生效。缺少新 queryRewrite 字段时只按出厂值读取，不自动改写用户配置；真实 CONFIG-DEV.yaml 未由本批修改。
 
-当前主保存路径为：原生设置窗控件（Rust 草稿）→ `SettingsPort`（[ui/ports.rs](../../crates/native-host/src/ui/ports.rs) 的 `settings_commit` 请求）→ Node `settingsCommit` → setOverrides → config 写队列 → `flushConfig` → `reapplyRuntimeSettings` → `pushNativeUiState`（快捷键/字体/主题/舞台/聊天列/图片预览/摆位/尺寸/自动呼出/音效十条推送，逐项口径见 [pushes.ts](../../src/services/native-ui/pushes.ts) 头部）。字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
+当前主保存路径为：原生设置窗控件（Rust 草稿）→ `SettingsPort`（[ui/ports/](../../crates/native-host/src/ui/ports/) 的 `settings_commit` 请求）→ Node `settingsCommit` → setOverrides → config 写队列 → `flushConfig` → `reapplyRuntimeSettings` → `pushNativeUiState`（快捷键/字体/主题/舞台/聊天列/图片预览/摆位/尺寸/自动呼出/音效十条推送，逐项口径见 [pushes.ts](../../src/services/native-ui/pushes.ts) 头部）。字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
 
 频率档位批（2026-10-05）的即时生效链：保存后 `reapplyRuntimeSettings` 的 `ai.proactive.*` 分支调 `refreshProactive()`（scanner 按新档重排随机唤醒、重算冷却并重推 Rust 投影），`ai.silentAccess.*` 分支按档位是否 `off` 起停观察总闸与静默了解；dreaming 档位与记忆总闸变化刷新内部 dreaming 期限；用户任务的交付仍复核当前设置，不改已保存周期样本。整份导入 YAML 由 `importConfigYaml()` 收尾的消费者刷新链补同样的刷新（失败只留痕，配置已落盘）。
 
-字段的显示单位与 CONFIG 存储单位不一定相同，换算必须落在宿主草稿边界、不能混入 getter 导致保存污染。例如（历史）：窗口冷却的 getter/CONFIG 用毫秒，原生设置窗按秒换算显示（读入除 1000、提交乘 1000；schema 只声明显示单位与按显示单位收口的范围）——2026-10-05 档位化后这两个冷却键随字段删除，`ui/settings/mod.rs` 的毫秒键表与换算机制一并退役（开发阶段不留无消费者的脚手架）；将来再出现显示单位差异时按同一规则在草稿边界新增唯一换算点。日志设置读取配置值，运行期才应用 dev 的 debug 覆盖，同属这类边界。
+字段的显示单位与 CONFIG 存储单位不一定相同，换算必须落在宿主草稿边界、不能混入 getter 导致保存污染。例如（历史）：窗口冷却的 getter/CONFIG 用毫秒，原生设置窗按秒换算显示（读入除 1000、提交乘 1000；schema 只声明显示单位与按显示单位收口的范围）——2026-10-05 档位化后这两个冷却键随字段删除，`ui/settings/` 的毫秒键表与换算机制一并退役（开发阶段不留无消费者的脚手架）；将来再出现显示单位差异时按同一规则在草稿边界新增唯一换算点。日志设置读取配置值，运行期才应用 dev 的 debug 覆盖，同属这类边界。
 
 设置改动完成后集中核对“修改 → 保存 → 文件回读 → 运行期读取 → 关闭重开设置”的往返；涉及跨窗口、模式或重启生效时一并核对对应消费者。类型检查不能发现字符串配置键漏映射或单位错误；本清单是后续变更的验收要求，不表示本轮文档修改运行了这些验证。
 
@@ -85,8 +85,8 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | 字段 | 用途 | 运行期消费点 |
 |---|---|---|
 | `ai.contextMaxTokens` | 上下文窗口（低于 65536 在模型解析处报错，压缩按同一预算规划） | [context/builder.ts](../../src/services/context/builder.ts)、[compactor.ts](../../src/services/engine/compactor.ts)、[model-gateway.ts](../../src/services/engine/harness/model-gateway.ts) |
-| `ai.thinking.effort` | 思考强度默认值（`auto`/`low`/`medium`/`high`/`max`，默认 `high`；聊天抽屉「思考」下拉写入 `chat_set_thinking_effort`；无会话级覆盖） | [runtime.ts](../../src/services/engine/harness/runtime.ts) 的回合思考强度直读（`aiConfig.thinkingEffort`） |
-| `ai.loop.maxRetry` | 生成级重试次数（0 = 关闭重试） | [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts) 的 RetryPolicy 下发 |
+| `ai.thinking.effort` | 思考强度默认值（`auto`/`low`/`medium`/`high`/`max`，默认 `high`；聊天抽屉「思考」下拉写入 `chat_set_thinking_effort`；无会话级覆盖） | [runtime/turn.ts](../../src/services/engine/runtime/turn.ts) 的回合思考强度直读（`aiConfig.thinkingEffort`） |
+| `ai.loop.maxRetry` | 生成级重试次数（0 = 关闭重试） | [harness/slot.ts](../../src/services/engine/harness/slot.ts) 的 RetryPolicy 下发 |
 | `ai.loop.subAgentRounds` | agent 子代理工具轮上限（无人值守子运行；主聊天回合已无计数上限，走循环病理检测） | [sub-agent.ts](../../src/services/agent/sub-agent.ts) |
 | `ai.loop.maxParallelTools` | 只读并行上限 | 见上一节（宿主许可所有者） |
 | `ai.memory.maxSessions` | 会话标签保留上限 | [session/store.ts](../../src/services/session/store.ts) |
@@ -165,7 +165,7 @@ data_root/
 
 开发构建的**运行时 CONFIG 不在数据根内**（见上表的五维区分），其余目录布局与生产一致。
 
-`screenshots/` 与 `pasted/` 是**托管聊天图片根**（枚举点 `commands/screenshot_cmd.rs` 的 `managed_chat_image_dirs`）：删除会话时，先扫描其余会话条目剔除仍被引用的图片（fork 会复制条目、共享路径），只把无人引用的路径交给宿主命令 `chat_delete_session_images`——最后一个引用会话删除后才真正清理；扫描失败按失败安全跳过本次清理。**包含判定在 Rust**，根外的任何路径（用户自己磁盘上的原图）一律不删。两个目录都**不再有数量/时间上限**（2026-10-06 取消 200 上限，只保留「删会话自动删」）；托管文件的其余回收点：粘贴草稿未发送即丢弃（撤选/切会话/退出，见 `ui/chat/model.rs` 的 `PendingDraftRelease`）与用户手动删除；崩溃/强杀不回收（接受残量）。`screenshots/` 由截图工具落盘（只有展示型，`show_to_user=false` 不写文件），`pasted/` 由聊天输入框的粘贴入口落盘，两者共用同一套原子写 + 预览授权实现。
+`screenshots/` 与 `pasted/` 是**托管聊天图片根**（枚举点 `commands/screenshot_cmd.rs` 的 `managed_chat_image_dirs`）：删除会话时，先扫描其余会话条目剔除仍被引用的图片（fork 会复制条目、共享路径），只把无人引用的路径交给宿主命令 `chat_delete_session_images`——最后一个引用会话删除后才真正清理；扫描失败按失败安全跳过本次清理。**包含判定在 Rust**，根外的任何路径（用户自己磁盘上的原图）一律不删。两个目录都**不再有数量/时间上限**（2026-10-06 取消 200 上限，只保留「删会话自动删」）；托管文件的其余回收点：粘贴草稿未发送即丢弃（撤选/切会话/退出，见 `ui/chat/model/mod.rs` 的 `PendingDraftRelease`）与用户手动删除；崩溃/强杀不回收（接受残量）。`screenshots/` 由截图工具落盘（只有展示型，`show_to_user=false` 不写文件），`pasted/` 由聊天输入框的粘贴入口落盘，两者共用同一套原子写 + 预览授权实现。
 
 Node 先执行 `initPaths()`（取 `get_runtime_paths`）；`BaseDirs` 只给真正被外部读取的目录，需要完整路径时用 `runtimePath(scope, ...segments)` 交给宿主拼接和校验。业务文件名由所属模块管理。
 
@@ -222,7 +222,7 @@ Card（人格卡）同样按需加载（2026-10-06）：只有激活卡常驻内
 
 设置窗不再有独立的 Profile / 人格卡行级列表（2026-10-06 用户裁决：与上方下拉功能重复，整面板删除）。选项数据仍复用既有请求：`profile_list` 供外观页「当前 Profile」下拉与「刷新 Profile 列表」，`personality_cards` 供 AI 页「人格卡」下拉（不新增宿主请求/命令、不新增 Node 接口）。
 
-- **管理动作的作用对象 = 当前激活项**：Profile 的「重命名 / 导出 / 删除」与 Card 的「编辑 / 重命名 / 导出 / 删除」作用于「当前 Profile / 人格卡」下拉的草稿值（`ui/settings/mod.rs` 的 `selected_profile_id` / `selected_card_id` 解析，按钮文案沿用旧口径、保留「选中」字样）；激活值不在选项列表（外部改动）时回退列表第一项，列表未加载或为空时如实报错、不拿不存在的 id 去操作。
+- **管理动作的作用对象 = 当前激活项**：Profile 的「重命名 / 导出 / 删除」与 Card 的「编辑 / 重命名 / 导出 / 删除」作用于「当前 Profile / 人格卡」下拉的草稿值（`ui/settings/ui.rs` 的 `selected_profile_id` / `selected_card_id` 解析，按钮文案沿用旧口径、保留「选中」字样）；激活值不在选项列表（外部改动）时回退列表第一项，列表未加载或为空时如实报错、不拿不存在的 id 去操作。
 - **激活仍是独立动作**：Profile / 卡片的激活仍走「角色展示 / 人格」的下拉 + 保存（`switchActiveProfile` / `switchPersonality` 唯一入口），管理动作不触发切换。
 
 ## 本地存储边界

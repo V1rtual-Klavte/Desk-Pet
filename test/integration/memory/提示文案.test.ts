@@ -2,7 +2,7 @@
 // 提示文案 —— 从 test/e2e/scenes/memory/提示文案.scene.ts 迁到 L3
 // ==========================================
 //
-// 动态提示的文案此前散在三处（context/builder、engine/harness/runtime、engine/harness/model-gateway）：
+// 动态提示的文案此前散在三处（context/builder、engine/runtime/turn、engine/harness/model-gateway）：
 // 改一处就分叉，而且没有任何断言拦它。这个测试钉住「只有一处定义」这件事本身。
 //
 // 当前时间的落位：它此前拼在 `composeDynamicPrompt` 末尾、落在 dynamic:runtime 块里。

@@ -1,5 +1,5 @@
 // 主对话回合编排（准入 → 计划相位 → 驱动 → 结算）。
-// 纯搬移自 harness/runtime.ts（T1.6 拆入 runtime 编排层），不改变行为。
+// 由原回合运行模块拆入 runtime 编排层（T1.6），不改变行为。
 
 import type { JsonValue } from "@earendil-works/pi-agent-core"
 import type { ProactiveOwner } from "@/services/agent/types"

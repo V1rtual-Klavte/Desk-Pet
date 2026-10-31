@@ -167,7 +167,7 @@ export function measureCompactionMaterial(input: {
   // AgentMessage 联合里只有工具结果带 details；地址解析只认它，别的角色一律 undefined。
   // 一次解析供三处用（阶梯条目、正文通知与 eventId 字段）：同一结果在素材里不会同时出现前缀与完整 id。
   const addresses = all.map(message => resolveAddress(message, input.addressRefs))
-  // 阶梯条目与主请求**同形同源**（runtime.ts 的适配器是同一件事在那边的一份）：index / toolName /
+  // 阶梯条目与主请求**同形同源**（`harness/message-adapters.ts` 的适配器是同一件事在那边的一份）：index / toolName /
   // text 与主请求逐字段一致，`planToolResultLadder` 的候选集因此两路永远同判。
   // preserve 的条目同样在这里取地址（它们不进候选集，但地址标注照走）。
   const entries: ToolResultLadderEntry[] = []
@@ -534,7 +534,7 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
  * 闸门输入：与主请求**同源**的阶梯输入。
  *
  * **形态无关**：判定核不收消息数组，也不自带消息形态适配器 —— entries 与 measure 都由调用方
- * （`runtime.ts`，Pi 消息形态适配的唯一落点）装配，`measure` 与主请求投影是同一个闭包。
+ * （`harness/message-adapters.ts`，Pi 消息形态适配的唯一落点）装配，`measure` 与主请求投影是同一个闭包。
  */
 export interface LadderGateInput {
   /**

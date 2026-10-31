@@ -100,7 +100,7 @@ struct RunStatePayload {
 // 发送投递归宿（`deskpet-send-outcome`）
 // ==========================================
 
-/// 投递归宿回执（`HarnessDeliveryReceipt`，`src/services/engine/harness/harness-slot.ts:290`
+/// 投递归宿回执（`HarnessDeliveryReceipt`，`src/services/engine/state/slot.ts`
 /// 的三值）：`steered`/`followup` 进入本次运行，`deferred`（nextRun）只随下一次运行消费。
 /// 宿主只按三值选中性文案，不做任何投递判定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

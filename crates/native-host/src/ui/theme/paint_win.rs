@@ -742,7 +742,7 @@ mod gdi {
         stripe_bands, ButtonFace, ButtonRole, Rect,
     };
 
-    // ── GDI 文本常量（windows-sys 0.52 未登记 DT_*；与 windows_chat.rs 同款就地定义）──
+    // ── GDI 文本常量（windows-sys 0.52 未登记 DT_*；与 windows_chat/ 同款就地定义）──
     const DT_CENTER: u32 = 0x0000_0001;
     const DT_VCENTER: u32 = 0x0000_0004;
     const DT_SINGLELINE: u32 = 0x0000_0020;

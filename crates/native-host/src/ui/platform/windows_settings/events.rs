@@ -1,4 +1,4 @@
-//! Windows 设置窗的窗口过程、消息处理与控件动作（自 `windows_settings.rs` 拆出）。
+//! Windows 设置窗的窗口过程、消息处理与控件动作（自原 `windows_settings` 单文件拆出）。
 
 use super::*;
 use super::dialogs::{confirm_dangerous, confirm_dangerous_for_key, sync_document_dialog};

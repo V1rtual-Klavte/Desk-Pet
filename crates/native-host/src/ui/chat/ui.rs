@@ -617,7 +617,7 @@ impl ChatUi {
         self.schedule_refresh();
     }
 
-    /// Node → 宿主事件的路由入口（事件名 + JSON 载荷）—— `ipc/bridge.rs` 的事件
+    /// Node → 宿主事件的路由入口（事件名 + JSON 载荷）—— `ipc/bridge/events.rs` 的事件
     /// 广播订阅（`HostBridge::subscribe_events` 的进程内消费者）的落点。
     ///
     /// 按事件名经 [`ChatEvent::from_wire`] 解析后交给 [`Self::apply_event`]：

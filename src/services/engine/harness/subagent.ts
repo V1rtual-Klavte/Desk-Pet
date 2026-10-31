@@ -1,5 +1,5 @@
 // 子代理内核：delegation、Plan、主动与定时工作共用的唯一子运行出口。
-// 纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语），不改变行为。
+// 由原回合运行模块抽出（T1.5），不改变行为。
 
 import { contentText } from "@earendil-works/pi-ai"
 import { SUB_AGENT_DEFAULT_MAX_TOOL_CALLS, SUB_AGENT_DEFAULT_TIMEOUT_MS } from "@/services/agent/timeouts"
@@ -15,7 +15,7 @@ import { createTurnKernel } from "./turn-kernel"
 import type { TurnKernel } from "./turn-kernel"
 import { createTurnSpec } from "./turn-spec"
 
-// 日志分类沿用原 runtime.ts 的 PiRuntime：纯搬移，不改日志口径。
+// 日志分类沿用拆分前的 `PiRuntime`：纯搬移，不改日志口径。
 const log = createLogger("PiRuntime")
 
 /** Only actual successful tool receipts supply source references; never assistant prose. */

@@ -11,7 +11,7 @@
 // 见 ui/chat/paste.rs）共用同一实现；两个目录同属「托管聊天图片根」，
 // 删会话连带清理的边界集合由 `managed_chat_image_dirs` 唯一枚举。
 // 托管图片不按数量/时间淘汰（2026-10-06 取消 200 上限）：回收只有三种力量 ——
-// 删会话（`chat_delete_session_images`）、粘贴草稿丢弃回滚（`ui/chat/model.rs`）、
+// 删会话（`chat_delete_session_images`）、粘贴草稿丢弃回滚（`ui/chat/model/mod.rs`）、
 // 用户手动删文件。
 //
 // transport 无关的普通函数：窗口状态经 WindowPort、预览授权经 AssetScopePort、

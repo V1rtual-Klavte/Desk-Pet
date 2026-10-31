@@ -4,7 +4,7 @@
 //
 // 拆分（执行契约 §4.1、原生宿主迁移过程记录 §9.4 第 7/35 条）：
 // - 本文件只做**本进程**的 revision 分发：runtime 订阅它，在记忆被改动时中止陈旧投影
-//   （已发出的输入不可召回，`engine/harness/runtime.ts`）。
+//   （已发出的输入不可召回，`engine/runtime/turn.ts`）。
 // - 跨窗口同步（`deskpet-memory-revision-changed/-applied`）属于 **纯 UI 的窗口间协调**，
 //   判据 (b) 不进 Node 图。单 Node 架构下所有提交都发生在
 //   本进程，不需要事件回环；若原生 UI 仍需要跨窗口通知，由原生 UI 内部承接。

@@ -37,7 +37,7 @@ export type {
 
 // ── Plan 确认桥接（会话键控）──
 // requestPlanConfirm/requestPlanStepDecision 只由 runtime 与同域的计划提案模块
-// （`plan/proposal.ts`）调用，不经 barrel；面板与测试替身按 planId 应答，
+// （`runtime/plan-proposal.ts`）调用，不经 barrel；面板与测试替身按 planId 应答，
 // 并读 planConfirmState 的只读视图。
 export {
   abortRunningPlan, bindRunningPlan, cancelSessionPlans, clearRunningPlan,

@@ -7,7 +7,7 @@
 // 这里只有类型，没有实现；传输（socket/pipe、帧编解码、背压、blob 编解码）在 W2 落地。
 //
 // 权威来源：
-// - 命令清单与参数名：Rust `crates/native-host/src/host/dispatch.rs` 的 `NativeDispatcher`
+// - 命令清单与参数名：Rust `crates/native-host/src/host/dispatch/` 的 `NativeDispatcher`
 //   分派表（142 条，逐条对应本文件的 `HostCommandMap`），实现落在 `crates/native-host/src/`
 //   各域。参数是 camelCase 线格式（Rust `max_bytes` → `maxBytes`）。TS 调用点
 //   （138 处 / 35 文件）只用于核对「谁在用、返回类型被当成什么」，不作为签名依据。
@@ -589,7 +589,7 @@ export type HostCommandMap = {
     args: { clips: { welcome: string | null; popup: string | null; retract: string | null } }
     result: void
   }
-  // ── 应用生命周期（host/dispatch.rs 分派 + main.rs 退出序列）──
+  // ── 应用生命周期（host/dispatch/ 分派 + main.rs 退出序列）──
   /** 原生 UI：重启应用（经 LifecyclePort 的统一退出/重启序列）。 */
   app_restart: { args: Record<string, never>; result: void }
 
@@ -1832,32 +1832,32 @@ export type HostEventMap = {
   [HOST_EVENT_BASH_BACKGROUND_FINISHED]: BashBackgroundFinishedPayload
 
   // ── 聊天流式与运行状态（Node → UI）──
-  // 生产者：src/services/engine/harness/runtime.ts 的 emitUiEvent（best-effort；
+  // 生产者：engine 的 `emitUiEvent`（定义在 harness/titlebar.ts，best-effort；
   // 失败只影响刷新，不影响回合）。事件经 HostBridge 到达原生 UI 后，
   // 「已提交读模型」仍是最终收敛点（§4.1）。
   /**
-   * 助手流式增量（runtime.ts）。消费方是原生 UI 聊天域（分泡渲染前的裸增量）。
+   * 助手流式增量（harness/turn-sinks.ts）。消费方是原生 UI 聊天域（分泡渲染前的裸增量）。
    * TODO(W0): 生产者/消费者两侧都只有内联字面量，没有可 import 的命名 payload 类型；
    *   且消费端今天把字段都当可选（防御式）。W4a 应命名并导出，冻结为必填。
    */
   [HOST_EVENT_ASSISTANT_STREAM]: { sessionId: string; delta: string }
-  /** 流式收尾（runtime.ts:1477/1484）。TODO(W0): 同上，无命名 payload 类型。 */
+  /** 流式收尾（harness/turn-sinks.ts）。TODO(W0): 同上，无命名 payload 类型。 */
   [HOST_EVENT_ASSISTANT_STREAM_END]: { sessionId: string }
   /**
-   * 阶段提示（runtime.ts:1430）。只发**语义 key**，文案由 UI 按当前 Card 取
+   * 阶段提示（harness/titlebar.ts）。只发**语义 key**，文案由 UI 按当前 Card 取
    * （getSimpleStage）—— 事件不携带角色台词；类型 key 复用 @/services/personality 的
    * SimpleStageKey。
    */
   [HOST_EVENT_STAGE_HINT]: { sessionId: string; stage: SimpleStageKey }
   /**
-   * 工具开始/结束（runtime.ts）。消费方是原生 UI 聊天域。
+   * 工具开始/结束（harness/turn-spec.ts、harness/turn-sinks.ts）。消费方是原生 UI 聊天域。
    * TODO(W0): 无命名 payload 类型，两侧都是内联字面量；W4b 命名并导出。
    */
   [HOST_EVENT_TOOL_EXECUTING]: { toolId: string; toolName: string }
   /** TODO(W0): 同 tool-executing，无命名 payload 类型。 */
   [HOST_EVENT_TOOL_COMPLETED]: { toolId: string; toolName: string; success: boolean }
   /**
-   * 运行态通知（runtime.ts）。原生 UI 聊天域只据此显示/收起停止按钮；
+   * 运行态通知（runtime/turn.ts、runtime/resume.ts）。原生 UI 聊天域只据此显示/收起停止按钮；
    * 真相源仍是 Node 的运行槽，UI 不因此持有第二份运行状态。
    * TODO(W0): 无命名 payload 类型；W4a 命名并导出。
    */
@@ -1880,7 +1880,7 @@ export type HostEventMap = {
   }
   /**
    * 分泡揭示进度（断链 D；生产者 `src/services/native-ui/reveal-push.ts`，是 humanizer
-   * 调度器每次状态变化的投影）。形状 = Rust `crates/native-host/src/ui/chat/model.rs::
+   * 调度器每次状态变化的投影）。形状 = Rust `crates/native-host/src/ui/chat/model/mod.rs::
    * RevealProgress`（逐字段同名）。`HumanizerRevealState.typingStartedAt` 是调度器内部
    * 计时原点，不进行载荷。真相源仍是 Node 调度器：消费端按 `revealed` 裁剪
    * `visible_parts`，不重算节奏；每次发布语义都不同（逐泡推进 / typing 终态），
@@ -1914,7 +1914,7 @@ export type HostEventMap = {
     forceStepByStep: boolean
   }
   /**
-   * 计划步骤进度（runtime.ts）。消费方是原生 UI 的计划确认面板，按
+   * 计划步骤进度（runtime/plan-phase.ts、runtime/plan-proposal.ts）。消费方是原生 UI 的计划确认面板，按
    * stepId/total/status 消费；desc 是生产端补充说明，一并冻结。
    * TODO(W0): 无命名 payload 类型；status 枚举没有共享类型，W4a 命名并导出。
    */

@@ -128,7 +128,7 @@ pub struct PanelRow {
 pub struct ListPanel {
     pub id: &'static str,
     pub title: &'static str,
-    /// 面板说明：静态文案，由 `ui/settings/mod.rs` 的 `*_panels()` 组装。
+    /// 面板说明：静态文案，由 `ui/settings/ui.rs` 的 `*_panels()` 组装。
     pub hint: String,
     /// 读取失败原因；`None` 且 `loaded=true` 时空列表才是「真的没有」。
     pub error: Option<String>,

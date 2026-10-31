@@ -4,7 +4,7 @@
 //
 // 检测面：`generateReply` 在「结算正文缺区块 + Card 声明了 updateBy=llm 变量 + 本轮具备
 // 写入资格」时回传 `runtimeDataMissing`；提醒面：会话级 mark/clear 状态供 Harness 在
-// 下一回合注入一句提醒（接线在 engine/harness/runtime.ts，L2 不 import 该模块）。
+// 下一回合注入一句提醒（接线在 engine/runtime/turn.ts，L2 不 import 该模块）。
 //
 // 模型「漏发区块」这一半是模型行为，L2 不复现；这里验证的是引擎侧的判定与状态：
 // 条件齐全才判违约，任一条件缺失都不打扰。

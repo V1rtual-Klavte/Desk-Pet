@@ -59,7 +59,7 @@ function settle(request: ConfirmRequest, decision: PermissionConfirmation): void
 /**
  * PermissionKernel 使用的有身份确认入口。**等待本身没有超时**（2026-10-06 用户裁决：
  * 选择类弹窗不留超时，用户想多久想多久）—— 等待期间该会话的回合墙钟与工具超时停表
- *（`user-wait.ts`）。原先的 5 分钟超时在 2026-10-06 一并删除；它兼的职责（「面板没送到
+ *（`state/user-wait.ts`）。原先的 5 分钟超时在 2026-10-06 一并删除；它兼的职责（「面板没送到
  * 就没完没了」）改由**显式逃生口**承接，每一条都在各自的层上判定：
  *   · 确认事件发射失败 → 原生 UI 桥按拒绝立即结算（`native-ui/permission-confirm.ts`）；
  *   · 新请求顶掉旧请求（单槽语义）→ 旧请求按拒绝结算（本函数下一行）；

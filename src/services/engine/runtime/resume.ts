@@ -1,5 +1,5 @@
 // 待处置计划的继续与丢弃入口。
-// 纯搬移自 harness/runtime.ts（T1.6 拆入 runtime 编排层），不改变行为。
+// 由原回合运行模块拆入 runtime 编排层（T1.6），不改变行为。
 
 import type { PlanState, PlanStepRecord } from "@/services/engine/protocol"
 import { createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/protocol"

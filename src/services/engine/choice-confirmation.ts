@@ -52,7 +52,7 @@ export type ChoiceResolution =
  * （ingress 侧投递成功后结算，见 `cancelSessionChoices`）；`session_switched` 切会话
  * 含 signal abort，用户停止回合走同一条；`not_active` 会话被关闭；`emit_failed`
  * 提问事件发不出去）。
- * 没有 `timeout`（2026-10-06 用户裁决：选择类弹窗不留超时，`user-wait.ts` 的等待豁免）；
+ * 没有 `timeout`（2026-10-06 用户裁决：选择类弹窗不留超时，`state/user-wait.ts` 的等待豁免）；
  * 也没有 `ui_unavailable`：选择面板常驻注册、没有「监听注册失败」这条产生路径
  *（与计划确认的六值口径刻意不同 —— 不留走不到的死分支）。
  */
@@ -78,7 +78,7 @@ export const choiceState = reactive<{ pending: PendingChoiceView[] }>({ pending:
 interface ChoiceEntry {
   view: PendingChoiceView
   resolve: (outcome: ChoiceOutcome) => void
-  /** 回合预算豁免的等待登记（`user-wait.ts`）：结算（任何原因）即 release。 */
+  /** 回合预算豁免的等待登记（`state/user-wait.ts`）：结算（任何原因）即 release。 */
   releaseWait: () => void
   signalCleanup?: () => void
 }
@@ -186,7 +186,7 @@ export interface RequestChoiceInput {
 
 /**
  * 请求用户做一次选择（按 requestId 键控）。**没有等待超时**（2026-10-06 用户裁决：
- * 选择类弹窗不留超时）—— 等待期间该会话的回合墙钟与工具超时停表（`user-wait.ts`），
+ * 选择类弹窗不留超时）—— 等待期间该会话的回合墙钟与工具超时停表（`state/user-wait.ts`），
  * 用户想多久想多久。非答复归宿只来自明确事件：`signal` 的 abort（用户停止回合 /
  * 会话切换）按 `session_switched`、事件发射失败按 `emit_failed`、`user` 由面板回执
  * resolve、`not_active` 由会话关闭触发、`user_replied` 由用户直发消息的 ingress 结算

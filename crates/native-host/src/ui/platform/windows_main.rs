@@ -83,7 +83,7 @@ const NAV_SETTINGS_WIDTH: i32 = 34;
 /// 与 macOS 一致：「×」+「设置」+ 间距与内边距。
 const TITLEBAR_RIGHT_RESERVE: i32 = 72;
 /// `SetBkMode` 的 TRANSPARENT（1）：windows-sys 的 `Gdi::TRANSPARENT` 类型是 u32，
-/// 该 API 要 i32，按 `windows_chat.rs` 同款就地定义（避免类型不匹配）。
+/// 该 API 要 i32，按 `windows_chat/` 同款就地定义（避免类型不匹配）。
 const TRANSPARENT: i32 = 1;
 
 /// 全窗宽顶栏的展示状态（主线程唯一；随主窗销毁清空）。
@@ -154,12 +154,12 @@ fn dpi_scale(hwnd: HWND) -> f64 {
     f64::from(dpi) / f64::from(DPI_BASELINE)
 }
 
-/// 逻辑像素 → 物理像素（与 `windows_chat.rs` 同口径的取整）。
+/// 逻辑像素 → 物理像素（与 `windows_chat/` 同口径的取整）。
 fn scaled(value: i32, scale: f64) -> i32 {
     (f64::from(value) * scale).round() as i32
 }
 
-/// 逻辑像素（f64，品牌/状态位这类估算值）→ 物理像素（同 `windows_chat.rs::scaled_f`）。
+/// 逻辑像素（f64，品牌/状态位这类估算值）→ 物理像素（同 `windows_chat/mod.rs::scaled_f`）。
 fn scaled_f(value: f64, scale: f64) -> i32 {
     (value * scale).round() as i32
 }
@@ -571,7 +571,7 @@ fn create_titlebar(main: HWND) {
 ///
 /// **顶栏外投影（`--barsh` 的非 inset 部分）不在这里画**：本窗是顶栏自身的子窗口，
 /// GDI 画不出客户区之外的像素；能承载该投影的是下方的聊天列 DC 与舞台表面，实际
-/// 画点取设计稿 `.bar` 的原位 —— `windows_chat.rs::paint_shell` 在聊天列 DC 上画
+/// 画点取设计稿 `.bar` 的原位 —— `windows_chat/paint.rs::paint_shell` 在聊天列 DC 上画
 /// 投影带（条下 1px 露头在标签条上可见）。舞台列是分层渲染表面、不参与 GDI 主题
 /// 绘制，这一半没有画点（平台差异，如实登记）。
 unsafe fn paint_titlebar(bar: HWND, hdc: HDC) {
@@ -1106,7 +1106,7 @@ mod tests {
     }
 
     /// 条内几何收口到共享模块：本文件不得再落第二份条高/品牌槽/状态位起点定义
-    /// （旧实现曾在 `windows_chat.rs` 与这里各持一份镜像常量），且必须消费共享面。
+    /// （旧实现曾在 `windows_chat/` 与这里各持一份镜像常量），且必须消费共享面。
     /// 与 macOS `macos_main.rs` 的同名守卫对称 —— 本文件在 macOS 上不参与编译，
     /// 由 CI 的 windows job 执行（本机只做离线核对，见模块头）。
     #[test]

@@ -1,5 +1,5 @@
 // 回合内核：一次运行冻结的模型/能力/权限与快照接线；主回合与子代理复用同一内核。
-// 纯搬移自 harness/runtime.ts（T1.5 抽出 harness 原语），不改变行为。
+// 由原回合运行模块抽出（T1.5），不改变行为。
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
@@ -22,7 +22,7 @@ import { readContextEpoch } from "./delivery"
 import type { PiModel } from "./model-gateway"
 import { harnessSlots } from "./slot-registry"
 
-// 日志分类沿用原 runtime.ts 的 PiRuntime：纯搬移，不改日志口径。
+// 日志分类沿用拆分前的 `PiRuntime`：纯搬移，不改日志口径。
 const log = createLogger("PiRuntime")
 
 /** 一次运行的宿主侧共享上下文；主回合与子代理复用同一套投影/快照/审计。 */

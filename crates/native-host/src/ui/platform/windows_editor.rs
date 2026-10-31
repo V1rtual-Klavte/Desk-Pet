@@ -124,7 +124,7 @@ const TOP_BUTTON_W: i32 = 76;
 const TOP_BUTTON_H: i32 = 26;
 
 /// `SetBkMode` 的 TRANSPARENT：windows-sys 里 `Gdi::TRANSPARENT` 是 u32，该 API 要 i32
-/// （与 `windows_chat.rs` 同款就地定义）。
+/// （与 `windows_chat/` 同款就地定义）。
 const TRANSPARENT: i32 = 1;
 
 fn wide(value: &str) -> Vec<u16> {
@@ -1525,7 +1525,7 @@ pub(crate) fn confirm_close(hwnd: HWND) -> bool {
 // ==========================================
 //
 // 为什么不用 MessageBoxW：本面板要「可滚动只读提示词 + 复制到剪贴板」，MessageBox
-// 只能给系统固定按钮（与 `windows_chat.rs` 的通用提示对话框同一判断）。
+// 只能给系统固定按钮（与 `windows_chat/` 的通用提示对话框同一判断）。
 //
 // **非模态**（与 macOS 的 transient NSPopover 对称）：内容是只读说明 + 提示词 +
 // 复制，没有「必须先回答」的语义；模态（禁用属主 + 嵌套消息循环）会把整个应用
@@ -2298,7 +2298,7 @@ fn window_text(hwnd: HWND) -> String {
 mod tests {
     use super::*;
 
-    /// 源码级守门：`with_state` 的闭包里不得再借 STATE（与 `windows_settings.rs` 同款，
+    /// 源码级守门：`with_state` 的闭包里不得再借 STATE（与 `windows_settings/` 同款，
     /// 扫描器共用 [`crate::ui::platform::windows::source_guard`]）。
     ///
     /// 2026-10-07 修掉的一处真实缺陷就是这个形状（切 Profile 后的重排在借用里调了

@@ -18,7 +18,7 @@
 //!
 //! # 错误保真
 //!
-//! 失败一律返回结构化 [`AppError`]：`code`/`message` 经 `ipc/bridge.rs` 的
+//! 失败一律返回结构化 [`AppError`]：`code`/`message` 经 `ipc/bridge/host.rs` 的
 //! `respond_app_err` → `WireError` 原样过 IPC（`{code,message}`），**不降级为字符串**。
 //! 本模块不把错误折成成功、不伪造默认值；未知方法只回「命令矩阵外的方法」这一
 //! 明确错误（产品宿主不静默忽略任何调用）。

@@ -1,7 +1,7 @@
 //! 记忆库的命令面：transport 无关的普通函数。
 //!
 //! 每个函数只做三件事：参数收窄、调用唯一 Store、把结果原样返回。
-//! 业务规则一律留在 `store.rs`，命令层不复制第二份判定。
+//! 业务规则一律留在 `store/`，命令层不复制第二份判定。
 //! IPC 层只做参数提取后转发，不含业务判定。
 
 use super::conversation::{ConversationEventTime, ConversationIndexEntry, ConversationRecordTime};

@@ -9,11 +9,11 @@
 //
 // 两条硬规则：
 //   1. 未登记命令一律抛错，**任何分支都不返回 null 冒充成功**；
-//   2. 参数名按 Rust 分派侧（`crates/native-host/src/host/dispatch.rs` 与
+//   2. 参数名按 Rust 分派侧（`crates/native-host/src/host/dispatch/` 与
 //      `commands/`）的 camelCase 键逐个抄写，取不到就抛错 ——
 //      参数名写错时静默拿到 undefined，只会读写错路径，是最难查的一类假通过。
 //
-// 签名以 `crates/native-host/src/{host/dispatch.rs,commands/}` 下的源文件为准，每条
+// 签名以 `crates/native-host/src/{host/dispatch/,commands/}` 下的源文件为准，每条
 // handler 上注明出处。
 // [保留已登记 §4.2] 本文件在 Node 侧运行，不能 import @/services/logger|error（会拖进
 // 宿主桥与浏览器全局）；需要留痕时写 stderr，不污染 stdout（vitest 用它输出报告）。

@@ -20,7 +20,7 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
 - `AppError` 的 `code()` 是**跨语言错误码的单一真相源**：Node 侧 `HostCommandError.code` 与它同表，
   新增变体要同步（见 §7 同步义务表）。
 - 解析外部载荷（IPC 回执、线协议帧、YAML）时：**缺字段/类型不符即如实报错，不给「静默兜底值」**。
-  口径样板见 `ui/ports.rs::parse_stage_profile` 顶部注释。唯一允许的例外是**显式声明为可选**
+  口径样板见 `ui/ports/mod.rs::parse_stage_profile` 顶部注释。唯一允许的例外是**显式声明为可选**
   且语义上「缺省 = 该状态」的字段（如各面板面板的 `history` 缺省），这类必须在就地注释写明理由。
 
 ## 2. 平台与条件编译
@@ -75,7 +75,7 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
 | 域 | 职责 | 备注 |
 |---|---|---|
 | `paths/` | 数据根、域内路径拼接与校验、种子 | 路径规则的唯一实现点 |
-| `host/` | 分派器、端口契约（`mod.rs`）、监督器、事件出口 | 命令矩阵的 Rust 半边在 `host/dispatch.rs` |
+| `host/` | 分派器、端口契约（`mod.rs`）、监督器、事件出口 | 命令矩阵的 Rust 半边在 `host/dispatch/` |
 | `ipc/` | 线协议（信封/帧/限额）、传输、blob | 字节布局规范在 `ipc/mod.rs` 模块文档 |
 | `commands/` | 命令实现（按域分子模块） | 只做域内相对路径，见 §4 |
 | `ui/` | 原生 UI 域；`platform/` 是两平台实现，其余为平台无关的模型/状态/面板 | 见 §5.1 |
@@ -92,7 +92,7 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
 ### 5.1 `ui/` 的硬约束
 
 - `platform/` 下**只有平台 API 调用**，业务逻辑放平台无关模块（`chat/`、`settings/`、`editor/`、`state.rs`、
-  `stage.rs`、`titlebar.rs` 等），两平台共享同一份模型 —— 不要在 `macos_chat.rs` 里写状态机。
+  `stage.rs`、`titlebar.rs` 等），两平台共享同一份模型 —— 不要在 `macos_chat/` 里写状态机。
   例外：平台视图的局部状态（如聊天分页游标）可以留在平台聊天文件；不得在平台文件承载跨窗口共享状态或领域状态机。
 - **`define_class!` 里自定义 target-action 必须放在裸 `impl 类名 {}` 块**：写进 `unsafe impl <协议>` 块
   会让 objc2 拿它去协议定义里核对，找不到就在**类注册期 panic**
@@ -136,7 +136,7 @@ IPC 命令矩阵的 Rust 半边、模块落位、测试与日志、同步义务�
 
 | 改动 | 必须同步 |
 |---|---|
-| 新增/改名/删参 `HostCommandMap` 命令 | `src/services/host/types.ts`（逐字）→ `host/dispatch.rs` 分派臂 → `docs/current/system-design.md` 的条数 → 契约 `sourceFiles` + `sourceHash` |
+| 新增/改名/删参 `HostCommandMap` 命令 | `src/services/host/types.ts`（逐字）→ `host/dispatch/` 分派臂 → `docs/current/system-design.md` 的条数 → 契约 `sourceFiles` + `sourceHash` |
 | `AppError` 新增/改名变体 | `code()` 字符串 → TS 侧同表的错误码 → 契约 |
 | 线协议字段/帧布局（`ipc/`） | `ipc/mod.rs` 的布局注释 → Node 侧 `src/services/host/wire.ts` → 帧相关单测与契约 |
 | `ui/settings/schema.rs` 字段 | [根 AGENTS 的配置同步链](../../AGENTS.md#单一真相源与模块落位) |

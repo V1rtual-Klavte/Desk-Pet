@@ -88,7 +88,7 @@
 //!
 //! 消息行动作（记住这条）：入口 = **聊天消息右键菜单**（气泡上的按钮已于 2026-10-05
 //! 按用户规则退场，入口改由右键承接；平台层只对用户消息挂项，判据 =
-//! `model.rs::MessageSnapshot::remember_event_id`，不在平台层复刻）。`RememberMessage`
+//! `model/mod.rs::MessageSnapshot::remember_event_id`，不在平台层复刻）。`RememberMessage`
 //! 经**有界 `request`**（[`remember_request`]）映射到 `chat_remember_message`。
 //! 可信来源复核（origin / taint / eligibleForMemory 与 user_ui_current 二次门禁）
 //! 由 Node 记忆域裁定，宿主只提供入口、不复刻判定；不可信/来源失效由 Node

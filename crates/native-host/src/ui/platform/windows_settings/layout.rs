@@ -1,4 +1,4 @@
-//! Windows 设置窗的布局几何与控件排布（自 `windows_settings.rs` 拆出）。
+//! Windows 设置窗的布局几何与控件排布（自原 `windows_settings` 单文件拆出）。
 
 use super::*;
 use super::render::{notice_overlay_geometry, set_combo_heights};

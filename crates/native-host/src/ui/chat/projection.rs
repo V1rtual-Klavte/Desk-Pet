@@ -7,7 +7,7 @@
 //!
 //! **接线待 W3c/W4 收口**：承载通道（IPC 事件名/命令名）与最终信封由领域事件端口
 //! 的并发代理定义；本文件只固定 UI 侧需要的载荷形状，届时以对齐后的形状为准改名，
-//! 不保留兼容读取。UI 收到整帧即覆盖显示态（见 `model.rs`）。
+//! 不保留兼容读取。UI 收到整帧即覆盖显示态（见 `model/mod.rs`）。
 
 use serde::Deserialize;
 
@@ -293,7 +293,7 @@ pub struct ProjectedRecoveredPlan {
 /// 一帧完整投影：当前会话 + 全部消息 + 语义文案表 + 面板读模型。
 ///
 /// 面板字段都是 `Option`，但**缺省语义按字段性质分两类**（投影是整帧读模型；
-/// 消费方 `model.rs::apply_projection` 即按这里的划分解释，不能一概而论）：
+/// 消费方 `model/mod.rs::apply_projection` 即按这里的划分解释，不能一概而论）：
 ///
 /// - **会话/视图态**（`queue` / `interrupted` / `recovered_plans` / `slash_commands` /
 ///   `default_delivery`）：**随帧权威，缺省即清空**。这些值描述「此刻这个会话/界面
@@ -316,7 +316,7 @@ pub struct ProjectedRecoveredPlan {
 /// defaultDelivery / prompts / usage）必须并入这同一条 builder（同一帧）**，否则另一条
 /// 生产者轮流发帧会互相清空 —— 每次会话变化一帧不带 `messages`，就会把正文抹掉。
 ///
-/// 切会话时计划/权限面板由 `model.rs::apply_projection` 清空（事件驱动面板，不属于
+/// 切会话时计划/权限面板由 `model/mod.rs::apply_projection` 清空（事件驱动面板，不属于
 /// 本投影）；队列/中断/待处置计划/slash 注册表由上面的「缺省即清空」统一收纳。
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -362,7 +362,7 @@ pub struct TranscriptProjection {
     #[serde(default)]
     pub default_delivery: Option<String>,
     /// 会话标签列表（`sessions` 的整表投影）；None = 本帧不携带 → **保持现值**
-    /// （窗口级视图数据；语义与理由见结构体文档与 `model.rs::apply_projection`）。
+    /// （窗口级视图数据；语义与理由见结构体文档与 `model/mod.rs::apply_projection`）。
     #[serde(default)]
     pub sessions: Option<Vec<ProjectedSession>>,
     /// 会话历史读模型（`refreshSessionHistory()` 的结果）；None = 本帧不携带 →

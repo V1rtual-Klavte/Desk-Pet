@@ -269,7 +269,7 @@ export async function prepareConversationCapabilities(
       log.warn(`MCP 获取失败: ${name} | ${acquired.error ?? "未知错误"}`)
     }
   }
-  // 每回合的 Skill 目录指纹核对挂在这里：主回合（runtime.ts 的 runPiAgentTurn）、续跑与 Plan 恢复
+  // 每回合的 Skill 目录指纹核对挂在这里：主回合（runtime/turn.ts 的 runPiAgentTurn）、续跑与 Plan 恢复
   // 都经本函数进入，稳态恰好 1 次 Rust IPC（指纹没变就复用 store 的清单）。磁盘一变即重载，
   // 所以「实时」由每回合核对保证 —— 没有 TTL、不需要重启；决策 8 删总开关后本入口不再把关。
   const { syncSkillCatalog } = await import("@/services/skill")
