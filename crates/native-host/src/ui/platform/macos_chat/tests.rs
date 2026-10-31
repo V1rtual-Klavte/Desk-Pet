@@ -1,19 +1,8 @@
 use super::content::{panel_button_action_face, session_tab_pill_width};
 
 /// 生产源码（不含测试模块）：源码级守门跨拆分后的全部文件扫描。
-const SOURCES: [&str; 8] = [
-    include_str!("mod.rs"),
-    include_str!("window.rs"),
-    include_str!("stack.rs"),
-    include_str!("input.rs"),
-    include_str!("content/mod.rs"),
-    include_str!("content/view.rs"),
-    include_str!("content/transcript.rs"),
-    include_str!("content/panels.rs"),
-];
-
-fn source_text() -> String {
-    SOURCES.concat()
+fn source_text() -> &'static str {
+    crate::ui::platform::test_sources::macos_chat()
 }
 
 use super::*;
@@ -471,7 +460,7 @@ fn 聊天列不再自建顶栏() {
             "旧顶栏实现残留「{name}」：{needle}"
         );
     }
-    let production = source.as_str();
+    let production = source;
     assert!(
         production.contains(concat!("crate::ui::titlebar::", "HEIGHT")),
         "标签条与顶部预留必须消费共享条高（顶部带归全窗宽顶栏）"
@@ -826,7 +815,7 @@ fn 泡量测保持单遍_源码守门() {
         body.contains("used_width"),
         "量测必须把最宽行宽一并返回（泡宽用它，见 build_bubble_view）"
     );
-    let production = source.as_str();
+    let production = source;
     assert!(
         !production.contains("fn prose_used_width"),
         "二次量测函数 prose_used_width 已合并删除，不得回潮"
@@ -840,7 +829,7 @@ fn 泡量测保持单遍_源码守门() {
 #[test]
 fn 气泡正文宽度走共享整点函数_源码守门() {
     let source = source_text();
-    let production = source.as_str();
+    let production = source;
     assert!(
         production.contains("bubble_inner_width(max_width)"),
         "泡量测/渲染宽度必须走共享 `bubble_inner_width`（整点取整）"

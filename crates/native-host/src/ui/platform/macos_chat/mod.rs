@@ -138,19 +138,6 @@ pub(crate) use window::{
     set_main_pane_visible, show_dialog, viewer_set_frame,
 };
 
-/// 拆分后的生产源码并集（不含测试模块）：供跨文件源码守门拼接扫描。
-#[cfg(test)]
-pub(crate) const SOURCE_TEXT: &str = concat!(
-    include_str!("mod.rs"),
-    include_str!("window.rs"),
-    include_str!("stack.rs"),
-    include_str!("input.rs"),
-    include_str!("content/mod.rs"),
-    include_str!("content/view.rs"),
-    include_str!("content/transcript.rs"),
-    include_str!("content/panels.rs"),
-);
-
 // ==========================================
 // 尺寸与排版常量（窗口形态的裁定：窄高聊天栏，置于主窗之上、编辑器之下）
 // ==========================================

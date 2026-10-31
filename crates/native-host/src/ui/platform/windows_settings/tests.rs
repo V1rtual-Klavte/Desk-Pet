@@ -18,16 +18,8 @@ use super::render::{
     notice_overlay_geometry, row_button_title, row_main_kind, row_secondary_title, set_combo_heights,
 };
 
-const PRODUCTION_SOURCES: &[&str] = &[
-    include_str!("mod.rs"),
-    include_str!("layout.rs"),
-    include_str!("render.rs"),
-    include_str!("events.rs"),
-    include_str!("dialogs.rs"),
-];
-
-fn production_source() -> String {
-    PRODUCTION_SOURCES.concat()
+fn production_source() -> &'static str {
+    crate::ui::platform::test_sources::windows_settings()
 }
 
 // ==========================================

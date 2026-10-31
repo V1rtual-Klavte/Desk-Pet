@@ -12,18 +12,8 @@ use super::controls::*;
 use super::layout::*;
 
 /// 拆分后的平台源码清单：源码级门禁扫描整个目录，等价于拆分前的单文件扫描。
-const SOURCES: &[&str] = &[
-    include_str!("mod.rs"),
-    include_str!("layout.rs"),
-    include_str!("controls.rs"),
-    include_str!("content/mod.rs"),
-    include_str!("content/build.rs"),
-    include_str!("content/edit.rs"),
-    include_str!("content/document.rs"),
-];
-
-fn source_text() -> String {
-    SOURCES.concat()
+fn source_text() -> &'static str {
+    crate::ui::platform::test_sources::macos_settings()
 }
 
 #[test]

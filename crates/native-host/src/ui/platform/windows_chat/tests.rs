@@ -19,18 +19,6 @@ use super::window::*;
 use super::wndproc::*;
 
 /// 拆分后的生产源码（按下方固定顺序拼接；不含 `tests.rs` 自身）。
-const PRODUCTION_SOURCES: &[&str] = &[
-    include_str!("mod.rs"),
-    include_str!("window.rs"),
-    include_str!("wndproc.rs"),
-    include_str!("layout.rs"),
-    include_str!("paint.rs"),
-    include_str!("transcript.rs"),
-    include_str!("panels.rs"),
-    include_str!("input.rs"),
-    include_str!("dialogs.rs"),
-];
-
 /// ownerdraw 按钮必须走**承载窗底重放**：token 近似补角/补底正是用户 2026-10-07
 /// 实拍「按钮后面一块灰色矩形底」的根因（近似色比条区真实像素暗 20+ 灰阶）。
 /// 源码级守门（与 `windows_settings` 的同名测试同款）：四条绘制入口都得先
@@ -149,10 +137,7 @@ fn rtf_回调分段推进到真正的文件末尾() {
 /// 拆分后的生产源码（`tests.rs` 以外各子文件拼接；源码级守门断言都在这段上做，
 /// 否则会命中测试自己的字面量 —— 那种断言永远为真、等于没写）。
 fn production_source() -> &'static str {
-    static PRODUCTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PRODUCTION
-        .get_or_init(|| PRODUCTION_SOURCES.concat())
-        .as_str()
+    crate::ui::platform::test_sources::windows_chat()
 }
 
 /// 从源码里截出某个函数的函数体（大括号配对；守门断言用）。

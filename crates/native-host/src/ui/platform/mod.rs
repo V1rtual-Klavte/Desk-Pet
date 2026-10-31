@@ -37,6 +37,10 @@ pub(crate) mod windows_main;
 #[cfg(target_os = "windows")]
 pub(crate) mod windows_settings;
 
+// 平台中立的生产源码清单：跨平台源码门禁在任意目标上都能扫描两平台实现。
+#[cfg(test)]
+pub(crate) mod test_sources;
+
 #[cfg(target_os = "macos")]
 pub(crate) use macos as imp;
 #[cfg(target_os = "windows")]
