@@ -34,11 +34,10 @@ import { readActiveAttemptEvidence } from "@/services/engine/harness/delivery"
 import { formatError } from "@/services/error"
 import { createTurnKernel } from "@/services/engine/harness/turn-kernel"
 import { assembleConversationTools, createTurnSpec } from "@/services/engine/harness/turn-spec"
-import { defersTitlebarReleaseToReveal, emitStageHint, processTitlebarOwner, releaseStaleProcessTitlebarOwners } from "@/services/engine/harness/titlebar"
+import { defersTitlebarReleaseToReveal, emitStageHint, emitUiEvent, processTitlebarOwner, releaseStaleProcessTitlebarOwners } from "@/services/engine/harness/titlebar"
 import { createLogger } from "@/services/logger"
 import { finishWithoutTurn, runPlanPhase } from "./plan-phase"
 import { settleMainTurn } from "./settlement"
-import { emitUiEvent } from "./ui-events"
 
 const log = createLogger("PiRuntime")
 

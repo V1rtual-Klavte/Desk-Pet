@@ -1,5 +1,6 @@
 // 子运行契约：owner、证据与产物形状。
 import type { ThinkingEffort, ProviderReservation } from "@/services/agent/types"
+import type { RuntimeTraceContext } from "@/services/engine/protocol"
 import type { TaskToolAuthorization, ToolDef } from "@/services/tool"
 
 /**
@@ -103,4 +104,15 @@ export interface PiSubAgentOutput {
   rawReply?: string
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
   members?: Array<{ role: string; output: PiSubAgentOutput }>
+}
+
+// 一次性文本调用的审计归属。
+/** 一次性调用的审计归属：给出后请求快照与派生记录按会话落盘（不入模型消息流）。 */
+export interface PiTextCallAudit {
+  sessionId: string
+  turnId?: string
+  requestId?: string
+  /** 派生来源（如触发这次一次性调用的 runId/planId）。 */
+  derivedFrom?: string[]
+  traceContext?: RuntimeTraceContext
 }

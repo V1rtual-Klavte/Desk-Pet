@@ -4,7 +4,8 @@
 import { publishRuntimeTrace, sha256Text } from "@/services/engine/protocol"
 import type { RuntimeTraceContext } from "@/services/engine/protocol"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
-import type { PlanCancelReason } from "@/services/engine/plan/settlement"
+import { createPlanSettlement } from "@/services/engine/plan/settlement"
+import type { PlanCancelReason, PlanConfirmDeclineReason } from "@/services/engine/plan/settlement"
 import { bindRunningPlan, clearRunningPlan, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, generatePlan, normalizePlan, planEffectClassFor, planStepAcceptance, planToRecords, recordsToPlan } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanPriorResult, PlanResult } from "@/services/engine/planner"
@@ -16,12 +17,28 @@ import { planConfig, safetyConfig } from "@/services/config"
 import { HOST_EVENT_PLAN_PROGRESS } from "@/services/host"
 import type { PiAgentTurnOutput } from "@/services/engine/state"
 import type { HarnessSlot } from "@/services/engine/harness/slot"
+import { emitUiEvent } from "@/services/engine/harness/titlebar"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { NON_CONFIRM_CONTEXT, planSettlement } from "./plan-settlement"
-import { emitUiEvent } from "./ui-events"
 
 const log = createLogger("PiRuntime")
+
+// 计划结算原语与「确认未成立」归宿说明：显式命令相位（plan-phase）与恢复入口共享。
+// 原为独立模块（T1.6 拆分产物），纯搬移自 harness/runtime.ts，不改变行为。
+
+/**
+ * 计划结算原语（写盘降级 / 收尾 / 取消与用户拒绝归宿）：与模型提议入口
+ * （`plan/proposal.ts`）共享同一实现，见 `plan/settlement.ts`；两处原先的同形复刻已删除。
+ */
+const planSettlement = createPlanSettlement(createLogger("PiRuntime"))
+
+/** 确认未成立（不是用户拒绝）的归宿说明：进 `PlanPhaseOutcome.context` 供审计与恢复入口使用，不是给用户看的文案。 */
+const NON_CONFIRM_CONTEXT: Record<PlanConfirmDeclineReason, string> = {
+  session_switched: "确认时会话已切换",
+  not_active: "确认时会话已不再活跃",
+  emit_failed: "确认事件发射失败",
+  ui_unavailable: "计划面板不可用",
+}
 
 // ── 计划相位与统一收尾（PLAN-15 / PLAN-10 / FIX-34 / FIX-35） ──
 

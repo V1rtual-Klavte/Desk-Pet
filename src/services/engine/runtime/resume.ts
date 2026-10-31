@@ -12,10 +12,10 @@ import { pushSystemMessage } from "@/services/session"
 import { HOST_EVENT_RUN_STATE } from "@/services/host"
 import type { PiAgentTurnOutput } from "@/services/engine/state"
 import { harnessSlots } from "@/services/engine/harness/slot-registry"
+import { emitUiEvent } from "@/services/engine/harness/titlebar"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { finishWithoutTurn, runPlanPhase } from "./plan-phase"
-import { emitUiEvent } from "./ui-events"
 
 const log = createLogger("PiRuntime")
 
