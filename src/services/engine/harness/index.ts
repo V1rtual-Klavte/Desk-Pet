@@ -1,12 +1,8 @@
 // Pi 运行时 barrel：多轮 Agent 回合（AgentHarness lane）、一次性文本调用、Provider 网络边界的统一出口。
 
 export {
-  classifyTurnFailure,
   compactActiveSession,
   continueInterruptedRun,
-  createActiveMessage,
-  createTurnNoteMessage,
-  defersTitlebarReleaseToReveal,
   deliverActiveTurn,
   discardPlan,
   discardInterruptedRun,
@@ -18,9 +14,7 @@ export {
   resumePlan,
   returnPausedInputs,
   runPiAgentTurn,
-  runPiSubAgent,
   takePausedInputs,
-  turnFailureReply,
   withdrawQueuedInput,
 } from "./runtime"
 export type {
@@ -29,6 +23,12 @@ export type {
   QueuedInputsView,
   RecoveredPlanView,
 } from "./runtime"
+
+// T1.5 抽出的 harness 原语：runtime.ts 只保留编排（T1.6 再整体迁走）。
+export { runPiSubAgent } from "./subagent"
+export { classifyTurnFailure, turnFailureReply } from "./turn-failure"
+export { createActiveMessage, createTurnNoteMessage } from "./message-adapters"
+export { defersTitlebarReleaseToReveal } from "./titlebar"
 
 export { describeInputDelivery, isInputCommitted, readActiveAttemptEvidence, readActiveAttemptAssociations, readContextEpoch, readRequestResponse } from "./delivery"
 export type { ActiveAttemptEvidence, ContextEpoch, InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage, RequestResponseEvidence } from "./delivery"
