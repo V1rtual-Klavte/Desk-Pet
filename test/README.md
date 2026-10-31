@@ -231,6 +231,8 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 
 ## Contract 与 sourceHash
 
+聊天驱动的 `assistant_message` 检查点要求非空正文、`assistantEntryId` 和 `replyBinding=request-response`。直接回复与排队回复均从同一 `requestId` 的持久 run 分支取证；返回字符串、Provider usage 的 `responded` 或工具中间轮不能代替最终助手提交。失败回执即使携带兜底正文也使步骤阻塞，失败记录保留回执、正文及诊断，不将收集到故障证据记成任务完成。
+
 `contracts/*.contract.ts` 是模块行为契约。每个 coverage point 的 `scenarios` 必须写场景的稳定 **`caseId`**，不是文件名、描述或导出名。每个 caseId 只能归属一个场景，且场景的 `meta.module`、`meta.contractId` 必须与其 Contract coverage point 一致。
 
 **跨层 caseId 对账在全量 L4 的收尾路径真实执行**：启动脚本（`scripts/contract-layers.mjs`）把三层实际收集到的 caseId 汇总 —— unit / integration 读最近一次整层快层运行落盘的 `test/reports/caseids-*.json`，e2e 读本次报告的场景集（skip 不算）—— 与全部 Contract 声明的 `scenarios` 对比：声明了没有任何层携带（MISSING）、携带了没有任何声明（ORPHAN）、同一 caseId 被两层同时携带（CROSS-LAYER，违反跨层唯一）任一命中即打印明细并非零退出。带 `--module` / `--scene` / `--case` / `--tag` / `--suite` 过滤、或 `--bench` / `--quality` / `--performance` 特殊模式的运行跳过（集合残缺会误报），所以全量 L4 前要先跑过快层（`test:release` 的顺序保证）。快层逐层运行时 `test/host/caseid-reporter.ts` 只判自己那层并把整层集合落盘 —— 落盘文件正是这份对账的输入。

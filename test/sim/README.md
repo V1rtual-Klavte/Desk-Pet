@@ -120,6 +120,8 @@ authoring Skill 会先列候选、询问要审哪条，再把审阅卡贴到聊�
 
 ### 外部公开集适配
 
+消息回执的直接与排队路径统一核对同一请求的持久 run 分支，仅以终态助手正文签发 `assistantEntryId` 与 `replyBinding=request-response`。驱动的 `assistant_message` 检查点要求该绑定；非空兜底字符串不能单独满足检查点。`outcome=failed` 保留诊断并阻塞，采集结束与任务成功分别记录，旧运行证据和判分不回写。
+
 外部公开任务沿用同一 schema、fixture、driver、rubric、审批、隔离运行与独立 judge 流程；适配器把允许的上游输入转成现有 case，不另建评测框架，也不声称复现官方完整 benchmark。来源和固定版本见 [`external/catalog.json`](desk-pet-chat/external/catalog.json)，适配、安装和接线入口在 `external/`。长期数据位于忽略的 `test/sim/desk-pet-chat/external/.data/<dataset>/`：原始文件在 `raw/`，编译套件在 `dataset/`；临时验收可显式使用 `test/.tmp/external-eval/`。`fetch` 只取公开文件且不读账号凭据；固定版 `install` 会校验来源并复用有效缓存。GAIA 属 gated 数据，只有本机已有授权登录时才可安装；令牌只供下载子进程使用，不写入收据或日志。
 
 ```bash
