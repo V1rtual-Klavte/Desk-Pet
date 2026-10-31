@@ -10,8 +10,8 @@
 import { describe, expect, it } from "vitest"
 
 import { trustedSourcesFromEntries } from "@/services/agent/memory/sources"
-import { inputSourceMark, userInputMessage } from "@/services/engine/runtime"
-import type { IngressEnvelope } from "@/services/engine/runtime"
+import { inputSourceMark, userInputMessage } from "@/services/engine/protocol"
+import type { IngressEnvelope } from "@/services/engine/protocol"
 
 const INGRESS: IngressEnvelope = {
   schemaVersion: 1,

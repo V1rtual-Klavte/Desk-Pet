@@ -8,9 +8,9 @@
 // 重排只做一件事：在一小组候选里选「这次该用哪几条」，它不能改写事实、
 // 不能引入候选之外的 id，也不能把否定句裁掉。
 
-import type { MessageTaint } from "@/services/engine/runtime"
-import { hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/runtime"
-import type { RuntimeTraceContext } from "@/services/engine/runtime"
+import type { MessageTaint } from "@/services/engine/protocol"
+import { hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/protocol"
+import type { RuntimeTraceContext } from "@/services/engine/protocol"
 import { DEFAULT_CONTEXT_WINDOW, estimateContextTokens, sliceByTokenBudget } from "@/services/context/budget"
 import { completePiText } from "@/services/engine/harness"
 import { memoryConfig } from "@/services/config"

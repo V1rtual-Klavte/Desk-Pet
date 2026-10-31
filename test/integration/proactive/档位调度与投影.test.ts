@@ -41,7 +41,7 @@ import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-
 import { updateStagesFile } from "@/services/personality/stages-file"
 import { setOverride, setProactiveFrequency } from "@/services/config"
 import { activeSessionId } from "@/services/session/store"
-import { subscribeRuntimeTrace } from "@/services/engine/runtime"
+import { subscribeRuntimeTrace } from "@/services/engine/protocol"
 import { configureProactive, refreshProactive, start, stop, tick, wakeDelayMs } from "@/services/proactive/scanner"
 import { proactiveTierLimits } from "@/services/proactive/tiers"
 import { internalScheduler } from "@/services/scheduler"

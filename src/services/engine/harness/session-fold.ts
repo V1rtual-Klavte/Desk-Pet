@@ -91,14 +91,14 @@
 //     （createLogger("SessionFold")，等级按执行方案 T5.02 步骤 4 的表）。它读一次 → 判定 →
 //     摘要校验 → 写同目录临时文件 → renameFile 覆盖；任何一步失败都保留原文件、返回 skipped，
 //     绝不抛错、绝不影响会话功能。
-// 外部依赖：上游的 `JSONL_STORAGE_VERSION`；`@/services/engine/runtime` 的 `sha256Text` /
-// `stableSerialize`（`engine/runtime` 不 import `engine/harness`，不成环）；`@/services/logger` 与
+// 外部依赖：上游的 `JSONL_STORAGE_VERSION`；`@/services/engine/protocol` 的 `sha256Text` /
+// `stableSerialize`（`engine/protocol` 不 import `engine/harness`，不成环）；`@/services/logger` 与
 // `@/services/error`（同目录的 `session-frame-buffer.ts` 已是同样的依赖方向）。
 // ==========================================
 
 import { JSONL_STORAGE_VERSION } from "@earendil-works/pi-agent-core/harness/session"
 import type { Context, FileSystem } from "@earendil-works/pi-agent-core"
-import { sha256Text, stableSerialize } from "@/services/engine/runtime"
+import { sha256Text, stableSerialize } from "@/services/engine/protocol"
 import { SESSION_WRITE_MAX_BYTES } from "./session-file-system"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"

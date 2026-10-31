@@ -11,8 +11,8 @@
 
 import type { PiAgentTurnOutput } from "@/services/engine/harness"
 import { runPiAgentTurn } from "@/services/engine/harness"
-import type { IngressEnvelope } from "@/services/engine/runtime"
-import { userInputMessage } from "@/services/engine/runtime"
+import type { IngressEnvelope } from "@/services/engine/protocol"
+import { userInputMessage } from "@/services/engine/protocol"
 import { initSessions } from "@/services/session"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { getActiveSessionId } from "@/services/session/store"

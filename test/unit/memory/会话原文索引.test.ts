@@ -30,7 +30,7 @@ vi.mock("@/services/paths", () => ({
   relativeWithinRoot: (root: string, full: string) => full.startsWith(`${root}/`) ? full.slice(root.length + 1) : null,
 }))
 
-vi.mock("@/services/engine/runtime", () => ({
+vi.mock("@/services/engine/protocol", () => ({
   MEMORY_CITATIONS_ENTRY: "deskpet.memory_citations",
   messageEventId: (message: { deskpetEventId?: unknown }) => typeof message.deskpetEventId === "string"
     ? message.deskpetEventId : undefined,

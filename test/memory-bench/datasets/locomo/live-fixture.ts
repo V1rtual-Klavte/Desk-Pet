@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
-import { inputEventId, sha256Text, userInputMessage } from "@/services/engine/runtime"
+import { inputEventId, sha256Text, userInputMessage } from "@/services/engine/protocol"
 import { acquirePiSession, createPiSession, PI_LANE, releasePiSession } from "@/services/session"
 import type { MemorySource } from "@/services/agent/memory"
 import { getActiveCard, saveCardText } from "@/services/personality"

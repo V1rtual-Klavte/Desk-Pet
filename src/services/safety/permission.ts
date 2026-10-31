@@ -8,7 +8,7 @@ import type {
 } from "@/services/tool"
 import { safetyConfig } from "@/services/config"
 import type { SafetyMode } from "@/services/config"
-import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
+import { redactText, sha256Text, stableSerialize } from "@/services/engine/protocol"
 import { requestPermissionConfirm, cancelPermissionConfirm } from "./confirm"
 
 export type { EffectClass, PermissionDecision }

@@ -1,5 +1,5 @@
-import { subscribeRuntimeTrace } from "@/services/engine/runtime"
-import type { RuntimeTraceEvent } from "@/services/engine/runtime"
+import { subscribeRuntimeTrace } from "@/services/engine/protocol"
+import type { RuntimeTraceEvent } from "@/services/engine/protocol"
 import { getHostBridge } from "@/services/host"
 import { BoundedTraceBuffer, captureTraceContext, TraceContextMap } from "@/services/sim/trace-chunk"
 import type { TraceChunk, TraceChunkAck, TraceContext } from "@/services/sim/trace-chunk"

@@ -15,7 +15,7 @@ import { initPaths } from "@/services/paths"
 import { readPiSessionEntriesOnce } from "@/services/session/repo"
 import { installMemoryProvider } from "@/services/agent/memory"
 import type { MemoryProjection, MemoryProvider } from "@/services/agent/memory"
-import { MEMORY_CITATIONS_ENTRY } from "@/services/engine/runtime"
+import { MEMORY_CITATIONS_ENTRY } from "@/services/engine/protocol"
 import { flushConfig, memoryConfig, planConfig, setOverrides } from "@/services/config"
 
 let dataRoot = ""

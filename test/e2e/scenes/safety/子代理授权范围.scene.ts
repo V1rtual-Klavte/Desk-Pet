@@ -37,7 +37,8 @@
 // 「派生型工具真的到不了子代理手里」由 te-23 的场景举证，这里不重复。
 
 import type { FauxResponseStep } from "@earendil-works/pi-ai"
-import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/engine/plan/checkpoint-store"
+import { PLAN_STEP_RESULT_ENTRY } from "@/services/engine/protocol/entries"
+import type { PlanStepResult } from "@/services/engine/plan/checkpoint-store"
 import { initChat } from "@/services/agent/runner"
 import { planConfig, setOverride } from "@/services/config"
 import { harnessSlots } from "@/services/engine/harness"

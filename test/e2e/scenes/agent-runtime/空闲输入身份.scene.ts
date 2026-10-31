@@ -1,5 +1,5 @@
 import { describeInputDelivery } from "@/services/engine/harness"
-import { inputSourceOf, messageRequestId } from "@/services/engine/runtime"
+import { inputSourceOf, messageRequestId } from "@/services/engine/protocol"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"

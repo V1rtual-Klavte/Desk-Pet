@@ -11,8 +11,8 @@
  */
 import { closeSync, fsyncSync, openSync, writeSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { subscribeRuntimeTrace } from "@/services/engine/runtime"
-import type { RuntimeTraceEvent } from "@/services/engine/runtime"
+import { subscribeRuntimeTrace } from "@/services/engine/protocol"
+import type { RuntimeTraceEvent } from "@/services/engine/protocol"
 import {
   BoundedTraceBuffer, captureTraceContext, TraceContextMap,
 } from "./trace-chunk"

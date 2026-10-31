@@ -19,7 +19,7 @@ import {
   pendingMemorySourceCount, registerMemorySources, startMemoryJob, cancelMemoryJob,
 } from "@/services/agent/memory"
 import type { MemoryDraft, MemoryItem, MemorySource } from "@/services/agent/memory"
-import { inputEventId, laneMessageText, messageEventId, userInputMessage } from "@/services/engine/runtime"
+import { inputEventId, laneMessageText, messageEventId, userInputMessage } from "@/services/engine/protocol"
 import { getActiveCard, getActivePersonalityId } from "@/services/personality"
 import { getActiveProfile } from "@/services/profile"
 import { listPiSessionMetadata, acquirePiSession, createPiSessionWithId, PI_LANE } from "@/services/session"

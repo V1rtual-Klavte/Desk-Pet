@@ -6,7 +6,7 @@ import { createNewSession, getActiveSessionId } from "@/services/session"
 import { sendMessage } from "@/services/agent/runner"
 import { getHostBridge } from "@/services/host"
 import { applyMemoryChange, collectMemorySources, memorySourceEvidence, memoryStatus, registerMemorySources, MemoryService, sqliteMemoryProvider } from "@/services/agent/memory"
-import { messageEventId } from "@/services/engine/runtime"
+import { messageEventId } from "@/services/engine/protocol"
 import { searchConversationCandidates } from "@/services/agent/memory/conversation"
 
 // 多轮会话正文的真相源是 pi 会话条目：换行正文必须完整保留（没有 300 字预览副本），

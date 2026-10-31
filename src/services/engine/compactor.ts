@@ -11,7 +11,7 @@ import type { ToolResultLadderEntry, ToolResultLevelMeasure } from "@/services/c
 import { aiConfig } from "@/services/config"
 import { errorCode, formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import type { CompactionOverflowDetail } from "@/services/engine/runtime"
+import type { CompactionOverflowDetail } from "@/services/engine/protocol"
 import { SESSION_TRANSCRIPT_TOOL } from "@/services/tool/session-transcript"
 
 const log = createLogger("Compactor")

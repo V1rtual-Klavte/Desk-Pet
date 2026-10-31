@@ -6,7 +6,8 @@
 import { getToolByName, listAll, type ToolDef } from "@/services/tool"
 import type { PiSubAgentInput, PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/harness"
 import type { ThinkingEffort } from "@/services/agent/types"
-import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
+import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/protocol"
+import { planAcceptanceLabel } from "@/services/engine/protocol/plan-readback"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 // 用户等待的预算豁免（零依赖叶子）：计划时限（deadlineAt）扣除用户等待时长，见 executePlan。
@@ -689,32 +690,9 @@ async function executeStep(
 
 // ── 结果格式化 ──
 
-/** 验收档的展示文案（唯一一处）：失败优先，成功再分证据是否闭环。 */
-function planAcceptanceLabel(success: boolean, acceptance: "verified" | "unverified"): string {
-  if (!success) return "失败"
-  return acceptance === "verified" ? "完成（证据已核对）" : "完成（未验收）"
-}
-
 /** 步骤结果的展示档位（与验收档同源，不另造第二套判定）。 */
 function stepAcceptanceLabel(output: PiSubAgentOutput): string {
   return planAcceptanceLabel(output.success, planStepAcceptance(output))
-}
-
-/**
- * 主回合回读一条 `deskpet.plan_step_result` 的正文。
- * 子运行的槽读不到父会话条目，所以这条投影只服务主回合；形状不合按不可读处理。
- */
-export function formatPlanStepResultReadback(data: unknown): string | undefined {
-  if (typeof data !== "object" || data === null) return undefined
-  const result = data as Record<string, unknown>
-  const { stepId, title, acceptance, success, reply, error } = result
-  if (typeof stepId !== "string" || typeof title !== "string" || typeof success !== "boolean"
-    || typeof reply !== "string"
-    || (acceptance !== "verified" && acceptance !== "unverified")
-    || (error !== undefined && typeof error !== "string")) return undefined
-  const lines = [`[计划步骤结果] 步骤 ${stepId}「${title}」：${planAcceptanceLabel(success, acceptance)}`, reply]
-  if (typeof error === "string" && error.trim() !== "") lines.push(`错误：${error}`)
-  return lines.join("\n")
 }
 
 export function formatStepResults(result: PlanExecutionResult): string {

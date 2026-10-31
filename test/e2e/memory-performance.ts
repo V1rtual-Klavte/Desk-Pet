@@ -3,7 +3,7 @@ import { queryMemory, getMemoryItems, installMemoryProvider, sqliteMemoryProvide
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { aiConfig, setOverrides, flushConfig } from "@/services/config"
 import { getActiveSessionId } from "@/services/session"
-import { createRuntimeTraceContext } from "@/services/engine/runtime"
+import { createRuntimeTraceContext } from "@/services/engine/protocol"
 import { standardSetup } from "../host/standard-setup"
 import { latencySummary } from "../host/performance"
 

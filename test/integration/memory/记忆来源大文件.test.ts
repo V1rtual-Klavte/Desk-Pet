@@ -24,8 +24,8 @@ vi.mock("@/services/agent/memory/ipc", () => ({ registerMemorySources: register 
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { collectMemorySources } from "@/services/agent/memory/sources"
-import { inputSourceMark, userInputMessage } from "@/services/engine/runtime"
-import type { IngressEnvelope } from "@/services/engine/runtime"
+import { inputSourceMark, userInputMessage } from "@/services/engine/protocol"
+import type { IngressEnvelope } from "@/services/engine/protocol"
 import { initPaths } from "@/services/paths"
 import { PI_LANE, acquirePiSession, createPiSession, listPiSessionMetadata, releasePiSession } from "@/services/session/repo"
 import { MAX_TOOL_FILE_BYTES } from "@/services/tool/pi/native-execution-env"

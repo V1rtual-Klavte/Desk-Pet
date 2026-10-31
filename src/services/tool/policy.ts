@@ -10,7 +10,7 @@ import type {
   ToolIsolation, ToolPolicy, ToolReplay, ToolResult,
 } from "./types"
 import { TOOL_POLICY_VERSION } from "./types"
-import { sha256Text, stableSerialize } from "@/services/engine/runtime"
+import { sha256Text, stableSerialize } from "@/services/engine/protocol"
 
 /** 执行函数形状：只经 `defineTool` 进入模块内 WeakMap，不是 ToolDef 的公开字段。 */
 export type ToolHandler = (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>

@@ -12,7 +12,7 @@ import { readPiSessionEntries } from "@/services/session/repo"
 import { installMemoryProvider } from "@/services/agent/memory"
 import type { MemoryProjection } from "@/services/agent/memory"
 import { estimateContextTokens, estimateMessageTokens } from "@/services/context"
-import { createMemoryRecallMessage } from "@/services/engine/runtime"
+import { createMemoryRecallMessage } from "@/services/engine/protocol"
 import { aiConfig, flushConfig, memoryConfig, planConfig, setOverrides } from "@/services/config"
 
 let root = ""

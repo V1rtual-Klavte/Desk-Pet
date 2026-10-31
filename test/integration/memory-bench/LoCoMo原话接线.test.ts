@@ -8,7 +8,7 @@ import { fakeText, installFakeProvider, lastRequestText } from "../../host/fake-
 import { ensureSession, runRuntimeTurn } from "../memory/回合夹具"
 import { initPaths } from "@/services/paths"
 import { flushConfig, setOverrides } from "@/services/config"
-import { messageEventId } from "@/services/engine/runtime"
+import { messageEventId } from "@/services/engine/protocol"
 import { trustedSourcesFromEntries } from "@/services/agent/memory/sources"
 import { readPiSessionEntries } from "@/services/session/repo"
 import { FALLBACK_STAGES, getActiveCard, initRegistry, loadCard, stageSourceHash, updateStagesFile } from "@/services/personality"

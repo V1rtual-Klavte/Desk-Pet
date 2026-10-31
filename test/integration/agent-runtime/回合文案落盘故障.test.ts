@@ -43,7 +43,7 @@ import { assistantTexts, countTexts, sessionMessages, userTexts } from "../../ho
 import { standardSetup } from "../../host/standard-setup"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { harnessSlots, turnFailureReply } from "@/services/engine/harness"
-import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
+import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/protocol"
 import { initPaths } from "@/services/paths"
 import { getFallbackReply } from "@/services/personality"
 import { chatHistory, listPiSessionMetadata, readPiSessionEntriesOnce, releasePiSession } from "@/services/session"

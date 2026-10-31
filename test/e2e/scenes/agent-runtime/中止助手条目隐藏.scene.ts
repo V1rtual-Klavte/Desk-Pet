@@ -6,7 +6,7 @@ import type {
 import { setOverride } from "@/services/config"
 import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { initChat, sendMessage, stopActiveRun } from "@/services/agent/runner"
-import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
+import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/protocol"
 import { getActiveSessionId } from "@/services/session"
 import { chatHistory } from "@/services/session/store"
 import { registerBlockingTool } from "../../../host/blocking-tool"

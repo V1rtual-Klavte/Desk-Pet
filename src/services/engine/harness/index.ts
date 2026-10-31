@@ -44,7 +44,7 @@ export type { ActiveAttemptEvidence, ContextEpoch, InputCommitState, InputDelive
 
 export { readLastConversationPromptTokens } from "./request-stats"
 
-export { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/runtime"
+export { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/protocol"
 export type {
   CompactionAuditSink,
   PromptCapabilityContext,
@@ -53,7 +53,7 @@ export type {
   PromptRequestContext,
   PromptRequestParams,
   PromptRequestPurpose,
-} from "@/services/engine/runtime"
+} from "@/services/engine/protocol"
 
 export { RuntimeDataStreamFilter } from "./stream-text"
 

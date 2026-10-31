@@ -6,8 +6,8 @@ import {
   publishMemoryRecallReferences,
   runtimeTracePreview,
   subscribeRuntimeTrace,
-} from "@/services/engine/runtime"
-import type { RuntimeTraceEvent } from "@/services/engine/runtime"
+} from "@/services/engine/protocol"
+import type { RuntimeTraceEvent } from "@/services/engine/protocol"
 
 const unsubscribes: Array<() => void> = []
 

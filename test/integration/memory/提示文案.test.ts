@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest"
 
 import { buildPrompt, CHAT_THINKING_HINTS, ONE_SHOT_LOW_EFFORT_HINT, composeDynamicPrompt, currentTimeNote, currentTimeDate, estimateContextTokens, setCurrentTimeNoteAnchor } from "@/services/context"
 import { createTurnNoteMessage } from "@/services/engine/harness"
-import { isTransientInputMessage, TURN_NOTE_CUSTOM_TYPE } from "@/services/engine/runtime"
+import { isTransientInputMessage, TURN_NOTE_CUSTOM_TYPE } from "@/services/engine/protocol"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import type { VariablePool } from "@/services/personality/variable-pool"
 

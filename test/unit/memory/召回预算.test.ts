@@ -18,7 +18,7 @@ import { setTestDataRoot } from "../../host/node-ipc"
 import { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory } from "@/services/agent/memory"
 import { memoryRecallTokens } from "@/services/agent/memory/projection"
 import { estimateContextTokens } from "@/services/context"
-import { createRuntimeTraceContext, subscribeRuntimeTrace } from "@/services/engine/runtime"
+import { createRuntimeTraceContext, subscribeRuntimeTrace } from "@/services/engine/protocol"
 
 const UNIT = "召回事实按条目完整投影，不从否定或条件中间截断。"
 /** 5000 字中文，远超下面声明的召回预算。 */

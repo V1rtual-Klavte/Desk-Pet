@@ -1,21 +1,15 @@
 // 未完成步骤按本次尝试的累计效果恢复；工具返回或后续只读事件不能证明整步可安全重放。
 
 import type { Entry, JsonValue } from "@earendil-works/pi-agent-core"
-import type { PlanCompletion, PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/runtime"
+import type { PlanCompletion, PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/protocol"
+import {
+  PLAN_CHECKPOINT_ENTRY, PLAN_RECOVERY_FAILED_ENTRY, PLAN_STEP_RESULT_ENTRY, PLAN_WRITE_FAILED_ENTRY,
+} from "@/services/engine/protocol/entries"
 import { appendPiSessionCustomEntry, readPiSessionEntriesOnce } from "@/services/session"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
 const log = createLogger("PlanCheckpoint")
-
-/** Plan checkpoint 条目类型；恢复扫描按它过滤会话条目。 */
-export const PLAN_CHECKPOINT_ENTRY = "deskpet.plan_checkpoint"
-/** 计划步骤结果条目：PLAN-09② 的「可回读地址」；宿主自定义条目，不进模型消息流。 */
-export const PLAN_STEP_RESULT_ENTRY = "deskpet.plan_step_result"
-/** 启动恢复失败证据条目（FIX-30④）；不进模型消息流。 */
-export const PLAN_RECOVERY_FAILED_ENTRY = "deskpet.plan_recovery_failed"
-/** 计划写盘失败证据条目（FIX-63①）；不进模型消息流。 */
-export const PLAN_WRITE_FAILED_ENTRY = "deskpet.plan_write_failed"
 
 export interface PlanCheckpointPayload {
   action: "created" | "plan_state" | "step_state" | "tool_start" | "tool_end" | "recovery" | "terminal"

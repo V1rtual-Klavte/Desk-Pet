@@ -1,4 +1,4 @@
-import type { ContextBlock, ContextLayer, ContextAllocation } from "@/services/engine/runtime"
+import type { ContextBlock, ContextLayer, ContextAllocation } from "@/services/engine/protocol"
 import { createLogger } from "@/services/logger"
 import { ContextBudgetError, contextBudget, estimateContextTokens, type ContextBudget } from "./budget"
 

@@ -8,8 +8,8 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/services/engine/harness", () => ({ completePiText: mocks.completePiText }))
-vi.mock("@/services/engine/runtime", async importOriginal => ({
-  ...await importOriginal<typeof import("@/services/engine/runtime")>(),
+vi.mock("@/services/engine/protocol", async importOriginal => ({
+  ...await importOriginal<typeof import("@/services/engine/protocol")>(),
   publishRuntimeTrace: mocks.publishRuntimeTrace,
 }))
 vi.mock("@/services/context", () => ({ currentTimeNote: mocks.currentTimeNote }))
@@ -20,7 +20,7 @@ import { extractMemoryEnumeration, focusMemoryEvidence } from "@/services/agent/
 import { MEMORY_READING_POLICY, memoryRecallTokens, renderMemoryRecall } from "@/services/agent/memory/projection"
 import { deriveMemoryQueryPlan } from "@/services/agent/memory/query"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
-import type { RuntimeTraceContext } from "@/services/engine/runtime"
+import type { RuntimeTraceContext } from "@/services/engine/protocol"
 
 const QUERY = "What did I say about my ThinkPad earlier?"
 

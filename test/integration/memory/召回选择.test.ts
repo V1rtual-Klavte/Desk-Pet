@@ -26,7 +26,7 @@ vi.mock("@/services/engine/harness", () => ({
   completePiText: mocks.completePiText,
   isAIGenerating: vi.fn(() => false),
 }))
-vi.mock("@/services/engine/runtime", () => ({ publishRuntimeTrace: vi.fn() }))
+vi.mock("@/services/engine/protocol", () => ({ publishRuntimeTrace: vi.fn() }))
 vi.mock("@/services/logger", () => ({ createLogger: () => ({ warn: vi.fn() }) }))
 vi.mock("@/services/error", () => ({ formatError: (error: unknown) => String(error) }))
 

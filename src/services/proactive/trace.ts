@@ -1,7 +1,7 @@
-import { createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
-import type { RuntimeTraceContext, RuntimeTraceKind } from "@/services/engine/runtime"
+import { createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/protocol"
+import type { RuntimeTraceContext, RuntimeTraceKind } from "@/services/engine/protocol"
 import { createLogger } from "@/services/logger"
-import { runtimeTracePreview } from "@/services/engine/runtime/trace"
+import { runtimeTracePreview } from "@/services/engine/protocol/trace"
 
 const log = createLogger("ProactiveTrace")
 const DEBUG_FIELDS = new Set(["status", "reason", "count", "hasMore", "controlRevision", "ruleId", "opportunityIds", "sourceIds",

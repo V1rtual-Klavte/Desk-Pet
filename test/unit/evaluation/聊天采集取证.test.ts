@@ -53,7 +53,7 @@ vi.mock("@/services/agent/memory", () => ({
   memoryStatus: async () => fixture.memoryStatus,
 }))
 
-vi.mock("@/services/engine/runtime", () => ({
+vi.mock("@/services/engine/protocol", () => ({
   laneMessageText: (message: { text?: string }) => message.text ?? "",
   subscribeRuntimeTrace: (listener: (event: any) => void) => {
     fixture.listener = listener

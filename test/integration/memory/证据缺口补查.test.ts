@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("@/services/engine/harness", () => ({ completePiText: mocks.completePiText }))
-vi.mock("@/services/engine/runtime", () => ({ publishRuntimeTrace: mocks.publishRuntimeTrace }))
+vi.mock("@/services/engine/protocol", () => ({ publishRuntimeTrace: mocks.publishRuntimeTrace }))
 vi.mock("@/services/context", () => ({ currentTimeNote: mocks.currentTimeNote }))
 vi.mock("@/services/logger", () => ({ createLogger: () => ({ warn: mocks.warn }) }))
 vi.mock("@/services/error", () => ({ formatError: (error: unknown) => String(error) }))
@@ -18,7 +18,7 @@ import { memoryRecallTokens } from "@/services/agent/memory/projection"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
 import type { MemoryQueryPlan } from "@/services/agent/memory/query"
 import { deriveMemoryQueryPlan } from "@/services/agent/memory/query-shape"
-import type { RuntimeTraceContext } from "@/services/engine/runtime"
+import type { RuntimeTraceContext } from "@/services/engine/protocol"
 
 const QUERY = "Why did I choose the blue route earlier?"
 const READ_REVISION = 7

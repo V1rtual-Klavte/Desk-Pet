@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import { createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/protocol"
 import { createSimTraceRecorder } from "@/services/sim/trace-recorder"
 
 /** 采集只按显式绑定的会话兜底归属；未绑定的会话事件仍必须是 orphan。 */

@@ -16,7 +16,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { PI_LANE, acquirePiSession } from "@/services/session/repo"
-import { PROMPT_SNAPSHOT_ENTRY, inputEventId, messageRequestId } from "@/services/engine/runtime"
+import { PROMPT_SNAPSHOT_ENTRY, inputEventId, messageRequestId } from "@/services/engine/protocol"
 import { harnessSlots } from "./harness-slot"
 
 const log = createLogger("Delivery")

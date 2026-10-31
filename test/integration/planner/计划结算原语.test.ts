@@ -28,12 +28,13 @@ import { createLogger } from "@/services/logger"
 import { initPaths } from "@/services/paths"
 import { deleteAllPiSessionsForTest, initSessions, pushSystemMessage, DESKPET_SYSTEM_MESSAGE_ENTRY, readPiSessionEntriesOnce } from "@/services/session"
 import { activeSessionId, chatHistory, clearMessages, getActiveSessionId, sessions } from "@/services/session/store"
-import { PLAN_WRITE_FAILED_ENTRY, planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
+import { PLAN_WRITE_FAILED_ENTRY } from "@/services/engine/protocol/entries"
+import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import { createPlanSettlement } from "@/services/engine/plan/settlement"
 import { planEffectClassFor, planToRecords } from "@/services/engine/planner"
 import type { PlanResult } from "@/services/engine/planner"
-import { createRuntimeTraceContext, subscribeRuntimeTrace } from "@/services/engine/runtime"
-import type { RuntimeTraceEvent } from "@/services/engine/runtime"
+import { createRuntimeTraceContext, subscribeRuntimeTrace } from "@/services/engine/protocol"
+import type { RuntimeTraceEvent } from "@/services/engine/protocol"
 
 /** 绑定测试日志通道的结算原语实例（与两条入口同一工厂，只换日志前缀）。 */
 const settlement = createPlanSettlement(createLogger("PlanSettlementTest"))

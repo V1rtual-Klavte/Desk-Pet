@@ -1,7 +1,7 @@
 import { deliverActiveTurn, harnessSlots, listQueuedInputs } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
-import { inputEventId } from "@/services/engine/runtime/input-identity"
+import { inputEventId } from "@/services/engine/protocol/input-identity"
 import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 import { getCommandReply } from "@/services/personality"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"

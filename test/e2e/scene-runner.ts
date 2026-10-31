@@ -12,7 +12,7 @@ import type {
 } from "./types"
 import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/harness"
 import { runPiAgentTurn } from "@/services/engine/harness"
-import { userInputMessage } from "@/services/engine/runtime"
+import { userInputMessage } from "@/services/engine/protocol"
 import { sendMessage } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { harnessSlots } from "@/services/engine/harness"

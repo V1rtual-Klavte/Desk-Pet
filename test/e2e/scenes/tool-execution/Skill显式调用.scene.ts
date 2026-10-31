@@ -5,7 +5,7 @@ import { initChat } from "@/services/agent/runner"
 import { getCommandReply } from "@/services/personality"
 import { deleteSkill, upsertSkill } from "@/services/skill"
 import { errorCode } from "@/services/error"
-import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
+import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/protocol"
 import { entryMessageText, sessionEntries } from "../../../host/session-entries"
 
 /**

@@ -86,15 +86,15 @@ export type {
   PromptTransform,
   PromptTransformReason,
   QuerySource,
-} from "./runtime"
+} from "./protocol"
 export {
   createPromptSnapshot,
   redactText,
   serializePromptSnapshot,
   sha256Text,
   stableSerialize,
-} from "./runtime"
-export type { PromptSnapshotInput, RedactedText } from "./runtime"
+} from "./protocol"
+export type { PromptSnapshotInput, RedactedText } from "./protocol"
 export {
   createRuntimeTraceContext,
   hasRuntimeTraceSubscribers,
@@ -102,8 +102,8 @@ export {
   runtimeTraceContextForRequest,
   runtimeTracePreview,
   subscribeRuntimeTrace,
-} from "./runtime"
-export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./runtime"
+} from "./protocol"
+export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./protocol"
 
 // ── Pi Agent Core Runtime ──
 export {

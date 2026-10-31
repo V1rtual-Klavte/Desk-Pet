@@ -12,7 +12,7 @@ import type { MemoryDraft, MemoryItem, MemoryProvider, MemoryScope, MemorySource
 import { aiConfig, flushConfig, memoryConfig, setOverrides } from "@/services/config"
 import { estimateContextTokens } from "@/services/context/budget"
 import { completePiText } from "@/services/engine/harness"
-import { subscribeRuntimeTrace } from "@/services/engine/runtime"
+import { subscribeRuntimeTrace } from "@/services/engine/protocol"
 import { publishedUiEventRecords } from "../host/ui-event-tap"
 import { createNewSession } from "@/services/session"
 import { listAll, register, unregister } from "@/services/tool"

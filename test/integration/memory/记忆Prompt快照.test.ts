@@ -20,7 +20,7 @@ import { setTestDataRoot } from "../../host/node-ipc"
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { captureRuntimeTrace } from "../../host/trace-observer"
 import { runRuntimeTurn } from "./回合夹具"
-import { createPromptRewrite, createPromptSnapshot, serializePromptSnapshot } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, serializePromptSnapshot } from "@/services/engine/protocol"
 import { initPaths } from "@/services/paths"
 
 let root = ""

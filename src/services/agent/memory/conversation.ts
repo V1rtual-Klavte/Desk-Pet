@@ -12,7 +12,7 @@ import { estimateContextTokens } from "@/services/context/budget"
 import { BaseDirs, relativeWithinRoot } from "@/services/paths"
 import { createLogger } from "@/services/logger"
 import { errorCode } from "@/services/error"
-import { MEMORY_CITATIONS_ENTRY, messageEventId } from "@/services/engine/runtime"
+import { MEMORY_CITATIONS_ENTRY, messageEventId } from "@/services/engine/protocol"
 import { getPiSessionRepo, listPiSessionMetadata, readPiSessionEntriesOnce, readVisibleSessionTranscript, withPiSessionFileLock } from "@/services/session"
 import type { MemoryProjection } from "./provider"
 import { deriveMemoryQueryPlan } from "./query"
@@ -48,7 +48,7 @@ export interface ConversationRecallRequest {
   tokenBudget: number
   signal: AbortSignal
   before?: number
-  traceContext?: import("@/services/engine/runtime").RuntimeTraceContext
+  traceContext?: import("@/services/engine/protocol").RuntimeTraceContext
 }
 
 export interface ConversationCandidateRequest {

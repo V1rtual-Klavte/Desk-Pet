@@ -28,7 +28,7 @@ import {
 } from "@/services/session"
 import { installSimClock, resetSimClockForTest, setSimClockBase } from "@/services/sim/clock"
 import { createSimTraceRecorder } from "@/services/sim/trace-recorder"
-import { laneMessageText } from "@/services/engine/runtime"
+import { laneMessageText } from "@/services/engine/protocol"
 import type { DeskpetReplyEvidence } from "@/services/reply"
 import { fakeText, installFakeProvider, lastRequestText } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"

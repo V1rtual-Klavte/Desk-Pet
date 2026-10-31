@@ -3,8 +3,8 @@
 
 import { createHash } from "node:crypto"
 import { completePiText } from "@/services/engine/harness"
-import { publishRuntimeTrace } from "@/services/engine/runtime"
-import type { RuntimeTraceContext } from "@/services/engine/runtime"
+import { publishRuntimeTrace } from "@/services/engine/protocol"
+import type { RuntimeTraceContext } from "@/services/engine/protocol"
 import { contextBudget, estimateRequestTokens } from "@/services/context/budget"
 import { currentTimeNote } from "@/services/context"
 import { createLogger } from "@/services/logger"

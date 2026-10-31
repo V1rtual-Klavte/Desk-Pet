@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory } from "@/services/agent/memory"
-import { createMemoryRecallMessage, isMemoryRecallMessage, MEMORY_RECALL_CUSTOM_TYPE } from "@/services/engine/runtime"
+import { createMemoryRecallMessage, isMemoryRecallMessage, MEMORY_RECALL_CUSTOM_TYPE } from "@/services/engine/protocol"
 import { estimateContextTokens } from "@/services/context/budget"
 
 /** 注入探针的正文：中文按 token 口径估算（1 汉字 ≈ 1 token），5 个汉字 ≈ 5 token。 */

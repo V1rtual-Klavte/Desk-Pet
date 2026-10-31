@@ -29,7 +29,7 @@
 
 import { TODO_CONTEXT } from "@earendil-works/pi-agent-core"
 import { acquirePiSession } from "@/services/session/repo"
-import { PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/runtime"
+import { PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/protocol"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 

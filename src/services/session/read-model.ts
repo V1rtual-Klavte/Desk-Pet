@@ -6,7 +6,7 @@
 import type { CustomEntry, Entry, JsonValue, MessageEntry } from "@earendil-works/pi-agent-core"
 import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai"
 import type { Message, ToolCallRequest } from "@/services/agent/types"
-import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY, inputSourceOf, messageEventId } from "@/services/engine/runtime"
+import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY, inputSourceOf, messageEventId } from "@/services/engine/protocol"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { getMessageImagePaths } from "@/services/images"
@@ -50,7 +50,7 @@ export function registerSessionEntryMapper(customType: string, mapper: SessionEn
   }
 }
 
-// 欢迎语与系统提示的 customType 是协议词汇（`engine/runtime/types.ts`），本模块只管投影。
+// 欢迎语与系统提示的 customType 是协议词汇（`engine/protocol/types.ts`），本模块只管投影。
 registerSessionEntryMapper(DESKPET_GREETING_ENTRY, (entry) => {
   const text = dataText(entry.data)
   if (!text) return undefined

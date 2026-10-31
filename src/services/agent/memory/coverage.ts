@@ -1,6 +1,6 @@
 // Request-local evidence completion. Retrieval remains behind the governed provider;
 // reader notes and search hints are never registered as memory sources.
-import { publishRuntimeTrace } from "@/services/engine/runtime"
+import { publishRuntimeTrace } from "@/services/engine/protocol"
 import { focusMemoryEvidence, isGroundedMemorySearch } from "./reader"
 import type { FocusedMemoryEvidence, FocusMemoryEvidenceInput } from "./reader"
 import type { MemoryCountItem } from "./evidence-review"

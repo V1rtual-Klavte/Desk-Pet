@@ -2,7 +2,7 @@
 // Query planner for local memory and conversation retrieval
 // ==========================================
 
-import type { RuntimeTraceContext } from "@/services/engine/runtime"
+import type { RuntimeTraceContext } from "@/services/engine/protocol"
 import { contextBudget, DEFAULT_CONTEXT_WINDOW, estimateContextTokens, sliceByTokenBudget } from "@/services/context/budget"
 import { currentTimeNote } from "@/services/context"
 import { completePiText } from "@/services/engine/harness"

@@ -78,7 +78,7 @@ import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-
 import { updateStagesFile } from "@/services/personality/stages-file"
 import { getActiveSessionId } from "@/services/session/store"
 import { initChat } from "@/services/agent/runner"
-import { subscribeRuntimeTrace } from "@/services/engine/runtime"
+import { subscribeRuntimeTrace } from "@/services/engine/protocol"
 import { opportunity, source } from "@/services/proactive/opportunities"
 import { configureProactive, offer, start, stop, tick } from "@/services/proactive"
 import { localDayKey } from "@/services/proactive/time"

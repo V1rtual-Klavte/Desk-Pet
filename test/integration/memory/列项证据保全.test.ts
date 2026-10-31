@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const mocks = vi.hoisted(() => ({ completePiText: vi.fn(), publishRuntimeTrace: vi.fn(), warn: vi.fn() }))
 
 vi.mock("@/services/engine/harness", () => ({ completePiText: mocks.completePiText }))
-vi.mock("@/services/engine/runtime", async importOriginal => ({
-  ...await importOriginal<typeof import("@/services/engine/runtime")>(),
+vi.mock("@/services/engine/protocol", async importOriginal => ({
+  ...await importOriginal<typeof import("@/services/engine/protocol")>(),
   publishRuntimeTrace: mocks.publishRuntimeTrace,
 }))
 vi.mock("@/services/context", () => ({ currentTimeNote: () => "[当前时间] 2026-10-10 12:00 周六" }))
@@ -14,7 +14,7 @@ vi.mock("@/services/error", () => ({ formatError: (error: unknown) => String(err
 import { focusMemoryEvidence } from "@/services/agent/memory/reader"
 import { memoryRecallTokens, renderMemoryRecall } from "@/services/agent/memory/projection"
 import type { MemoryProjection } from "@/services/agent/memory/provider"
-import type { RuntimeTraceContext } from "@/services/engine/runtime"
+import type { RuntimeTraceContext } from "@/services/engine/protocol"
 
 const TRACE = { runId: "enum-preservation", traceState: { sequence: 0, lastMonotonicMs: 0 } } satisfies RuntimeTraceContext
 
