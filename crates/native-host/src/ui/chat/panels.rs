@@ -1857,7 +1857,7 @@ mod tests {
         );
         assert!(
             windows.contains("focus_main_pane_input()"),
-            "windows_chat.rs 没有调用既有的输入框聚焦函数"
+            "windows_chat/ 没有调用既有的输入框聚焦函数"
         );
     }
 
@@ -2094,7 +2094,7 @@ mod tests {
         for needle in ["SS_OWNERDRAW", "ODT_STATIC", "fn draw_themed_card"] {
             assert!(
                 windows.contains(needle),
-                "windows_chat.rs 缺 {needle}（卡片底板画不出来）"
+                "windows_chat/ 缺 {needle}（卡片底板画不出来）"
             );
         }
         // macOS 的底板是图层绘制的独立构造函数（`place_panel_elements` 里调它）。
@@ -2323,7 +2323,7 @@ mod tests {
         assert!(
             windows.contains("INSPECTOR_SCROLL_CLASS")
                 && windows.contains("inspector_scroll_command"),
-            "windows_chat.rs 缺滚动裁剪窗（WS_VSCROLL / 滚动指令接线）"
+            "windows_chat/ 缺滚动裁剪窗（WS_VSCROLL / 滚动指令接线）"
         );
     }
 }

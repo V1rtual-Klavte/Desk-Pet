@@ -18,7 +18,6 @@ use super::transcript::*;
 use super::window::*;
 use super::wndproc::*;
 
-/// 拆分后的生产源码（按下方固定顺序拼接；不含 `tests.rs` 自身）。
 /// ownerdraw 按钮必须走**承载窗底重放**：token 近似补角/补底正是用户 2026-10-07
 /// 实拍「按钮后面一块灰色矩形底」的根因（近似色比条区真实像素暗 20+ 灰阶）。
 /// 源码级守门（与 `windows_settings` 的同名测试同款）：四条绘制入口都得先
