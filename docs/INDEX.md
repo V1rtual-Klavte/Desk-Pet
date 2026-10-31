@@ -11,20 +11,15 @@
 | 找模块、跟踪主调用链 | [系统地图](current/system-design.md) | 目标源码与对应 current 文档 |
 | TypeScript 业务服务与 HostBridge 接线规则 | [services AGENTS](../src/services/AGENTS.md) | 目标领域 current 与源码 |
 | Rust 宿主、原生 UI 与平台规则 | [native-host AGENTS](../crates/native-host/AGENTS.md) | [工程参考](current/development.md)与目标源码 |
-| 会话队列、取消、恢复、Pi 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
+| 会话队列、取消、恢复、Pi 协议与 Harness 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
 | 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
 | 数据库表结构、schema 版本、库文件与 WAL | [数据库](current/database.md) | 记忆与主动链同库；行为见[当前记忆](current/memory.md)、[主动陪伴](current/proactive.md) |
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
-| Pi 协议与 Harness 接线 | [运行时契约](current/runtime-contract.md) | [工具系统](current/tool-system.md)、目标源码与[未完成总表](plans/active/未完成工作与已知缺口.md) |
-| 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
-| 公开通用评测安装、接线与运行（GAIA／MultiChallenge／MemoryArena／BEAM／LHTB） | [演练与评测说明](../test/sim/README.md) | `dataset external install / status / verify / connect`；[固定来源清单](../test/sim/desk-pet-chat/external/catalog.json)；沿用聊天评测，不进入 CI／发布评测 |
-| 聊天评测三个 Skill、题型与判分、金银标、可选抽查与修复回归 | [未完成总表 §12](plans/active/未完成工作与已知缺口.md#12-统一聊天评测闭环)（剩余验收项与能力缺口） | 入口见 [聊天 Skill](../test/sim/desk-pet-chat/SKILL.md)、[用例制作 Skill](../test/sim/desk-pet-eval-authoring/SKILL.md)、[运行与判分 Skill](../test/sim/desk-pet-eval-runner/SKILL.md)；历史实施批次与证据见[归档契约](history/implementation/聊天评测闭环执行契约-2026-10-26归档.md) |
+| 测试执行与验证边界 | [验证边界](current/development.md#验证边界) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
+| 聊天评测与公开通用评测（三个 Skill、金银标、GAIA／MultiChallenge／MemoryArena／BEAM／LHTB） | [未完成总表 §12](plans/active/未完成工作与已知缺口.md#12-统一聊天评测闭环)（剩余验收项与能力缺口） | [评测说明](../test/sim/README.md)、[固定来源清单](../test/sim/desk-pet-chat/external/catalog.json)、[聊天](../test/sim/desk-pet-chat/SKILL.md)／[用例制作](../test/sim/desk-pet-eval-authoring/SKILL.md)／[运行判分](../test/sim/desk-pet-eval-runner/SKILL.md) Skill |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
-| 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |
-| 主动消息/静默了解/记忆整理的频率档位与锁屏语义 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[运行时数据](current/runtime-data.md)；剩余开放问题见[未完成总表](plans/active/未完成工作与已知缺口.md) §10 |
-| 统一调度、用户定时任务、复杂任务执行与子运行统一 | [主动陪伴](current/proactive.md)、[工具系统](current/tool-system.md)、[运行时契约](current/runtime-contract.md) | 剩余验收见[未完成总表](plans/active/未完成工作与已知缺口.md) §11；[归档方案](history/implementation/统一调度与子运行执行方案-2026-10-18归档.md) 只作证据 |
-| 原生宿主（Rust）+ 唯一 Node Harness、私有 IPC 与轻量化收尾 | [未完成总表](plans/active/未完成工作与已知缺口.md) §8、§9 | [系统地图](current/system-design.md) 与目标源码；目标契约已归档（见下方历史入口） |
-| 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [当前记忆](current/memory.md)及相关源码；[记忆推断路由与检索补全归档](history/implementation/记忆推断路由与检索补全-2026-10-18归档.md) 与 P0–P4 契约只作证据 |
+| 主动陪伴、行为画像、频率档位与统一调度 | [主动陪伴](current/proactive.md) | [运行时数据](current/runtime-data.md)、[工具系统](current/tool-system.md)、[运行时契约](current/runtime-contract.md)；剩余开放问题与验收见[未完成总表](plans/active/未完成工作与已知缺口.md) §10、§11 |
+| 剩余未完成工作与收尾 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | 原生宿主收尾见 §8、§9，记忆重构与验证见 §3；[当前记忆](current/memory.md)及相关源码 |
 
 ## 文档职责与维护
 
@@ -46,7 +41,7 @@
 
 计划/归档文件用简短文件头说明用途、状态、日期及替代入口；核对日期不代表整个工作树已验证。报告必须区分源码基线、执行环境和未验证项，不把旧通过数复制到每份概览。历史文件可能带 archived 或 implemented_verified 等状态，所在 history 目录均表示它不再是当前行为契约。
 
-根 AGENTS 只维护全局规则；services、native-host、test 的 AGENTS 各自维护本域约束，通过链接引用全局条款，避免重复。所有 CLAUDE.md 只写一行 `@agents.md`，导入同目录规则。模块细节通过任务路由按需读取；阅读路径的成本按实际文件 token 数评估，仓库 Markdown 总量不等于每轮 Prompt 注入量。
+根 AGENTS 只维护全局规则；services、native-host、test 的 AGENTS 各自维护本域约束，通过链接引用全局条款，避免重复。模块细节通过任务路由按需读取。
 
 ## 未完成工作
 
@@ -54,42 +49,9 @@
 
 ## 历史入口
 
-以下只保留归档目录索引，不作为后续任务的阅读入口；不再读取或修改这些文件。当前问题与进度只看未完成总表。
+`docs/history/` 归档后封存，不作为后续任务的阅读入口；不再读取或修改，当前问题与进度只看未完成总表。仍被当前文档直接引用的历史文件由引用方就地链接。
 
-- [记忆检索底座 P0–P4 2026-10-18 归档](history/implementation/记忆检索底座-P0-P4-2026-10-18归档.md)：结构化词面检索、阅读/装配与列项补全的目标契约与 P0–P5/B2C 记录；**已实现并归档**，后续推断路由已归档为[记忆推断路由与检索补全](history/implementation/记忆推断路由与检索补全-2026-10-18归档.md)。
-- [记忆推断路由与检索补全 2026-10-18 归档](history/implementation/记忆推断路由与检索补全-2026-10-18归档.md)：推断/建议路由、地理归属、`temporalOrder` 与 advice/enumeration 扫描；**已实现并归档**，剩余复验、金标口径与契约重审见[未完成总表](plans/active/未完成工作与已知缺口.md) §3、§5。
-- [统一调度与子运行执行方案 2026-10-18 归档](history/implementation/统一调度与子运行执行方案-2026-10-18归档.md)：内部调度、用户提醒与执行型任务、工具确认、随机计划、Card 交付、思考强度与统一子运行；**已实施并以单元/集成/Rust/契约/全量严格 E2E ×3 验收后归档**，P1/P2 遗留见[未完成总表](plans/active/未完成工作与已知缺口.md) §11。
-- [聊天评测闭环执行契约 2026-10-26 归档](history/implementation/聊天评测闭环执行契约-2026-10-26归档.md)：三个 Skill 的目标设计、W1–W6 实施批次、隔离运行、证据封存、判分包与两次银标运行证据；**W1–W6 实现与集中门禁已验收；独立 coding-agent 重判、真实 Skill 自主运行、用户 gold 审批／抽查、CE-08／多 trial／CE-20／Windows 与 W2 停止调度仍未执行**，剩余项见[未完成总表](plans/active/未完成工作与已知缺口.md) §12。
-
-- [回合治理与图片生命周期执行契约 2026-10-06 归档](history/implementation/回合治理与图片生命周期执行契约-2026-10-06归档.md)：四项治理的目标契约与工作包清单——工具循环上限对齐主流（取消计数硬上限、病理检测替代）、AI 生成锁由回合状态推导（删 30s 定时强解与 cooldown 模块）、冷却锁搬进 Rust 账本、截图 200 上限取消与粘贴草稿回滚；**已实施（快层与 Rust 门禁全绿、契约按 analyze→generate 刷新）**，不再列入未完成总表。
-- [主动陪伴与记忆频率档位执行契约 2026-10-06 归档](history/implementation/主动陪伴与记忆频率档位执行契约-2026-10-06归档.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏语义、三处「关/低/中/高」频率档位、带工具规划器与自带 MCP 的目标契约与 W1–W5 波次；**W1–W4 与 W5-A 已实现后归档**（对照基线 `05bd0c1` + 工作树），server-pdf 等剩余开放问题见[未完成总表](plans/active/未完成工作与已知缺口.md) §10；Live 验收锚点已于 2026-10-06 达成（observed／understanding.json／proactive 表非 0）。
-- [主题设计稿（三套预设）](history/design/theme-candidates.html)：三套主题预设（`brushed` / `chrome` / `verdigris`）的视觉基准与 55 个自定义属性取值。**例外说明**：它同时是 `crates/native-host/src/ui/theme/tokens.rs` 的 `include_str!` **编译期依赖**（常量 `DESIGN_DOC`），移动即编译失败；主题逐屏对照收尾前仍作视觉基准使用，改色值须与 `tokens.rs` 两处同改。2026-10-05 由 `docs/plans/active/` 移入，路径引用已全仓同步。
-- [主题设计稿（两款 · 聊天面）](history/design/theme-candidates-2.html)：2026-10-05 聊天面板改版的视觉基准（`.rail` / `.insp` 等结构与尺寸），`macos_chat/` 三处注释引用；同批移入归档。
-- [原生宿主轻量化执行契约 2026-10-04 基线](history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md)：用户已定功能边界、最终接口、源码映射与 W0–W11 执行/验收条件；**W0–W9 已实现后归档**，剩余资源测量与原生 UI 设施见[未完成总表](plans/active/未完成工作与已知缺口.md) §8。
-- [原生宿主迁移过程记录 2026-10-04 基线](history/implementation/原生宿主迁移过程记录-2026-10-04基线.md)：W0 只读盘点基线、W0/W1 已发现的问题、W0 冻结决定（含**仍具约束力的六条裁定**：Node 不得驱动窗口显隐与层级、不静默改线格式字段名、契约 sourceFiles 只指向 native-host、命令矩阵冻结流程、光标事件不进 Node 事件表、`window-observed` 双投）、W1 行为差异对照，以及功能对等接线批次与设置管理面的交付记录；W0–W9 实现落地后归档，剩余工作见未完成总表 §8、§9。
-- [活人感（拟人化）运行时契约 2026-10-04 基线](history/implementation/拟人化运行时契约-2026-10-04基线.md)：分条气泡、打字节奏、正在输入、回合分流、主动消息同路径与三个开关、静默了解、话题画像、主动纪律和图片输入的目标契约与自动验收检查点（§12）；实现完成后归档，纯环境验收不再列入未完成总表。
-- [主动陪伴运行时执行方案 2026-10-03 基线](history/implementation/主动陪伴运行时执行方案-2026-10-03基线.md)：完整目标契约、实现对照矩阵与检查点；核心链路已接入，核对后的实现与验收缺口已转入未完成总表，归档不表示完整验收。
-- [记忆 check-in 与主动扫描器设计 2026-10-03 基线](history/design/记忆checkin与主动扫描器设计-2026-10-03基线.md)：原始功能／效果蓝图；旧数据结构、分轮安排及范围修订由执行基线的对照说明承接，不再作为当前指令。
-- [测试分层重构契约 2026-09-29 基线](history/implementation/测试分层重构契约-2026-09-29基线.md)：推翻单一 Live 层的论证、L0–L5 目标分层、观测性与证据强度要求、测试树落位 `test/` 与跨层契约门禁；W0–W7 已实施后归档，三处未完成项（L4 端到端实跑、Windows CI job 真实触发、`entry: "unit"` 枚举值删除）已转登记到未完成总表。
-- [Skill 与 Tool 收敛及模式统一方案 2026-09-26 基线](history/implementation/Skill与Tool收敛及模式统一方案-2026-09-26基线.md)：把 skill 换成 Pi 原生三层、tool 面优化与补齐、移除 pet/assistant 双模式的方案正文、决策定稿、覆盖矩阵与实测证据（2026-09-26 实施并通过严格门禁后归档）。
-- [会话压缩与存储瘦身方案 2026-09-27 基线](history/implementation/会话压缩与存储瘦身方案-2026-09-27基线.md)：压缩分级重构与存储瘦身的设计真相源——六个问题的实测证据、唯一压缩判据、手段阶梯与日志折叠的改法论证（**设计冻结归档；实施由执行方案承接**）。
-- [会话压缩与存储瘦身执行方案 2026-09-28 基线](history/implementation/会话压缩与存储瘦身执行方案-2026-09-28基线.md)：W1–W6 波次分解、跨波交接契约、覆盖矩阵与 §0.6 进度台账及终局门禁证据（2026-09-28 实施并通过严格门禁后归档）。
-- [前舞台修复方案 2026-09-24 基线](history/implementation/前舞台修复方案-2026-09-24基线.md)：全仓审查的约 120 条发现、修复论证与 §7/§8 决策与验收设计（需求真相源）。
-- [前舞台修复执行方案 2026-09-24 基线](history/implementation/前舞台修复执行方案-2026-09-24基线.md)：W1–W5 的波次分解、§0.6 进度台账、W5.0 执行结果、W5.2 未验证边界收口与附录 A 覆盖矩阵。正文内的 `plans/active/前舞台修复方案.md` 是当时路径，实体现为本目录的两份基线。
-- [收尾清单 2026-09-20 基线](history/analysis/收尾清单-2026-09-20基线.md)：表情/动画/音效移除收尾、L3 与许可残留的决策论证、当时的验证缺口快照。
-- [Pi 方案 2026-09-20 基线](history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)：PI-1/PI-2 协议正文、实施订正与验收设计。
-- [执行手册 2026-09-20 基线](history/implementation/记忆系统重构执行手册-2026-09-20基线.md)：H-1–H-4 实现细节、06:58 轮证据与当时的未验证边界。
-- [表情 / 动画 / 音效移除基线](history/implementation/表情动画音效移除-2026-09-20基线.md)：移除边界、保留范围，以及 `RUNTIME_DATA` 指令随情绪链被删的回归与处理（已实施并通过整轮门禁）。
-- [加固计划 2026-09-20 基线](history/analysis/运行时加固与清理计划-2026-09-20基线.md)：2026-09-18 逐条复核后的剩余待办快照；剩余条目已迁入当前未完成工作总表。
-- [轻量陪伴方案 2026-09-20 基线](history/design/轻量陪伴运行时与统一内核建设方案-2026-09-20基线.md)：A–E 已完成、F/G 待建时的方向快照。
-- [AgentHarness 迁移方案基线](history/implementation/AgentHarness迁移方案-2026-09-18基线.md)：运行内核替换的协议、替换映射与 H-1–H-4 批次设计（已实施并通过集中验证）。
-- [2026-09-18 执行手册基线](history/implementation/记忆系统重构执行手册-2026-09-18基线.md)：H-1–H-4 的实现与修复细节、集中验证收敛过程与当时的证据表。
-- [会话压缩建设方案](history/implementation/会话压缩建设方案.md)：参考项目比较、压缩设计与当时的实施证据。
-- [旧产品与技术说明](history/design/DES-2026-09-17基线.md)：DES 精简前正文。
-- [旧统一内核总方案](history/design/轻量陪伴运行时与统一内核建设方案-2026-09-17基线.md)：原比较、论证和候选设计。
-- [记忆系统运行时契约 2026-10-03 基线](history/implementation/记忆系统运行时契约-2026-10-03基线.md)：无向量分层记忆的设计口径、SQLite／来源／治理协议、dreaming、UI/配置接线与验收矩阵；已按当前实现归档，提案差异见文末 §14。
-- [旧运行时契约](history/implementation/记忆系统运行时契约-2026-09-17基线.md)、[旧执行手册](history/implementation/记忆系统重构执行手册-2026-09-17基线.md)：原阶段协议、接力记录与证据。
-- [加固审查基线](history/analysis/运行时加固与清理计划-2026-09-17基线.md)：原缺陷、修复批次、历史行号与当时决策。
-- [愿景驱动重构方案](history/design/愿景驱动整体重构方案.md)：早期设计；其中纯 Markdown 和 Pi 候选结论已被后续方案替代。
-
-其他材料按 `history/design/`、`history/implementation/`、`history/analysis/`、`history/source/` 保存；目录与文件名用于检索，不将某篇旧全仓审查称为当前实现基线。
+- [design](history/design/)：旧产品与交互设计、内核方案、视觉基准。
+- [implementation](history/implementation/)：旧执行方案、契约基线与实施记录。
+- [analysis](history/analysis/)：旧审查、收尾清单与验证快照。
+- [source](history/source/)：源码快照与附录材料。

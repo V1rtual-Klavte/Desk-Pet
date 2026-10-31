@@ -20,7 +20,7 @@ pnpm run test:mutation                 # 缺陷注入观测（先记录，不设
 
 - 测试域规则入口与维护义务（改了什么同步什么）：[AGENTS.md](./AGENTS.md)
 - 分层目标、波次与诚实边界：[测试分层重构契约](../docs/history/implementation/测试分层重构契约-2026-09-29基线.md)（已归档；未完成项见[未完成工作与已知缺口](../docs/plans/active/未完成工作与已知缺口.md)）
-- 当前验证边界与未验证项：[测试边界](../docs/current/testing.md)
+- 当前验证边界与未验证项：[验证边界](../docs/current/development.md#验证边界)
 - 代码代理的 Contract 分析、生成与覆盖审查流程：[SKILL.md](./SKILL.md)
 
 ## 该写在哪一层

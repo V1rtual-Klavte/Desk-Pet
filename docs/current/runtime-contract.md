@@ -9,7 +9,7 @@ scope: runtime-foundation-before-memory-kernel
 
 本文记录已经落地的横向运行时边界；记忆与会话的存储、checkpoint 和预算细节由[当前记忆与会话基础](./memory.md)维护，长期记忆的剩余验收见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md) §3。
 
-引擎内部按 `protocol → state → harness → runtime` 四层单向依赖（[check-engine-layers.mjs](../../scripts/check-engine-layers.mjs) 门禁）：`protocol/` 只放协议与读模型原语（输入身份、快照、Plan 回读、trace），`state/` 放运行槽/回合/子代理/用户等待的可变状态与迁移，`harness/` 放 Harness 原语（槽注册与重试、回合内核、模型网关、失败分类、递送），`runtime/` 负责编排（普通回合、规划阶段、Plan 提案与恢复、压缩、队列与结算）。下层不得反向依赖上层。
+引擎内部按 `protocol → state → harness → runtime` 四层单向依赖（[check-engine-layers.mjs](../../scripts/check-engine-layers.mjs) 门禁）；另有只静态依赖 `protocol`/`state` 的 `plan` 层（`runtime` 可依赖 `plan`，其两处动态 import 由门禁显式放行），不属于这些层、也不在带注释的 `UNCLASSIFIED_ALLOW` 白名单中的文件会被拒绝。四层的分工是：`protocol/` 只放协议与读模型原语（输入身份、快照、Plan 回读、trace），`state/` 放运行槽/回合/子代理/用户等待的可变状态与迁移，`harness/` 放 Harness 原语（槽注册与重试、回合内核、模型网关、失败分类、递送），`runtime/` 负责编排（普通回合、规划阶段、Plan 提案与恢复、压缩、队列与结算）。下层不得反向依赖上层。
 
 ## 会话、来源与恢复
 

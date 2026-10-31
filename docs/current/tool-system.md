@@ -133,7 +133,7 @@ MCP 工具的取消链与预算（2026-10-06 体检报告 R2 对齐）：`toTool
 
 原生设置窗的工具页对 MCP 提供服务器列表、逐项开关与连接测试（管理面 `tools_mcp_servers` / `tools_mcp_toggle` / `mcp_test`，占用中的服务器由既有入口拒绝）；条目的编辑面是**表单**（`mcp_server_form` / `mcp_save`，字段控件逐项：name/transport/command/args/url/headers/env/enabled），逐字段校验、`sse` 明确拒绝并点名；**重名保存不覆盖**（新增撞名与改名撞名都结构化报错）。`args` 每行一个参数、`env`/`headers` 是多行 KEY=VALUE 文本（与 `parseEnvText` 同源）。CONFIG 直改的条目与 JSON 导入同样过逐字段 schema 校验（不再 `String()`/默认 true 收拢；导入兼容 `"type":"http"` 与缺省字段是外部格式适配的显式默认）。出厂自带 github 远程条目（`https://api.githubcopilot.com/mcp/`，`enabled: false` 开箱不连接；免 Copilot 席位、默认只读头），面板里附一行「GitHub 令牌」（`action = credential`）：状态经 `mcp_credential_status`（只回变量名、不回值），点击弹原生输入框把值经 `mcp_credential_set` 写进自有存储。env 只透传给子进程，日志不打印 env。MCP 工具一律声明 `passthrough` + `external_side_effect` + `exclusive_effect`，既不能凭发现结果自动获得执行许可，也不能与其它执行并发。
 
-验证规则见[测试边界](testing.md)。
+验证规则见[工程参考](development.md#验证边界)。
 
 
 用户定时任务工具为 `schedule_query` / `schedule_change`，只接受当前可信用户事件与宿主冻结的任务/来源/提议身份；没有系统任务枚举或控制操作。后台工具授权保存实际 toolName 与完整 schema/策略/只读提示描述符指纹；每次调用重读任务版本、授权和参数范围，描述符变更后不能沿用。MCP readOnlyHint 只影响任务能力资格，不降低原有风险和效果策略；最终仍经 PermissionKernel deny-first 和持久任务授权裁决。权限提示可用时以 `interactive` 等待确认；不可用才退回 `background`，并把缺失授权记为 `needs_input`。详见[主动陪伴](proactive.md)。

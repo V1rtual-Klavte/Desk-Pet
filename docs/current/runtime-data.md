@@ -15,7 +15,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | 数据根 | `{工作区}/data/desk-pet/`（工作区根由 debug 宿主注入，release 路径不经过它） | **Windows 默认 `<安装目录>/userdata`**（不占系统盘，跟着安装盘走；安装目录不可写时留痕并回落 `%LOCALAPPDATA%\com.v1rtual.deskpet`）；**macOS 默认 `~/Library/Application Support/com.v1rtual.deskpet`**（`.app` 常驻 `/Applications`、普通用户不可写），放 `.app` 同级的 `portable.txt` 可改为同级目录的 `userdata/`。目录名 `userdata` 要自证用途（光叫 `data` 看不出是谁的）；标记与回落判定在 `paths::portable_data_root`／`side_data_root` 与 `app_local_data_dir` 内，不读环境变量、不引入第二处路径推导，数据根的决定点仍只有 AppPaths 一处。卸载器按同一路径询问是否连数据一起删（默认不删） |
 | 运行时 CONFIG | 工作区 `CONFIG-DEV.yaml`，不存在时用工作区 `CONFIG.yaml` | `data_root/settings/CONFIG.yaml`，首次启动由编译期嵌入的 `CONFIG.yaml` 模板初始化 |
 | 随包资源根 | 工作区 `packaging/dist`（存在时；`dev:prepare` 摆出 node/harness/defaults 三件套），否则打包布局资源目录 | 打包布局资源目录：macOS `.app/Contents/Resources`；Windows 安装目录（可执行文件同级） |
-| 随包 Node | `packaging/dist/node`（`dev:prepare` 按 [node-runtime.json](../../packaging/node-runtime.json) 锁定版本 22.22.3 暂存，版本一致则跳过） | 安装目录 `resources/node`（release CI 按同一锁定版本暂存并校验 SHASUMS） |
+| 随包 Node | `packaging/dist/node`（`dev:prepare` 按 [node-runtime.json](../../packaging/node-runtime.json) 锁定版本暂存，版本一致则跳过） | 安装目录 `resources/node`（release CI 按同一锁定版本暂存并校验 SHASUMS） |
 | Harness 产物 | `packaging/dist/harness/main.mjs`（`dev:prepare` 触发 `pnpm run build:harness`） | 安装目录 `resources/harness/main.mjs`（release CI 在 Ubuntu 构建一次、双平台打包共用） |
 
 两种环境下运行的都是**随包 Node（锁定版本）**，不是用户机器的全局 Node；监督器握手时核对 Node 自报版本，不一致拒绝并杀进程，随包 Node 或 harness 产物缺失即宿主启动失败，不静默回落。E2E 隔离模式（debug + `DESKPET_E2E=1`）另有独立数据根与合成 CONFIG，见下文。
@@ -41,7 +41,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 `ai.memory.queryRewrite`（默认 `adaptive`，可取 `off`）与 `ai.memory.rerank`（默认 `off`，可取 `adaptive`）为统一检索技术参数，作用于用户事实、派生画像和会话原话，沿用记忆总时限与预算。它们不提供设置控件或 `settings_commit` 单独映射；编辑当前运行模式的完整 CONFIG 文件后重启生效。缺少新 queryRewrite 字段时只按出厂值读取，不自动改写用户配置；真实 CONFIG-DEV.yaml 未由本批修改。
 
-当前主保存路径为：原生设置窗控件（Rust 草稿）→ `SettingsPort`（[ui/ports/](../../crates/native-host/src/ui/ports/) 的 `settings_commit` 请求）→ Node `settingsCommit` → setOverrides → config 写队列 → `flushConfig` → `reapplyRuntimeSettings` → `pushNativeUiState`（快捷键/字体/主题/舞台/聊天列/图片预览/摆位/尺寸/自动呼出/音效十条推送，逐项口径见 [pushes.ts](../../src/services/native-ui/pushes.ts) 头部）。字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
+当前主保存路径为：原生设置窗控件（Rust 草稿）→ `SettingsPort`（[ui/ports/](../../crates/native-host/src/ui/ports/) 的 `settings_commit` 请求）→ Node `settingsCommit` → setOverrides → config 写队列 → `flushConfig` → `reapplyRuntimeSettings` → `pushNativeUiState`（快捷键/字体/主题/舞台/聊天列/图片预览/摆位/尺寸/自动呼出/音效等推送，逐项口径见 [pushes.ts](../../src/services/native-ui/pushes.ts) 头部）。字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
 
 频率档位批（2026-10-05）的即时生效链：保存后 `reapplyRuntimeSettings` 的 `ai.proactive.*` 分支调 `refreshProactive()`（scanner 按新档重排随机唤醒、重算冷却并重推 Rust 投影），`ai.silentAccess.*` 分支按档位是否 `off` 起停观察总闸与静默了解；dreaming 档位与记忆总闸变化刷新内部 dreaming 期限；用户任务的交付仍复核当前设置，不改已保存周期样本。整份导入 YAML 由 `importConfigYaml()` 收尾的消费者刷新链补同样的刷新（失败只留痕，配置已落盘）。
 
@@ -107,7 +107,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 | 字段 | 取值 | 语义 | 生效 |
 |---|---|---|---|
-| `tools.bash.whitelist` | 命令名数组，出厂 CONFIG 18 项（getter 另留 15 项兜底，同值子集） | 命令首词命中、不含 shell 组合符且未命中危险/硬禁止模式时判 `NORMAL`、免确认；它是**免确认通道**而不是硬墙 —— 不在名单只意味着要走确认，命令仍可执行 | 每次风险分级即时读取；设置保存后经重应用路径生效 |
+| `tools.bash.whitelist` | 命令名数组，出厂项以 [CONFIG.yaml](../../CONFIG.yaml) 为准（getter 另留同值子集兜底，逐项以 [config.ts](../../src/services/config.ts) 为准） | 命令首词命中、不含 shell 组合符且未命中危险/硬禁止模式时判 `NORMAL`、免确认；它是**免确认通道**而不是硬墙 —— 不在名单只意味着要走确认，命令仍可执行 | 每次风险分级即时读取；设置保存后经重应用路径生效 |
 
 由原生设置窗「工具 → Bash」区的「命令白名单」字段读取与回写（多行文本 ↔ 标量数组的互逆换算在 `normalizeSettingValue`）、经 settings_commit 落盘；运行期只经 [config.ts](../../src/services/config.ts) 的 `toolsConfig.bashWhitelist` 读取，分级消费点是 [pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 的 `classifyBashRisk`。Rust 侧不再看白名单：[bash_policy.rs](../../crates/native-host/src/commands/bash_policy.rs) 的 `enforce_bash_policy` 只有层 1 硬基线与层 2 系统路径保护，也不接收 scope / whitelist 入参，拒绝结论与名单无关。
 

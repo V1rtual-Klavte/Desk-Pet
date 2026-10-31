@@ -18,7 +18,7 @@ Rust 实现细则见 [native-host AGENTS](../../crates/native-host/AGENTS.md)，
 | 工具、权限、MCP、Skill | [工具系统](../../docs/current/tool-system.md) |
 | 配置、路径、Card/Profile 与种子 | [运行时数据](../../docs/current/runtime-data.md) |
 | 变量、阶段提示、回复元数据 | [人格与回复](../../docs/current/personality.md) |
-| 主动陪伴、观察、画像与回执 | [主动陪伴](../../docs/current/proactive.md)、[行为画像](../../docs/current/behavior.md) |
+| 主动陪伴、观察、画像与回执 | [主动陪伴](../../docs/current/proactive.md) |
 | IPC、引导、异常与构建 | [工程参考](../../docs/current/development.md) |
 | 迁移剩余工作 | [未完成总表](../../docs/plans/active/未完成工作与已知缺口.md) §8、§9 |
 

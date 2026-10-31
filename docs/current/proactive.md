@@ -75,13 +75,53 @@
 
 ## 观测、表现与控制
 
-行为画像独立存放在 `behavior/`，不进记忆FTS、dreaming或记忆导出。四组指标与质量、存储和清除边界见[行为画像](behavior.md)。macOS 只取前台进程自己的窗口标题（按窗口 owner PID 匹配），匹配不到就返回缺失标题，不拼其它应用的标题；窗口采样由原生事件驱动、空闲按需现采，观察时间不再是窗口机会的新鲜度判据（身份变化会取消在途窗口任务）；监控关闭只关闭观测来源，事项和纯时间规则仍用独立的可见性、锁屏、系统idle入口判定资格。锁屏（`screen_state=locked`）不再判为观察不可用：主动消息照常参与、不额外加严；静默了解在固定钟点到点即跑（2026-10-06 起不再要求 idle 达标、允许用户在用电脑），仅 `screen_state=unavailable` 跳过本轮；locked 批跳过截图类（Node 不请求、Rust 终裁拒绝），只用文件/目录与最后一次窗口快照（决策提示注明快照可能陈旧）；只有 `unavailable`（真不可知）才丢弃机会并留跳过原因。窗口类机会在锁屏期间仍会因当前窗口数据陈旧自然失效（`window_unavailable`）——这是既有新鲜度判据而非锁屏加严；非窗口类机会不受影响。观察门禁资格有常驻 L3 用例（caseId `proactive-observation-gate`，契约 pr-09，覆盖三态准入与 locked 跳过截图），测试已写、按用户要求统一留到收口波运行。
+行为画像独立存放在 `behavior/`，不进记忆FTS、dreaming或记忆导出。四组指标与质量、存储和清除边界见[行为画像](#行为画像)。macOS 只取前台进程自己的窗口标题（按窗口 owner PID 匹配），匹配不到就返回缺失标题，不拼其它应用的标题；窗口采样由原生事件驱动、空闲按需现采，观察时间不再是窗口机会的新鲜度判据（身份变化会取消在途窗口任务）；监控关闭只关闭观测来源，事项和纯时间规则仍用独立的可见性、锁屏、系统idle入口判定资格。锁屏（`screen_state=locked`）不再判为观察不可用：主动消息照常参与、不额外加严；静默了解在固定钟点到点即跑（2026-10-06 起不再要求 idle 达标、允许用户在用电脑），仅 `screen_state=unavailable` 跳过本轮；locked 批跳过截图类（Node 不请求、Rust 终裁拒绝），只用文件/目录与最后一次窗口快照（决策提示注明快照可能陈旧）；只有 `unavailable`（真不可知）才丢弃机会并留跳过原因。窗口类机会在锁屏期间仍会因当前窗口数据陈旧自然失效（`window_unavailable`）——这是既有新鲜度判据而非锁屏加严；非窗口类机会不受影响。观察门禁资格有常驻 L3 用例（caseId `proactive-observation-gate`，契约 pr-09，覆盖三态准入与 locked 跳过截图），测试已写、按用户要求统一留到收口波运行。
 
-presence只有 idle/working/resting 和有限短动作，不移动真实窗口或执行外部动作。文案取当前Card的 `StageMap.presence`，通过titlebar所有权写入；短动作每小时最多2次、每次2秒，隐藏、锁屏、减少动态效果或销毁时停止。日历运行期离线，农历节日及节气使用[香港天文台年度历表](https://www.hko.gov.hk/tc/gts/time/conversion.htm)的2026–2035本地数据，覆盖范围外明确 calendar_uncovered，不推算法定调休。
+presence只有 idle/working/resting 和有限短动作，不移动真实窗口或执行外部动作。连续观察工作或开发上下文 30 分钟可进入 `working`（不依赖长期画像质量门槛）；presence 不设到期租约，由下一条观察、观察许可关闭或卡片切换释放。`resting` 来自当前观察到的 idle 或媒体上下文，不代表人格或真实休息结论。文案取当前Card的 `StageMap.presence`，通过titlebar所有权写入；短动作每小时最多2次、每次2秒，隐藏、锁屏、减少动态效果或销毁时停止。日历运行期离线，农历节日及节气使用[香港天文台年度历表](https://www.hko.gov.hk/tc/gts/time/conversion.htm)的2026–2035本地数据，覆盖范围外明确 calendar_uncovered，不推算法定调休。
 
 聊天入口：`/proactive on`（档位恢复出厂默认「高」，不记忆上次档位，只检查仍有效窗口、不堆积补发）、`/proactive off`（档位置「关」，即时取消在飞尝试与表现、保留约定暂停）、`/proactive status`（显示当前档位 + 今日送达 + 暂停中）、`/behavior clear`。画像清除先撤销SQLite中的派生资格，再排空采集队列、删除文件与RAM；旧样本不能恢复，启用监控时后续新样本继续采集。AI设置「主动陪伴」区提供主动消息档位与静默时间段，与斜杠命令读写同一份 CONFIG（档位不再是 SQLite 控制点，命令与设置同源）。拟人表达开关控制表达节奏，静默访问档位控制观察来源，两者独立于主动消息档位。
 
 开发证据出口：`ProactiveTrace` 的 debug 日志与 `subscribeRuntimeTrace` 只读订阅（`@/services/engine/protocol`；生产不订阅、不保留负载，测试适配器按需订阅）。事件经既有RuntimeTrace／logger发布，覆盖窗口观察与画像结算、机会、规划、claim、表达、反馈与事项治理，并给跳过原因（如静默、冷却、忙、视图过期、预算或 owner 变化）以及 tick／attempt／request 关联；不保存标题、应用身份、记忆正文、用户原话或完整Prompt，trace观察者不承担业务提交或取消资格。理想线路由用户撰写，审阅门禁与证据工具见[测试README](../../test/README.md)。
+
+## 行为画像
+
+行为画像是 `data_root/behavior/` 下独立的派生数据域：原始账（`segments/`、`daily/` 与内存读模型）不直接进入长期记忆、dreaming 的用户区或用户事实。画像层唯一允许沉淀进记忆的是**稳定结论**（见「稳定结论沉淀」：只在 reliable 档存在，经 dreaming 的派生区沉淀为「系统观察」，与用户事实分区存放、分区召回，并随画像清除一起失效）。静默访问档位（`ai.silentAccess.frequency`）是观察许可；档位「关」时 Rust 观察线程停止采样，前端清当前快照并结束画像分段。隐私清除先撤销主动来源对行为画像的引用，再清除画像文件与内存读模型。
+
+### 原生观察
+
+Rust 单一 monitor 线程发出 `window-observed`。采样由原生事件驱动：macOS 注册 NSWorkspace 的前台切换／系统睡眠唤醒／显示器睡眠唤醒／会话切换通知与锁屏、解锁分布式通知，Windows 安装前台窗口 WinEvent 钩子与会话、电源（睡眠唤醒、显示器开关）通知；不再按固定间隔轮询，`general.desktop.pollingIntervalMs` 已退役、运行期无消费者。系统或显示器睡眠、会话恢复先补发一条 `suspended` 边界再发新采样，避免把离开时长当成连续使用。每个有效采样包含 `appId/app/title`、Unix `observedAt`、本代 monotonic `sampleMonoMs`、`monitorGeneration`、单调 `sequence`、屏幕维度 `screen_state` 与正交的系统 idle、桌宠可见和前台状态。`screen_state` 三态：`observed`（前台窗口可截）／`locked`（锁屏；截图无意义但状态可知）／`unavailable`（真不可知）；idle 与它正交——锁屏也带 idle（「用户离开」与「离开多久」是两件事），idle 无效（NaN、负数或缺失）时整体判 `unavailable` 且不带 idle。事件载荷 `observation_state` 保持 5 值生命周期维度（`observed/locked/unavailable/suspended/disabled`）、字段名不变，与命令路径的 `screen_state` 不同义：正常采样由 `screen_state` 直通，监控边界样本以 `suspended`/`disabled` 直通。Windows 应用标识只取进程文件名 stem，不保存可执行文件路径；macOS 取 bundle id 与当前应用名，标题只取属于前台进程（窗口 owner PID 匹配）的窗口，否则标题缺失。锁屏和不可用状态不带应用或标题。macOS 锁键判定：`CGSSessionScreenIsLocked` 键缺失或显式 `false` = 未锁定（继续查 idle），`kCFBooleanTrue` = 锁屏，非常规取值 = `unavailable` 并一次性 `rust_warn`；键缺失打一次性 `rust_info`，不随每次采样重复。这是隐私相关的放宽：未来系统若锁屏时也不写该键会误报 `observed`，取舍是相对「键缺失即永久 `unavailable`、依赖观察的两条链从不运行」。Windows（winlogon）分支同样先查 `GetLastInputInfo` 再定状态、`locked` 也带 idle（行为变更；本机不可验证，唯一权威是 CI `windows-latest`）。独立 `get_runtime_activity` 只返回桌宠可见/前台、`screen_state` 三态、idle 和采样时间，不返回当前应用身份，空闲资格按需现采；消费包装对 `unavailable` 按同因 10 分钟限频 `log.warn` 留痕（文案含影响面「依赖观察的主动机会与静默了解会被跳过」），恢复可用后重置限频记忆。
+
+前端唯一事件入口做形状、代际和序号校验：旧代际、重复和乱序样本丢弃；窗口工具只读这份快照。窗口观察订阅者同步收到原事件，画像写盘在自身串行队列执行，不阻塞主动规则的事件监听。
+
+### 分段、聚合和质量
+
+每段有效时间只落入 `active`、`idle`、`unknown`、`unobserved` 之一。相同应用身份的连续观察可以合并，但事件之间的长间隔不会整段算作 active：单段不超过 5 分钟且两端 idle 都低于 5 分钟时，才可把间隔记为 active；较长间隔用单调 idle 计数切分可证明的 active 前缀与 idle 后缀，idle 计数重置或不足以解释的部分记为 `unknown`。墙钟间隔超过 monotonic 可确认时长的部分，以及锁屏、不可用、挂起等边界前未被证明的时段，记为 `unobserved`。队列丢弃也会切断分段并记为 unobserved；时钟回退不拿负时长补账。所有时长按本地日、小时拆分。
+
+单日聚合包含 `categoryMs`、本地小时直方图、appId 时长、工作连续段统计、切换数、`coveredMs`、`unobservedMs`、`idleMs`、`unknownMs` 和桌宠前台使用时间；`active/idle/unknown/unobserved` 互斥。`hourMs` 只累计 active，idle、unknown 与 unobserved 不进入逐小时活跃分钟。appId 每日最多记录 64 个；没有标题、正文、标题哈希或截图。滚动 JSONL 分片每片不超过 512 KiB、**保留 7 日**；daily JSON **保留 40 日**（启动只读最近 **35 日**——画像本身只用最近 30 天，余量给跨日与时钟回退）；最新四类画像只留内存读模型，可由 daily 重算。计量口径升至 `measurementVersion=2` 后，旧版本 daily 不混算为 v2；先持久化派生记忆撤销待办，再删除旧派生缓冲，避免重启重复撤销新结论。读取异常不标记装载完成，下次读取重试。首次读取或登记派生记忆前由共享 memory reconciliation 撤销旧派生行为来源，闭包成功后才清待办，失败则保留待办重试。**保留期与「画像结论长期化」联动**：稳定结论沉淀进记忆后，原始账降级为滚动工作缓冲，长期回看由结论承担；因此结论必须能在 30 天画像窗口内被重新验证或推翻，不得依赖更长的原始历史。
+
+画像提供 `rhythm/apps/focus/activity` 四组近30个日历日画像；另有按最近7个日历日裁剪的 `weekly` activity/focus，供周回顾使用，不以“最近7个有样本的日子”代替一周。应用类别以 `appId` 身份规则判定，命中时置信度为 high；标题只用于短暂的媒体 activity hint，属于 low 置信线索，不能把未知应用推断成已知类别，原始标题不落盘。`focus` 字段是已识别 work/development 应用在 active 时间内的连续段统计，是应用类别与时间的代理指标，不代表心理专注、产出或实际工作。`quality.eligibleCollectionMs` 是覆盖时长与 `unobservedMs` 之和；应用未运行或监控关闭期间没有采样，不计入可评估时长。`unknownMs` 虽没有可靠活动分类，仍属于已收到且有时间边界的覆盖；`unobservedMs` 则是无法确认的时间。没有有效采集时间时质量为 `unavailable`；`coverageRatio = coveredMs / eligibleCollectionMs`，至少 3 个有效观察日且覆盖率≥60%才标为 `reliable`。质量不足时仍可使用当前连续观察支持的短时上下文，但不得据此宣称长期作息、精确工时、心理专注或成就。
+
+`clearBehavior()` 先停 collector 并等待其队列完成，再删除行为目录并清空内存快照。调用端须先在 SQLite 主动控制事务里失效 behavior 来源的机会、任务、未决尝试与派生缓存，**并在同一事务里失效派生结论沉淀的记忆**（先失效引用、再写来源墓碑、删正文/索引/候选，见下节），然后调用此清理函数。停止后的迟到事件不写回。
+
+### 稳定结论沉淀
+
+抽取层是 [conclusions.ts](../../src/services/behavior/conclusions.ts) 的纯函数 `sedimentConclusions(snapshot)`：唯一输入是画像读模型 `BehaviorSnapshot`（近 30 日 `rhythm/apps/focus/activity` + quality），拿不到 `daily/`、`segments/` 原始账——“不沉淀原始账”是类型签名层面的边界，不是注释约定。只有 `quality.status === "reliable"`（≥3 个有效观察日 + 覆盖率 ≥60%）才产出结论，其余状态返回空数组（不登记、不沉淀）；每个画像组最多一条，共四个槽位（`rhythm/apps/focus/activity`），文本只含带段/整比/取整后的表述，并**自带判据**（依据的画像字段与窗口，如「判据：近30日画像窗口的最强 4 小时活跃带」）。**不记清单**：具体某天的工时、精确时间戳、逐次应用切换细节、窗口标题/正文/截图——这些只留在画像域。可重验/可推翻：结论由当前滚动窗口重算，新数据改写输入即改写文本；不依赖 >30 天历史（与原始账 7/40 日滚动缓冲口径一致）。
+
+登记与整理在记忆域：`collectBehaviorMemorySources`（[sources.ts](../../src/services/agent/memory/sources.ts)）把结论登记为 `derived_behavior` 来源（合成会话 `behavior`、条目 `conclusion:<slot>:<measurementVersion>`、来源身份含 `measurementVersion` 与结论文本 hash——同版本同结论幂等，新版本进入覆盖流程）；dreaming 前置登记后按来源类别分开开作业，派生批次的 Review 是**确定性映射**（[dreaming.ts](../../src/services/agent/memory/dreaming.ts) 的 `buildDerivedCandidates`：结论文本原样成为正文，模型不参与改写或演绎观察，也不占 token 预算），同槽位新版本带 `supersedesId` 覆盖旧条目（新旧冲突的收敛 = 版本 + 覆盖，不无界堆积）。沉淀出的条目 `origin=derived_behavior`：分区存放与召回、永不进核心画像、不做 working 事项、不跨来源类别改写（Rust 在发布与治理写入两侧校验）；记忆块里标「系统观察」并注明是可由用户撤销的推断；记忆面板的库总览行与详情也对派生条目标注同一标记（用户事实不标注）。用户清画像（`/behavior clear`）时，Rust 在同一控制事务里先失效主动引用，再给全体派生来源写提取墓碑、删条目/索引/候选并推进 `forget_epoch` 与 memory revision（先失效引用再删数据）；已清的结论文本不能迟到回灌，也不会在清画像后自行复活（结论文本变化产生的新身份不受影响）。**清画像的闭包覆盖全部派生来源**：了解摘要（`understanding:` 前缀）与结论（`conclusion:` 前缀）一起被写墓碑与清理。**第二条派生通道**：静默了解的摘要经 `collectUnderstandingMemorySources` 登记为同区来源，身份绑定稳定 artifact、输入版本与摘要；同 artifact 内容更新替换旧观察，缺证据旧摘要不登记。每次最多登记最新 12 个不同 artifact 的可验证观察，满额按最旧优先 supersede；候选仍为确定性映射（文本逐字、不经模型演绎）。共享 memory reconciliation 在 recall 与 derived registration 前检查 `measurementVersion=2` 的画像待撤销标记和了解层旧证据待办；只有闭包成功才确认标记，失败保留待办重试。「清除静默了解」复用现有了解闭包，范围收在 `understanding:` 来源（`memory_apply_change` 的 `forget_understanding`，actor 固定 internal）。实现细节与失效链证据见[当前记忆](memory.md)与[数据库](database.md)。
+
+### 了解与话题参与
+
+静默了解的目的是了解用户本身（工作与项目、投入与关注、生活与兴趣、工具与习惯），窗口与截图只是线索。两种方向与读取边界见上文「规则、预算与送达」：`breadth` 铺开整台电脑、`depth` 各 50% 走 `existing`/`new`，了解层为空时强制广度；读取范围为整机只读，读取数值上限已删除，每小时读取名额与单文件字符预算保留。
+
+`observation` 持有独立派生文件 `behavior/understanding.json`：观察摘要**不直接进入**长期事实，只有经 dreaming 派生区（`origin=derived_behavior`，与画像结论同区）确定性沉淀的条目才进记忆库，原始 `understanding.json` 不进 FTS、不进入记忆导出。决策输入由窗口快照（锁屏时为最后一次并注明可能陈旧）与最近 8 条已知了解，外加五块只读有界摘要组成：本地时间（含星期与 IANA 时区）、Card 人设有界摘要、画像质量与就近 6 个钟点活跃分钟（近 7 日）、话题 top-5 占比，以及长期记忆核心画像（空 query 走 core 召回、token 256、条数 ≤3、单条 ≤400 字符、显式跳过重排、身份取运行时活跃会话与激活 Card）。各块缺省或不可靠时如实降级（无激活 Card 为 null、画像不可靠原样带质量状态、话题为空数组、无活跃会话或 `ai.memory.enabled` 总闸关闭时不召回、召回失败按空），降级不使批次失败；决策输入整段计入 aux 共享 token 预留。决策解析失败、字段非法或路径非绝对时本批不读文件，只保留截图（锁屏批只保留最后一次窗口快照）。
+
+摘要质量：纯否定结论（截图无有效内容、目录里没有项目文件、读取失败）不进入了解层——存储写入与快照两侧用同一判定挡掉，既不展示、也不计入覆盖率（`ready` 仍要求至少 3 个独立来源，但只数有信息的观察），更不会被沉淀成记忆。退化截图（高度 <120 或不足宽度 1/10 的扁带）由 Rust 判不可用，Node 回退到窗口快照与目标读取。了解批次落盘后**事件驱动**触发一次派生整理（`runDreamingSweep`，派生 Review 是确定性映射、不过模型），失败只留痕，来源仍在水位之后等下次重试。
+
+每条了解记录同时保存 `evidenceId`（稳定 artifact 身份的 SHA-256）与 `evidenceHash`（实际输入版本的 SHA-256），不留第二份正文；前者决定独立来源数，后者只标记该 artifact 的内容版本。文件/目录以路径作为稳定身份；窗口与截图以 `appId` 作为稳定域，标题不参与身份。内容更新不增加独立来源数，新版本覆盖该 artifact 的旧观察；展示覆盖数与独立来源数分开，只有至少 3 个独立 artifact 才是 `ready`。缺少任一 hash 的旧记录可留作本地展示，但不计 ready、不进入了解 prompt，也不能登记为派生记忆来源；读取时先持久化 memory closure pending，首次 recall 或 derived registration 经共享 reconciliation 撤销旧了解沉淀，闭包成功才清 pending。
+
+可信、已提交用户原话按参与来源入队，单次辅助调用提取标签、有限 category / sensitivity / stance 枚举与权重；正文只在 RAM 请求中使用。敏感或 unknown 标签不存入可用选材；中立、负面、引用、假设、否定与不确定立场按原枚举保留。权重表示讨论参与度，不表示喜好或稳定事实；来源与规范化主题配对后去重，同源重复模型输出不增加权重；至少两个独立用户来源才向主动选材提供占比。保留 90 日／512 条上限；清除水位与来源失效阻止旧正文回扫晋升，显式遗忘也会撤销关联标签资格。
+
+停止、前台抢占、会话／Card或来源变化会取消旧代际；预算返回与请求前再次核对来源，原生CANCELLED终止整批；结果返回后再次核对许可与来源。`/behavior clear` 的清除顺序见上文「观测、表现与控制」。
 
 ## 数据库
 
