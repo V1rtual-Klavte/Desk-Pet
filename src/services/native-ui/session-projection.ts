@@ -436,7 +436,7 @@ export function buildSessionProjection(options: { history?: boolean } = {}): Ses
  * 推送一帧投影（失败归宿由调用方决定：会话操作路径只留痕，见 index.ts/chat-intents）。
  *
  * 帧前**发出**一次中断态探测（`getInterruptedRun`，不 await）：中断态只在会话槽打开后
- * 才可读（`harness-slot` 的 open 从会话文件恢复未完成操作），探测负责把槽打开；若确有
+ * 才可读（`slot.ts` 的 open 从会话文件恢复未完成操作），探测负责把槽打开；若确有
  * 中断，`markInterrupted(true)` 经 `session-signal` 触发下一帧（中断面板与标签角标随帧
  * 到位）。探测失败只留痕（老 UI 的 `refreshInterrupted` 同款归宿）——本帧不被打开槽阻塞。
  */

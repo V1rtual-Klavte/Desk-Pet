@@ -150,7 +150,7 @@ export async function acquirePiSession(sessionId: string): Promise<Session<Jsonl
  * T-6（关闭 / 退出前缓冲被 flush）在本仓的挂点就在这里：上游
  * `HarnessSlot.close → harness.close → session.close → storage.close` 全链路一次 `FileSystem`
  * 调用都没有（执行方案 §0.3），句柄一关就没有别的触发点，只能在此显式冲掉帧缓冲。
- * 直接调用方（`repo.ts` 内部、`harness-slot.ts`）无需各自改动即获得 flush。
+ * 直接调用方（`repo.ts` 内部、`slot.ts`）无需各自改动即获得 flush。
  *
  * 顺序必须是「先 close 再 flush」：`session.close()` 会等 mutation line 与 `commitQueue`
  * 排干，即所有帧写入都已进过装饰器；反过来会与在飞提交赛跑，漏掉最后一帧。
@@ -320,7 +320,7 @@ export async function readPiSessionEntriesOnce(sessionId: string, query?: EntryQ
       // 动态导入必须指名具体模块：桶命名空间在 inlineDynamicImports 下急切求值，
       // 与循环网叠加会触发 L4 构建守卫（见 test/host/native/build.mjs）与 bundle TDZ。
       const [{ getActiveSessionId }, { harnessSlots }] = await Promise.all([
-        import("./store"), import("@/services/engine/harness/harness-slot"),
+        import("./store"), import("@/services/engine/harness/slot-registry"),
       ])
       if (getActiveSessionId() !== sessionId && !harnessSlots.peek(sessionId)) await releasePiSession(sessionId)
     }
@@ -330,8 +330,8 @@ export async function readPiSessionEntriesOnce(sessionId: string, query?: EntryQ
 /** 追加 deskpet 自定义 entry（宿主生成、非模型消息）；lane 分支不存在时按需创建。返回条目 id。 */
 export async function appendPiSessionCustomEntry(sessionId: string, customType: string, data?: JsonValue): Promise<string> {
   // 槽存活时只允许 AgentLane 改动它自己的 tip。session Branch 即使成功落盘，也会让运行中的
-  // Harness 按旧内存 tip 续写并把旁路 entry 留在链外；动态导入避免 repo ↔ harness-slot 静态环。
-  const { harnessSlots } = await import("@/services/engine/harness/harness-slot")
+  // Harness 按旧内存 tip 续写并把旁路 entry 留在链外；动态导入避免 repo ↔ slot-registry 静态环。
+  const { harnessSlots } = await import("@/services/engine/harness/slot-registry")
   const slot = harnessSlots.peek(sessionId)
   if (slot) return await slot.appendCustomEntry(customType, data)
 

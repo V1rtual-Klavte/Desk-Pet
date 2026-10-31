@@ -62,15 +62,9 @@ export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCa
 export { completePiText } from "./model-gateway"
 
 export { createHarnessRunState } from "@/services/engine/state"
-export {
-  HarnessSlot,
-  HARNESS_LANE,
-  compactionSettingsFor,
-  harnessSlots,
-  isAIGenerating,
-  retryPolicyFromConfig,
-} from "./harness-slot"
-export type { HarnessRunSpec } from "./harness-slot"
+export { HarnessSlot, HARNESS_LANE, compactionSettingsFor, retryPolicyFromConfig } from "./slot"
+export type { HarnessAdmitInputSpec, HarnessAdmitSkillSpec, HarnessAdmitSpec, HarnessAdmissionResult, HarnessRunSpec } from "./slot"
+export { HarnessSlots, harnessSlots, isAIGenerating } from "./slot-registry"
 
 export { toAgentHarnessTools } from "@/services/tool"
 export type { HarnessToolRun } from "@/services/tool"

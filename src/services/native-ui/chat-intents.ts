@@ -69,7 +69,7 @@ import {
   switchToSession,
 } from "@/services/session"
 import { markSessionHistoryResolved, pushSessionProjection } from "./session-projection"
-import { harnessSlots } from "@/services/engine/harness/harness-slot"
+import { harnessSlots } from "@/services/engine/harness/slot-registry"
 
 const log = createLogger("NativeUi")
 

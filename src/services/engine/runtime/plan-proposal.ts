@@ -38,7 +38,7 @@ import { planConfig, safetyConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { sha256Text } from "@/services/engine/protocol"
-import { harnessSlots } from "@/services/engine/harness"
+import { harnessSlots } from "@/services/engine/harness/slot-registry"
 import type { PiSubAgentScope } from "@/services/engine/state"
 import {
   bindRunningPlan, clearRunningPlan, planConfirmState,

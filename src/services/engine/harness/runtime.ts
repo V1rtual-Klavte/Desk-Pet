@@ -77,9 +77,10 @@ import type {
   PiAgentInputTurn, PiAgentSkillTurn, PiAgentTurnInput, PiAgentTurnOutput, PiSubAgentAudit,
   PiSubAgentEvidence, PiSubAgentInput, PiSubAgentOutput, PiSubAgentOwner, PiSubAgentScope, TurnFailure,
 } from "@/services/engine/state"
-import { harnessSlots, HarnessSlot } from "./harness-slot"
+import { HarnessSlot } from "./slot"
+import { harnessSlots } from "./slot-registry"
 import { readActiveAttemptEvidence, readContextEpoch } from "./delivery"
-import type { HarnessRunSpec } from "./harness-slot"
+import type { HarnessRunSpec } from "./slot"
 import { classifyFailureKind } from "@/services/error/failure-kind"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
@@ -576,7 +577,7 @@ function createLadderGateBuilder(args: {
  * —— 那是上游自己的摘要效应：用它的通用英文提示词（`compaction.js` 的 `SUMMARIZATION_SYSTEM_PROMPT`）
  * 重新摘要。那条路径不受本方案的地址目录与投影阶梯约束，产出的摘要却会提交成后续所有回合唯一的
  * 历史视图且不可回滚：用户以为压缩成功，用的却是另一套语义。宁可不压缩。
- * 同理**不得返回 `undefined`**（空返回）：`harness-slot.ts` 的 before_compaction 桥接里那条
+ * 同理**不得返回 `undefined`**（空返回）：`slot.ts` 的 before_compaction 桥接里那条
  * `if (!host)` 早退是上游唯一的兜底入口 —— 宿主一旦空返回，等于放行上游摘要。
  *
  * 失败的可见面（现状口径，改那条接线不属本函数职责）：decline 在上游的 `declined` 终态里**不带

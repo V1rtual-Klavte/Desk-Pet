@@ -110,7 +110,7 @@ import type { SceneDef } from "../../../e2e/types"
 //      + 轮 4 的前缀单元（正文 + toolCall + 承载结果）；
 //   ② 第 1 片的 `previousSummary` 是**第一条 compaction 条目的摘要**（不再是 null）——
 //      「跨压缩的迭代链」没有断；
-//   ③ `contextEpoch` 两次推进（每次提交 +1，`harness-slot.ts` 的 compaction_end）；
+//   ③ `contextEpoch` 两次推进（每次提交 +1，`slot.ts` 的 compaction_end）；
 //   ④ 两次压缩之后**原文条目仍逐字不变**（压缩只改请求视图，4 条探针结果全在）。
 //
 // ── 轮 3/轮 4 的载荷（与轮 1/轮 2 同构）──
@@ -139,7 +139,7 @@ const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fa
 /** 真正生效的窗口与 `resolvePiTurnModel` 一致：配置值与注入模型窗口取小（maxTokens 由预算覆盖）。 */
 const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 131_072)
 const BUDGET = contextBudget(WINDOW_TOKENS)
-/** 压缩设置与 `harness-slot.ts` 同一条表达式（maxOutput 取同一个预算的 outputReserve）：保留窗口从这里来。 */
+/** 压缩设置与 `slot.ts` 同一条表达式（maxOutput 取同一个预算的 outputReserve）：保留窗口从这里来。 */
 const SETTINGS = compactionSettingsFor(WINDOW_TOKENS, BUDGET.outputReserve)
 /** 单片素材预算：与 `summarizeCompaction` 传给规划器的实参同一条表达式，不另写一份口径。 */
 const SLICE_BUDGET = Math.floor(BUDGET.hardInputLimit * COMPACTION_SLICE_RATIO)
@@ -937,7 +937,7 @@ export const 压缩分片: SceneDef = {
           if (!latestCompaction.summary.includes(lastIntent)) {
             throw new Error(`第二条 compaction 条目的正文不是本次末片产出（找不到「${lastIntent}」）：${latestCompaction.summary.slice(0, 120)}`)
           }
-          // 换代身份：两次提交各推进一次（槽在 compaction_end 上 ++，harness-slot 的 1697 行）。
+          // 换代身份：两次提交各推进一次（槽在 compaction_end 上 ++，见 slot.ts）。
           const snapshot = harnessSlots.snapshot(sessionId)
           if (snapshot?.contextEpoch !== 2) {
             throw new Error(`contextEpoch 应为 2（两次提交各推进一次），实际 ${String(snapshot?.contextEpoch)}`

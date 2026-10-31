@@ -306,7 +306,7 @@ describe("会话意图承接（chat_* 宿主请求）", () => {
     expect(await onDisk(created!.id), "新会话没有真落盘（仓库扫描不到）").toBe(true)
 
     // 欢迎语【落盘】依赖该会话的 harness lane（槽的 prepare 才建），新建会话此刻没有
-    // run：产品把无槽期的宿主条目挂进审计队列、run 时补齐（不丢，见 harness-slot 的
+    // run：产品把无槽期的宿主条目挂进审计队列、run 时补齐（不丢，见 slot.ts 的
     // orphanAudits）；「欢迎语经 JSONL 恢复」的端到端断言由领域引导序列用例覆盖。
     // 本条验证：欢迎语恰好一次（在磁盘或在该会话视图，双写/丢失都红）。
     const greetings = await readPiSessionEntriesOnce(created!.id, { customType: DESKPET_GREETING_ENTRY, order: "asc" })

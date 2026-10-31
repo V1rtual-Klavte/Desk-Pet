@@ -214,7 +214,7 @@ export interface CompactionOverflowDetail {
  * 压缩被拒绝的结构化留痕：decline 不是失败（不写 `failure`、不改用户可见文案），但「哪种原因、
  * 什么触发、关键数字多少」必须可诊断 —— pi 的 `declined` 终态不带 error，宿主钩子是唯一的原因出口。
  * 钩子每次拒绝都写进 `CompactionAuditSink.decline` 并留一条统一日志；槽按触发方式落审计条目
- * （manual / overflow；threshold 是每个检查点都会重试的内部优化，只留日志，见 harness-slot）。
+ * （manual / overflow；threshold 是每个检查点都会重试的内部优化，只留日志，见 slot.ts）。
  */
 export interface CompactionDeclineRecord {
   readonly kind: CompactionDeclineKind

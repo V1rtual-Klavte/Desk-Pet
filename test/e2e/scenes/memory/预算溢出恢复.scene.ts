@@ -40,7 +40,7 @@ const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 200_000)
 const OUTPUT_RESERVE = contextBudget(WINDOW_TOKENS).outputReserve
 const BUDGET = contextBudget(WINDOW_TOKENS, OUTPUT_RESERVE)
 /**
- * 压缩设置与 harness-slot 同一条表达式：模型解析把 maxTokens 收到 min(窗口推导值, 模型值)，
+ * 压缩设置与 slot.ts 同一条表达式：模型解析把 maxTokens 收到 min(窗口推导值, 模型值)，
  * 保留窗口从这里来。旧写法拿 OUTPUT_RESERVE 当 maxOutput —— 窗口推导值是 25000、模型值是
  * 16384，两者给不出同一份 normalInputTarget（保留窗口随窗口缩放后数字分家）。
  */

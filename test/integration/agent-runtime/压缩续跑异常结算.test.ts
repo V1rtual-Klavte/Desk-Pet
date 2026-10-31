@@ -1,7 +1,7 @@
 // ==========================================
 // 压缩续跑异常结算 —— 手动压缩的续跑「已结算 / 不支持的 suspended」两条异常归宿
 //
-// 被测：`HarnessSlot.compact`（harness-slot.ts 的续跑收口段）。压缩提交成功后，Harness 会
+// 被测：`HarnessSlot.compact`（slot.ts 的续跑收口段）。压缩提交成功后，Harness 会
 // 再驱动一次续跑消费 lane 持久 inbox；那段续跑**没有宿主回合** —— 它若已结算（completed/
 // failed/aborted/declined 任一终态），压缩结果就不可能进入任何回合结算与 UI，不能报
 // 「压缩完成」；它若挂起（suspended，不结算的操作），后续准入会恒判忙，必须显式取消结算。
@@ -15,7 +15,7 @@
 // 桩替换的是调用结果、不是被断言的判定逻辑：终态映射、审计落盘与 abort 调用都在产品代码里。
 //
 // 与 `压缩挂起结算.test.ts` 的分工：那一条测「Provider 返回延迟响应」的回合结算（abort 挂起
-// 操作）；本文件测**压缩续跑**的收口分支，两者都在 harness-slot 的异常面，不重叠。
+// 操作）；本文件测**压缩续跑**的收口分支，两者都在 slot.ts 的异常面，不重叠。
 //
 // 未运行声明：按实施期纪律，本文件只写不跑，断言对错留验收环节（首跑见红时先对质问
 // 「断言写错 vs 实现缺陷」，不要直接改实现迎合断言）。
@@ -34,7 +34,7 @@ import { standardSetup } from "../../host/standard-setup"
 import { createHarnessRunState, harnessSlots } from "@/services/engine/harness"
 // 审计条目的 customType 常量没进 harness barrel（只有压缩拒绝/提示词重写/快照三条进了）：
 // 按需直连唯一实现，不手抄字符串（抄一份就多一个会漂移的定义点）。
-import { COMPACTION_CONTINUATION_ENTRY } from "@/services/engine/harness/harness-slot"
+import { COMPACTION_CONTINUATION_ENTRY } from "@/services/engine/harness/slot"
 import { initChat } from "@/services/agent/runner"
 import { initPaths } from "@/services/paths"
 import { getActiveSessionId } from "@/services/session/store"

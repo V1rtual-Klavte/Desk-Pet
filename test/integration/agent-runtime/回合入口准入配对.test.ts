@@ -3,7 +3,7 @@
 // ==========================================
 //
 // 被测语义（契约《回合治理与图片生命周期》Part 2；ar-30 的另一半）：
-// isAIGenerating() = 受理计数（admit/endAdmission）+ 槽运行状态（harness-slot）。三个回合入口
+// isAIGenerating() = 受理计数（admit/endAdmission）+ 槽运行状态（slot.ts）。三个回合入口
 // 各自在 begin() 成功后受理、在同一回路的 finally 交回 —— dispatchMessage 一侧已由
 // AI生成锁.test.ts 的 [ai-lock-admission-survives-slot-reset] 钉住，本文件把另外两个入口
 // 也钉到同一判据上：

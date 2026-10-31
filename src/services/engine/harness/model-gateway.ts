@@ -494,11 +494,11 @@ export interface PiTextCallResult {
 /**
  * 槽的只读快照（代际与换代身份）。
  *
- * 动态导入 harness-slot：静态导入会形成 `harness-slot → model-gateway → harness-slot` 的模块环
- * （槽在 create 时要用本模块的 createHarnessModels）。
+ * 动态导入 slot-registry：静态导入会形成 `slot-registry → slot → model-gateway → slot-registry`
+ * 的模块环（槽在 create 时要用本模块的 createHarnessModels）。
  */
 async function readSlotSnapshot(sessionId: string): Promise<HarnessSlotSnapshot | undefined> {
-  const { harnessSlots } = await import("./harness-slot")
+  const { harnessSlots } = await import("./slot-registry")
   return harnessSlots.peek(sessionId)?.snapshot()
 }
 
@@ -510,7 +510,7 @@ async function readSlotSnapshot(sessionId: string): Promise<HarnessSlotSnapshot 
  * 不因「没人 flush」丢掉一次性请求的证据。
  */
 async function persistAuditSnapshot(sessionId: string, purpose: PiTextPurpose, snapshot: PromptSnapshot): Promise<void> {
-  const { harnessSlots } = await import("./harness-slot")
+  const { harnessSlots } = await import("./slot-registry")
   const slot = harnessSlots.peek(sessionId)
   if (slot) {
     slot.queueAuditEntry(PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)

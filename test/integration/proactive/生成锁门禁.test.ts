@@ -4,7 +4,7 @@
 //
 // 被测语义（契约《回合治理与图片生命周期》Part 2 的主动链半边）：
 // scanner 在表达前检查 `isAIGenerating()`（受理计数 + 槽状态推导，真相源在
-// `engine/harness/harness-slot`）：回合在飞时机会在门禁处跳过并留痕
+// `engine/harness/slot-registry`）：回合在飞时机会在门禁处跳过并留痕
 // `proactive_skipped(reason: "ai_generating")`，表达端口不被触达。
 // 门禁排在 lane_busy 之前 —— 锁与在飞 lane 同时为真时，留痕理由必须是 ai_generating 而不是
 // lane_busy（分支被删或顺序被换，这条都会红）。回合交回（锁归假）后同一机会照常放行：
