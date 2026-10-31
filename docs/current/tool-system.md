@@ -97,7 +97,7 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由原
 
 ## 文件、命令与取消
 
-工具 handler 返回失败时，Pi 适配器保留错误说明与诊断正文（包括 `missing`、`errors` 等结构化内容），由 Pi 标记 `isError=true` 并落盘，后续请求可读取诊断。错误反馈使用中性说明，不用 Card 台词替代字段含义；成功后的结果继续按成功处理，不把失败诊断丢弃或改成成功。
+工具 handler 返回失败时，Pi 适配器保留错误说明与诊断正文（包括 `missing`、`errors` 等结构化内容），通过原生抛错保持 `isError=true`，中止或钩子异常时也不把失败改成成功。SDK 不传递的错误码与 details 经当前回合的一次性元数据桥交给 after_tool，消费后移除，最终随同一条工具结果落盘，不另建持久记录；后续请求可读取诊断。错误反馈使用中性说明，不用 Card 台词替代字段含义；成功后的结果继续按成功处理。ask_user 只在选择通道的 user／user_replied 归宿返回 `errorCode=user_cancelled`，仍是未完成的交互结果，既不增加技术失败计数，也不清零已有失败；同参重复检测照常。界面发送失败使用 failed，会话生命周期取消使用 cancelled，继续按错误处理，不能按工具名或错误文本豁免。
 
 - 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」）由 Rust [paths/mod.rs::is_credential_path](../../crates/native-host/src/paths/mod.rs) 做不可关闭的最终判定（`SENSITIVE_PATH`），接入点是 `validate_file_path`/`validate_new_file_path` 的词法形态**与** canonicalize 结果两侧 —— 不存在的路径也先得凭据结论而不是 `PATH_NOT_FOUND`，符号链接与 Windows 短名解析后仍会被判；记忆库主文件与 `-wal`/`-shm` 同受 `is_managed_memory_path` 保护；TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
 - 读写目标只接受**常规文件**（[tool_exec/fs.rs](../../crates/native-host/src/commands/tool_exec/fs.rs) 的 `ensure_regular_file`）：`file_read`/`file_read_binary` 在取元数据后立刻判类型，`file_write`/`file_write_atomic`/`file_append` 对已存在的目标判，`file_rename` 的源拒绝 FIFO/设备/套接字但**允许目录**（重命名目录是合法用法，且 `rename` 是元数据操作、不打开内容）。FIFO/套接字/字符设备/块设备的 open 会一直等对端或直接写到设备，handler 因此永不结算、许可额度也不释放，只能在源头拒绝。`/dev/null` 类设备目标**不豁免**：设备路径本就不在允许根（Home/系统临时目录/开发项目根）内，到不了类型判定这一步。

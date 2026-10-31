@@ -196,6 +196,7 @@ delivered／missing／oversized／invalid；符号链接与越过数据根的路
 全部探针统一由独立 coding-agent judge 判定；用户抽查只用于核对，
 不会产生或改写 pass/fail，也不能替代 case 的 gold 审批。
 `--authorization` 冻结用例、用途、模型／数据范围、trial 与修复预算与 holdout 一致性；`drive` 调用前复核授权指纹与请求模型。
+驱动每个已开始步骤都在 finally 读取累计用量并持久化，失败回执、传输异常与检查点超时也不漏账；读取失败或用量字段缺失记 unknown，保留原始阻塞原因，不把未知消耗记成已知零。
 `compare` 只在固定条件一致时对照 baseline 与候选，漂移条件逐项列出；`holdout` 只报告留出使用，两者都不产生质量结论。
 修复用 `--repair-of` 新建 attempt，沿用原 Case 哈希、Card、Profile 与时钟并保留旧失败。
 驱动 host 步骤支持手工触发 `sim_proactive_tick`／`sim_task_deliver`：直接调用主动 tick 与任务投递的组件入口，
