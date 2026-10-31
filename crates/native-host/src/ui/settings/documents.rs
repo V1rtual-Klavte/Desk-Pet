@@ -435,6 +435,18 @@ mod tests {
     use crate::ui::settings::test_support::*;
     use crate::ui::settings::*;
 
+    /// macOS 平台源码（P3 起是目录）：跨平台守门按**整套目录源码**扫描，
+    /// 只看 `mod.rs` 会漏掉 `content/` 里的渲染点。Windows 侧仍是单文件。
+    const MACOS_SOURCES: &str = concat!(
+        include_str!("../platform/macos_settings/mod.rs"),
+        include_str!("../platform/macos_settings/layout.rs"),
+        include_str!("../platform/macos_settings/controls.rs"),
+        include_str!("../platform/macos_settings/content/mod.rs"),
+        include_str!("../platform/macos_settings/content/build.rs"),
+        include_str!("../platform/macos_settings/content/edit.rs"),
+        include_str!("../platform/macos_settings/content/document.rs"),
+    );
+
     #[test]
     fn 保存回执不吞掉同字段的新编辑或其它字段的编辑() {
         let mut draft = SettingsDraft::default();
@@ -544,11 +556,11 @@ mod tests {
     /// 断言用 `concat!` 拆词，避免测试文件自身在外部按整词扫描时自命中。
     #[test]
     fn 两平台设置页都渲染记忆说明常量() {
-        const MACOS: &str = include_str!("../platform/macos_settings.rs");
+        const MACOS: &str = MACOS_SOURCES;
         const WINDOWS: &str = include_str!("../platform/windows_settings.rs");
         let needle = concat!("MEMORY", "_TIP");
         for (name, source) in [
-            ("macos_settings.rs", MACOS),
+            ("macos_settings/", MACOS),
             ("windows_settings.rs", WINDOWS),
         ] {
             assert!(
@@ -565,11 +577,11 @@ mod tests {
     /// `include_str!` 与 `concat!` 拆词的理由同上（删掉任一侧引用本用例立刻红）。
     #[test]
     fn 两平台设置页都渲染记忆分页视图() {
-        const MACOS: &str = include_str!("../platform/macos_settings.rs");
+        const MACOS: &str = MACOS_SOURCES;
         const WINDOWS: &str = include_str!("../platform/windows_settings.rs");
         let needle = concat!("memory_items", "_view");
         for (name, source) in [
-            ("macos_settings.rs", MACOS),
+            ("macos_settings/", MACOS),
             ("windows_settings.rs", WINDOWS),
         ] {
             assert!(

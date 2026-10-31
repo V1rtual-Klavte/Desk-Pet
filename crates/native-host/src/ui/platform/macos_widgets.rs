@@ -628,7 +628,7 @@ mod tests {
     ///
     /// AppKit 层级行为无法在单测里真开模态窗，用源码形状守住「新 runModal 站点
     /// 绕过降级」这一类回归。已迁移的三处文件全部纳入；仍在裸调用、各自文件所有权
-    /// 不在本批的站点（macos_settings.rs / macos_chat.rs / native_ports.rs）见交付报告，
+    /// 不在本批的站点（macos_settings/ / macos_chat.rs / native_ports.rs）见交付报告，
     /// 迁移完成后应把对应文件加入下方清单。
     #[test]
     fn 模态调用站点不绕过降级包裹() {
@@ -694,7 +694,19 @@ mod tests {
         for (name, source, hooks) in [
             ("macos.rs", include_str!("macos.rs"), 1),
             ("macos_chat.rs", include_str!("macos_chat.rs"), 0),
-            ("macos_settings.rs", include_str!("macos_settings.rs"), 0),
+            (
+                "macos_settings/",
+                concat!(
+                    include_str!("macos_settings/mod.rs"),
+                    include_str!("macos_settings/layout.rs"),
+                    include_str!("macos_settings/controls.rs"),
+                    include_str!("macos_settings/content/mod.rs"),
+                    include_str!("macos_settings/content/build.rs"),
+                    include_str!("macos_settings/content/edit.rs"),
+                    include_str!("macos_settings/content/document.rs"),
+                ),
+                0,
+            ),
             ("macos_editor.rs", include_str!("macos_editor.rs"), 0),
             ("macos_main.rs", include_str!("macos_main.rs"), 0),
         ] {
