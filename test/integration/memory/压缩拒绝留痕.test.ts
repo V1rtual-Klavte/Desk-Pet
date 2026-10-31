@@ -29,9 +29,9 @@ import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { assistantTexts, compactionEntries, sessionEntries, sessionMessages } from "../../host/session-entries"
 import { standardSetup } from "../../host/standard-setup"
-import {
-  COMPACTION_DECLINED_ENTRY, compactActiveSession, compactionSettingsFor, resolvePiTurnModel,
-} from "@/services/engine/harness"
+import { COMPACTION_DECLINED_ENTRY } from "@/services/engine/protocol"
+import { compactActiveSession } from "@/services/engine/runtime"
+import { compactionSettingsFor, resolvePiTurnModel } from "@/services/engine/harness"
 import { compactCommand } from "@/services/engine/slash/commands/compact"
 import { getCommandReply } from "@/services/personality"
 import { initChat } from "@/services/agent/runner"

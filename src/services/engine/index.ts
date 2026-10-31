@@ -61,8 +61,8 @@ export type { ChoiceOutcome, ChoiceResolution } from "./choice-confirmation"
 // ── 模型提议计划（propose_plan 工具的执行相位）──
 // 与显式命令入口（runtime 的 runPlanPhase）共用确认通道、执行器与记录存储；唯一消费者
 // 是 `tool/local-extra/plan.ts`，产物归宿是工具结果而不是主回合上下文。
-export { runProposedPlan } from "./runtime/plan-proposal"
-export type { ProposedPlanInput, ProposedPlanOutcome } from "./runtime/plan-proposal"
+export { runProposedPlan } from "./runtime"
+export type { ProposedPlanInput, ProposedPlanOutcome } from "./runtime"
 
 // ── Runtime protocol vocabulary ──
 export type {
@@ -106,33 +106,12 @@ export {
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./protocol"
 
 // ── Pi Agent Core Runtime ──
+export { harnessSlots, describeInputDelivery, readRequestResponse } from "./harness"
+export type { InputDeliveryEvidence, InputDeliveryStage } from "./harness"
 export {
-  compactActiveSession,
-  continueInterruptedRun,
-  deliverActiveTurn,
-  describeInputDelivery,
-  discardPlan,
-  discardInterruptedRun,
-  getInterruptedRun,
-  harnessSlots,
-  isSessionBusy,
-  listQueuedInputs,
-  listRecoveredPlans,
-  readRequestResponse,
-  resumePlan,
-  runPiAgentTurn,
-  takePausedInputs,
-  withdrawQueuedInput,
-} from "./harness"
-export type {
-  HarnessQueuedItem,
-  PiAgentTurnOutput,
-} from "./state"
-export type {
-  InputDeliveryEvidence,
-  InputDeliveryStage,
-  InterruptedRunInfo,
-  ManualCompactionResult,
-  QueuedInputsView,
-  RecoveredPlanView,
-} from "./harness"
+  compactActiveSession, continueInterruptedRun, deliverActiveTurn, discardPlan, discardInterruptedRun,
+  getInterruptedRun, isSessionBusy, listQueuedInputs, listRecoveredPlans, resumePlan, runPiAgentTurn,
+  takePausedInputs, withdrawQueuedInput,
+} from "./runtime"
+export type { HarnessQueuedItem, PiAgentTurnOutput } from "./state"
+export type { InterruptedRunInfo, ManualCompactionResult, QueuedInputsView, RecoveredPlanView } from "./runtime"

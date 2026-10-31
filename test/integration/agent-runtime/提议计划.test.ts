@@ -44,7 +44,7 @@ import { setUiEventPublisher } from "@/services/host"
 import { planCheckpointStore } from "@/services/engine"
 import { getOverride, planConfig, setOverride } from "@/services/config"
 import { initPaths } from "@/services/paths"
-import { resumePlan } from "@/services/engine/harness"
+import { resumePlan } from "@/services/engine/runtime"
 import { chatHistory, getActiveSessionId } from "@/services/session/store"
 import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 

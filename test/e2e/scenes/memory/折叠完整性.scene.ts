@@ -42,16 +42,8 @@ import type { FileError, JsonlSessionMetadata, Result } from "@earendil-works/pi
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
-import {
-  FOLD_POLICY,
-  FRAME_BUFFER_MAX_BYTES,
-  compactActiveSession,
-  compactionSettingsFor,
-  flushSessionFrameWrites,
-  harnessSlots,
-  prepareFold,
-  readFoldLog,
-} from "@/services/engine/harness"
+import { FOLD_POLICY, FRAME_BUFFER_MAX_BYTES, compactionSettingsFor, flushSessionFrameWrites, harnessSlots, prepareFold, readFoldLog } from "@/services/engine/harness"
+import { compactActiveSession } from "@/services/engine/runtime"
 import {
   acquirePiSession,
   getActiveSessionId,

@@ -1,30 +1,7 @@
-// Pi 运行时 barrel：多轮 Agent 回合（AgentHarness lane）、一次性文本调用、Provider 网络边界的统一出口。
+// Pi 适配 barrel：子代理内核、回合原语、一次性文本调用、Provider 网络边界的统一出口。
+// 产品编排（回合/队列/计划相位/恢复/结算/压缩）在 `@/services/engine/runtime`，这里不再转出。
 
-export {
-  compactActiveSession,
-  continueInterruptedRun,
-  deliverActiveTurn,
-  discardPlan,
-  discardInterruptedRun,
-  getInterruptedRun,
-  isSessionBusy,
-  listQueuedInputs,
-  listRecoveredPlans,
-  pausedInputsText,
-  resumePlan,
-  returnPausedInputs,
-  runPiAgentTurn,
-  takePausedInputs,
-  withdrawQueuedInput,
-} from "./runtime"
-export type {
-  InterruptedRunInfo,
-  ManualCompactionResult,
-  QueuedInputsView,
-  RecoveredPlanView,
-} from "./runtime"
-
-// T1.5 抽出的 harness 原语：runtime.ts 只保留编排（T1.6 再整体迁走）。
+// T1.5 抽出的 harness 原语。
 export { runPiSubAgent } from "./subagent"
 export { classifyTurnFailure, turnFailureReply } from "./turn-failure"
 export { createActiveMessage, createTurnNoteMessage } from "./message-adapters"

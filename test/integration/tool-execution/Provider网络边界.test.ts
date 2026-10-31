@@ -10,12 +10,7 @@
 // 规则 6 的 L2 禁入清单）；本文件实际只调用其中的零依赖网络防护叶子。
 import { describe, expect, it } from "vitest"
 
-import {
-  capProviderResponseBody,
-  createProviderFetchGuard,
-  providerResponseByteCap,
-  validateProviderUrl,
-} from "@/services/engine/harness"
+import { capProviderResponseBody, createProviderFetchGuard, providerResponseByteCap, validateProviderUrl } from "@/services/engine/harness"
 
 describe("Provider 网络边界", () => {
   it("Provider URL 协议边界与响应体上限 [tool-provider-network-boundary]", async () => {

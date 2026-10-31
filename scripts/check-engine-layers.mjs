@@ -32,9 +32,10 @@ const ALLOWED = {
   runtime: new Set(["protocol", "state", "harness", "plan", "runtime"]),
 }
 
-// 唯一允许的 plan → harness 动态边：子代理内核按需加载。
+// plan → harness 仅允许两条按需边：步骤子代理内核与一次性文本调用（planner 调模型生成计划）。
+// plan 的静态图仍只依赖 protocol/state —— 这两条 import() 都不产生静态边。
 const DYNAMIC_ALLOW = new Map([
-  ["planner.ts", new Set(["@/services/engine/harness/subagent"])],
+  ["planner.ts", new Set(["@/services/engine/harness/subagent", "@/services/engine/harness/model-gateway"])],
 ])
 
 function walk(dir, out = []) {

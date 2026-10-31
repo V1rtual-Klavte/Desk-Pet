@@ -31,7 +31,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { sessionEntries } from "../../host/session-entries"
 import { standardSetup } from "../../host/standard-setup"
-import { createHarnessRunState, harnessSlots } from "@/services/engine/harness"
+import { createHarnessRunState } from "@/services/engine/state"
+import { harnessSlots } from "@/services/engine/harness"
 // 审计条目的 customType 常量没进 harness barrel（只有压缩拒绝/提示词重写/快照三条进了）：
 // 按需直连唯一实现，不手抄字符串（抄一份就多一个会漂移的定义点）。
 import { COMPACTION_CONTINUATION_ENTRY } from "@/services/engine/harness/slot"

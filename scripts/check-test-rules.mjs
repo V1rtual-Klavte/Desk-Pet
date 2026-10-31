@@ -56,8 +56,12 @@ export const RULES = [
  * `rg -l 'getHostBridge|from "@/services/host"' src/services`，按入口归位到 `@/…`）。
  */
 const IPC_MODULES = [
-  { spec: "@/services/engine/harness", why: "pi barrel 会带出 runtime.ts（经宿主端口发布 UI 事件）" },
-  { spec: "@/services/engine/harness/runtime", why: "agent harness 运行时：经宿主端口发布事件" },
+  { spec: "@/services/engine/harness", why: "Pi 适配 barrel 会带出 model-gateway/provider 观测的宿主端口发布" },
+  { spec: "@/services/engine/runtime", why: "产品编排 barrel：经宿主端口发布 UI 事件" },
+  { spec: "@/services/engine/runtime/turn", why: "主回合编排：运行态事件经宿主端口发布" },
+  { spec: "@/services/engine/runtime/resume", why: "计划恢复入口：运行态事件经宿主端口发布" },
+  { spec: "@/services/engine/runtime/plan-phase", why: "计划相位：进度事件经宿主端口发布" },
+  { spec: "@/services/engine/runtime/plan-proposal", why: "模型提议计划：进度事件经宿主端口发布" },
   { spec: "@/services/session", why: "会话 barrel 会带出 persistence.ts" },
   { spec: "@/services/session/persistence", why: "会话 UI 状态落盘经 HostBridge（L3 的层签名）" },
   { spec: "@/services/session/activity", why: "会话活动时间读取经 HostBridge 的 session_read_text 尾部模式（L3 的层签名）" },

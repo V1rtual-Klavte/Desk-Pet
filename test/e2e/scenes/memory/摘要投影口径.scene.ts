@@ -1,5 +1,6 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
-import { compactionSettingsFor, compactActiveSession } from "@/services/engine/harness"
+import { compactionSettingsFor } from "@/services/engine/harness"
+import { compactActiveSession } from "@/services/engine/runtime"
 import {
   L0_SHORTENED_TAG, MIN_ADDRESS_PREFIX, annotateToolResultText, isUniqueAddressRef,
   projectToolResultText, toolResultNotice, toolResultTokenBudget,

@@ -240,11 +240,17 @@ export function noTopLevelAwaitGuard() {
  * 模块排序只要变动（本仓环形依赖网很大，加一条边就可能变），该对象就会在
  * `const harnessSlots = new HarnessSlots()` 之前求值 →
  * `ReferenceError: Cannot access 'harnessSlots' before initialization`。
- * 动态导入请**指名具体模块**（`@/services/engine/harness/runtime` 等）：保懒加载语义、
+ * 动态导入请**指名具体模块**（`@/services/engine/harness/subagent` 等）：保懒加载语义、
  * 不生成桶命名空间。新增需要动态导入的桶时，把它加进这里的清单。
  */
 export function assertNoDynamicBarrelImports() {
-  const banned = ['import("@/services/engine")', 'import("@/services/engine/harness")']
+  const banned = [
+    'import("@/services/engine")',
+    'import("@/services/engine/harness")',
+    'import("@/services/engine/state")',
+    'import("@/services/engine/protocol")',
+    'import("@/services/engine/runtime")',
+  ]
   const hits = []
   const scan = dir => {
     for (const name of readdirSync(dir)) {

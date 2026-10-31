@@ -11,7 +11,7 @@ import type {
   TurnResult,
 } from "./types"
 import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/state"
-import { runPiAgentTurn } from "@/services/engine/harness"
+import { runPiAgentTurn } from "@/services/engine/runtime"
 import { userInputMessage } from "@/services/engine/protocol"
 import { sendMessage } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"

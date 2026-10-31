@@ -28,7 +28,7 @@ import { captureRuntimeTrace } from "../../host/trace-observer"
 import { sessionEntries } from "../../host/session-entries"
 import { runRuntimeTurn } from "./回合夹具"
 import { ESTIMATE_DRIFT_WARN_RATIO, estimateMessageTokens } from "@/services/context"
-import { PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/harness"
+import { PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/protocol"
 
 /** ≈414 字符的中文摘要正文：估算口径是「1 汉字 ≈ 1 token」，够大才断得出漏算。 */
 const SUMMARY_BODY = "这是一段用于估算器角色覆盖断言的中文摘要正文，".repeat(18)

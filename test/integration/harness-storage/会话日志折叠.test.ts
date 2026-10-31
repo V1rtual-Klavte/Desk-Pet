@@ -61,16 +61,7 @@ import type { Write } from "@earendil-works/pi-agent-core/harness/session"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
-import {
-  FOLD_POLICY,
-  SESSION_WRITE_MAX_BYTES,
-  createPiSessionRepo,
-  flushSessionFrameWrites,
-  foldSessionFile,
-  logStateDigest,
-  prepareFold,
-  readFoldLog,
-} from "@/services/engine/harness"
+import { FOLD_POLICY, SESSION_WRITE_MAX_BYTES, createPiSessionRepo, flushSessionFrameWrites, foldSessionFile, logStateDigest, prepareFold, readFoldLog } from "@/services/engine/harness"
 import type { FoldOutcome, PiSessionRepo } from "@/services/engine/harness"
 // 会话域读路径（无单次大小上限）：尺寸守卫夹具读超 5 MiB 的折叠结果必须经它，按需直连该模块。
 import { SessionFileSystem } from "@/services/engine/harness/session-file-system"

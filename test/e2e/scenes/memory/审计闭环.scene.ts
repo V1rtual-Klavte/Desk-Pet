@@ -1,4 +1,5 @@
-import { PROMPT_SNAPSHOT_ENTRY, harnessSlots } from "@/services/engine/harness"
+import { PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/protocol"
+import { harnessSlots } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { readActiveAttemptEvidence } from "@/services/engine/harness"
 import { runTestActiveExpression } from "../../../host/active-expression"

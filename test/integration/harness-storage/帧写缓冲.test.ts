@@ -47,13 +47,7 @@ import { appendList, pendingAssistantFrames } from "@earendil-works/pi-agent-cor
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { logByteMark, readLogLines, setTestDataRoot } from "../../host/node-ipc"
-import {
-  createPiSessionRepo,
-  FRAME_BUFFER_MAX_BYTES,
-  FRAME_FLUSH_FAILURE_MARK,
-  FrameBufferingFileSystem,
-  flushSessionFrameWrites,
-} from "@/services/engine/harness"
+import { createPiSessionRepo, FRAME_BUFFER_MAX_BYTES, FRAME_FLUSH_FAILURE_MARK, FrameBufferingFileSystem, flushSessionFrameWrites } from "@/services/engine/harness"
 // 判别器是「这一行是帧」的唯一真相源，但没进 barrel（barrel 只导出四个名字）；
 // 测试按需直连该模块，不去改动冻结中的实现目录。
 import { isFrameAppendTransaction } from "@/services/engine/harness/session-frame-buffer"

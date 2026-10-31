@@ -13,7 +13,7 @@ import { formatAllRules } from "@/services/personality/must-rules"
 import { hasLlmWritableCardVars, RUNTIME_DATA_CLOSE, RUNTIME_DATA_OPEN, RUNTIME_DATA_TAG } from "@/services/reply"
 import type { PersonalityCard } from "@/services/personality/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
-import type { ContextBlock } from "@/services/engine/protocol"
+import type { ContextAllocation, ContextBlock } from "@/services/engine/protocol"
 import { buildPromptBlocks } from "./kernel"
 import type { ContextBudgetAdjustment } from "./kernel"
 import { contextBudget, toolBudgetSchema, type ContextBudget } from "./budget"
@@ -56,7 +56,7 @@ export interface BuildContextOutput {
   inputTokenBudget: number
   /** 被整块淘汰的可选块（内核产出）：审计与快照读它，不再有第二轮借用计算。 */
   budgetDrops: ContextBudgetAdjustment[]
-  allocations: import("@/services/engine/protocol").ContextAllocation[]
+  allocations: ContextAllocation[]
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { debug } from "@/services/debug"
-import { harnessSlots, compactActiveSession } from "@/services/engine/harness"
+import { harnessSlots } from "@/services/engine/harness"
+import { compactActiveSession } from "@/services/engine/runtime"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { aiConfig } from "@/services/config"

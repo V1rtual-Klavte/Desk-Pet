@@ -45,14 +45,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { formatError } from "@/services/error"
-import {
-  createPiSessionRepo,
-  FOLD_POLICY,
-  flushSessionFrameWrites,
-  logStateDigest,
-  prepareFold,
-  readFoldLog,
-} from "@/services/engine/harness"
+import { createPiSessionRepo, FOLD_POLICY, flushSessionFrameWrites, logStateDigest, prepareFold, readFoldLog } from "@/services/engine/harness"
 import type { FoldOutcome, PiSessionRepo } from "@/services/engine/harness"
 // 判别器是「这一行是帧」的唯一真相源；没进 barrel，按需直连该模块（同 帧写缓冲.test.ts）。
 import { isFrameAppendTransaction } from "@/services/engine/harness/session-frame-buffer"

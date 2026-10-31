@@ -1,4 +1,5 @@
-import { getInterruptedRun, harnessSlots, listQueuedInputs } from "@/services/engine/harness"
+import { getInterruptedRun, listQueuedInputs } from "@/services/engine/runtime"
+import { harnessSlots } from "@/services/engine/harness"
 import type { HarnessQueuedItem } from "@/services/engine/state"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"

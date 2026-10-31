@@ -1,4 +1,5 @@
-import { deliverActiveTurn, harnessSlots } from "@/services/engine/harness"
+import { deliverActiveTurn } from "@/services/engine/runtime"
+import { harnessSlots } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"

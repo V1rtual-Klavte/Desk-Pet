@@ -665,7 +665,7 @@ async function executeStep(
     tools.push(...listAll())
   }
 
-  const { runPiSubAgent } = await import("@/services/engine/harness/runtime")
+  const { runPiSubAgent } = await import("@/services/engine/harness/subagent")
   const audit = config.sessionId
     ? { sessionId: config.sessionId, ...(config.planId ? { planId: config.planId } : {}), stepId: String(step.id) }
     : undefined

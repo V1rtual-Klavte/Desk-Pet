@@ -1,5 +1,6 @@
 import { getHostBridge } from "@/services/host"
-import { continueInterruptedRun, harnessSlots } from "@/services/engine/harness"
+import { continueInterruptedRun } from "@/services/engine/runtime"
+import { harnessSlots } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { deleteSkill, getSkillsPromptBlock, upsertSkill } from "@/services/skill"

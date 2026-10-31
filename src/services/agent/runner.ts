@@ -9,8 +9,9 @@ import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getCommandReply, getFallbackReply } from "@/services/personality/stages-cache"
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import { conversationConfig } from "@/services/config"
-import { createActiveMessage, defersTitlebarReleaseToReveal, deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/harness"
-import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/state"
+import { createActiveMessage, defersTitlebarReleaseToReveal, harnessSlots, isInputCommitted } from "@/services/engine/harness"
+import { deliverActiveTurn, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/runtime"
+import type { HarnessDeliveryReceipt, PiAgentTurnOutput, TurnFailure } from "@/services/engine/state"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { preProcess } from "@/services/engine/preprocessor"
 import type { PreProcessDedupAdmission, PreProcessState } from "@/services/engine/preprocessor"
@@ -242,7 +243,7 @@ export interface SendMessageResult {
   toolCalls: { toolName: string; status: string }[]
   /** 忙碌投递给当前运行的准确回执；空闲回合与直接拒绝不返回。 */
   delivery?: HarnessDeliveryReceipt
-  failure?: import("@/services/engine/state").TurnFailure
+  failure?: TurnFailure
   /**
    * 回复在界面显示了但没能写进会话文件：宿主已用系统消息告知用户，
    * 这里透传同样的事实供场景/调用方断言「界面与持久正文不一致」。

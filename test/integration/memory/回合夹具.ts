@@ -11,7 +11,7 @@
 //
 // 这里不实现任何产品行为：会话建立/投递/记账全部调用产品入口，只有 Provider 是替身。
 import type { PiAgentTurnOutput } from "@/services/engine/state"
-import { runPiAgentTurn } from "@/services/engine/harness"
+import { runPiAgentTurn } from "@/services/engine/runtime"
 import { userInputMessage } from "@/services/engine/protocol"
 import { initChat } from "@/services/agent/runner"
 import type { ActiveMessageResult } from "@/services/agent/types"

@@ -10,7 +10,7 @@
 // ==========================================
 
 import type { PiAgentTurnOutput } from "@/services/engine/state"
-import { runPiAgentTurn } from "@/services/engine/harness"
+import { runPiAgentTurn } from "@/services/engine/runtime"
 import type { IngressEnvelope } from "@/services/engine/protocol"
 import { userInputMessage } from "@/services/engine/protocol"
 import { initSessions } from "@/services/session"
