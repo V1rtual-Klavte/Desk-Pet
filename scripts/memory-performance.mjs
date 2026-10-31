@@ -7,7 +7,7 @@ import { createHash } from "node:crypto"
 import { pruneRetainedGroups } from "./report-retention.mjs"
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)))
-const SOURCE_FILES = ["Cargo.lock", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/memory/schema.rs", "crates/native-host/src/paths/mod.rs", "test/e2e/memory-performance.ts", "test/host/performance.ts", "scripts/memory-performance.mjs"]
+const SOURCE_FILES = ["Cargo.lock", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store/mod.rs", "crates/native-host/src/memory/store/query.rs", "crates/native-host/src/memory/store/change.rs", "crates/native-host/src/memory/store/jobs.rs", "crates/native-host/src/memory/store/backup.rs", "crates/native-host/src/memory/store/budget.rs", "crates/native-host/src/memory/schema.rs", "crates/native-host/src/paths/mod.rs", "test/e2e/memory-performance.ts", "test/host/performance.ts", "scripts/memory-performance.mjs"]
 function sourceHash() {
   const hash = createHash("sha256")
   for (const file of [...SOURCE_FILES].sort()) hash.update(readFileSync(join(repo, file)))
