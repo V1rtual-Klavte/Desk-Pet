@@ -43,7 +43,7 @@ export interface CompactionSummaryInput {
   /** 迭代摘要素材（preparation.previousSummary）。 */
   previousSummary?: string
   /** 调用方冻结的模型；缺省回退到配置窗口。 */
-  model?: import("./harness").PiModel
+  model?: import("./harness/model-gateway").PiModel
   signal?: AbortSignal
   /** 压缩请求的归属会话；给出后摘要请求进快照体系（没有会话可归属时不传）。 */
   sessionId?: string
@@ -327,7 +327,7 @@ async function callOnce(input: {
   preserveToolNames?: ReadonlySet<string>
   addressRefs?: ReadonlyMap<string, string>
   signal?: AbortSignal
-  model?: import("./harness").PiModel
+  model?: import("./harness/model-gateway").PiModel
   sessionId?: string
   runId?: string
 }): Promise<{ summary: StructuredSummary; inputText: string; usage: Usage }> {
@@ -344,7 +344,7 @@ async function callOnce(input: {
   if (material.level === 2) log.info("摘要素材升到级 2 以适应硬上限:", { used: material.used, limit: input.hardInputLimit })
   // 不截字也不静默丢覆盖：单片超过硬上限时明确失败（§5.2），由调用方决定回退或放弃。
   if (material.used > input.hardInputLimit) throw new ContextBudgetError(material.used, input.hardInputLimit)
-  const { completePiText } = await import("./harness")
+  const { completePiText } = await import("./harness/model-gateway")
   const response = await completePiText({
     purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText: material.userText,
     // Provider 输出不按摘要内容预算卡死：推理也会吃输出额度，卡 2048 会把完整摘要判成
