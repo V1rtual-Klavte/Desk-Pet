@@ -1842,7 +1842,7 @@ mod tests {
     fn 两平台都接上提问面板的聚焦回填() {
         // `include_str!` 让两份平台源码成为编译期依赖：删掉任一侧的处理分支，
         // 本用例立刻断言失败，而不是静默只在一半平台生效。
-        const MACOS: &str = include_str!("../platform/macos_chat.rs");
+        const MACOS: &str = crate::ui::platform::macos_chat::SOURCE_TEXT;
         const WINDOWS: &str = include_str!("../platform/windows_chat.rs");
         for (name, source) in [("macos_chat.rs", MACOS), ("windows_chat.rs", WINDOWS)] {
             assert!(
@@ -2082,7 +2082,7 @@ mod tests {
     fn 两平台都接上卡片底板绘制() {
         // `include_str!` 让两份平台源码成为编译期依赖（要的就是这个：删掉任一侧
         // 的卡片分支本用例立刻编译不过/断言失败，而不是静默只在一半平台生效）。
-        const MACOS: &str = include_str!("../platform/macos_chat.rs");
+        const MACOS: &str = crate::ui::platform::macos_chat::SOURCE_TEXT;
         const WINDOWS: &str = include_str!("../platform/windows_chat.rs");
         for (name, source) in [("macos_chat.rs", MACOS), ("windows_chat.rs", WINDOWS)] {
             assert!(
@@ -2302,7 +2302,7 @@ mod tests {
     fn 两平台都接上抽屉内部滚动() {
         // `include_str!` 让两份平台源码成为编译期依赖：删掉任一侧的滚动接线，
         // 本用例立刻断言失败，而不是静默只在一半平台退回「按上限丢块」。
-        const MACOS: &str = include_str!("../platform/macos_chat.rs");
+        const MACOS: &str = crate::ui::platform::macos_chat::SOURCE_TEXT;
         const WINDOWS: &str = include_str!("../platform/windows_chat.rs");
         for (name, source) in [("macos_chat.rs", MACOS), ("windows_chat.rs", WINDOWS)] {
             assert!(

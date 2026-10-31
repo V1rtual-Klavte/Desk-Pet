@@ -693,7 +693,7 @@ mod tests {
         );
         for (name, source, hooks) in [
             ("macos.rs", include_str!("macos.rs"), 1),
-            ("macos_chat.rs", include_str!("macos_chat.rs"), 0),
+            ("macos_chat/", crate::ui::platform::macos_chat::SOURCE_TEXT, 0),
             (
                 "macos_settings/",
                 concat!(

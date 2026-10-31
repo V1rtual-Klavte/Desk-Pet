@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn pending_strip_geometry_is_shared_by_both_platforms() {
         for (name, source) in [
-            ("macos_chat.rs", include_str!("../platform/macos_chat.rs")),
+            ("macos_chat.rs", crate::ui::platform::macos_chat::SOURCE_TEXT),
             ("windows_chat.rs", include_str!("../platform/windows_chat.rs")),
         ] {
             let rebuild = function_body(name, source, "fn rebuild_pending(");
@@ -585,7 +585,7 @@ mod tests {
     #[test]
     fn pending_chip_labels_never_append_a_second_cross_in_either_platform() {
         for (name, source) in [
-            ("macos_chat.rs", include_str!("../platform/macos_chat.rs")),
+            ("macos_chat.rs", crate::ui::platform::macos_chat::SOURCE_TEXT),
             ("windows_chat.rs", include_str!("../platform/windows_chat.rs")),
         ] {
             let rebuild = function_body(name, source, "fn rebuild_pending(");
