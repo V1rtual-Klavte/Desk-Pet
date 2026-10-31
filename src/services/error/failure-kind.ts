@@ -8,11 +8,11 @@
 /**
  * 失败分类。
  *
- * `admission` 不是从文案派生的档位：它由调用点写入（回合准入拒绝、lane 结构操作在飞），
- * 分类函数永不返回它。其余档位与 Live Test 的 `ErrorKind` 同词表。
+ * `admission` 与 `tool_loop` 由调用点写入（准入拒绝 / 工具循环治理终止），
+ * 分类函数永不从文案推断这两档。与 Live Test 的 `ErrorKind` 共用词表。
  */
 export type FailureKind =
-  | "timeout" | "auth" | "rate_limit" | "network" | "provider" | "admission" | "unknown"
+  | "timeout" | "auth" | "rate_limit" | "network" | "provider" | "admission" | "tool_loop" | "unknown"
 
 /**
  * 把 Provider 的失败文案收敛成稳定分类。

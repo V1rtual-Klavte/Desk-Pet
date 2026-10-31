@@ -480,6 +480,8 @@ function messageReply(operation: any) {
       stepId: operation.stepId,
     },
     requestId: operation.operationId,
+    assistantEntryId: `assistant-${operation.operationId}`,
+    replyBinding: "request-response",
   }
 }
 

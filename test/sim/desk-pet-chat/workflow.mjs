@@ -675,6 +675,11 @@ function messageReceiptFor(step, response, operation) {
   if (receipt.sessionId !== response.sessionId) {
     fail("driver.receipt", `消息步骤 ${step.id} 的回执会话与响应会话不一致`);
   }
+  if (response.outcome !== "failed" && typeof response.reply === "string" && response.reply.trim()
+      && (typeof response.assistantEntryId !== "string" || !response.assistantEntryId.trim()
+        || response.replyBinding !== "request-response")) {
+    fail("driver.receipt", `消息步骤 ${step.id} 的回复缺少已提交助手条目的请求绑定`);
+  }
   return {
     operation: {
       operationId: receipt.operationId,
@@ -687,6 +692,7 @@ function messageReceiptFor(step, response, operation) {
     requestId: response.requestId,
     ...(typeof response.assistantEntryId === "string" && response.assistantEntryId.trim()
       ? { assistantEntryId: response.assistantEntryId } : {}),
+    ...(typeof response.replyBinding === "string" ? { replyBinding: response.replyBinding } : {}),
     ...(isRecord(response.delivery) ? { delivery: structuredClone(response.delivery) } : {}),
   };
 }
@@ -705,6 +711,7 @@ function stepResultFor(step, response, operation) {
       outcome: response.outcome,
       reply,
       toolCalls: Array.isArray(response.toolCalls) ? response.toolCalls.length : 0,
+      ...(isRecord(response.failure) ? { failure: structuredClone(response.failure) } : {}),
       ...messageReceiptFor(step, response, operation),
     };
   }
@@ -837,7 +844,11 @@ async function satisfyCheckpoint({ checkpoint, record, transport, now, sleep, me
     if (record.result.reply.trim() === "") {
       return { id: checkpoint.id, wait: checkpoint.wait, status: "timeout", observedAt, detail: "消息步骤没有取得助手回复" };
     }
-    return { id: checkpoint.id, wait: checkpoint.wait, status: "satisfied", observedAt, detail: `回复 ${record.result.reply.length} 字` };
+    if (!record.result.assistantEntryId || record.result.replyBinding !== "request-response") {
+      return { id: checkpoint.id, wait: checkpoint.wait, status: "timeout", observedAt, detail: "消息步骤没有已提交助手条目的请求绑定" };
+    }
+    return { id: checkpoint.id, wait: checkpoint.wait, status: "satisfied", observedAt,
+      detail: `已提交助手条目 ${record.result.assistantEntryId}，回复 ${record.result.reply.length} 字` };
   }
   if (checkpoint.wait === "session_created") {
     const created = record.result?.result?.createdSessionId;
@@ -1018,6 +1029,7 @@ export async function executeDriver({
       ? { operationId: `op-${randomUUID()}`, caseId: progress.caseId, stepId: step.id }
       : null;
     let response;
+    let result;
     let record;
     try {
       response = step.kind === "message"
@@ -1036,7 +1048,7 @@ export async function executeDriver({
           })
           : transport.message(renderDriverText(step.text, { dataRoot }), operation))
         : await executeHostStep(step, transport);
-      const result = stepResultFor(step, response, operation);
+      result = stepResultFor(step, response, operation);
       if (step.kind === "message" && (response.outcome === "failed" || result.reply.trim() === "")) {
         const reason = response.failure
           ? `回合失败：${response.failure.kind ?? "unknown"}${response.failure.message ? ` / ${response.failure.message}` : ""}`
@@ -1065,7 +1077,7 @@ export async function executeDriver({
         startedAt,
         completedAt: new Date(now()).toISOString(),
         clock: { base: clock.base, now: clock.now, timezone: clock.timezone },
-        result: { kind: step.kind, error: error instanceof Error ? error.message : String(error) },
+        result: { ...(result ?? { kind: step.kind }), error: error instanceof Error ? error.message : String(error) },
         error: error instanceof Error ? error.message : String(error),
       };
       progress.steps.push(record);

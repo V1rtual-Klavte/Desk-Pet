@@ -1,3 +1,7 @@
+// 2026-10-30：te-46 覆盖 handler 失败文本经 Pi 适配、持久化与下一次请求的完整诊断；
+// 原生 throw/isError 路径与成功处理不变。
+// 2026-10-31 集中验收（补记）：te-46 的 tool-failure-diagnostic-preserved 实跑通过；
+// 全量 L2／L3 与 tsc + cargo check 通过。
 // 2026-10-29 共享解析器静态复核：generator.ts 仅新增取证专用 preserveWhitespace 可选项，
 // 工具/回复既有调用仍用默认解析；权限、执行、变量解析与工具结果路由未变，测试未运行。
 // 2026-10-27 DeepSeek Fetch：te-46 覆盖错误与在途取消，te-47 覆盖 Router 20秒取消和参数/结果日志脱敏；其余分派与许可语义不变。
@@ -259,8 +263,9 @@ export const toolExecutionContract: ModuleContract = {
     // 都从这里取值；改值 = 改线协议。同名常量表服务宿主/UI/Node 多个域。
     "src/services/host/event-names.ts",
   ],
-  sourceHash: "596a4b008fd3cdff19edc536f6d949cae54eba9cd1bc9f389805816d514fb137",
+  sourceHash: "42f1ab6a196b82cf1e067e69d890deb37f551a08027e5c57e2e4c82936d9f9bf",
   coverage: [
+    { id: "te-46", feature: "工具失败的诊断正文透传", description: "Pi 工具适配器将 handler 的失败说明和诊断文本交给原生错误通道，保留结构化 missing/errors 等正文，不套 Card 台词；工具结果 isError=true、完整诊断落盘且进入下一次请求，修正参数后的成功结果保持成功。", why: "只保留 execution 等字段名会把缺参误读成执行故障，模型无法据此纠正；返回诊断正文不能把失败洗成成功。", layer: "integration", depth: "deep", scenarios: ["tool-failure-diagnostic-preserved"] },
     {"id": "te-46", "feature": "DeepSeek Fetch 协议与错误/取消语义", "description": "公开 HTTP(S) URL 预检、POST /v1/tools/fetch 与 Bearer、Markdown 结果；403 安全拒绝不冒充401认证失败，402余额与404正文不可用分别提示，在途请求透传取消信号并返回cancelled", "why": "错误可归因且取消确实到达网络请求", "layer": "unit", "depth": "deep", "scenarios": ["web-fetch-error-semantics", "web-fetch-inflight-cancel"]},
     {"id": "te-47", "feature": "Fetch 的 Router 超时与日志投影", "description": "实际 web_fetch handler 经 Router 的20秒死线取消在途Fetch并记timeout；参数日志剥离URL查询与fragment，完成日志仅记字符数，完整来源仍在结果中", "why": "全链日志不能绕过专用日志脱敏，超时不能只结束外层而留下网络请求", "layer": "integration", "depth": "deep", "scenarios": ["web-fetch-router-redaction", "web-fetch-router-timeout"]},
 

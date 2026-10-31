@@ -154,6 +154,8 @@ function fakeTransport(overrides: Partial<DriverTransport> & { state?: FakeTrans
         toolCalls: [],
         operation: { ...operation, trialId: TRIAL_ID, sessionId: state.active, generation: GENERATION },
         requestId: operation.operationId,
+        assistantEntryId: `assistant-${operation.operationId}`,
+        replyBinding: "request-response",
       }
     },
     sessions: async () => ({
@@ -506,6 +508,8 @@ describe("驱动执行", () => {
           generation: GENERATION,
         },
         requestId: operation.operationId,
+        assistantEntryId: `assistant-${operation.operationId}`,
+        replyBinding: "request-response",
       }),
     })
 
@@ -549,6 +553,44 @@ describe("驱动执行", () => {
     expect(progress.steps[0]?.result?.reply).toBeUndefined()
   })
 
+  it("非空回复必须绑定已提交助手条目 [chat-driver-committed-reply-required]", async () => {
+    for (const binding of [
+      { assistantEntryId: undefined, replyBinding: "request-response" },
+      { assistantEntryId: "unverified-entry", replyBinding: "direct" },
+    ]) {
+      const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+      const progress = progressFor(pkg)
+      const time = manualTime()
+      const base = fakeTransport()
+      const transport = fakeTransport({ message: async (text, operation) => ({
+        ...await base.message(text, operation), ...binding,
+      }) })
+      await expect(executeDriver({ progress, driverPackage: pkg, transport, now: time.now, sleep: time.sleep }))
+        .rejects.toThrow(/缺少已提交助手条目的请求绑定/)
+      expect(progress.status).toBe("blocked")
+      expect(progress.index).toBe(0)
+      expect(progress.steps[0]?.status).toBe("failed")
+    }
+  })
+
+  it("失败回执即使有兜底正文也阻塞，并保留失败诊断 [chat-driver-failed-reply-blocked]", async () => {
+    const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+    const progress = progressFor(pkg)
+    const time = manualTime()
+    const base = fakeTransport()
+    const transport = fakeTransport({ message: async (text, operation) => ({
+      ...await base.message(text, operation), outcome: "failed", reply: "工具循环已停止",
+      failure: { kind: "tool_loop", message: "工具连续失败 5 次" },
+    }) })
+    await expect(executeDriver({ progress, driverPackage: pkg, transport, now: time.now, sleep: time.sleep }))
+      .rejects.toThrow(/tool_loop/)
+    expect(progress.status).toBe("blocked")
+    expect(progress.steps[0]?.result).toMatchObject({ outcome: "failed", reply: "工具循环已停止",
+      failure: { kind: "tool_loop", message: "工具连续失败 5 次" } })
+    expect(progress.steps[0]?.checkpoints).toBeUndefined()
+    expect(driverOutcome(progress).status).toBe("interrupted")
+  })
+
   it("消息预算到界时在下一步副作用前阻塞 [chat-driver-budget]", async () => {
     const pkg = driverPackage([
       { id: "say-1", kind: "message", text: "一", at: AT_1 },
@@ -586,6 +628,8 @@ describe("驱动执行", () => {
         toolCalls: [],
         operation: { ...operation, trialId: TRIAL_ID, sessionId: "fixture-session", generation: GENERATION },
         requestId: operation.operationId,
+        assistantEntryId: `assistant-${operation.operationId}`,
+        replyBinding: "request-response",
         failure: { kind: "provider", message: "连接失败" },
       }),
     })

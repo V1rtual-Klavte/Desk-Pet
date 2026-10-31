@@ -50,6 +50,7 @@ import { getSkillCatalogFingerprint, listEnabledSkills, syncSkillCatalog } from 
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+import type { DeskpetReplyEvidence } from "@/services/reply"
 // 用户等待的回合预算豁免（零依赖叶子）：等待期间挂起回合墙钟，见类字段与 executeDrive。
 import { createPausableDeadline, isUserWaiting, onUserWaitChange } from "@/services/engine/user-wait"
 import { createHarnessModels, resolvePiTurnModel, toPiAgentThinkingLevel } from "./model-gateway"
@@ -75,6 +76,8 @@ export interface HarnessRunState {
    * （调用门 `block + terminate`）；③ 失败连击硬阈值（结果侧 `after_tool` 的 `terminate`）。
    */
   stoppedByToolGovernance: boolean
+  /** 由命中治理的分支记录真实原因，不从 Card 兜底台词反推。 */
+  toolGovernanceReason?: string
   toolCallsMade: number
   retriesUsed: number
   /** transform_context 记录的当次请求判定；由网关在下一次请求取走（取走即清空）。 */
@@ -1490,11 +1493,11 @@ export class HarnessSlot {
   }
 
   /** 兜底回复也属于会话记录：追加为普通 assistant 条目。 */
-  async appendAssistantMessage(text: string): Promise<void> {
+  async appendAssistantMessage(text: string, replyEvidence?: DeskpetReplyEvidence): Promise<string> {
     await this.open()
-    if (!this.lane) return
+    if (!this.lane) throw new Error("运行槽没有可写入的会话 lane")
     const model = resolvePiTurnModel()
-    await this.lane.appendMessage({
+    return this.lane.appendMessage({
       role: "assistant",
       content: [{ type: "text", text }],
       api: model.api,
@@ -1503,6 +1506,7 @@ export class HarnessSlot {
       usage: EMPTY_SLOT_USAGE,
       stopReason: "stop",
       timestamp: Date.now(),
+      ...(replyEvidence ? { deskpetReplyEvidence: replyEvidence } : {}),
     }, TODO_CONTEXT)
   }
 

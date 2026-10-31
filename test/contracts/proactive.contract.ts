@@ -1,3 +1,5 @@
+// 2026-10-30 定向复核：delivery.ts 仅收紧普通请求 readRequestResponse 的 stop/length 资格；主动尝试与 SQLite 回执读取函数未改。
+// 2026-10-31 集中验收（补记）：pr-* 随全量 L2／L3 实跑通过。
 // 2026-10-29 记忆范围收敛定向复核（承 9e304157）：sourceFiles 中 scanner.ts 的主动跟进任务
 // 按来源是否含 session 范围决定 scope/scopeId（否则绑定 owner.cardId），planner.ts 的
 // recallMemory 不再传 cardId；store.rs 的目标查询改为 user 或同会话 session，memory 协议
@@ -327,7 +329,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "679279a8d330b62b894f01bb2ad2ac19c0056ac89c14d769a7dc380496d7fd10",
+  module:"proactive",sourceHash: "8a6026be7fcf0e2f030897d8bef7e8c53fec95faebe70b04bf646ce06ce5c604",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

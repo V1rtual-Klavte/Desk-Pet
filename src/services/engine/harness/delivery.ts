@@ -152,7 +152,7 @@ export async function readRequestResponse(
     if (tipIndex < 0 || !(fromIndex < userIndex && userIndex < tipIndex)) continue
     const assistant = entries[tipIndex]
     if (!assistant || assistant.type !== "message" || assistant.message.role !== "assistant"
-      || assistant.message.stopReason === "error" || assistant.message.stopReason === "aborted") continue
+      || (assistant.message.stopReason !== "stop" && assistant.message.stopReason !== "length")) continue
     const text = contentText(assistant.message.content).trim()
     if (!text) continue
     return {

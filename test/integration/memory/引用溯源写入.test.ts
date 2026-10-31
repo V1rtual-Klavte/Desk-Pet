@@ -3,8 +3,10 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { fauxAssistantMessage } from "@earendil-works/pi-ai"
+import type { FauxResponseStep } from "@earendil-works/pi-ai"
 
-import { fakeText, installFakeProvider } from "../../host/fake-provider"
+import { fakeText, installFakeProvider, lastRequestText } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { entryMessageText } from "../../host/session-entries"
 import { standardSetup } from "../../host/standard-setup"
@@ -162,5 +164,24 @@ describe("助手回复的记忆引用溯源载荷", () => {
 
     expect(output.reply).toBe(reply)
     expect(await citationPayloads(sessionId)).toEqual([])
+  })
+
+  it("已渲染记忆的回合失败后，落盘兜底不获得事实引用 [memory-citation-fallback-excluded]", async () => {
+    const sessionId = await ensureSession()
+    const question = "本轮核对已召回的茶偏好。"
+    installRecall({ async recall() { return [factProjection()] } })
+    const steps: FauxResponseStep[] = Array.from({ length: 5 }, () => context => lastRequestText(context) === question
+      ? fauxAssistantMessage([], { stopReason: "error", errorMessage: "本轮生成失败" })
+      : fakeText("读取来源后按原证据继续"))
+    const provider = installFakeProvider(steps)
+    restoreProvider = provider.restore
+    const output = await runRuntimeTurn(question)
+    expect(output.failure).toBeDefined()
+    expect(output.committedAssistantEntryId).toEqual(expect.any(String))
+    expect(provider.payloads.some(payload => JSON.stringify(payload.messages).includes("用户喜欢乌龙茶。"))).toBe(true)
+    expect(await citationPayloads(sessionId)).toEqual([])
+    const entries = await readPiSessionEntriesOnce(sessionId)
+    expect(entries.find(entry => entry.id === output.committedAssistantEntryId)).toMatchObject({ type: "message",
+      message: { deskpetReplyEvidence: { generatedText: "", outcome: "fallback" } } })
   })
 })

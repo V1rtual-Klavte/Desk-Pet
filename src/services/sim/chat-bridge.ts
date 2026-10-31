@@ -11,6 +11,7 @@ import { join } from "node:path"
 import { StringDecoder } from "node:string_decoder"
 import { getHostBridge } from "@/services/host"
 import { sendMessage } from "@/services/agent/runner"
+import type { SendMessageResult } from "@/services/agent/runner"
 import { getActiveCard } from "@/services/personality"
 import { getActiveSessionId, getSessions, readPiSessionEntriesOnce } from "@/services/session"
 import { describeInputDelivery, readRequestResponse } from "@/services/engine/harness"
@@ -56,6 +57,33 @@ const REPLY_WAIT_MS = 120_000
 export interface SimChatMessage {
   role: "user" | "assistant"
   text: string
+}
+
+/** 控制回执只认同一请求的持久正文；返回字符串本身不构成助手提交证据。 */
+export async function resolveSimMessageReply(
+  sessionId: string,
+  requestId: string,
+  result: Pick<SendMessageResult, "reply" | "outcome" | "failure">,
+): Promise<{
+  reply: string
+  outcome: SendMessageResult["outcome"]
+  replyBinding: "unavailable" | "request-response"
+  assistantEntryId?: string
+  failure?: SendMessageResult["failure"]
+}> {
+  if (result.outcome === "failed") {
+    return { reply: result.reply.trim(), outcome: "failed", replyBinding: "unavailable",
+      ...(result.failure ? { failure: result.failure } : {}) }
+  }
+  const evidence = result.outcome === "queued"
+    ? await waitForRequestResponse(sessionId, requestId)
+    : await readRequestResponse(sessionId, requestId)
+  if (!evidence) return {
+    reply: "", outcome: "failed", replyBinding: "unavailable",
+    failure: { kind: "unknown", message: "本次请求没有可核对的已提交助手正文" },
+  }
+  return { reply: evidence.text, outcome: result.outcome, replyBinding: "request-response",
+    assistantEntryId: evidence.assistantEntryId }
 }
 
 type SimChatCommand =
@@ -288,18 +316,8 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
             ...(command.tools === "none" ? { toolMode: "none" as const } : {}),
             ...(command.imagePaths?.length ? { imagePaths: command.imagePaths } : {}),
           })
-          let reply = result.reply.trim()
-          let replyBinding: "direct" | "request-response" = "direct"
-          let assistantEntryId: string | undefined
-          if (!reply && result.outcome === "queued") {
-            // 投递回执只证明入队；回复必须按 requestId 找到同一条请求的 run 分支。
-            const evidence = await waitForRequestResponse(sessionId, requestId)
-            if (evidence) {
-              reply = evidence.text
-              assistantEntryId = evidence.assistantEntryId
-              replyBinding = "request-response"
-            }
-          }
+          const { reply, replyBinding, assistantEntryId, outcome, failure } =
+            await resolveSimMessageReply(sessionId, requestId, result)
           let delivery: InputDeliveryLookup
           try {
             delivery = await describeInputDelivery(sessionId, requestId)
@@ -309,13 +327,13 @@ export async function startSimChatBridge(): Promise<SimChatBridge> {
           transcript.push({ role: "user", text })
           if (reply) transcript.push({ role: "assistant", text: reply })
           await emit({
-            id, type: "message", sessionId, requestId, reply, outcome: result.outcome, toolCalls: result.toolCalls,
+            id, type: "message", sessionId, requestId, reply, outcome, toolCalls: result.toolCalls,
             ...(operation ? { operation } : {}),
             ...(assistantEntryId ? { assistantEntryId } : {}),
             replyBinding,
             delivery,
-            ...(result.failure ? { failure: result.failure } : {}),
-            ...(reply ? {} : { note: result.outcome === "failed" ? "回合未进入 Provider，详见 failure" : "回复未在控制通道内取得，请查看会话正文" }),
+            ...(failure ? { failure } : {}),
+            ...(reply ? {} : { note: "未取得可核对的助手正文，详见 failure 与会话记录" }),
           })
           return
         }

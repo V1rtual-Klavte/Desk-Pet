@@ -7,7 +7,6 @@ import type { AgentHarnessTool } from "@earendil-works/pi-agent-core"
 import type { TaskToolAuthorization, ToolDef } from "../types"
 import { executeToolDefinition } from "../router"
 import { toolPolicyHash } from "../policy"
-import { getSimpleStage } from "@/services/personality/stages-cache"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("HarnessTool")
@@ -91,7 +90,12 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
         }
       }
       run.history.push({ toolName: tool.name, status: "error" })
-      throw new Error(`${getSimpleStage("error") ?? "Error"}: ${result.error ?? "工具执行失败"}`)
+      // Pi 将 throw 变成 isError=true 的工具结果；保留 handler 的诊断正文，不能只留下
+      // "execution" 这类字段名，使模型把缺参误读成执行故障。错误结果不套 Card 台词。
+      const diagnostic = result.contentParts?.filter(part => part.type === "text").map(part => part.text).join("\n")
+        || result.content
+      throw new Error([`工具 ${tool.name} 失败：${result.error ?? "工具执行失败"}`, diagnostic]
+        .filter(text => text.trim().length > 0).join("\n"))
     },
   }))
 }

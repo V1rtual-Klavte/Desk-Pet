@@ -1,3 +1,7 @@
+// 2026-10-30：治理终止复用失败结算并持久化 fallback，ar-29 补真实状态与 JSONL 身份断言；
+// failure-kind 新增显式 tool_loop，分类器不从文案猜测。
+// 2026-10-31 集中验收（补记）：ar-29 的 failure／JSONL fallback 断言随工具循环治理用例实跑通过；
+// 全量 L2（169 files／1387）与 L3（125 files／435）、tsc + cargo check 通过。L4 未运行。
 // 2026-10-29 回复取证与撤销补写：ar-24 静态复核 afterResponse、历史恢复与正常变量配对，
 // 新 evidence.ts 与 generator.ts 保留空白解析为实际定义点；专用补写状态退出，记忆反例归 mm-83。
 // 本轮按用户要求只写测试与静态审查，未运行门禁。
@@ -334,7 +338,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "e7ea0be46bc8b2523d93779ab99d8da54e474511643ee3698af054f821ade64a",
+  sourceHash: "464b354c2af015f2cef61bf00ab0a1ade2c3c59637376b0061fcaa0742853629",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -631,7 +635,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-29",
       feature: "病理检测的接线（软提示与两条硬终止路径）",
-      description: "createTurnSpec 每回合新建 guard 与 toolLoopNotices（回合级内存态、不落盘；子运行也吃这套检测）：软档（同参或失败连击第 3 次起）产出的中性提示（非 Card 台词）经投影出口与地址标注同一通道附到该条工具结果正文，跨请求持续存在（后续每一笔请求里的同一结果都带），多 text 块结果整条只拼在最后一个 text 块一次（不逐块重复），阈值之前的结果不带提示；硬档两条路都置同一枚 stoppedByToolGovernance 停止标志，主回合由 settleMainTurn 早退到 Card 的 toolLoopMaxRounds 兜底收尾（子运行收尾走自身出口）：同参连击在调用门 block + terminate（该次调用不执行、历史记 blocked、不再发下一次请求），失败连击在结果侧经 after_tool 的 terminate 立即终止（失败工具照常走到 after_tool；批内全部调用都带该标记时上游在当前批次后结束运行，混批时标志已记下、模型再调工具由下一次调用门拦下，第 5 次失败后不再发请求、历史不出现调用门的 blocked 记录）。每回合重置由新建实例承载：同一会话两个回合各自从零累计，第二回合不继承第一回合的连击。子运行（runPiSubAgent）的请求投影关闭（projectToolResults=false）：软提示不在请求视图里附着（无处可附），但判据与硬终止照常生效 —— maxToolCalls 封顶够不着时，同参连续第 5 次在调用门被 block + terminate（先于子运行轮数封顶收口）",
+      description: "createTurnSpec 每回合新建 guard 与 toolLoopNotices（回合级内存态、不落盘；子运行也吃这套检测）：软档（同参或失败连击第 3 次起）产出的中性提示（非 Card 台词）经投影出口与地址标注同一通道附到该条工具结果正文，跨请求持续存在（后续每一笔请求里的同一结果都带），多 text 块结果整条只拼在最后一个 text 块一次（不逐块重复），阈值之前的结果不带提示；硬档两条路都置同一枚 stoppedByToolGovernance 停止标志，主回合由 settleMainTurn 早退到 Card 的 toolLoopMaxRounds 兜底收尾（子运行收尾走自身出口）：同参连击在调用门 block + terminate（该次调用不执行、历史记 blocked、不再发下一次请求），失败连击在结果侧经 after_tool 的 terminate 立即终止（失败工具照常走到 after_tool；批内全部调用都带该标记时上游在当前批次后结束运行，混批时标志已记下、模型再调工具由下一次调用门拦下，第 5 次失败后不再发请求、历史不出现调用门的 blocked 记录）。每回合重置由新建实例承载：同一会话两个回合各自从零累计，第二回合不继承第一回合的连击。子运行（runPiSubAgent）的请求投影关闭（projectToolResults=false）：软提示不在请求视图里附着（无处可附），但判据与硬终止照常生效 —— maxToolCalls 封顶够不着时，同参连续第 5 次在调用门被 block + terminate（先于子运行轮数封顶收口） 主回合治理终止返回 failure.kind=tool_loop 和真实命中原因，既有 failTurn 将 Card 兜底作为 fallback 条目恰好落盘一次，并返回提交身份；写盘失败如实返回 persistFailed，不签发提交身份，用户主动停止不走此兜底。",
       why: "判据之外，提示与终止都由接线承载：提示挂错出口模型看不到、终止漏挂则该停不停（fail-open）、每回合重置若丢则正常会话会被跨回合累计冤枉硬终止；after_tool 的 terminate 是「模型不再调工具时也能收手」的唯一出口",
       layer: "integration",
       depth: "deep",

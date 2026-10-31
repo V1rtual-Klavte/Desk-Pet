@@ -1,3 +1,5 @@
+// 2026-10-30 定向复核：appendAssistantMessage 返回真实提交身份并接受回复证据；无 lane 显式失败。槽释放、恢复、正文存储与帧折叠路径未改，治理落盘断言归 agent-runtime ar-29。
+// 2026-10-31 集中验收（补记）：hs-* 随全量 L2／L3 实跑通过，回复证据按既有 message 形态落盘。
 // 2026-10-29 共享状态静态复核：harness-slot.ts 仅删除专用 completedReply 字段，
 // JSONL提交、帧写入、折叠与恢复方法未改；新增回复元数据按既有message持久形态保存，测试未运行。
 // 2026-10-24 故障槽恢复批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口新增故障槽
@@ -88,7 +90,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/engine/harness/harness-slot.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加内存字段，JSONL 条目 schema 未变；定向复核后刷新。
-  sourceHash: "f51972fe78963e257c9457ac521fce4ce81c2e4f2e20543097638cccc6f20875",
+  sourceHash: "67a58a17697d0a9b596aa27e019bd0b3cc0f6a9c3ccbce3b187298ff7d905f9c",
   coverage: [
     {
       id: "hs-11",

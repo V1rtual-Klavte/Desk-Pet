@@ -1,3 +1,5 @@
+// 2026-10-30 定向复核：主回合失败收尾落盘并标记 fallback，不进入成功回复的分泡/历史原文恢复；hz-01..05 的协议与节奏实现未改。
+// 2026-10-31 集中验收（补记）：hz-01..05 随全量 L2／L3 实跑通过。
 // 2026-10-29 hz-05 改按精确保留空白的取证 helper；旧补写退出不改变现有分泡算法。
 // 静态复核与测试修订完成后计算 hash；本轮不运行测试。
 // 2026-10-29 验收批次：humanizerEvidenceText 解码 SPLIT 时沿用输入换行风格（CRLF 文本不混入
@@ -158,7 +160,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "b84ab61e7cbfea8f29316999946dde08df4d3db170891ebf152187087dd6cadd",
+  sourceHash: "6cf1792aaa7493fcf730c4a3ffb398f453288d26ad547e3c638eea5ce08c89a2",
   coverage: [
     {
       id: "hz-01",

@@ -455,6 +455,7 @@ export function validateMessageReceipt(event, operation) {
     operation: Object.fromEntries(MESSAGE_OPERATION_FIELDS.map(field => [field, receipt[field]])),
     ...(typeof event.assistantEntryId === "string" && event.assistantEntryId.trim()
       ? { assistantEntryId: event.assistantEntryId } : {}),
+    ...(typeof event.replyBinding === "string" ? { replyBinding: event.replyBinding } : {}),
     ...(event.delivery && typeof event.delivery === "object" ? { delivery: event.delivery } : {}),
     ...(event.failure ? { failure: event.failure } : {}),
   }

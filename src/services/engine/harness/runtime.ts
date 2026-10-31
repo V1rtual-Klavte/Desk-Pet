@@ -269,7 +269,7 @@ export interface PiAgentTurnOutput {
   activeCommit?: { operationId: string; triggerEntryId: string; assistantEntryId: string; text: string; timestamp: number; parts?: string[]; silent?: boolean; usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number } }
   /** Actual provider usage accrued before a failure; absence means unknown, never an estimate. */
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
-  /** 仅在重试耗尽、回复是兜底文案时出现 */
+  /** 回合失败的真实分类；包括重试耗尽、准入失败与工具循环治理终止。 */
   failure?: TurnFailure
   /** 停止归还：未消费的补充消息 requestId（宿主决定重新排队或丢弃）。 */
   undelivered?: string[]
@@ -1510,16 +1510,18 @@ function createTurnSpec(kernel: TurnKernel, options: {
       // 计数硬上限只服务无人值守的子运行（主回合不传 maxToolCalls）。
       if (options.maxToolCalls !== undefined && toolCallsUsed >= options.maxToolCalls) {
         state.stoppedByToolGovernance = true
+        state.toolGovernanceReason = `工具调用次数达到上限 (${options.maxToolCalls})`
         kernel.toolRun.history.push({ toolName, status: "blocked" })
-        return { block: { reason: `工具调用次数达到上限 (${options.maxToolCalls})`, terminate: true } }
+        return { block: { reason: state.toolGovernanceReason, terminate: true } }
       }
       // 病理检测在调用门（权限之前）：同参连击到硬阈值就整回合优雅终止；失败连击的硬阈值
       // 在结果侧已经终止（afterTool 的 terminate），这里兜住「本批未整体终止仍有后续调用」的窗口。
       const loop = loopGuard.noteCall(toolName, args)
       if (loop.level === "hard") {
         state.stoppedByToolGovernance = true
+        state.toolGovernanceReason = toolLoopBlockReason(loop.reason)
         kernel.toolRun.history.push({ toolName, status: "blocked" })
-        return { block: { reason: toolLoopBlockReason(loop.reason), terminate: true } }
+        return { block: { reason: state.toolGovernanceReason, terminate: true } }
       }
       if (loop.level === "soft") toolLoopNotices.set(toolCallId, toolLoopNotice(loop.reason))
       toolCallsUsed++
@@ -1575,10 +1577,11 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       // 失败连击到硬阈值：结果侧经 `after_tool` 的 `terminate` 立即终止 —— 本批工具全部带该
       // 标记时上游在当前批次后结束运行、不再发下一次请求（运行仍以 completed 收口，但没有
-      // 收尾助手消息）。治理标志与同参连击共用一枚：结算按它早退到 `toolLoopMaxRounds` 兜底，
-      // 不把治理终止错报成「模型未产出正文」。
+      // 收尾助手消息）。治理标志与同参连击共用一枚：宿主按 tool_loop 失败结算并落盘
+      // `toolLoopMaxRounds` 兜底，不把治理终止错报成成功或「模型未产出正文」。
       if (loop.level === "hard") {
         state.stoppedByToolGovernance = true
+        state.toolGovernanceReason = toolLoopBlockReason(loop.reason)
         return { details: detailsPatch, isError, terminate: true }
       }
       return { details: detailsPatch, isError }
@@ -2401,7 +2404,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     }
     // 溯源写入失败不影响回复；它只影响「来源被更正/遗忘后这条回复是否退出召回」。
     const citationEntryId = output.committedAssistantEntryId ?? output.activeCommit?.assistantEntryId
-    if (citationEntryId && (citedRefs.itemIds.length || citedRefs.conversationRefs.length)) {
+    // 失败收尾也有提交身份，但 Card 兜底没有转述召回事实，不能为它制造记忆引用。
+    if (!output.failure && citationEntryId && (citedRefs.itemIds.length || citedRefs.conversationRefs.length)) {
       const citation: MemoryCitationEntryData = {
         assistantEntryId: citationEntryId,
         itemIds: citedRefs.itemIds,
@@ -2967,9 +2971,9 @@ async function settleMainTurn(args: {
     pushSystemMessage("本次回复未能写入会话记录（运行槽已不存在），重启后不会保留", turnSessionId)
   }
 
-  const failTurn = async (message: string, kind: TurnFailure["kind"]): Promise<PiAgentTurnOutput> => {
+  const failTurn = async (message: string, kind: TurnFailure["kind"], fallbackReply?: string): Promise<PiAgentTurnOutput> => {
     // 失败分类保留上游文案（decline 不改写成预算错误），只有展示文案回到硬预算判定。
-    const reply = turnFailureReply(message, state, kind)
+    const reply = fallbackReply ?? turnFailureReply(message, state, kind)
     // 主动表达的准入/生成失败不能借用普通用户回合的可见兜底：guard 的语义是
     // 「不调用 Provider，也不产生 assistant 提交」，错误 operation tip 仍由 Harness 留作
     // 失败证据，但不能再追加一条可见的 fallback assistant 消息。
@@ -2978,10 +2982,13 @@ async function settleMainTurn(args: {
     }
     if (!slot) {
       reportMissingSlot("兜底回复未落盘")
-      return { reply, toolCallHistory, retriesUsed: state.retriesUsed, failure: { kind, message } }
+      return { reply, toolCallHistory, retriesUsed: state.retriesUsed, failure: { kind, message }, persistFailed: true }
     }
     let persistFailed = false
-    await slot.appendAssistantMessage(reply).catch(error => {
+    const committedAssistantEntryId = await slot.appendAssistantMessage(reply, {
+      schemaVersion: 1, generatedText: "", outcome: "fallback",
+      humanizerEnabled: kernel.humanizerEnabled ?? false, transformation: "none",
+    }).catch(error => {
       persistFailed = true
       log.error("兜底回复落盘失败:", formatError(error))
       reportError("PiRuntime", error, { kind: "回合文案落盘失败", overlay: false })
@@ -2994,6 +3001,7 @@ async function settleMainTurn(args: {
       toolCallHistory,
       retriesUsed: state.retriesUsed,
       failure: { kind, message },
+      ...(committedAssistantEntryId ? { committedAssistantEntryId } : {}),
       ...(persistFailed ? { persistFailed: true } : {}),
     }
   }
@@ -3041,7 +3049,7 @@ async function settleMainTurn(args: {
   // 这条早退也不补 abortedByStop —— 那会让宿主丢弃 reply，「工具轮超限」文案再也看不到；
   // 停止与治理终止同时发生的情形已由上面的 aborted 分支覆盖。
   if (state.stoppedByToolGovernance) {
-    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed }
+    return failTurn(state.toolGovernanceReason ?? "工具循环治理终止", "tool_loop", getFallbackReply("toolLoopMaxRounds"))
   }
   if (result.status !== "completed") {
     const reason = result.error ?? "Pi Agent 未返回有效回复"

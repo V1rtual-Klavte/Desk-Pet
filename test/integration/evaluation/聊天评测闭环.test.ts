@@ -15,6 +15,7 @@ import { initChat, resetAgentRuntimeForTest, sendMessage } from "@/services/agen
 import { flushConfig, getAllOverrides, setOverrides } from "@/services/config"
 import { usageGrandTotal } from "@/services/debug"
 import { readRequestResponse } from "@/services/engine/harness"
+import { resolveSimMessageReply } from "@/services/sim/chat-bridge"
 import { initPaths } from "@/services/paths"
 import { getActiveCard } from "@/services/personality/registry"
 import {
@@ -450,9 +451,8 @@ describe("聊天评测闭环（L3 合成用例）", () => {
           const result = await sendMessage(text, { requestId: operation.operationId })
           const sessionId = getActiveSessionId()
           return {
+            ...await resolveSimMessageReply(sessionId, operation.operationId, result),
             sessionId,
-            outcome: result.outcome,
-            reply: result.reply,
             toolCalls: result.toolCalls,
             operation: { ...operation, trialId: TRIAL_ID, sessionId, generation: GENERATION },
             requestId: operation.operationId,

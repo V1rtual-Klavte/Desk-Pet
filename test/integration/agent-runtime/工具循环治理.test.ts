@@ -46,6 +46,9 @@ import type { ToolDef } from "@/services/tool"
 import { runPiSubAgent, resetPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import { initPaths } from "@/services/paths"
+import { initChat, sendMessage } from "@/services/agent/runner"
+import { readPiSessionEntriesOnce } from "@/services/session"
+import { getActiveSessionId } from "@/services/session/store"
 
 /** 探针工具名/ID：只读、无副作用，执行次数是「调用到底有没有真的发生」的独立观测面。 */
 const PROBE_ID = "loop-governance-probe"
@@ -183,6 +186,13 @@ describe("工具循环治理", () => {
       "工具历史的成败序列不对（前 4 次执行成功、第 5 次被拦）").toEqual(["done", "done", "done", "done", "blocked"])
     expect(provider.state.callCount, "硬终止后不应再有下一次请求").toBe(5)
     expect(output.reply, "硬终止收尾不是 Card 的工具轮兜底文案").toBe(getFallbackReply("toolLoopMaxRounds"))
+    expect(output.failure).toEqual({ kind: "tool_loop", message: "工具循环病理检测：同一工具与参数连续调用 5 次，终止回合" })
+    const entries = await readPiSessionEntriesOnce(getActiveSessionId())
+    const fallback = entries.find(entry => entry.id === output.committedAssistantEntryId)
+    expect(fallback).toMatchObject({ type: "message", message: {
+      role: "assistant", content: [{ type: "text", text: getFallbackReply("toolLoopMaxRounds") }],
+      deskpetReplyEvidence: { generatedText: "", outcome: "fallback", transformation: "none" },
+    } })
   }, 60_000)
 
   it("连续失败第 5 次在结果侧硬终止：不再发下一次请求、收尾用工具轮兜底文案 [tool-loop-failure-hard-termination]", async () => {
@@ -192,16 +202,26 @@ describe("工具循环治理", () => {
       fakeText("不应到达的收尾正文"),
     ])
 
-    const output = await runRuntimeTurn("连续失败几次看看。")
+    await initChat()
+    const output = await sendMessage("连续失败几次看看。")
 
     expect(executions.length, "5 次失败调用都应真实执行（失败连击的硬阈值在结果侧判定，不在调用门预拦）").toBe(5)
-    expect(output.toolCallHistory.map(item => item.status),
+    expect(output.toolCalls.map(item => item.status),
       "工具历史应是 5 次失败（没有第 6 次被调用门拦下的记录）")
       .toEqual(["error", "error", "error", "error", "error"])
     // 区分力核心：结果侧 terminate 让回合在第 5 条结果后立即结束 —— 去掉 terminate 时
     // 模型会再拿到一次请求（本轮脚本给正文），这里会变成 6。
     expect(provider.state.callCount, "第 5 次失败后不应再发请求（结果侧 terminate 未生效？）").toBe(5)
     expect(output.reply, "硬终止收尾不是 Card 的工具轮兜底文案").toBe(getFallbackReply("toolLoopMaxRounds"))
+    expect(output.outcome).toBe("failed")
+    expect(output.failure).toEqual({ kind: "tool_loop", message: "工具循环病理检测：工具连续失败 5 次，终止回合" })
+    const entries = await readPiSessionEntriesOnce(getActiveSessionId())
+    const fallbacks = entries.filter(entry => entry.type === "message" && entry.message.role === "assistant"
+      && entry.message.content.some(part => part.type === "text" && part.text === getFallbackReply("toolLoopMaxRounds")))
+    expect(fallbacks).toHaveLength(1)
+    expect(fallbacks[0]).toMatchObject({ message: {
+      deskpetReplyEvidence: { generatedText: "", outcome: "fallback", transformation: "none" },
+    } })
   }, 60_000)
 
   it("同参第 3 次只附软提示且不断连；阈值之前的结果不带提示 [tool-loop-soft-notice]", async () => {

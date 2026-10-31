@@ -362,6 +362,8 @@ describe("驱动消息回执身份", () => {
     reply: "你好",
     outcome: "succeeded",
     toolCalls: [],
+    assistantEntryId: "assistant-entry-1",
+    replyBinding: "request-response",
   }
 
   it("回执原样绑定本次 operation、trial、会话与代际", () => {
@@ -371,6 +373,8 @@ describe("驱动消息回执身份", () => {
       outcome: "succeeded",
       requestId: "op-1",
       operation,
+      assistantEntryId: "assistant-entry-1",
+      replyBinding: "request-response",
     })
   })
 
