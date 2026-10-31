@@ -9,7 +9,7 @@
 // isActiveMessage 一律 false：迁移的场景都是普通用户输入，不是主动消息入口。
 // ==========================================
 
-import type { PiAgentTurnOutput } from "@/services/engine/harness"
+import type { PiAgentTurnOutput } from "@/services/engine/state"
 import { runPiAgentTurn } from "@/services/engine/harness"
 import type { IngressEnvelope } from "@/services/engine/protocol"
 import { userInputMessage } from "@/services/engine/protocol"

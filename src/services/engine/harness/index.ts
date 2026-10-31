@@ -26,17 +26,8 @@ export {
 export type {
   InterruptedRunInfo,
   ManualCompactionResult,
-  PiAgentTurnInput,
-  PiAgentTurnOutput,
-  PiSubAgentAudit,
-  PiSubAgentEvidence,
-  PiSubAgentOwner,
-  PiSubAgentInput,
-  PiSubAgentOutput,
-  PiSubAgentScope,
   QueuedInputsView,
   RecoveredPlanView,
-  TurnFailure,
 } from "./runtime"
 
 export { describeInputDelivery, isInputCommitted, readActiveAttemptEvidence, readActiveAttemptAssociations, readContextEpoch, readRequestResponse } from "./delivery"
@@ -67,37 +58,19 @@ export {
   resolvePiTurnModel,
   toPiReasoningLevel,
 } from "./model-gateway"
-export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallAudit, PiTextCallInput, PiTextCallResult, PiTextPurpose } from "./model-gateway"
+export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult, PiTextPurpose } from "./model-gateway"
 export { completePiText } from "./model-gateway"
 
+export { createHarnessRunState } from "@/services/engine/state"
 export {
   HarnessSlot,
   HARNESS_LANE,
   compactionSettingsFor,
-  createHarnessRunState,
   harnessSlots,
   isAIGenerating,
   retryPolicyFromConfig,
 } from "./harness-slot"
-export type {
-  HarnessAbortReason,
-  HarnessCancelQueuedKind,
-  HarnessCompactOutcome,
-  HarnessDeliveryPhase,
-  HarnessDeliveryReceipt,
-  HarnessQueueCounts,
-  HarnessQueuedItem,
-  HarnessRunHooks,
-  HarnessRunResult,
-  HarnessRunSinks,
-  HarnessRunSpec,
-  HarnessRunState,
-  HarnessRunStatus,
-  HarnessSlotSnapshot,
-  HarnessSlotState,
-  HarnessStructuralHost,
-  HarnessTurnAdmission,
-} from "./harness-slot"
+export type { HarnessRunSpec } from "./harness-slot"
 
 export { toAgentHarnessTools } from "@/services/tool"
 export type { HarnessToolRun } from "@/services/tool"

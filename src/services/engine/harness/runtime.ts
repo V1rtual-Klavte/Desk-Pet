@@ -7,12 +7,10 @@ import { createCompactionSummaryMessage } from "@earendil-works/pi-agent-core"
 import type { AgentMessage, CompactResult, CompactionPreparation, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation, ThinkingEffort } from "@/services/agent/types"
-import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, CompactionDeclineKind, CompactionDeclineRecord, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/protocol"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, deriveMemoryRecallBudget, deriveMemoryQueryPlan, completeMemoryEvidence, renderMemoryRecall, validateConversationProjections, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
 import type { FocusedMemoryEvidence, MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
-import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import { clearPlanDelivery, takePlanDelivery } from "@/services/engine/plan/delivery"
 import { createPlanSettlement, planCompletionOf } from "@/services/engine/plan/settlement"
@@ -43,7 +41,7 @@ import {
   createEnableToolsTool, defaultActiveToolNames,
   findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash, readHarnessToolOutcome,
 } from "@/services/tool"
-import type { HarnessToolRun, ToolDef, TaskToolAuthorization } from "@/services/tool"
+import type { HarnessToolRun, ToolDef } from "@/services/tool"
 import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool/local/screenshot-details"
 import { aiConfig, humanizerConfig, loopConfig, memoryConfig, planConfig, safetyConfig } from "@/services/config"
 import { silentAccessFrequency } from "@/services/proactive/tiers"
@@ -72,21 +70,17 @@ import { isDeskpetReplyEvidence } from "@/services/reply"
 import type { DeskpetReplyEvidence } from "@/services/reply"
 import { describeCompactionFailure, ladderGate, summarizeCompaction } from "../compactor"
 import type { LadderGateInput } from "../compactor"
-import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
-import { readActiveAttemptEvidence, readContextEpoch } from "./delivery"
+import { createHarnessRunState } from "@/services/engine/state"
 import type {
-  HarnessCancelQueuedKind,
-  HarnessCompactOutcome,
-  HarnessDeliveryReceipt,
-  HarnessQueuedItem,
-  HarnessRunHooks,
-  HarnessRunResult,
-  HarnessRunSinks,
-  HarnessRunSpec,
-  HarnessRunState,
-} from "./harness-slot"
+  HarnessCancelQueuedKind, HarnessCompactOutcome, HarnessDeliveryReceipt, HarnessQueuedItem,
+  HarnessRunHooks, HarnessRunResult, HarnessRunSinks, HarnessRunState,
+  PiAgentInputTurn, PiAgentSkillTurn, PiAgentTurnInput, PiAgentTurnOutput, PiSubAgentAudit,
+  PiSubAgentEvidence, PiSubAgentInput, PiSubAgentOutput, PiSubAgentOwner, PiSubAgentScope, TurnFailure,
+} from "@/services/engine/state"
+import { harnessSlots, HarnessSlot } from "./harness-slot"
+import { readActiveAttemptEvidence, readContextEpoch } from "./delivery"
+import type { HarnessRunSpec } from "./harness-slot"
 import { classifyFailureKind } from "@/services/error/failure-kind"
-import type { FailureKind } from "@/services/error/failure-kind"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { createMemoryRecallMessage, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, MEMORY_CITATIONS_ENTRY, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishMemoryRecallReferences, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, TURN_NOTE_CUSTOM_TYPE, userInputMessage } from "@/services/engine/protocol"
@@ -185,103 +179,6 @@ export function pausedInputsText(messages: AgentMessage[]): string {
   return messages.map(laneMessageText).filter(text => text.length > 0).join("\n")
 }
 
-/** 回合入参的公共面：两支（用户输入 / 技能准入）共用，正文来源不同。 */
-interface PiAgentTurnBase {
-  sessionId: string
-  /**
-   * 按文本工作的环节（显式计划、记忆召回）用它。技能准入传用户敲下的原文：
-   * 正文由 Harness 从技能文件构造，宿主这里没有别的东西可以代表「这次输入是什么」。
-   */
-  userText: string
-  /**
-   * 输入已落盘（lane.accept 提交用户条目成立）之后的 UI 记账钩子：用户气泡与未回复计数
-   * 只在条目提交进会话文件之后更新，预检失败、未获准入时不会先画一条不存在于会话里的气泡。
-   */
-  onInputAdmitted?: () => void | Promise<void>
-  unansweredCount: number
-  isActiveMessage?: boolean
-  /** A per-turn capability policy, independent of proactive-message semantics. */
-  toolMode?: "none"
-  activeRequest?: ActiveMessageRequest
-  turnContext?: ProactiveTurnContext
-  runGeneration?: number
-  turnId?: string
-}
-
-/** 用户输入支（现状形态）：正文与投递身份由调用方构造，空闲发送与忙碌投递共用同一形状。 */
-export interface PiAgentInputTurn extends PiAgentTurnBase {
-  /**
-   * 本次投递的正文（`userInputMessage()` 或主动消息构造器的产物），随回合落盘。
-   * 身份与来源标记因此对所有入口一致生效。
-   */
-  userPrompt: AgentMessage | AgentMessage[]
-  /**
-   * 停止后继续：把取回的暂停输入按原顺序作为本次投递内容（身份不合并、正文不重复追加）。
-   */
-  pausedMessages?: AgentMessage[]
-  ingress?: IngressEnvelope
-  skillAdmission?: undefined
-}
-
-/**
- * 技能准入支（`/skill <技能名> [额外指示]`）：宿主不提供正文 —— 那条 `role:"user"` 消息由 Pi 在
- * `accept` 内按技能文件构造（含技能文件的绝对路径）并提交，所以宿主也不再投递第二条正文，
- * 更不给它套 `deskpetEventId`：条目不是我们构造的，套一份身份只会造出查不到的假投递证据。
- * 互斥字段用 `undefined` 钉死（与 `HarnessAdmitSkillSpec` 的 `?: never` 同一口径）。
- */
-export interface PiAgentSkillTurn extends PiAgentTurnBase {
-  skillAdmission: SlashSkillAdmission
-  userPrompt?: undefined
-  pausedMessages?: undefined
-  ingress?: undefined
-}
-
-export type PiAgentTurnInput = PiAgentInputTurn | PiAgentSkillTurn
-
-/**
- * 回合在拿到模型回复之前就失败的结构化原因。
- *
- * 产品侧要的是「有兜底文案可显示」，报告侧要的是「这次失败属于哪一类」，两者不冲突：
- * 只返回兜底文案会让报告把 Provider 故障记成 assertion 失败，观测直接失效。
- * `kind` 与 Live Test 的 `ErrorKind` 同名，报告可直接照搬。
- */
-export interface TurnFailure {
-  kind: FailureKind
-  message: string
-}
-
-export interface PiAgentTurnOutput {
-  reply: string
-  /** Multiple display bubbles derived from one committed assistant entry. */
-  replyParts?: string[]
-  /** True when the committed assistant entry intentionally contains no visible text. */
-  silent?: boolean
-  /** Runtime generation paired with any transient reveal schedule. */
-  runGeneration?: number
-  generationStartedAt?: number
-  committedAssistantEntryId?: string
-  /** 本回合提交的助手条目关联的截图路径（`deskpetImagePaths`）；宿主据此推实时界面消息。 */
-  userImagePaths?: string[]
-  humanized?: boolean
-  toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
-  retriesUsed: number
-  runtimeData?: { variables: Record<string, string> }
-  activeCommit?: { operationId: string; triggerEntryId: string; assistantEntryId: string; text: string; timestamp: number; parts?: string[]; silent?: boolean; usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number } }
-  /** Actual provider usage accrued before a failure; absence means unknown, never an estimate. */
-  usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
-  /** 回合失败的真实分类；包括重试耗尽、准入失败与工具循环治理终止。 */
-  failure?: TurnFailure
-  /** 停止归还：未消费的补充消息 requestId（宿主决定重新排队或丢弃）。 */
-  undelivered?: string[]
-  /** 回合因显式停止（不是超时）结束；宿主不得在停止后自动继续剩余输入。 */
-  abortedByStop?: boolean
-  /**
-   * 兜底/中断文案没能写进会话文件（只显示过，没有持久正文）——
-   * 宿主据此区分「已持久化」与「界面看到过」，不要当成同一件事。
-   */
-  persistFailed?: boolean
-}
-
 /**
  * 失败回合的展示文案。
  *
@@ -308,101 +205,6 @@ export function turnFailureReply(
  * 这里的别名只为兼容既有消费者（`engine/harness` barrel、预算场景）：名字不变，实现只有一份。
  */
 export { classifyFailureKind as classifyTurnFailure } from "@/services/error/failure-kind"
-
-/** Parent cancellation/permission identity shared by delegated and Plan work. */
-export interface PiSubAgentScope {
-  sessionId: string
-  runGeneration: number
-  trustedUserEventId?: string
-  isCurrent: () => boolean
-  signal?: AbortSignal
-  parentSlot?: HarnessSlot
-}
-
-/** Purpose and authority are bound by the host, never accepted from model arguments. */
-export type PiSubAgentOwner =
-  | (PiSubAgentScope & { kind: "conversation"; runId: string; parentRunId?: string })
-  | (PiSubAgentScope & { kind: "plan"; runId: string; planId: string; stepId: string; parentRunId?: string })
-  | (Omit<PiSubAgentScope, "trustedUserEventId" | "parentSlot"> & { kind: "proactive"; runId: string; cardId: string })
-  | {
-      kind: "scheduled"
-      runId: string
-      sessionId: string
-      cardId: string
-      taskId: string
-      taskVersion: number
-      occurrenceId: string
-      authorization: TaskToolAuthorization
-      isCurrent: () => boolean
-      signal?: AbortSignal
-    }
-
-export interface PiSubAgentAudit {
-  sessionId?: string
-  planId?: string
-  stepId?: string
-  /** Business-owned result location; the kernel does not create a second transcript. */
-  reference?: string
-}
-
-export interface PiSubAgentInput {
-  owner: PiSubAgentOwner
-  task: string
-  tools: ToolDef[]
-  systemPrompt: string
-  capabilities?: { requiredToolNames?: readonly string[] }
-  maxToolCalls?: number
-  /** Caller override: scheduled work may prompt only when a human-facing confirm sink is mounted. */
-  permissionMode?: "interactive" | "background"
-  timeoutMs?: number
-  deadlineAt?: number
-  thinkingEffort?: ThinkingEffort
-  maxOutputTokens?: number
-  beforeProvider?: (reservation: ProviderReservation) => Promise<boolean>
-  disableAutomaticCompaction?: boolean
-  /** Runtime completion and acceptance are separate: this validator owns business success. */
-  outputContract?: {
-    kind: "text" | "json"
-    validate?: (output: { reply: string; artifact?: unknown; evidence: PiSubAgentEvidence }) => boolean | string | Promise<boolean | string>
-  }
-  onToolStart?: (toolName: string, toolCallId: string) => Promise<void> | void
-  onToolDone?: (toolName: string, toolCallId: string, success: boolean) => Promise<void> | void
-  audit?: PiSubAgentAudit
-}
-
-export interface PiSubAgentEvidence {
-  tools: Array<{ toolName: string; toolCallId?: string; status: string; reason?: string; sourceUrls?: string[]; sources?: Array<{ url: string; publishedAt?: string }>; completedAt?: number }>
-  incomplete: string[]
-  /** A failed/cancelled non-read call may have left effects before its receipt (local mutation / process / external). */
-  unconfirmedEffects: boolean
-}
-
-export interface PiSubAgentOutput {
-  status: "completed" | "cancelled" | "timed_out" | "needs_input" | "failed"
-  /** Business acceptance; completed alone only means the Harness ended. */
-  success: boolean
-  reply: string
-  artifact?: unknown
-  toolCallsMade: number
-  evidence: PiSubAgentEvidence
-  audit: PiSubAgentAudit & { runId: string; requestId: string; ownerKind: PiSubAgentOwner["kind"] }
-  resolved?: {
-    modelId: string
-    provider: string
-    requestedThinkingEffort: ThinkingEffort
-    reasoningLevel?: string
-    reasoningParameter?: string | null
-    thinkingAdaptation: "native" | "server_default" | "unsupported"
-    deadlineAt: number
-    maxToolCalls: number
-    maxOutputTokens: number
-    toolNames: string[]
-  }
-  error?: string
-  rawReply?: string
-  usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
-  members?: Array<{ role: string; output: PiSubAgentOutput }>
-}
 
 /** 一次运行的宿主侧共享上下文；主回合与子代理复用同一套投影/快照/审计。 */
 interface TurnKernel {

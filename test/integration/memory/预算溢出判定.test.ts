@@ -17,7 +17,7 @@ import { describe, expect, it } from "vitest"
 
 import { ContextBudgetError } from "@/services/context"
 import { classifyTurnFailure, createHarnessModels, turnFailureReply } from "@/services/engine/harness"
-import type { TurnFailure } from "@/services/engine/harness"
+import type { TurnFailure } from "@/services/engine/state"
 
 const FAKE_MODEL = {
   id: "deskpet-fake", name: "Desk-Pet Fake", api: "faux", provider: "deskpet-fake",

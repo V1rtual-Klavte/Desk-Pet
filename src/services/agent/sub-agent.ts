@@ -16,7 +16,7 @@
 
 import { listAll, type ToolDef } from "@/services/tool"
 import { runPiSubAgent } from "@/services/engine/harness"
-import type { PiSubAgentOutput, PiSubAgentOwner } from "@/services/engine/harness"
+import type { PiSubAgentOutput, PiSubAgentOwner } from "@/services/engine/state"
 import { loopConfig } from "@/services/config"
 import { SUB_AGENT_RUN_TIMEOUT_MS } from "./timeouts"
 import { formatError } from "@/services/error"

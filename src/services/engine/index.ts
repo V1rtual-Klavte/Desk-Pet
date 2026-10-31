@@ -126,11 +126,13 @@ export {
 } from "./harness"
 export type {
   HarnessQueuedItem,
+  PiAgentTurnOutput,
+} from "./state"
+export type {
   InputDeliveryEvidence,
   InputDeliveryStage,
   InterruptedRunInfo,
   ManualCompactionResult,
-  PiAgentTurnOutput,
   QueuedInputsView,
   RecoveredPlanView,
 } from "./harness"

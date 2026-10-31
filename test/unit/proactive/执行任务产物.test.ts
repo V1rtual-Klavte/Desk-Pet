@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { classifyWorkFailure, validateWorkArtifact } from "@/services/user-tasks/work"
-import type { PiSubAgentEvidence } from "@/services/engine/harness"
+import type { PiSubAgentEvidence } from "@/services/engine/state"
 const now=Date.parse("2026-10-18T04:00:00Z")
 const work={goal:"查询今天的新闻热点",inputs:[],capabilities:["search"],output:"三条热点附来源",completion:"取得本轮可核验来源"}
 const artifact={text:"三条热点",completed:true,criterion:"取得本轮可核验来源",sources:[{url:"https://example.org/news",title:"新闻原文"}]}

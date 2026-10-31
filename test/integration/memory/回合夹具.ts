@@ -10,7 +10,7 @@
 // L4 侧 `lastRequestText` 曾被 16 个场景各自复制，教训已经付过一次。
 //
 // 这里不实现任何产品行为：会话建立/投递/记账全部调用产品入口，只有 Provider 是替身。
-import type { PiAgentTurnOutput } from "@/services/engine/harness"
+import type { PiAgentTurnOutput } from "@/services/engine/state"
 import { runPiAgentTurn } from "@/services/engine/harness"
 import { userInputMessage } from "@/services/engine/protocol"
 import { initChat } from "@/services/agent/runner"

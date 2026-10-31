@@ -1,7 +1,7 @@
 // L3：只替换宿主事务、子运行与表达端口；验证真实用户任务 dispatcher 的生命周期接线。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ScheduledJob, SchedulerRunRecord } from "@/services/scheduler"
-import type { PiSubAgentOutput } from "@/services/engine/harness"
+import type { PiSubAgentOutput } from "@/services/engine/state"
 import type { ProactiveOwner, ProactiveTask } from "@/services/proactive/types"
 import type { UserTaskDefinition } from "@/services/user-tasks/types"
 

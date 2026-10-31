@@ -10,7 +10,7 @@ import type {
   TurnDef,
   TurnResult,
 } from "./types"
-import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/harness"
+import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/state"
 import { runPiAgentTurn } from "@/services/engine/harness"
 import { userInputMessage } from "@/services/engine/protocol"
 import { sendMessage } from "@/services/agent/runner"

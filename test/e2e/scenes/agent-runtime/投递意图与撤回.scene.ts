@@ -1,5 +1,5 @@
 import { harnessSlots, listQueuedInputs, withdrawQueuedInput } from "@/services/engine/harness"
-import type { HarnessQueuedItem } from "@/services/engine/harness"
+import type { HarnessQueuedItem } from "@/services/engine/state"
 import { setOverride } from "@/services/config"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"

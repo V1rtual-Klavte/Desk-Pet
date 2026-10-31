@@ -7,7 +7,7 @@
 
 import type { ConfirmPolicy, ConfirmRecord, ContractCheckResult, PlanConfirmRecord, PlanPolicy } from "../host/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
-import type { HarnessSlotState, PiAgentTurnOutput, TurnFailure } from "@/services/engine/harness"
+import type { HarnessSlotState, PiAgentTurnOutput, TurnFailure } from "@/services/engine/state"
 
 // ── Scene DSL ──
 

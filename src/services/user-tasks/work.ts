@@ -1,4 +1,4 @@
-import type { PiSubAgentEvidence } from "@/services/engine/harness"
+import type { PiSubAgentEvidence } from "@/services/engine/state"
 import type { WorkSpec } from "./types"
 
 export interface WorkArtifact {

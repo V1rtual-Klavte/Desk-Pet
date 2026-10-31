@@ -39,7 +39,7 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { sha256Text } from "@/services/engine/protocol"
 import { harnessSlots } from "@/services/engine/harness"
-import type { PiSubAgentScope } from "@/services/engine/harness"
+import type { PiSubAgentScope } from "@/services/engine/state"
 import {
   bindRunningPlan, clearRunningPlan, planConfirmState,
   requestPlanConfirm, requestPlanStepDecision,

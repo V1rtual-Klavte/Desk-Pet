@@ -14,24 +14,18 @@
 
 import { AgentHarness, BACKGROUND_CONTEXT, MemorySessionRepo, TODO_CONTEXT } from "@earendil-works/pi-agent-core"
 import type {
-  AgentHarnessStreamOptionsPatch,
   AgentLane,
   AgentMessage,
-  AgentToolResult,
-  CompactResult,
-  CompactionPreparation,
   CompactionSettings,
   LaneQueuedItem,
   JsonlSessionMetadata,
   JsonValue,
   OperationResultRecord,
   OperationRequest,
-  SettledAssistantMessage,
   Session,
-  UsageRow,
 } from "@earendil-works/pi-agent-core"
 import { contentText } from "@earendil-works/pi-ai"
-import type { AssistantMessage, Model, RetryPolicy, ToolResultMessage, Usage } from "@earendil-works/pi-ai"
+import type { RetryPolicy, Usage } from "@earendil-works/pi-ai"
 import type { ThinkingEffort } from "@/services/agent/types"
 import {
   toAgentHarnessTools, takeHarnessToolFailureDetails,
@@ -42,7 +36,15 @@ import {
   ContextBudgetError, contextBudget, ESTIMATOR_WORST_CASE_BIAS, isUniqueAddressRef, resolveAddressRef, shortenAddresses, toHarnessEstimateTokens,
 } from "@/services/context"
 import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, hasRuntimeTraceSubscribers, laneMessageText, messageRequestId, publishRuntimeTrace, runtimeTraceContextForRequest, userInputMessage } from "@/services/engine/protocol"
-import type { CompactionAuditSink, InputSourceMark, RuntimeTraceContext } from "@/services/engine/protocol"
+import type { InputSourceMark, RuntimeTraceContext } from "@/services/engine/protocol"
+import {
+  ABORT_REASON_DISPOSE, ABORT_REASON_TIMEOUT, ABORT_REASON_USER, createHarnessRunState,
+} from "@/services/engine/state"
+import type {
+  HarnessAbortReason, HarnessCancelQueuedKind, HarnessCompactOutcome, HarnessDeliveryPhase, HarnessDeliveryReceipt,
+  HarnessQueuedItem, HarnessQueueCounts, HarnessRunHooks, HarnessRunResult, HarnessRunSinks,
+  HarnessRunState, HarnessSlotSnapshot, HarnessSlotState, HarnessStructuralHost, HarnessTurnAdmission,
+} from "@/services/engine/state"
 import { PLAN_STEP_RESULT_ENTRY } from "@/services/engine/protocol/entries"
 import { formatPlanStepResultReadback } from "@/services/engine/protocol/plan-readback"
 import { conversationConfig, loopConfig } from "@/services/config"
@@ -67,138 +69,6 @@ export { PI_LANE as HARNESS_LANE } from "@/services/session/repo"
  * 必须留下可追溯的证据（与 PROMPT_SNAPSHOT_ENTRY 同层，不进模型消息流）。
  */
 export const COMPACTION_CONTINUATION_ENTRY = "deskpet.compaction_continuation"
-
-/** 回合内共享的聚合状态：由宿主创建，槽在事件处理中填充。 */
-export interface HarnessRunState {
-  /**
-   * 本回合是否命中工具循环治理（三种出口共用此一枚标志，后续工具一律拦截；主回合若有
-   * 已提交的终态收尾则正常交付，否则走 `toolLoopMaxRounds` 兜底）：① 子运行计数封顶（`maxToolCalls`）；② 同参连击硬阈值
-   * （调用门 `block + terminate`）；③ 失败连击硬阈值（结果侧 `after_tool` 的 `terminate`）。
-   */
-  stoppedByToolGovernance: boolean
-  /** 由命中治理的分支记录真实原因，不从 Card 兜底台词反推。 */
-  toolGovernanceReason?: string
-  toolCallsMade: number
-  retriesUsed: number
-  /** transform_context 记录的当次请求判定；由网关在下一次请求取走（取走即清空）。 */
-  contextError?: unknown
-  /**
-   * 本回合最近一次被取走的硬预算判定文案。硬预算超限改走 Harness 溢出恢复后，
-   * 上游以「没有可摘要范围」declined 时回合会失败、失败文案是上游的；
-   * 结算需要回到这条可解释的判定，才能告诉用户该缩短输入还是调窗口。
-   */
-  lastBudgetError?: string
-  /** 上游对溢出压缩的终态：declined 表示这次硬预算超限没有可安全摘要的范围。 */
-  overflowRecoveryDeclined?: boolean
-  /** abort 归还的未消费消息（deskpetEventId → requestId）。 */
-  undelivered: string[]
-  finalAssistant?: AssistantMessage
-  /** 最近一次不带工具调用的 assistant（结算候选）。 */
-  finalPlainAssistant?: AssistantMessage
-  /** Durable JSONL entry identity paired with the final assistant message. */
-  finalAssistantEntryId?: string
-  /**
-   * 本回合 show_to_user 截图的落盘路径（afterTool 从工具结果 details 取回）。
-   * 提交链在最终助手消息落条目之前把它们并入条目（`deskpetImagePaths`）与结算回传；
-   * 被取消/失败的回合不会走到提交，状态随回合丢弃。
-   */
-  pendingUserImages?: string[]
-  /** 已并入提交条目的用户可见截图路径（结算回传给宿主推界面）。 */
-  attachedUserImages?: string[]
-  /** Actual request usage observed from Harness events; absent means unknown. */
-  usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
-}
-
-export function createHarnessRunState(): HarnessRunState {
-  return { stoppedByToolGovernance: false, toolCallsMade: 0, retriesUsed: 0, undelivered: [] }
-}
-
-/** 宿主注入的行为：权限、结果元数据、投影与观测。 */
-export interface HarnessRunHooks {
-  beforeTool?: (input: {
-    toolCallId: string
-    toolName: string
-    args: Record<string, JsonValue>
-    signal?: AbortSignal
-  }) => Promise<{ block: { reason: string; terminate?: boolean } } | undefined> | { block: { reason: string; terminate?: boolean } } | undefined
-  /**
-   * `terminate: true` 经上游 `after_tool` 的结果合流进工具结果：本批工具全部带该标记时，
-   * Harness 在当前批次后结束运行、不再发起下一次请求（`includeFinalAssistant: false`，
-   * 运行以 completed 收口，由结算的治理兜底文案收尾）。单个批次里有未终止的调用时不生效。
-   */
-  afterTool?: (input: {
-    toolCallId: string
-    toolName: string
-    args: Record<string, JsonValue>
-    content: AgentToolResult<unknown>["content"]
-    details?: JsonValue
-    isError: boolean
-  }) => { details?: JsonValue; isError?: boolean; terminate?: boolean } | undefined
-  transformContext?: (input: {
-    messages: AgentMessage[]
-    systemPrompt: string
-    signal?: AbortSignal
-  }) => Promise<{ messages?: AgentMessage[] } | undefined> | { messages?: AgentMessage[] } | undefined
-  /**
-   * 压缩决策钩子：返回自定义 CompactResult（宿主摘要内核）或 decline 跳过。
-   * 摘要内核失败必须在钩子内转成 decline（宿主不落上游通用摘要）；`compactionAudit`
-   * 承载这次压缩的成败，由槽在 `compaction_end` 收口成审计条目。
-   */
-  beforeCompaction?: (input: {
-    reason: "manual" | "threshold" | "overflow"
-    preparation: CompactionPreparation
-    signal?: AbortSignal
-    /** 上游 hook 调用带的运行身份（压缩请求归属用）。 */
-    runId: string
-  }) => Promise<{ decline?: boolean; compaction?: CompactResult } | undefined> | { decline?: boolean; compaction?: CompactResult } | undefined
-  /** 本回合/本次结构操作的压缩审计槽：钩子工厂的产出写在这里，供 compaction_end 读。 */
-  compactionAudit?: CompactionAuditSink
-  /** 逐请求 streamOptions 补丁（超时/请求头）；Harness 的 SDK 内层重试保持关闭。 */
-  beforeRequest?: (input: {
-    step: "assistant" | "deferred" | "compaction" | "branch_summary"
-    attempt: number
-  }) => { streamOptions?: AgentHarnessStreamOptionsPatch } | undefined
-  afterResponse?: (message: SettledAssistantMessage, meta: {
-    status?: number
-    headers?: Record<string, string>
-  }) => Promise<SettledAssistantMessage | undefined> | SettledAssistantMessage | undefined
-  beforePayload?: (payload: unknown, model: Model<any>) => void
-}
-
-/**
- * 结构操作（手动压缩与它的续跑）的宿主面。
- *
- * 结构操作没有回合身份、没有工具、不进结算 —— 这不是第二套状态机：
- * 它只承载「systemPrompt + hooks + state」三样，用于让续跑也走宿主的投影/剥离/观测；
- * 任何回合语义（权限、工具、结算、UI 推送）都不得挂到这里。
- */
-export interface HarnessStructuralHost {
-  systemPrompt?: string
-  hooks?: HarnessRunHooks
-  state: HarnessRunState
-  traceContext?: RuntimeTraceContext
-  traceBridgeState?: { linkedNativeRunIds: Set<string>; firstTextGenerated: boolean }
-}
-
-/** 宿主注入的 UI/统计消费点；事件在 Harness 交付线上按序 await。 */
-export interface HarnessRunSinks {
-  onTurnStart?: () => void
-  /** 流式正文增量（只含 text_delta 且已去掉 RUNTIME_DATA 起止后的内容）；只更新瞬时展示。 */
-  onAssistantDelta?: (delta: string) => void
-  /**
-   * 当前 assistant 消息的流式缓冲结束（message_end / 新消息 start 帧 / 运行收尾）。
-   *
-   * 每条 assistant 消息边界都会调用一次，**含没有任何可见增量的消息**：实现方必须幂等，
-   * 并在这里清空过滤状态（只清「没有增量就不上报」会让过滤器永久停在停止态）。
-   */
-  onAssistantStreamEnd?: () => void
-  onAssistantMessage?: (message: AssistantMessage, entryId: string | undefined) => void | Promise<void>
-  onToolResultMessage?: (message: ToolResultMessage, entryId: string | undefined) => void | Promise<void>
-  onToolEnd?: (toolName: string, isError: boolean) => void
-  /** Harness RetryPolicy 开始一次重试等待；`attempt` 是从 1 起算的序号。 */
-  onRetry?: (attempt: number) => void
-  onUsage?: (row: UsageRow, totals: Usage) => void | Promise<void>
-}
 
 export interface HarnessRunSpec {
   requestId: string
@@ -282,78 +152,6 @@ type DriveSettlement =
   | { kind: "suspended"; operationId: string }
   | { kind: "rejected"; tag: string; status: "busy" | "closed" | "invalid" }
 
-export type HarnessRunStatus =
-  | "completed" | "failed" | "aborted" | "busy" | "invalid" | "closed" | "interrupted" | "faulted"
-
-export interface HarnessRunResult {
-  status: HarnessRunStatus
-  record?: OperationResultRecord
-  error?: string
-  /** 由本槽的超时中止（区别于宿主显式停止）。 */
-  timedOut: boolean
-  /** 本次运行的停止来源；未停止时为 undefined。宿主据此区分用户主动停止与超时/释放。 */
-  abortReason?: HarnessAbortReason
-  /** 未消费的 steer/followUp：入参 requestId 与正文由宿主决定重新排队或丢弃。 */
-  undelivered: string[]
-  state: HarnessRunState
-}
-
-export type HarnessSlotState = "closed" | "idle" | "running" | "interrupted" | "faulted"
-export type HarnessDeliveryPhase = "streaming" | "settling"
-/**
- * 投递回执：steered/followup 会进入本次运行；deferred（nextRun）只随下一次运行消费。
- * 值与旧 QueueAckState 的 steered/followup 文案保持一致，UI 不需第二套词汇。
- */
-export type HarnessDeliveryReceipt = "steered" | "followup" | "deferred"
-
-export interface HarnessSlotSnapshot {
-  sessionId: string
-  generation: number
-  state: HarnessSlotState
-  hasLane: boolean
-  deliveryPhase?: HarnessDeliveryPhase
-  requestId?: string
-  turnId?: string
-  operationId?: string
-  /** 本分支已提交的压缩次数：请求视图的换代身份；基数未知时省略字段（不写 0）。 */
-  contextEpoch?: number
-  /** lane 持久 inbox 的待消费项（真相源在会话文件；这里是最近一次 queue_update 的只读快照）。 */
-  queued: HarnessQueuedItem[]
-  /**
-   * `queued` 镜像是否可信：开槽时用 lane 的一次性读取播种，此后由 queue_update 全量覆盖。
-   * false 表示这个镜像还没有初值（或播种失败），消费者按「未就绪」处理，不把空镜像当「没有排队项」。
-   */
-  queueMirrorReady: boolean
-  interrupted?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
-}
-
-/** 排队项的只读视图：UI 展示与撤回都以它为准，不在前端另存一份队列状态。 */
-export interface HarnessQueuedItem {
-  entryId: string
-  kind: "steer" | "followUp" | "nextRun"
-  text: string
-  /** 投递时写入的宿主 requestId（`deskpetEventId` 的主键部分）；证据链按它关联输入。 */
-  requestId?: string
-}
-
-/** lane 持久 inbox 的排队计数（按 kind）：压缩拒绝、排队视图共用同一明细。 */
-export interface HarnessQueueCounts {
-  steer: number
-  followUp: number
-  nextRun: number
-}
-
-/** 手动压缩（/compact）的终态；文案由调用方决定。 */
-export interface HarnessCompactOutcome {
-  status: "completed" | "declined" | "nothing" | "busy" | "pending" | "closed" | "failed"
-  error?: string
-  /** status=pending 时的排队明细：压缩续跑可能消费 lane inbox，不能只报「有排队」。 */
-  queued?: HarnessQueueCounts
-}
-
-/** 单项撤回结果：与 lane.cancelQueued 的 kind 同名，unavailable 表示槽/通道不可用。 */
-export type HarnessCancelQueuedKind = "cancelled" | "already_consumed" | "not_found" | "unavailable"
-
 interface ActiveRun {
   spec: HarnessRunSpec
   operationId?: string
@@ -363,11 +161,6 @@ interface ActiveRun {
   linkedNativeRunIds?: Set<string>
   traceStatus?: string
 }
-
-const ABORT_REASON_TIMEOUT = "timeout"
-const ABORT_REASON_USER = "user"
-const ABORT_REASON_DISPOSE = "dispose"
-export type HarnessAbortReason = typeof ABORT_REASON_TIMEOUT | typeof ABORT_REASON_USER | typeof ABORT_REASON_DISPOSE
 
 /**
  * 单会话运行槽。同一时刻只允许一个 run；所有 lane 操作串行经过 Harness 的持久操作记录。
@@ -2046,14 +1839,6 @@ const EMPTY_SLOT_USAGE: Usage = {
 }
 
 // ── 槽注册表 ──
-
-/**
- * 回合受理凭据：`admit()` 的唯一产物、`endAdmission()` 的唯一入参。
- * 不透明句柄（调用方不解释字段），配对由类型与 Set 语义共同承载。
- */
-export interface HarnessTurnAdmission {
-  readonly admissionId: number
-}
 
 /**
  * 每会话一个槽：运行所有权、投递与 drain 代际的唯一宿主定义点（H-4 起 RuntimeQueue/AgentSlot 已删除）。

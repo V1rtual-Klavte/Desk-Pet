@@ -4,7 +4,7 @@
 // ==========================================
 
 import { getToolByName, listAll, type ToolDef } from "@/services/tool"
-import type { PiSubAgentInput, PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/harness"
+import type { PiSubAgentInput, PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/state"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/protocol"
 import { planAcceptanceLabel } from "@/services/engine/protocol/plan-readback"

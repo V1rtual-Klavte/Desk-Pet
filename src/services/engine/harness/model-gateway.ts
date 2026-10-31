@@ -20,7 +20,7 @@ import { formatError } from "@/services/error"
 import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, totalInputTokens, projectMessageContent, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
 import { PROMPT_SNAPSHOT_ENTRY, createPromptSnapshot, redactText, sha256Text } from "@/services/engine/protocol"
 import type { PromptSnapshot, PromptSnapshotInput } from "@/services/engine/protocol"
-import type { HarnessSlotSnapshot } from "./harness-slot"
+import type { HarnessSlotSnapshot, PiTextCallAudit } from "@/services/engine/state"
 import chatImageLimits from "@/services/images/limits.json"
 import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, providerResponseByteCap, validateProviderUrl } from "./net-guard"
 import { createProviderObservation } from "./provider-observation"
@@ -455,16 +455,6 @@ export function getPiRuntimeProviderOverride(): PiRuntimeProviderOverride | unde
 
 /** 一次性调用的用途；用量统计按它单列，不从主回合统计里消失。 */
 export type PiTextPurpose = "planner" | "compaction" | "memory" | "stages" | "observation" | "topic"
-
-/** 一次性调用的审计归属：给出后请求快照与派生记录按会话落盘（不入模型消息流）。 */
-export interface PiTextCallAudit {
-  sessionId: string
-  turnId?: string
-  requestId?: string
-  /** 派生来源（如触发这次一次性调用的 runId/planId）。 */
-  derivedFrom?: string[]
-  traceContext?: RuntimeTraceContext
-}
 
 export interface PiTextCallInput {
   /** 调用用途：进入按 purpose 分列的用量统计，也用于日志。 */
