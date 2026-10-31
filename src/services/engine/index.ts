@@ -61,8 +61,8 @@ export type { ChoiceOutcome, ChoiceResolution } from "./choice-confirmation"
 // ── 模型提议计划（propose_plan 工具的执行相位）──
 // 与显式命令入口（runtime 的 runPlanPhase）共用确认通道、执行器与记录存储；唯一消费者
 // 是 `tool/local-extra/plan.ts`，产物归宿是工具结果而不是主回合上下文。
-export { runProposedPlan } from "./plan/proposal"
-export type { ProposedPlanInput, ProposedPlanOutcome } from "./plan/proposal"
+export { runProposedPlan } from "./runtime/plan-proposal"
+export type { ProposedPlanInput, ProposedPlanOutcome } from "./runtime/plan-proposal"
 
 // ── Runtime protocol vocabulary ──
 export type {

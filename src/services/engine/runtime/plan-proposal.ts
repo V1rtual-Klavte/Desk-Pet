@@ -43,15 +43,15 @@ import type { PiSubAgentScope } from "@/services/engine/state"
 import {
   bindRunningPlan, clearRunningPlan, planConfirmState,
   requestPlanConfirm, requestPlanStepDecision,
-} from "../plan-confirmation"
+} from "@/services/engine/plan-confirmation"
 import {
   executePlan, formatPlanDeliverySummary, normalizePlan, planEffectClassFor, planStepAcceptance, planToRecords,
-} from "../planner"
-import type { PlanExecutionResult, PlanResult, PlanStep } from "../planner"
-import { planCheckpointStore } from "./checkpoint-store"
-import { stashPlanDelivery } from "./delivery"
-import { createPlanSettlement } from "./settlement"
-import type { PlanConfirmDeclineReason, PlanExecutionCancelReason } from "./settlement"
+} from "@/services/engine/planner"
+import type { PlanExecutionResult, PlanResult, PlanStep } from "@/services/engine/planner"
+import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
+import { stashPlanDelivery } from "@/services/engine/plan/delivery"
+import { createPlanSettlement } from "@/services/engine/plan/settlement"
+import type { PlanConfirmDeclineReason, PlanExecutionCancelReason } from "@/services/engine/plan/settlement"
 
 const log = createLogger("PlanProposal")
 

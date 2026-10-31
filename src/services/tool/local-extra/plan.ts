@@ -186,7 +186,7 @@ const proposePlanTool: ToolDef = defineTool({
     // harnessSlots 等绑定），模块排序稍变即在初始化前读取 → bundle TDZ（2026-10-06 验收
     // 实测：宿主启动即崩、场景一条都跑不到）；守门见 build.mjs 的 assertNoDynamicBarrelImports。
     const [{ runProposedPlan }, { planConfirmDeclineText }, { formatStepResults }] = await Promise.all([
-      import("@/services/engine/plan/proposal"),
+      import("@/services/engine/runtime/plan-proposal"),
       import("@/services/engine/plan-confirmation"),
       import("@/services/engine/planner"),
     ])
