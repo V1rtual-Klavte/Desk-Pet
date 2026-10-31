@@ -141,16 +141,18 @@ export const plannerContract: ModuleContract = {
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
   sourceFiles: ["src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts",
     // pl-01/pl-02/pl-09: explicit preflight entry; pl-13: tool failure result. Shared loops belong to agent-runtime.
-    "src/services/engine/harness/runtime.ts", "src/services/tool/local-extra/plan.ts",
+    // 2026-10-31 大文件拆分：runtime.ts → runtime/{turn,plan-phase,resume}.ts 的计划入口/相位/恢复。
+    "src/services/engine/runtime/turn.ts", "src/services/engine/runtime/plan-phase.ts", "src/services/engine/runtime/resume.ts",
+    "src/services/tool/local-extra/plan.ts",
     // 2026-10-06 提议入口批次补入：模型提议计划的执行相位（相位与显式命令入口共用确认/执行机制）。
     // 2026-10-06 去超时批次：plan/limits.ts 整文件删除（常量无消费者）；等待期预算豁免的
     // 唯一登记点补入（计划时限按累计等待扣除）。
-    "src/services/engine/plan/proposal.ts", "src/services/engine/user-wait.ts",
+    "src/services/engine/runtime/plan-proposal.ts", "src/services/engine/state/user-wait.ts",
     // 2026-10-06 验收批次补入：计划结算原语（pl-14）—— 两条入口共享的写盘降级 / 收尾 /
     // 取消归宿的唯一实现（此前 runtime.ts 与 proposal.ts 各存一份同形复刻）。
     // 2026-10-24 交付兜底批次补入：回合内计划结果的暂存（pl-15）—— 工具入口写入、主回合结算取走。
     "src/services/engine/plan/settlement.ts", "src/services/engine/plan/delivery.ts"],
-  sourceHash: "aaf58d2120cb756b1dd1738fc29a55df45e5872feaf32efcb78d2728ecc73b93",
+  sourceHash: "70c83d35f6fc22711055c2e87ba0ba1436cbb1afc95e73f794704a82118c9346",
   coverage: [
     // 退役预评估的三个 caseId 随功能删除；显式入口沿用原 ID，普通入口改测零额外请求。
     { id: "pl-01", feature: "显式 --plan 入口", description: "启用 ai.plan.enabled 时，行首 --plan 后为字尾或空白才触发生成、确认、步骤执行和主回复；无额外复杂度评估请求，计划终态 done。规划器的可用工具清单排除派生型工具（isolation=delegate，到不了步骤子代理），生成提示要求每步给出非空 allowedTools，场景同时断言提示词与工具清单（只判入口触发会让权限面错误的计划照样变绿）", why: "用户仍可显式要求计划，命令不能误匹配普通文本；规划器列出的权限面必须是步骤子代理真实可达的工具集", layer: "integration", depth: "deep", scenarios: ["plan-force-trigger"] },
@@ -164,7 +166,7 @@ export const plannerContract: ModuleContract = {
     { id: "pl-11", feature: "逐步确认的真前置门", description: "用户以 `--plan` 强制触发进入计划段（启用 ai.plan.enabled 的显式命令入口）且确认给出的 mode=stepByStep 传进计划段：2 步计划每步开工前各问一次步骤门（恰好 2 次 kind=step_gate 的 continue 裁决），门没有把计划卡住 —— 每步都执行、终态与终态事件都是 done、进度 total 是计划步数；门选择中止的 declined 归宿不在本场景（宿主通道对确认与门共用一套 planPolicy，给不出「确认自动 + 门中止」）", why: "逐步门此前没有任何运行时证据：它是否真的成为每步的前置门、确认的 mode 是否被采纳，只能在运行时接线里看", layer: "e2e", depth: "deep", scenarios: ["plan-step-gate-each-step"] },
     { id: "pl-12", feature: "计划确认回执通道的结算", description: "计划确认与步骤门共用 UI 回执反向通道（L3）：提问经 deskpet-plan-start 发出后，事件载荷带计划 summary 与每步 allowedTools（面板据此显示目标与工具权限面），确认回执按 planId 结算待确认计划并清空待确认表，步骤门回执同按 planId 结算裁决；未知 planId 的回执是 no-op —— 不结算、不误伤他人的待确认项、不抛，随后正确 planId 仍可正常结算；发布失败（UI 通道关闭）以 emit_failed 立即结算，不把 UI 不可达伪装成「继续等待」。**没有等待超时**（2026-10-06 用户裁决：选择类弹窗不留超时）：确认与步骤门的等待不设本地期限（假时钟推进 10 分钟仍待答、待确认视图不被计时器清掉），归宿只来自回执 / 取消信号 / 会话生命周期 / 发布失败", why: "回执是 UI→Node 反向通道的唯一结算入口：未知/迟到回执若误结算会替用户作答；超时结算等于把「用户还没想好」当成拒绝（已删）—— 替代它的是逐条显式逃生口（发布失败、取消信号、会话切换/关闭），吞掉任何一条都会让确认方悬挂", layer: "integration", depth: "deep", scenarios: ["plan-confirm-receipt-settles", "plan-confirm-receipt-unknown-noop", "plan-confirm-receipt-step-decision", "plan-confirm-emit-failure-settles", "plan-confirm-no-wait-timeout"] },
     // 2026-10-06 提议入口批次新增：模型给出的步骤经既有确认/执行/记录链跑完整相位。
-    { id: "pl-13", feature: "模型提议计划的执行相位（propose_plan）", description: "模型在回合中调用 propose_plan（`engine/plan/proposal.ts` 复用既有机制，不另建确认通道或执行器）：确认走 requestPlanConfirm（确认记录里的步骤数就是模型给出的步骤数）；用户确认后步骤由 executePlan 的子运行真实执行 —— 子运行请求里拿到的正是模型给的步骤文本，计划记录与每步请求携带冻结的原始目标（只取本轮可信用户原文，模型参数里的 intent 被忽略、模型转述不能替换用户事实；没有可信原文时由工具层回落到 summary），步骤可声明 dependsOn（只能引用更早步骤 id，规范化为 1..id-1；依赖步骤未成功完成时本步跳过并说明原因，不照常执行），工具面按该步 allowedTools 收窄（只 read 时没有 bash），进度事件按步骤 running/done 顺序发布、终态事件 done、计划记录落 done；逐步确认模式（stepByStep）下每步开工前各问一次既有步骤裁决面板（恰两条 continue 裁决），结果按 formatStepResults 既有格式（含 plan_step_result 回读地址）作为工具结果返回模型。just_do_it 策略下跳过确认面板直接执行：零确认请求到达面板通道、步骤照常真实执行（请求账主回合 + 步骤子运行 + 收尾）、记录落 done、收尾事件照发，工具结果仍是既有计划结果格式并如实标注「未经面板确认直接执行」。失败步骤后选择继续时，后续成功不改变整体失败：步骤记录 failed/done、计划和终态事件 failed，工具结果 isError=true 且说明部分失败。非只读工具失败时，提议入口同样按证据闭环判该步失败（验收档 unverified、不冒充完成，与 pl-06 的通用执行器语义同源），计划整体失败。并发守卫（同一会话同一时刻只允许一个计划）与用户取消/面板不可用/发射失败的如实归宿归 tool-execution 契约的 te-32", why: "模型侧此前没有任何「提议计划」的工具，需要确认时只能自己用 bash 弹 GUI 对话框 —— 用户实测被工具超时打断并留下孤儿窗口；这条入口必须证明它挂的是既有链路（同确认通道、同执行器、同记录、同步进门），而不是一条绕过确认的旁路", layer: "integration", depth: "deep", scenarios: ["plan-tool-confirm-accept", "plan-tool-step-gate", "plan-tool-just-do-it", "plan-tool-continue-failure", "plan-intent-binding", "plan-tool-effect-receipt"] },
+    { id: "pl-13", feature: "模型提议计划的执行相位（propose_plan）", description: "模型在回合中调用 propose_plan（`engine/runtime/plan-proposal.ts` 复用既有机制，不另建确认通道或执行器）：确认走 requestPlanConfirm（确认记录里的步骤数就是模型给出的步骤数）；用户确认后步骤由 executePlan 的子运行真实执行 —— 子运行请求里拿到的正是模型给的步骤文本，计划记录与每步请求携带冻结的原始目标（只取本轮可信用户原文，模型参数里的 intent 被忽略、模型转述不能替换用户事实；没有可信原文时由工具层回落到 summary），步骤可声明 dependsOn（只能引用更早步骤 id，规范化为 1..id-1；依赖步骤未成功完成时本步跳过并说明原因，不照常执行），工具面按该步 allowedTools 收窄（只 read 时没有 bash），进度事件按步骤 running/done 顺序发布、终态事件 done、计划记录落 done；逐步确认模式（stepByStep）下每步开工前各问一次既有步骤裁决面板（恰两条 continue 裁决），结果按 formatStepResults 既有格式（含 plan_step_result 回读地址）作为工具结果返回模型。just_do_it 策略下跳过确认面板直接执行：零确认请求到达面板通道、步骤照常真实执行（请求账主回合 + 步骤子运行 + 收尾）、记录落 done、收尾事件照发，工具结果仍是既有计划结果格式并如实标注「未经面板确认直接执行」。失败步骤后选择继续时，后续成功不改变整体失败：步骤记录 failed/done、计划和终态事件 failed，工具结果 isError=true 且说明部分失败。非只读工具失败时，提议入口同样按证据闭环判该步失败（验收档 unverified、不冒充完成，与 pl-06 的通用执行器语义同源），计划整体失败。并发守卫（同一会话同一时刻只允许一个计划）与用户取消/面板不可用/发射失败的如实归宿归 tool-execution 契约的 te-32", why: "模型侧此前没有任何「提议计划」的工具，需要确认时只能自己用 bash 弹 GUI 对话框 —— 用户实测被工具超时打断并留下孤儿窗口；这条入口必须证明它挂的是既有链路（同确认通道、同执行器、同记录、同步进门），而不是一条绕过确认的旁路", layer: "integration", depth: "deep", scenarios: ["plan-tool-confirm-accept", "plan-tool-step-gate", "plan-tool-just-do-it", "plan-tool-continue-failure", "plan-intent-binding", "plan-tool-effect-receipt"] },
     // 2026-10-06 验收批次新增：pl-14 —— `engine/plan/settlement.ts`（计划结算原语）自 2026-10-06
     // 起是显式命令入口（runtime.ts 的 runPlanPhase）与提议入口（plan/proposal.ts）共享的同一份实现
     // （此前两处各存一份同形复刻）。归属判断：结算原语是计划域的收尾机制（终态落盘、取消步骤

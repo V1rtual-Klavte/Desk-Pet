@@ -1,3 +1,4 @@
+// 2026-10-31 大文件拆分：sourceFiles 中 engine/user-wait.ts 移入 engine/state/；下文历史批次里的旧文件名指拆分前位置。
 // 2026-10-24 故障槽恢复与共享图片批次（定向复核）：sourceFiles 中 runner.ts 的用户消息入口
 // 新增故障槽显式恢复，harness-slot.ts 新增 isFaulted/recoverFaulted，manager.ts 的删会话图片
 // 清理新增跨会话引用过滤；权限判定、确认/放行通道与策略冻结未改，sf-* 未修订覆盖点，
@@ -149,8 +150,8 @@ import type { ModuleContract } from "../host/types"
 // safety-subagent-grant-scope 与 L2/L3 各测试）均在位；未修订覆盖点，sourceHash 按当前源码复算。
 export const safetyContract: ModuleContract = {
   module: "safety",
-  sourceFiles: ["src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/engine/user-wait.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/paths/security.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
-  sourceHash: "87eacabebe029afb561aea0f2f9600cebe5205c760229c0a05a4d5778af5d55b",
+  sourceFiles: ["src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/engine/state/user-wait.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/paths/security.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
+  sourceHash: "3a9dd8fd10048505841246776d71f54c4999ee037655b80d6481ca9201c6a326",
   coverage: [
     { id: "sf-25", feature: "持久任务授权与后台非交互权限",
       description: "PermissionKernel 接收 host 绑定的 TaskToolAuthorization，NOWAY 与工具 deny 仍先裁决，不能被任务授权覆盖；其余每件工具（含 SAFE）都校验精确工具/参数范围及 inputHash/policyHash，并在授权 await 后复查任务生命周期。有效持久授权可满足已授权任务的 ask；范围外返回 ask，需要额外输入。permissionMode=background 的 ask 立即返回，不创建交互确认等待；没有 taskAuthorization 的主回合保持原确认与会话授权语义。",

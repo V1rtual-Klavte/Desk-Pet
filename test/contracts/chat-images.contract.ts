@@ -170,11 +170,13 @@ export const chatImagesContract: ModuleContract = {
   sourceFiles: [
     "src/services/images/index.ts", "src/services/images/paths.ts", "src/services/images/request.ts", "src/services/images/processor.ts", "src/services/images/limits.json",
     "src/services/images/budget.ts", "src/services/context/budget.ts",
-    "crates/native-host/src/commands/chat_images.rs", "crates/native-host/src/commands/mod.rs", "crates/native-host/src/host/dispatch.rs",
+    "crates/native-host/src/commands/chat_images.rs", "crates/native-host/src/commands/mod.rs", "crates/native-host/src/host/dispatch/mod.rs", "crates/native-host/src/host/dispatch/args.rs",
     // ci-01/ci-06 own the image-specific ingress and request projection: runner prepares paths,
     // runtime hydrates image messages. Generic lane admission is anchored by agent-runtime.
-    "src/services/agent/runner.ts", "src/services/agent/types.ts", "src/services/engine/preprocessor.ts", "src/services/engine/runtime/input-identity.ts",
-    "src/services/engine/harness/runtime.ts", "src/services/session/read-model.ts", "src/services/session/manager.ts", "crates/native-host/src/images/inline.rs",
+    "src/services/agent/runner.ts", "src/services/agent/types.ts", "src/services/engine/preprocessor.ts", "src/services/engine/protocol/input-identity.ts",
+    // 2026-10-31 大文件拆分：runtime.ts 的水合/截图收集/图像模型上限与槽的图像入队分别落在这些文件。
+    "src/services/engine/harness/request-view.ts", "src/services/engine/harness/turn-spec.ts", "src/services/engine/harness/model-gateway.ts", "src/services/engine/harness/slot.ts",
+    "src/services/session/read-model.ts", "src/services/session/manager.ts", "crates/native-host/src/images/inline.rs",
     "src/services/session/messages.ts", "src/services/tool/local/screenshot.ts", "src/services/tool/local/screenshot-details.ts", "crates/native-host/src/commands/screenshot_cmd.rs",
     // 2026-10-06 粘贴落盘入口（剪贴板 → pasted/ → 待发送区）补入：它是聊天图片的第三条
     // 通路（文件选择器 / 拖入 / 粘贴），pasted/ 与 screenshots/ 同属 ci-07 的托管根；
@@ -184,11 +186,11 @@ export const chatImagesContract: ModuleContract = {
     "crates/native-host/src/ui/chat/paste.rs",
     // 2026-10-06 托管图片生命周期批次补入（粘贴草稿的丢弃/回滚都定义在这三个文件里）：
     // placeholders.rs（managed 标记 + discard_managed_files 丢弃语义唯一实现点）、
-    // model.rs（PendingDraftRelease::{Send,Discard} 参数化清空、remove_pending_image 撤选删单张）、
+    // model/run.rs（PendingDraftRelease::{Send,Discard} 参数化清空、remove_pending_image 撤选删单张）、
     // ui.rs（add_managed_pending_images 打标入口、rollback_pending_draft 退出回滚）。
     // 三者行为均由 Rust 内联单测背书（无 caseId，与 paste.rs 同口径）。
     // 「压缩」按钮的派发链（2026-10-06 契约账本批次补记，只登记不改源码）：面板 chip 与
-    // 输入框发送 `/compact` 复用同一条 slash 派发 —— model.rs 的 chip 必须携带
+    // 输入框发送 `/compact` 复用同一条 slash 派发 —— model/ 的 chip 必须携带
     // PanelAction::CompactSession（改坏映射的 Rust 内联单测即红），ui.rs 的
     // apply_panel_action 把它派发成 ChatIntent::SlashCommand，命令文本逐字为斜杠命令 /compact
     // （没有活跃会话时如实报错且不伪造压缩完成回执；同文件内联单测背书）。归属取
@@ -199,11 +201,18 @@ export const chatImagesContract: ModuleContract = {
     // chat-intents-guards.test.ts，均无 caseId）；`/compact` 的可压缩性准入归 agent-runtime
     // 的 ar-13 / ar-22。
     "crates/native-host/src/ui/chat/placeholders.rs",
-    "crates/native-host/src/ui/chat/model.rs",
+    // 2026-10-31 大文件拆分：ui/chat/model.rs → model/ 目录（草稿生命周期在 run.rs）。
+    "crates/native-host/src/ui/chat/model/mod.rs",
+    "crates/native-host/src/ui/chat/model/stream.rs",
+    "crates/native-host/src/ui/chat/model/run.rs",
+    "crates/native-host/src/ui/chat/model/plan.rs",
+    "crates/native-host/src/ui/chat/model/session.rs",
+    "crates/native-host/src/ui/chat/model/snapshot.rs",
+    "crates/native-host/src/ui/chat/model/debug.rs",
     "crates/native-host/src/ui/chat/ui.rs",
   ],
   // 2026-10-18 列项答案补全批次：补全在截图并入前完成，图片条目行为不变；定向复核后刷新。
-  sourceHash: "61fdaf69067113ad176b7a7b7cbeaffdb6b9bdc37fbaeb5253fbfa3504a4fd7c",
+  sourceHash: "7ab7ce90576044eadb30cf2c1812adaf8f98ee34d64bcd276adf4ae869afc0aa",
   coverage: [{ id: "ci-01", feature: "用户图片原路径整链", description: "原生常规图片准入最多4张/15MiB，图片-only输入提交后持久JSONL只存路径；模型请求临时读取真实图像，原文件删除后展示投影仍保留路径、请求明确缺失而无图像副本", why: "文本和UI缩略图不能证明模型收到了图像，也不能证明编码未进入JSONL", layer: "e2e", depth: "deep", scenarios: ["chat-image-path-production"] },
     { id: "ci-02", feature: "视觉预算与审计投影", description: "真实用户图像参与主请求与辅助请求的统一保守预算；base64长短不冒充语言token，完整图像内容仍进入仅hash审计投影", why: "图片预算为零会使上下文与主动持久额度准入失真，图像变化也不能得到相同审计内容", layer: "unit", depth: "deep", scenarios: ["chat-image-budget-content-hash"] },
     { id: "ci-03", feature: "截图展示给用户与隐私总闸", description: "screenshot 工具只在 ai.silentAccess.frequency 非 off（低/中/高档）时可用：Rust capture_screenshot 复检同一档位（off 即 Cancelled），前端命中时返回中性说明且不触达采集/落盘；show_to_user=true 时截图先经 save_screenshot 原子落盘（数据根 screenshots/；2026-10-06 取消 200 张保留上限，落盘文件不再被淘汰，回收只有删会话连带清理与用户手动删除）再挂到本回合提交的助手条目 deskpetImagePaths，读模型重载带回、原文件删除后仍保留路径（界面按不可用呈现）；show_to_user 缺省/false 时不落盘（不调用 save_screenshot、数据根不产生文件），工具结果 details 只有 showToUser、不带 screenshotPath，不挂条目、结算不回传；工具结果对模型始终携带 PNG image 块（私有截图模型照常看得见内嵌图片）", why: "「她给你看她看到的画面」要求条目与文件同源（先文件后条目、取消不产生半条消息），且隐私档位为 off 时不能截；私有截图不该在数据根留下用户没要展示的文件", layer: "integration", depth: "deep", scenarios: ["screenshot-show-to-user-attach", "screenshot-default-private", "screenshot-gate-neutral"] },

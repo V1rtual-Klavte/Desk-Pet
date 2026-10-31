@@ -84,13 +84,19 @@ export const harnessStorageContract: ModuleContract = {
     // 2026-10-06 契约账本批次 systematic sourceFiles 复查补入：hs-04（旁路写入与分支 tip 链）
     // 声称「活槽存在时 appendPiSessionCustomEntry 转交 HarnessSlot.appendCustomEntry → AgentLane，
     // 由 Pi 按当前 operation 状态提交进分支或持久 inbox」—— 这段转交语义的实现点在
-    // `src/services/engine/harness/harness-slot.ts`（session/repo.ts 只是入口）。此前漏列：
+    // `src/services/engine/harness/slot.ts`（session/repo.ts 只是入口）。此前漏列：
     // 改坏转交（回退到旧内存 tip 续写、把条目挤成孤立分支）会让场景红而本契约 hash 不动。
     // 该文件同时在 agent-runtime 契约在列，共享文件多契约并列是既有形态。
-    "src/services/engine/harness/harness-slot.ts",
+    // 2026-10-31 大文件拆分：harness-slot.ts → harness/slot.ts（槽实现，含 appends/折叠/恢复）
+    // 与 harness/slot-registry.ts（故障槽 isFaulted/recoverFaulted 与所有权表），
+    // 运行/排队契约类型落到 engine/state/。
+    "src/services/engine/harness/slot.ts",
+    "src/services/engine/harness/slot-registry.ts",
+    "src/services/engine/state/run.ts",
+    "src/services/engine/state/slot.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加内存字段，JSONL 条目 schema 未变；定向复核后刷新。
-  sourceHash: "7e3abecffbc132b1b5e69d5390c6df6848cb629e338cdc17d1c99cb9c0884f77",
+  sourceHash: "01307d048c57463f17f71298eff436265e94cafcbf9dd19671ee12110a93d9e9",
   coverage: [
     {
       id: "hs-11",

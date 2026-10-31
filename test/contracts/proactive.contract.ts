@@ -329,7 +329,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "86ed2ec937fc19956de0e0348cc16613580374d4c7ada3c8becf00e2d4af9ad7",
+  module:"proactive",sourceHash: "f13db3d4b35648b6143b7c99614be429d9c628bb9023693f786074d1e0005452",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",
@@ -352,7 +352,9 @@ export const proactiveContract:ModuleContract={
     // （注释内不写双引号路径：sourceHash 的读法会把方括号区间里任何双引号串当 sourceFile。）
     // pr-05/pr-07 的生产送达在 runner.sendActiveMessage 落到真实提交与视图投影；通用回合内核归 agent-runtime。
     "src/services/init.ts","src/services/agent/runner.ts","src/services/agent/types.ts","src/services/interaction.ts","src/services/session/index.ts","src/services/session/messages.ts","src/services/session/read-model.ts","src/services/session/manager.ts","src/services/personality/card-manage.ts",
-    "src/services/engine/harness/delivery.ts","crates/native-host/src/proactive/store.rs","crates/native-host/src/proactive/schema.rs",
+    "src/services/engine/harness/delivery.ts",
+    // 2026-10-31 大文件拆分：proactive/store.rs → 存储入口与扫描/认领/结算/控制子文件。
+    "crates/native-host/src/proactive/store/mod.rs","crates/native-host/src/proactive/store/scan.rs","crates/native-host/src/proactive/store/claim.rs","crates/native-host/src/proactive/store/settle.rs","crates/native-host/src/proactive/store/control.rs","crates/native-host/src/proactive/schema.rs",
     "crates/native-host/src/proactive/mod.rs","crates/native-host/src/proactive/commands.rs","crates/native-host/src/memory/protocol.rs","src/services/agent/memory/protocol.json","src/services/agent/memory/protocol.ts",
     "resources/defaults/personality/cards/default.md"],
   coverage:[

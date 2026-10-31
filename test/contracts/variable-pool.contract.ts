@@ -1,3 +1,4 @@
+// 2026-10-31 大文件拆分：本契约源码清单不涉及被拆文件（哈希未变）；下文历史批次里的 runtime.ts 等旧名指拆分前位置。
 // 2026-10-29 共享解析器静态复核：parseRuntimeData 的取证选项只改变返回正文的空白保留，
 // 默认trim、变量解析与batchWriteVars/写盘路径未变；取证断言归agent-runtime/ar-42，测试未运行。
 // 2026-10-05 本批复查与刷新（RUNTIME_DATA 协议缺失检测）：sourceFiles 变化 ——

@@ -296,9 +296,28 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/debug.ts",
     "src/services/error/failure-kind.ts",
     "src/services/engine/harness/delivery.ts",
-    "src/services/engine/harness/harness-slot.ts",
+    // 2026-10-31 大文件拆分：harness-slot.ts → 槽实现与注册表，以及运行/排队契约类型。
+    "src/services/engine/harness/slot.ts",
+    "src/services/engine/harness/slot-registry.ts",
+    "src/services/engine/state/run.ts",
+    "src/services/engine/state/slot.ts",
     "src/services/engine/harness/model-gateway.ts",
-    "src/services/engine/harness/runtime.ts",
+    // 2026-10-31 大文件拆分：harness/runtime.ts 的编排与回合原语落到 harness 原语与 runtime 编排文件。
+    "src/services/engine/harness/turn-kernel.ts",
+    "src/services/engine/harness/compaction-hook.ts",
+    "src/services/engine/harness/request-view.ts",
+    "src/services/engine/harness/turn-spec.ts",
+    "src/services/engine/harness/titlebar.ts",
+    "src/services/engine/harness/turn-sinks.ts",
+    "src/services/engine/harness/turn-failure.ts",
+    "src/services/engine/harness/subagent.ts",
+    "src/services/engine/harness/message-adapters.ts",
+    "src/services/engine/runtime/queue.ts",
+    "src/services/engine/runtime/turn.ts",
+    "src/services/engine/runtime/plan-phase.ts",
+    "src/services/engine/runtime/settlement.ts",
+    "src/services/engine/runtime/resume.ts",
+    "src/services/engine/runtime/compaction.ts",
     "src/services/engine/harness/stream-text.ts",
     "src/services/engine/harness/tool-loop-guard.ts",
     // 2026-10-06 面板上下文占用重启恢复批次补入：「最近一次对话请求」输入量的恢复读取器
@@ -307,7 +326,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/engine/plan-confirmation.ts",
     // 2026-10-06 提问选择批次补入：提问的回执通道（ar-32）与等待期预算豁免的唯一登记点（ar-33）。
     "src/services/engine/choice-confirmation.ts",
-    "src/services/engine/user-wait.ts",
+    "src/services/engine/state/user-wait.ts",
     "src/services/engine/preprocessor.ts",
     // 2026-10-27 Slash 命令表层（ar-38/ar-39）：preProcess 的查找/准入/结果路由与内置命令。
     "src/services/engine/slash/index.ts",
@@ -316,9 +335,9 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/engine/slash/commands/index.ts",
     "src/services/engine/slash/commands/help.ts",
     "src/services/engine/slash/commands/clear.ts",
-    "src/services/engine/runtime/input-identity.ts",
-    "src/services/engine/runtime/trace.ts",
-    "src/services/engine/runtime/types.ts",
+    "src/services/engine/protocol/input-identity.ts",
+    "src/services/engine/protocol/trace.ts",
+    "src/services/engine/protocol/types.ts",
     "src/services/humanizer/protocol.ts",
     "src/services/humanizer/scheduler.ts",
     "src/services/humanizer/index.ts",
@@ -343,7 +362,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "3c2208ce4e9bcc86b3b6cea9fb726a92d612afd3c6b6f7faf220c39bf7fe111c",
+  sourceHash: "9482d908e55dd148a16a64447c52c65ab8ae021fd4db868023768126f65eee9e",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -604,7 +623,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-25",
       feature: "RUNTIME_DATA 协议提醒的挂起、文案与注入",
-      description: "协议提醒按会话收敛：markRuntimeDataMissing / clearRuntimeDataMissing / hasRuntimeDataReminder 以 sessionId 为键、进程内存不落盘，A 会话违约不提醒 B 会话；提醒文案 RUNTIME_DATA_REMINDER_TEXT 点名 RUNTIME_DATA 区块。buildPrompt 只在调用方传入可选入参 runtimeDataReminder 时产出一个 ephemeral:runtime-data 块（text 与传入值逐字相同、进入 systemPrompt 请求视图），不传时该块不存在。结算侧 mark/clear（完成回合缺区块标记、履约或无可写变量清除）与下一回合注入判定在 engine/harness/runtime.ts —— 本点的 L2 用例只验证状态、文案与请求视图三件套；该接线的行为面（违约挂起 → 下一回合请求真的带提醒 → 履约/空区块清除后不再带）已由 ar-37 的 L3 用例直接驱动",
+      description: "协议提醒按会话收敛：markRuntimeDataMissing / clearRuntimeDataMissing / hasRuntimeDataReminder 以 sessionId 为键、进程内存不落盘，A 会话违约不提醒 B 会话；提醒文案 RUNTIME_DATA_REMINDER_TEXT 点名 RUNTIME_DATA 区块。buildPrompt 只在调用方传入可选入参 runtimeDataReminder 时产出一个 ephemeral:runtime-data 块（text 与传入值逐字相同、进入 systemPrompt 请求视图），不传时该块不存在。结算侧 mark/clear（完成回合缺区块标记、履约或无可写变量清除）与下一回合注入判定在 engine/runtime/settlement.ts 与 engine/runtime/turn.ts —— 本点的 L2 用例只验证状态、文案与请求视图三件套；该接线的行为面（违约挂起 → 下一回合请求真的带提醒 → 履约/空区块清除后不再带）已由 ar-37 的 L3 用例直接驱动",
       why: "提醒是「上一回合违约」到「下一回合补一句」的唯一补救通道：状态不按会话隔离会提醒到别的会话，块无条件产出会让每回合都多一段本不该出现的协议要求，文案不点名区块则模型无法照做",
       layer: "unit",
       depth: "deep",

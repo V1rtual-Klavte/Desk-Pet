@@ -45,14 +45,18 @@ export const hostContract: ModuleContract = {
     "src/services/host/bridge.ts",
     // hz-06 owns complete request-envelope sizing and automatic aggregate JSON upload.
     "src/services/host/connection.ts",
-    "crates/native-host/src/ipc/bridge.rs",
+    // 2026-10-31 大文件拆分：ipc/bridge.rs → 桥入口、宿主命令面、二进制通道与事件扇出。
+    "crates/native-host/src/ipc/bridge/mod.rs",
+    "crates/native-host/src/ipc/bridge/host.rs",
+    "crates/native-host/src/ipc/bridge/binary.rs",
+    "crates/native-host/src/ipc/bridge/events.rs",
     "crates/native-host/src/ipc/blob.rs",
     "crates/native-host/src/ipc/transport.rs",
     "crates/native-host/src/ipc/mod.rs",
     "crates/native-host/src/host/supervisor.rs",
     "src/services/error/format.ts",
   ],
-  sourceHash: "548c8beef415cd4b2a6f951b6d7c2a1299ba08f2fd4da140f00a194c370f5f6c",
+  sourceHash: "1d621d473c747114a4e5b37d3afb1fc0c4469246ec473f46decafdc60b5c5c7a",
   coverage: [
     {
       id: "hz-06",

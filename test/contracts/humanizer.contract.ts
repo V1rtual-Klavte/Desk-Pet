@@ -151,7 +151,10 @@ export const humanizerContract: ModuleContract = {
     // hz-04 is the production consumer check: runner commits/enqueues the reply and runtime
     // transforms it and releases the typing owner at first reveal.
     "src/services/agent/runner.ts",
-    "src/services/engine/harness/runtime.ts",
+    // 2026-10-31 大文件拆分：runtime.ts 的分泡变换、逐泡揭示与顶栏释放分别落到这三处。
+    "src/services/engine/harness/request-view.ts",
+    "src/services/engine/harness/titlebar.ts",
+    "src/services/engine/runtime/turn.ts",
     // 2026-10-06 契约账本批次 systematic sourceFiles 复查补入：hz-04（生产入口分泡与顶栏
     // 所有权）的 e2e 场景断言顶栏文本的持有与释放 —— 「顶栏所有权」的 set / release 语义
     // 实现点在 `src/services/titlebar.ts`（runtime 与调度器只调用它）。此前漏列：改坏
@@ -160,7 +163,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "3b0c7b4dd9de3b1fecac999308d7c0de04baf32ea7a29661ddd68b0c991c36a5",
+  sourceHash: "e9fa2c27b8bd1dbfd89d6b64de39cd594af555a4fc4a6b97b01a8f17e710ba8f",
   coverage: [
     {
       id: "hz-01",

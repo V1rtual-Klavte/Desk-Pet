@@ -381,12 +381,19 @@ export const memoryContract: ModuleContract = {
     "src/services/agent/memory/index.ts",
     // mm-76: `id@version` 的解析规则定义在这里（index.ts 只是再导出）。
     "src/services/agent/memory/ref.ts",
-    "crates/native-host/src/memory/store.rs",
+    // 2026-10-31 大文件拆分：memory/store.rs → memory/store/ 目录。
+    "crates/native-host/src/memory/store/mod.rs",
+    "crates/native-host/src/memory/store/query.rs",
+    "crates/native-host/src/memory/store/change.rs",
+    "crates/native-host/src/memory/store/jobs.rs",
+    "crates/native-host/src/memory/store/backup.rs",
+    "crates/native-host/src/memory/store/budget.rs",
     "crates/native-host/src/memory/schema.rs",
     "crates/native-host/src/memory/mod.rs",
     "crates/native-host/src/memory/protocol.rs",
     "crates/native-host/src/memory/commands.rs",
-    "crates/native-host/src/host/dispatch.rs",
+    "crates/native-host/src/host/dispatch/mod.rs",
+    "crates/native-host/src/host/dispatch/args.rs",
     "src/services/agent/memory/ipc.ts",
     // conversation_search record-time bounds are defined on the host command boundary.
     "src/services/host/types.ts",
@@ -409,8 +416,18 @@ export const memoryContract: ModuleContract = {
     "src/services/agent/memory/coverage.ts",
     "src/services/agent/memory/evidence.ts",
     "src/services/agent/memory/conversation.ts",
-    "crates/native-host/src/memory/conversation.rs",
-    "crates/native-host/src/proactive/store.rs",
+    // 2026-10-31 大文件拆分：memory/conversation.rs → memory/conversation/ 目录。
+    "crates/native-host/src/memory/conversation/mod.rs",
+    "crates/native-host/src/memory/conversation/index.rs",
+    "crates/native-host/src/memory/conversation/search.rs",
+    "crates/native-host/src/memory/conversation/context.rs",
+    "crates/native-host/src/memory/conversation/suppress.rs",
+    // 2026-10-31 大文件拆分：proactive/store.rs → proactive/store/ 目录。
+    "crates/native-host/src/proactive/store/mod.rs",
+    "crates/native-host/src/proactive/store/scan.rs",
+    "crates/native-host/src/proactive/store/claim.rs",
+    "crates/native-host/src/proactive/store/settle.rs",
+    "crates/native-host/src/proactive/store/control.rs",
     "src/services/session/manager.ts",
     "src/services/session/read-model.ts",
     "src/services/session/repo.ts",
@@ -426,16 +443,25 @@ export const memoryContract: ModuleContract = {
     // 2026-10-06 固定钟点批次补入：dreaming 定时调度器的到点判定（静默了解共用，零依赖叶子）。
     "src/services/proactive/schedule.ts",
     "src/services/behavior/conclusions.ts",
-    "src/services/engine/runtime/snapshot.ts",
-    "src/services/engine/runtime/types.ts",
-    "src/services/engine/runtime/trace.ts",
-    "src/services/engine/runtime/input-identity.ts",
+    "src/services/engine/protocol/snapshot.ts",
+    "src/services/engine/protocol/types.ts",
+    "src/services/engine/protocol/trace.ts",
+    "src/services/engine/protocol/input-identity.ts",
     "src/services/error/failure-kind.ts",
     // mm-15 owns checkpoint effect evidence and runtime resume admission; generic loops belong to agent-runtime.
     "src/services/engine/plan/checkpoint-store.ts",
     // runtime also owns recall gating/projection (mm-17/mm-37/mm-38), HarnessSlots compaction (mm-19/mm-40).
-    "src/services/engine/harness/runtime.ts",
-    "src/services/engine/harness/harness-slot.ts",
+    // 2026-10-31 大文件拆分：runtime.ts → 回合召回/压缩编排与计划恢复；harness-slot.ts → 槽实现与注册表，
+    // 运行/排队契约类型落到 engine/state/。
+    "src/services/engine/runtime/turn.ts",
+    "src/services/engine/harness/compaction-hook.ts",
+    "src/services/engine/harness/turn-spec.ts",
+    "src/services/engine/runtime/compaction.ts",
+    "src/services/engine/runtime/resume.ts",
+    "src/services/engine/harness/slot.ts",
+    "src/services/engine/harness/slot-registry.ts",
+    "src/services/engine/state/run.ts",
+    "src/services/engine/state/slot.ts",
     "src/services/engine/harness/delivery.ts",
     "src/services/engine/harness/session-repo.ts",
     "src/services/engine/harness/session-file-system.ts",
@@ -456,7 +482,7 @@ export const memoryContract: ModuleContract = {
   // runtime 的本域请求装配仍归 mm-55，通用循环与分泡提交由 agent-runtime 持有。
   // 2026-10-18 列项答案补全批次：新增 enumeration-answer.ts，runtime afterResponse 补全并与结算同源；reader 抽取器来源上限与最终证据对齐到 32、按 8 条分批合并、类别/问句片段具体性过滤、完整口味组合保留、最长项目吸收短片段、去空格变体去重；人物归属留在 LoCoMo 适配器（memory-bench mb-12），产品不解析 speaker 头；mm-73/mm-74/mm-75 覆盖，刷新。
   // 2026-10-24 引用溯源：会话原文引用同落 chunk 0，按 (sessionId, entryId) 去重后写入 quoteRefs；mm-79/mm-80/mm-81 覆盖，刷新。
-  sourceHash: "948652f86fc27f91f6456ed665517dbfd93fe49b57e7db01107a576b0d218f3d",
+  sourceHash: "0766c1e7bdfc8515df6425cc381fd1c6f9a9331b3690daddc27234d69c823d8c",
   coverage: [
     {"id": "mm-83", "feature": "列项线索不得强制改写助手答案", "description": "保留既有查询、阅读、列项抽取及最终证据，afterResponse在拟人化开关与异常出口均不追加缺失项目、不把弃答替换成抽取列表；提交正文与回合结算同源。历史曾出现不等于当前有效，主模型结合所问版本与后续修订解释证据，展示层没有项目裁决权。", "why": "逐字来源校验只能证明历史说过；宿主按缺词机械补写会把用户已取消的内容重新加回。删除旧补全helper应由真实提交入口反例承接，不以删除测试代替行为验证。", "layer": "integration", "depth": "deep", "scenarios": ["memory-answer-no-forced-replacement"]},
     {"id": "mm-84", "feature": "列项最终证据保全", "description": "固定检索与阅读结果时，跨会话枚举来源与完整user/reply回合保留在最终rendered evidence；抽取项目不穷尽时未抽取来源仍可达，历史与后续更正原话按已选中引用同时保留，supporting引用不升级为答案范围；合法注释与核对表超预算时回退完整原始证据。", "why": "取消答案补写不能以减少模型可见证据换取表面正确，回归必须检查最终来源身份、正文与顺序，不能只比候选条数或断言回复非空。", "layer": "integration", "depth": "deep", "scenarios": ["memory-enum-cross-session-full-turn-evidence", "memory-enum-unlisted-source-retained", "memory-enum-correction-evidence-advisory", "memory-enum-annotation-budget-raw-fallback"]},
