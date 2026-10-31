@@ -268,7 +268,7 @@ export const toolExecutionContract: ModuleContract = {
     // 都从这里取值；改值 = 改线协议。同名常量表服务宿主/UI/Node 多个域。
     "src/services/host/event-names.ts",
   ],
-  sourceHash: "4ca55a265f773ddea5090de6bd694ed826a67a04c036a228309acb48a96f9232",
+  sourceHash: "ee076b5dd3ee18f1f519c7d6e3d22301935bce72b05d678ff934f54cb81cb626",
   coverage: [
     { id: "te-46", feature: "工具失败的诊断正文透传", description: "Pi 工具适配器将 handler 的失败说明和诊断文本交给原生错误通道，保留结构化 missing/errors 等正文；错误码与 details 通过当前回合的一次性元数据桥补入 after_tool 并随同一结果落盘，原生 isError 不依赖钩子正常返回，外来同名归宿字段由适配器覆盖，不套 Card 台词；工具结果 isError=true、完整诊断落盘且进入下一次请求，修正参数后的成功结果保持成功。", why: "只保留 execution 等字段名会把缺参误读成执行故障，模型无法据此纠正；返回诊断正文不能把失败洗成成功。", layer: "integration", depth: "deep", scenarios: ["tool-failure-diagnostic-preserved"] },
     {"id": "te-46", "feature": "DeepSeek Fetch 协议与错误/取消语义", "description": "公开 HTTP(S) URL 预检、POST /v1/tools/fetch 与 Bearer、Markdown 结果；403 安全拒绝不冒充401认证失败，402余额与404正文不可用分别提示，在途请求透传取消信号并返回cancelled", "why": "错误可归因且取消确实到达网络请求", "layer": "unit", "depth": "deep", "scenarios": ["web-fetch-error-semantics", "web-fetch-inflight-cancel"]},

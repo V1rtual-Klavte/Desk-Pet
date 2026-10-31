@@ -56,7 +56,7 @@ export const hostContract: ModuleContract = {
     "crates/native-host/src/host/supervisor.rs",
     "src/services/error/format.ts",
   ],
-  sourceHash: "1d621d473c747114a4e5b37d3afb1fc0c4469246ec473f46decafdc60b5c5c7a",
+  sourceHash: "a852dc6131bb3108b3123b4aae22ff25304bdb0eb3251af35e85f00a68330c1e",
   coverage: [
     {
       id: "hz-06",

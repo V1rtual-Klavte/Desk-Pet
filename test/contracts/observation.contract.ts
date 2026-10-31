@@ -356,7 +356,7 @@ export const observationContract: ModuleContract = {
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
   // 2026-10-20 恢复设置页「弹出位置」：schema.rs 新增 general.popup.mode 枚举字段；观察域行为未变，定向复核后刷新。
-  sourceHash: "8458efbda1394f080ed06a7fbc4ba8737c86ae502e7ba2519274382882f7a639",
+  sourceHash: "4f7eac0e7c02b6e9803d5cfddff0653d76a6be2041fae8ca7bb54c991a8290fe",
   coverage: [
     {
       id: "ob-01",
