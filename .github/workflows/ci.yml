@@ -52,6 +52,9 @@ jobs:
       # Cargo.lock 与 target/ 均在仓库根。
       - run: pnpm run test:types
 
+      # 引擎分层方向守门：protocol ← state ← harness ← runtime 的静态 import 边 + 分类完整性
+      - run: pnpm run check:layers
+
       # = cargo test --lib -p native-host
       # 单测与 check 一样按平台原生编译运行；`#[cfg(unix)]`/`#[cfg(windows)]` 分支只在对应 job 生效。
       - run: pnpm run test:rust

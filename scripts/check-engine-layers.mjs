@@ -15,7 +15,31 @@ const PREFIXES = [
   ["runtime/", "runtime"],
   ["plan/", "plan"],
 ]
-const PLAN_FILES = new Set(["planner.ts", "plan-confirmation.ts"])
+const PLAN_FILES = new Set(["planner.ts", "plan-confirmation.ts", "user-wait.ts"])
+
+// 未归入四层的引擎文件（每项注明职责）。未分类不是默认豁免：不在此清单的引擎文件
+// 按「未分类」报错，避免新文件静默落到门禁之外。以 `/` 结尾的条目按目录前缀匹配。
+const UNCLASSIFIED_ALLOW = new Set([
+  // 引擎公开 barrel：只再导出四层入口与既有无层模块，不持有逻辑。
+  "index.ts",
+  // 输入预处理：slash 命令识别与空/重复消息过滤，ingress 的无层入口。
+  "preprocessor.ts",
+  // before_compaction 摘要内核：摘要调用、分片规划与素材度量（调度归 harness）。
+  "compactor.ts",
+  // 结构化摘要的解析与格式化：compactor 的私有纯函数，不对外成层。
+  "compaction/",
+  // slash 命令注册表与各命令实现：由 preprocessor 与 ingress 使用，不参与层间依赖。
+  "slash/",
+  // ask_user 的提问确认通道：与 plan-confirmation 同款骨架的提问回执桥。
+  "choice-confirmation.ts",
+])
+
+function isUnclassifiedAllowed(rel) {
+  for (const entry of UNCLASSIFIED_ALLOW) {
+    if (entry.endsWith("/") ? rel.startsWith(entry) : rel === entry) return true
+  }
+  return false
+}
 
 function layerOfPath(file) {
   const rel = relative(engine, file).split("\\").join("/")
@@ -72,28 +96,40 @@ const STATIC_RE = /(?:^|\n)\s*(?:import|export)\s+(?!type\b)(?:[^"'();]*?\sfrom\
 const DYNAMIC_RE = /import\(\s*["']([^"']+)["']\s*\)/g
 const errors = []
 
+/** `match.index` 换算为 1 基行号（静态正则的匹配含前导换行，先跳过前导空白）。 */
+function lineOfMatch(text, match) {
+  const start = match.index + (match[0].length - match[0].trimStart().length)
+  return text.slice(0, start).split("\n").length
+}
+
 for (const file of walk(engine)) {
-  const from = layerOfPath(file)
-  if (!from) continue
   const rel = relative(engine, file).split("\\").join("/")
+  const from = layerOfPath(file)
+  if (!from) {
+    if (!isUnclassifiedAllowed(rel)) errors.push(`未分类的引擎文件：${rel}`)
+    continue
+  }
   const text = readFileSync(file, "utf8")
   for (const [re, dynamic] of [[STATIC_RE, false], [DYNAMIC_RE, true]]) {
     re.lastIndex = 0
     for (const match of text.matchAll(re)) {
       const spec = match[1]
+      const line = lineOfMatch(text, match)
       const to = targetLayer(file, spec)
       if (to === "engine-barrel") {
-        errors.push(`${rel}: 引用引擎顶层 barrel（${spec}）会重新引入环`)
+        errors.push(`${rel}:${line}: 引用引擎顶层 barrel（${spec}）会重新引入环`)
         continue
       }
       if (!to || to === from) continue
       if (dynamic && DYNAMIC_ALLOW.get(rel)?.has(spec)) continue
-      if (!ALLOWED[from].has(to)) errors.push(`${rel}: ${from} → ${to}（${spec}）`)
+      if (!ALLOWED[from].has(to)) errors.push(`${rel}:${line}: ${from} → ${to}（${spec}）`)
     }
   }
 }
 
 if (errors.length > 0) {
+  // 排序输出：违规顺序不随目录遍历顺序变化，跨平台基线可直接比对。
+  errors.sort()
   console.error("引擎分层违规：\n  " + errors.join("\n  "))
   process.exit(1)
 }
