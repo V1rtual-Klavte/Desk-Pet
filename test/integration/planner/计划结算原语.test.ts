@@ -2,8 +2,8 @@
 // 计划结算原语 —— 两条计划入口共享的写盘降级 / 收尾 / 取消归宿（L3）
 // ==========================================
 //
-// 被测模块 `engine/plan/settlement.ts`：显式命令入口（runtime.ts::runPlanPhase）与模型提议
-// 入口（plan/proposal.ts）自 2026-10-06 起消费同一份实现（此前两处各存一份同形复刻）。
+// 被测模块 `engine/plan/settlement.ts`：显式命令入口（runtime/plan-phase.ts）与模型提议
+// 入口（runtime/plan-proposal.ts）自 2026-10-06 起消费同一份实现（此前两处各存一份同形复刻）。
 // 本文件钉住共享机制的参数化分支，防止「提取时顺手合并语义」：
 // ① 写盘降级：写终态失败时不抛、不静默 —— 证据条目与用户提示都落，收尾照常走完；
 // ② 三类终态（done / failed / interrupted）各自落盘，通知口径只认 deadline / declined；

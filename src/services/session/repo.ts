@@ -6,8 +6,11 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import type { Entry, EntryQuery, JsonValue, JsonlSessionMetadata, Session } from "@earendil-works/pi-agent-core"
-import { createPiSessionRepo, flushSessionFrameWrites } from "@/services/engine/harness"
-import type { PiSessionRepo } from "@/services/engine/harness"
+// 直连叶子模块而不是 harness barrel：barrel 会经 slot 回到本模块取 PI_LANE，
+// 形成静态环；esbuild 提前求值 barrel 命名空间时会在本模块的 const 初始化前读到它（TDZ）。
+import { createPiSessionRepo } from "@/services/engine/harness/session-repo"
+import { flushSessionFrameWrites } from "@/services/engine/harness/session-frame-buffer"
+import type { PiSessionRepo } from "@/services/engine/harness/session-repo"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
 import { readSessionActivityAt } from "./activity"

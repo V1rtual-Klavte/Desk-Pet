@@ -28,7 +28,7 @@ const log = createLogger("PiRuntime")
 
 /**
  * 计划结算原语（写盘降级 / 收尾 / 取消与用户拒绝归宿）：与模型提议入口
- * （`plan/proposal.ts`）共享同一实现，见 `plan/settlement.ts`；两处原先的同形复刻已删除。
+ * （`runtime/plan-proposal.ts`）共享同一实现，见 `plan/settlement.ts`；两处原先的同形复刻已删除。
  */
 const planSettlement = createPlanSettlement(createLogger("PiRuntime"))
 
