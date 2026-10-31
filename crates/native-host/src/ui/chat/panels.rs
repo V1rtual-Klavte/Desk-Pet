@@ -1441,6 +1441,27 @@ pub fn format_session_date(created_at_ms: i64) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Windows 聊天窗的生产源码（分层拆分后是目录）：`include_str!` 让各子文件仍是
+    /// 编译期依赖 —— 删掉任一处接线本用例立刻失败，而不是静默只在一半平台生效。
+    fn windows_chat_production() -> &'static str {
+        static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        SOURCE.get_or_init(|| {
+            [
+                include_str!("../platform/windows_chat/mod.rs"),
+                include_str!("../platform/windows_chat/window.rs"),
+                include_str!("../platform/windows_chat/wndproc.rs"),
+                include_str!("../platform/windows_chat/layout.rs"),
+                include_str!("../platform/windows_chat/paint.rs"),
+                include_str!("../platform/windows_chat/transcript.rs"),
+                include_str!("../platform/windows_chat/panels.rs"),
+                include_str!("../platform/windows_chat/input.rs"),
+                include_str!("../platform/windows_chat/dialogs.rs"),
+            ]
+            .concat()
+        })
+    }
+
+
     #[test]
     fn token格式化与既定口径一致() {
         assert_eq!(format_tokens(0), "0");
@@ -1843,8 +1864,8 @@ mod tests {
         // `include_str!` 让两份平台源码成为编译期依赖：删掉任一侧的处理分支，
         // 本用例立刻断言失败，而不是静默只在一半平台生效。
         const MACOS: &str = crate::ui::platform::macos_chat::SOURCE_TEXT;
-        const WINDOWS: &str = include_str!("../platform/windows_chat.rs");
-        for (name, source) in [("macos_chat.rs", MACOS), ("windows_chat.rs", WINDOWS)] {
+        let windows = windows_chat_production();
+        for (name, source) in [("macos_chat/", MACOS), ("windows_chat/", windows)] {
             assert!(
                 source.contains("PanelOutcome::FocusInput"),
                 "{name} 必须处理 PanelOutcome::FocusInput（否则「其它」只在一半平台把焦点交回输入框）"
@@ -1856,7 +1877,7 @@ mod tests {
             "macos_chat.rs 没有调用既有的输入框聚焦函数"
         );
         assert!(
-            WINDOWS.contains("focus_main_pane_input()"),
+            windows.contains("focus_main_pane_input()"),
             "windows_chat.rs 没有调用既有的输入框聚焦函数"
         );
     }
@@ -2083,8 +2104,8 @@ mod tests {
         // `include_str!` 让两份平台源码成为编译期依赖（要的就是这个：删掉任一侧
         // 的卡片分支本用例立刻编译不过/断言失败，而不是静默只在一半平台生效）。
         const MACOS: &str = crate::ui::platform::macos_chat::SOURCE_TEXT;
-        const WINDOWS: &str = include_str!("../platform/windows_chat.rs");
-        for (name, source) in [("macos_chat.rs", MACOS), ("windows_chat.rs", WINDOWS)] {
+        let windows = windows_chat_production();
+        for (name, source) in [("macos_chat/", MACOS), ("windows_chat/", windows)] {
             assert!(
                 source.contains("PanelElement::Card { frame } =>"),
                 "{name} 必须处理 PanelElement::Card（否则卡片只在一半平台出现）"
@@ -2093,7 +2114,7 @@ mod tests {
         // Windows 的底板走自绘 STATIC：建窗样式与 `WM_DRAWITEM` 绘制分支缺一不可。
         for needle in ["SS_OWNERDRAW", "ODT_STATIC", "fn draw_themed_card"] {
             assert!(
-                WINDOWS.contains(needle),
+                windows.contains(needle),
                 "windows_chat.rs 缺 {needle}（卡片底板画不出来）"
             );
         }
@@ -2303,8 +2324,8 @@ mod tests {
         // `include_str!` 让两份平台源码成为编译期依赖：删掉任一侧的滚动接线，
         // 本用例立刻断言失败，而不是静默只在一半平台退回「按上限丢块」。
         const MACOS: &str = crate::ui::platform::macos_chat::SOURCE_TEXT;
-        const WINDOWS: &str = include_str!("../platform/windows_chat.rs");
-        for (name, source) in [("macos_chat.rs", MACOS), ("windows_chat.rs", WINDOWS)] {
+        let windows = windows_chat_production();
+        for (name, source) in [("macos_chat/", MACOS), ("windows_chat/", windows)] {
             assert!(
                 source.contains("panel_scroll_geometry("),
                 "{name} 未接入抽屉内部滚动几何（panel_scroll_geometry）"
@@ -2321,8 +2342,8 @@ mod tests {
         );
         // Windows：内容裁剪窗带滚动条与滚动指令入口（裁剪 + 偏移移动）。
         assert!(
-            WINDOWS.contains("INSPECTOR_SCROLL_CLASS")
-                && WINDOWS.contains("inspector_scroll_command"),
+            windows.contains("INSPECTOR_SCROLL_CLASS")
+                && windows.contains("inspector_scroll_command"),
             "windows_chat.rs 缺滚动裁剪窗（WS_VSCROLL / 滚动指令接线）"
         );
     }

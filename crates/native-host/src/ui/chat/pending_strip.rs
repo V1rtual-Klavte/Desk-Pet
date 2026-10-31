@@ -529,6 +529,26 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// Windows 聊天窗的生产源码（分层拆分后是目录）：`include_str!` 让各子文件仍是
+    /// 编译期依赖 —— 删掉任一处接线本用例立刻失败，而不是静默只在一半平台生效。
+    fn windows_chat_production() -> &'static str {
+        static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        SOURCE.get_or_init(|| {
+            [
+                include_str!("../platform/windows_chat/mod.rs"),
+                include_str!("../platform/windows_chat/window.rs"),
+                include_str!("../platform/windows_chat/wndproc.rs"),
+                include_str!("../platform/windows_chat/layout.rs"),
+                include_str!("../platform/windows_chat/paint.rs"),
+                include_str!("../platform/windows_chat/transcript.rs"),
+                include_str!("../platform/windows_chat/panels.rs"),
+                include_str!("../platform/windows_chat/input.rs"),
+                include_str!("../platform/windows_chat/dialogs.rs"),
+            ]
+            .concat()
+        })
+    }
+
     /// 从源码里截出某个函数的正文：签名之后、下一个顶层函数/方法（0 或 4 空格缩进）之前。
     fn function_body<'a>(name: &str, source: &'a str, signature: &str) -> &'a str {
         let start = source
@@ -558,8 +578,8 @@ mod tests {
     #[test]
     fn pending_strip_geometry_is_shared_by_both_platforms() {
         for (name, source) in [
-            ("macos_chat.rs", crate::ui::platform::macos_chat::SOURCE_TEXT),
-            ("windows_chat.rs", include_str!("../platform/windows_chat.rs")),
+            ("macos_chat/", crate::ui::platform::macos_chat::SOURCE_TEXT),
+            ("windows_chat/", windows_chat_production()),
         ] {
             let rebuild = function_body(name, source, "fn rebuild_pending(");
             assert!(
@@ -585,8 +605,8 @@ mod tests {
     #[test]
     fn pending_chip_labels_never_append_a_second_cross_in_either_platform() {
         for (name, source) in [
-            ("macos_chat.rs", crate::ui::platform::macos_chat::SOURCE_TEXT),
-            ("windows_chat.rs", include_str!("../platform/windows_chat.rs")),
+            ("macos_chat/", crate::ui::platform::macos_chat::SOURCE_TEXT),
+            ("windows_chat/", windows_chat_production()),
         ] {
             let rebuild = function_body(name, source, "fn rebuild_pending(");
             assert!(
