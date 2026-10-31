@@ -11,7 +11,7 @@ import { planAcceptanceLabel } from "@/services/engine/protocol/plan-readback"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 // 用户等待的预算豁免（零依赖叶子）：计划时限（deadlineAt）扣除用户等待时长，见 executePlan。
-import { userWaitTotalMs } from "./user-wait"
+import { userWaitTotalMs } from "./state/user-wait"
 
 const log = createLogger("Planner")
 

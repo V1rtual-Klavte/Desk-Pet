@@ -11,7 +11,7 @@ import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
 import { urlForLog } from "./log-url"
 // 用户等待的预算豁免（零依赖叶子）：等待期间挂起本工具的超时计时器，见下方执行段注释。
-import { createPausableDeadline, isUserWaiting, subscribeUserWait } from "@/services/engine/user-wait"
+import { createPausableDeadline, isUserWaiting, subscribeUserWait } from "@/services/engine/state/user-wait"
 
 const log = createLogger("ToolRouter")
 

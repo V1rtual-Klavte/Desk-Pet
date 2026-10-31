@@ -31,7 +31,7 @@ import {
   type HostEventMap,
   type NodeUiEventName,
 } from "@/services/host"
-import { beginUserWait } from "./user-wait"
+import { beginUserWait } from "./state/user-wait"
 import { reactive } from "vue"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"

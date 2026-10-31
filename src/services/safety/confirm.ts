@@ -8,7 +8,7 @@
 
 import { reactive } from "vue"
 import { createLogger } from "@/services/logger"
-import { beginUserWait } from "@/services/engine/user-wait"
+import { beginUserWait } from "@/services/engine/state/user-wait"
 import type { EffectClass, PermissionConfirmation, PermissionRequest } from "./permission"
 
 const log = createLogger("SafetyConfirm")

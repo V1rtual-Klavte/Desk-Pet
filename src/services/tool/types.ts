@@ -69,7 +69,7 @@ export interface ToolPolicy {
      *    见 `tool/local/pi-bash` 注册点的注释与 `.superpowers/sdd/turn-gov/tool-timeout-impl-report.md`）。
      *
      * 适用 null 的工具，其归宿只来自用户动作、取消信号、执行端结算与会话生命周期，
-     * 外层由回合墙钟兜底（等待期已被 `engine/user-wait.ts` 豁免）。任何工具的等待期都
+     * 外层由回合墙钟兜底（等待期已被 `engine/state/user-wait.ts` 豁免）。任何工具的等待期都
      * 不会被这个计时器打断：等待期间计时器挂起、结束后按剩余预算续算。
      */
     timeoutMs?: number | null

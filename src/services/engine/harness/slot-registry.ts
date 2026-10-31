@@ -6,7 +6,7 @@
 import type { JsonValue } from "@earendil-works/pi-agent-core"
 import { ABORT_REASON_DISPOSE } from "@/services/engine/state"
 import type { HarnessCancelQueuedKind, HarnessSlotSnapshot, HarnessTurnAdmission } from "@/services/engine/state"
-import { onUserWaitChange } from "@/services/engine/user-wait"
+import { onUserWaitChange } from "@/services/engine/state/user-wait"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { HarnessSlot } from "./slot"

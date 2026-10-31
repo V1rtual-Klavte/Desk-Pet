@@ -12,7 +12,7 @@
 //   · 用户取消 / 提问未能送达界面 / 会话切换 / 用户停止回合 → 一律如实返回
 //     （`choiceDeclineText` 与通道的取消原因同源），**不假装用户选了任何一项**。
 //     等待本身**没有超时**（2026-10-06 用户裁决：选择类弹窗不留超时，用户想多久想多久；
-//     等待期豁免回合墙钟，见 `engine/user-wait.ts`）。
+//     等待期豁免回合墙钟，见 `engine/state/user-wait.ts`）。
 // 权限类确认（危险动作）不走这里：那仍由权限面板在动作发生时当场确认。
 // 通道在 `engine/choice-confirmation.ts`（会话键控的待答表、超时与发射失败归宿）；
 // 本文件只负责模型参数准入与归宿 → 工具结果的如实映射。
@@ -104,7 +104,7 @@ const askUserTool: ToolDef = defineTool({
   // 父批次执行许可。重放资格 never：崩溃恢复不自动重问（用户当时不一定在场）。
   // 执行超时 `null`：handler 的相位就是「等用户回答」（想多久想多久，2026-10-06 用户
   // 裁决不留超时），没有有限的预算可言；归宿只来自面板回执 / 取消信号 / 会话生命周期，
-  // 外层兜底是回合墙钟（等待期已豁免，见 engine/user-wait.ts）。
+  // 外层兜底是回合墙钟（等待期已豁免，见 engine/state/user-wait.ts）。
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },

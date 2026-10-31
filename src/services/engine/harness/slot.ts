@@ -54,7 +54,7 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import type { DeskpetReplyEvidence } from "@/services/reply"
 // 用户等待的回合预算豁免（零依赖叶子）：等待期间挂起回合墙钟，见类字段与 executeDrive。
-import { createPausableDeadline, isUserWaiting } from "@/services/engine/user-wait"
+import { createPausableDeadline, isUserWaiting } from "@/services/engine/state/user-wait"
 import { createHarnessModels, resolvePiTurnModel, toPiAgentThinkingLevel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 
@@ -216,7 +216,7 @@ export class HarnessSlot {
   private lastRunResult?: OperationResultRecord
   private interruptedInfo?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
   /**
-   * 回合墙钟（可忙暂停的一次性计时器，见 `engine/user-wait.ts`）。用户在做决定
+   * 回合墙钟（可忙暂停的一次性计时器，见 `engine/state/user-wait.ts`）。用户在做决定
    *（确认 / 裁决 / 权限 / 提问）期间挂起，结束后按剩余预算续算 —— 「用户想多久想多久」
    * 必须贯穿到预算层，否则等待超时删了也还会被墙钟掐断。
    */

@@ -15,7 +15,7 @@ const PREFIXES = [
   ["runtime/", "runtime"],
   ["plan/", "plan"],
 ]
-const PLAN_FILES = new Set(["planner.ts", "plan-confirmation.ts", "user-wait.ts"])
+const PLAN_FILES = new Set(["planner.ts", "plan-confirmation.ts"])
 
 // 未归入四层的引擎文件（每项注明职责）。未分类不是默认豁免：不在此清单的引擎文件
 // 按「未分类」报错，避免新文件静默落到门禁之外。以 `/` 结尾的条目按目录前缀匹配。

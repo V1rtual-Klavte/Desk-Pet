@@ -156,7 +156,7 @@ const proposePlanTool: ToolDef = defineTool({
   // 计划有外部副作用，崩溃后不自动重放（恢复走 planCheckpointStore 的显式「继续」入口）。
   // 执行超时 `null`（不设本工具的执行预算）：handler 的相位由「用户确认（想多久想多久，
   // 2026-10-06 用户裁决不留超时）+ 计划执行（executePlan 自带 `deadlineAt` 时限）」组成，
-  // 没有有限的预算能覆盖两段；外层兜底是回合墙钟（等待期已豁免，见 engine/user-wait.ts）。
+  // 没有有限的预算能覆盖两段；外层兜底是回合墙钟（等待期已豁免，见 engine/state/user-wait.ts）。
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },
