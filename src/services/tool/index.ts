@@ -19,7 +19,7 @@ export { defineTool, validateToolPolicy, toolPolicyFingerprint, toolPolicyHash, 
 export type { ToolHandler } from "./policy"
 
 // ── Harness 适配（引擎域把冻结的工具集转成 Harness 原生工具）──
-export { toAgentHarnessTools } from "./pi/harness-tool-adapter"
+export { toAgentHarnessTools, readHarnessToolOutcome, takeHarnessToolFailureDetails } from "./pi/harness-tool-adapter"
 export type { HarnessToolRun } from "./pi/harness-tool-adapter"
 
 // ── 执行许可（Rust 应用级所有者）──

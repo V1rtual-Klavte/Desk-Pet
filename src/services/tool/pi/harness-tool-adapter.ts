@@ -3,13 +3,28 @@
 // 权限终裁不在这里：before_tool 钩子（runtime 侧）负责 PermissionKernel / 次数上限，
 // execute 只执行已放行的工具；工具结果映射与失败语义由本适配器统一表达。
 
-import type { AgentHarnessTool } from "@earendil-works/pi-agent-core"
+import type { AgentHarnessTool, JsonValue } from "@earendil-works/pi-agent-core"
 import type { TaskToolAuthorization, ToolDef } from "../types"
 import { executeToolDefinition } from "../router"
 import { toolPolicyHash } from "../policy"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("HarnessTool")
+
+/** 适配器写入、槽的 after_tool 读取：保留失败语义，避免 SDK 的 throw 丢失结构化归宿。 */
+type HarnessToolOutcome = "success" | "failure" | "user_cancelled"
+export function readHarnessToolOutcome(details: unknown): HarnessToolOutcome | undefined {
+  if (!details || typeof details !== "object") return undefined
+  const outcome = (details as Record<string, unknown>).deskpetToolOutcome
+  return outcome === "success" || outcome === "failure" || outcome === "user_cancelled" ? outcome : undefined
+}
+
+/** 只桥接 SDK throw 丢弃的元数据；原生成败仍由 SDK 的错误结果承载，消费后立即移除。 */
+export function takeHarnessToolFailureDetails(run: HarnessToolRun, toolCallId: string): JsonValue | undefined {
+  const details = run.pendingFailures.get(toolCallId)
+  run.pendingFailures.delete(toolCallId)
+  return details
+}
 
 /** 一次工具调用所属回合的执行上下文；主回合与子代理共用。 */
 export interface HarnessToolRun {
@@ -25,6 +40,8 @@ export interface HarnessToolRun {
   isCurrent: () => boolean
   /** 回合级工具调用历史（返回给 UI/报告）。 */
   history: { toolName: string; status: string; personalityMsg?: string }[]
+  /** execute → after_tool 的一次性元数据桥；不落独立存储、不参与答案或工作验收。 */
+  pendingFailures: Map<string, Record<string, JsonValue>>
   onToolStart?: (toolName: string, toolCallId: string) => Promise<void> | void
   onToolDone?: (toolName: string, toolCallId: string, success: boolean) => Promise<void> | void
 }
@@ -85,15 +102,22 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
           content: result.contentParts ?? [{ type: "text", text: result.content }],
           // deskpetEntryId 是工具结果的持久条目 id（invocationId 与保留的结果条目 id 相同），
           // transform_context 用它给被缩短的结果标注可回读地址。
-          details: { ...(result.details && typeof result.details === "object" ? result.details : {}), deskpetEntryId: invocation.invocationId },
+          details: { ...(result.details && typeof result.details === "object" ? result.details : {}),
+            deskpetEntryId: invocation.invocationId, deskpetToolOutcome: "success" },
           ...(added && added.length ? { addedToolNames: added } : {}),
         }
       }
       run.history.push({ toolName: tool.name, status: "error" })
-      // Pi 将 throw 变成 isError=true 的工具结果；保留 handler 的诊断正文，不能只留下
-      // "execution" 这类字段名，使模型把缺参误读成执行故障。错误结果不套 Card 台词。
+      // 原生 throw 保证中止/钩子异常窗口仍是 isError=true；结构化原因由回合上下文
+      // 一次性桥接到 after_tool，随后随同一条工具结果落盘，不从错误文案猜测取消归宿。
       const diagnostic = result.contentParts?.filter(part => part.type === "text").map(part => part.text).join("\n")
         || result.content
+      run.pendingFailures.set(toolCallId, {
+        ...(result.details && typeof result.details === "object" ? result.details as Record<string, JsonValue> : {}),
+        // 失败结果不写回读地址：上游只用错误正文，错误分支带地址会违反记忆契约 mm-27。
+        deskpetToolOutcome: result.errorCode === "user_cancelled" ? "user_cancelled" : "failure",
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+      })
       throw new Error([`工具 ${tool.name} 失败：${result.error ?? "工具执行失败"}`, diagnostic]
         .filter(text => text.trim().length > 0).join("\n"))
     },

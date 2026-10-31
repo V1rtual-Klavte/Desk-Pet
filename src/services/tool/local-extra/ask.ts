@@ -151,9 +151,11 @@ const askUserTool: ToolDef = defineTool({
         content: "用户选择了「其它」：希望用自己的话回答，不采用你给出的选项。用户会在下一条消息里说明自己的选择；请等待并回应用户的下一条消息，不要重复提问。",
       }
     }
-    // 非答复归宿（取消/超时/切会话/会话关闭/发射失败/面板不可用）：一律如实说明，
-    // 不假装用户选了任何一项（文案与通道的取消原因同源，唯一组装点在 choiceDeclineText）。
-    return { success: false, content: "", error: choiceDeclineText(outcome.reason), errorCode: "cancelled" }
+    // 归宿来自选择通道的结构化原因；用户主动取消不能算技术失败，也不冒充工具成功。
+    // 发射失败仍是故障，会话生命周期取消仍走 cancelled，不能用工具名或文案猜测归宿。
+    const errorCode = outcome.reason === "user" || outcome.reason === "user_replied"
+      ? "user_cancelled" : outcome.reason === "emit_failed" ? "failed" : "cancelled"
+    return { success: false, content: "", error: choiceDeclineText(outcome.reason), errorCode }
   } catch (error) {
     // 异常不静默、不冒充成功；消息里带 requestId 便于对账。
     const message = formatError(error)

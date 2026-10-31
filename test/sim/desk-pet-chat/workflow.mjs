@@ -609,11 +609,17 @@ export function checkDriverBudget({ progress, now = Date.now() }) {
 }
 
 export function recordContextUsage(progress, usage, { at, stepId }) {
-  if (!isRecord(usage)) return;
+  if (!isRecord(usage)) {
+    progress.usage.tokensUnknown = true;
+    return;
+  }
   const calls = Number(usage.calls);
   const reported = Number(usage.reported);
   const total = Number(usage.total);
-  if (!Number.isSafeInteger(calls) || !Number.isSafeInteger(reported) || !Number.isSafeInteger(total)) return;
+  if (!Number.isSafeInteger(calls) || !Number.isSafeInteger(reported) || !Number.isSafeInteger(total)) {
+    progress.usage.tokensUnknown = true;
+    return;
+  }
   progress.usage.tokensCalls = calls;
   progress.usage.tokensReportedCalls = reported;
   progress.usage.tokens = Math.max(progress.usage.tokens, total);
@@ -1032,103 +1038,102 @@ export async function executeDriver({
     let result;
     let record;
     try {
-      response = step.kind === "message"
-        ? await (toolApproval === "allow-once" || typeof transport.confirm === "function"
-          ? messageWithInteractionPolicy({
-            text: renderDriverText(step.text, { dataRoot }),
-            operation,
-            transport,
-            progress,
-            onProgress,
-            stepId: step.id,
-            now,
-            sleep,
-            confirmPollMs,
-            decision: toolApproval === "allow-once" ? "allow_once" : "deny",
-          })
-          : transport.message(renderDriverText(step.text, { dataRoot }), operation))
-        : await executeHostStep(step, transport);
-      result = stepResultFor(step, response, operation);
-      if (step.kind === "message" && (response.outcome === "failed" || result.reply.trim() === "")) {
-        const reason = response.failure
-          ? `回合失败：${response.failure.kind ?? "unknown"}${response.failure.message ? ` / ${response.failure.message}` : ""}`
-          : "消息步骤没有取得助手回复";
-        fail("driver.message", `步骤 ${step.id} ${reason}`);
-      }
-      record = {
-        index,
-        id: step.id,
-        kind: step.kind,
-        at: step.at,
-        status: "completed",
-        startedAt,
-        completedAt: new Date(now()).toISOString(),
-        clock: { base: clock.base, now: clock.now, timezone: clock.timezone },
-        result,
-        checkpoints: [],
-      };
-    } catch (error) {
-      record = {
-        index,
-        id: step.id,
-        kind: step.kind,
-        at: step.at,
-        status: "failed",
-        startedAt,
-        completedAt: new Date(now()).toISOString(),
-        clock: { base: clock.base, now: clock.now, timezone: clock.timezone },
-        result: { ...(result ?? { kind: step.kind }), error: error instanceof Error ? error.message : String(error) },
-        error: error instanceof Error ? error.message : String(error),
-      };
-      progress.steps.push(record);
-      progress.inFlight = null;
-      progress.status = "blocked";
-      progress.blocked = {
-        code: error instanceof WorkflowError ? error.code : "driver.step",
-        message: record.error,
-        at: record.completedAt,
-      };
-      progress.usage.elapsedMinutes = Number(((now() - Date.parse(progress.usage.startedAt)) / 60_000).toFixed(3));
-      progress.updatedAt = record.completedAt;
-      await onProgress(progress);
-      throw error;
-    }
-
-    progress.steps.push(record);
-    progress.inFlight = null;
-    progress.index = index + 1;
-    progress.updatedAt = record.completedAt;
-
-    const points = syncPoints.filter((point) => point.after === step.id);
-    for (const checkpoint of points) {
-      const check = await satisfyCheckpoint({ checkpoint, record, transport, now, sleep, memoryWait, memoryBaseline });
-      record.checkpoints.push(check);
-      if (check.status !== "satisfied") {
+      try {
+        response = step.kind === "message"
+          ? await (toolApproval === "allow-once" || typeof transport.confirm === "function"
+            ? messageWithInteractionPolicy({
+              text: renderDriverText(step.text, { dataRoot }),
+              operation,
+              transport,
+              progress,
+              onProgress,
+              stepId: step.id,
+              now,
+              sleep,
+              confirmPollMs,
+              decision: toolApproval === "allow-once" ? "allow_once" : "deny",
+            })
+            : transport.message(renderDriverText(step.text, { dataRoot }), operation))
+          : await executeHostStep(step, transport);
+        result = stepResultFor(step, response, operation);
+        if (step.kind === "message" && (response.outcome === "failed" || result.reply.trim() === "")) {
+          const reason = response.failure
+            ? `回合失败：${response.failure.kind ?? "unknown"}${response.failure.message ? ` / ${response.failure.message}` : ""}`
+            : "消息步骤没有取得助手回复";
+          fail("driver.message", `步骤 ${step.id} ${reason}`);
+        }
+        record = {
+          index,
+          id: step.id,
+          kind: step.kind,
+          at: step.at,
+          status: "completed",
+          startedAt,
+          completedAt: new Date(now()).toISOString(),
+          clock: { base: clock.base, now: clock.now, timezone: clock.timezone },
+          result,
+          checkpoints: [],
+        };
+      } catch (error) {
+        record = {
+          index,
+          id: step.id,
+          kind: step.kind,
+          at: step.at,
+          status: "failed",
+          startedAt,
+          completedAt: new Date(now()).toISOString(),
+          clock: { base: clock.base, now: clock.now, timezone: clock.timezone },
+          result: { ...(result ?? { kind: step.kind }), error: error instanceof Error ? error.message : String(error) },
+          error: error instanceof Error ? error.message : String(error),
+        };
+        progress.steps.push(record);
+        progress.inFlight = null;
         progress.status = "blocked";
         progress.blocked = {
-          code: "checkpoint.timeout",
-          message: `${checkpoint.id}: ${check.detail}`,
-          at: check.observedAt,
+          code: error instanceof WorkflowError ? error.code : "driver.step",
+          message: record.error,
+          at: record.completedAt,
         };
-        progress.updatedAt = check.observedAt;
-        await onProgress(progress);
-        fail("checkpoint.timeout", progress.blocked.message);
+        progress.updatedAt = record.completedAt;
+        throw error;
       }
-    }
 
-    try {
-      const usage = await transport.context();
-      recordContextUsage(progress, usage?.context?.usageTotal, { at: record.completedAt, stepId: step.id });
-    } catch (error) {
-      progress.usage.contextErrors.push({
-        at: record.completedAt,
-        stepId: step.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      progress.usage.tokensUnknown = true;
+      progress.steps.push(record);
+      progress.inFlight = null;
+      progress.index = index + 1;
+      progress.updatedAt = record.completedAt;
+
+      const points = syncPoints.filter((point) => point.after === step.id);
+      for (const checkpoint of points) {
+        const check = await satisfyCheckpoint({ checkpoint, record, transport, now, sleep, memoryWait, memoryBaseline });
+        record.checkpoints.push(check);
+        if (check.status !== "satisfied") {
+          progress.status = "blocked";
+          progress.blocked = {
+            code: "checkpoint.timeout",
+            message: `${checkpoint.id}: ${check.detail}`,
+            at: check.observedAt,
+          };
+          progress.updatedAt = check.observedAt;
+          fail("checkpoint.timeout", progress.blocked.message);
+        }
+      }
+    } finally {
+      try {
+        const usage = await transport.context();
+        recordContextUsage(progress, usage?.context?.usageTotal, { at: record?.completedAt ?? new Date(now()).toISOString(), stepId: step.id });
+      } catch (error) {
+        progress.usage.contextErrors.push({
+          at: record?.completedAt ?? new Date(now()).toISOString(),
+          stepId: step.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        progress.usage.tokensUnknown = true;
+      }
+      progress.usage.elapsedMinutes = Number(((now() - Date.parse(progress.usage.startedAt)) / 60_000).toFixed(3));
+      await onProgress(progress);
     }
-    progress.usage.elapsedMinutes = Number(((now() - Date.parse(progress.usage.startedAt)) / 60_000).toFixed(3));
-    await onProgress(progress);
   }
 
   progress.status = "completed";

@@ -41,7 +41,7 @@ import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from 
 import {
   SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool,
   createEnableToolsTool, defaultActiveToolNames,
-  findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash,
+  findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash, readHarnessToolOutcome,
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef, TaskToolAuthorization } from "@/services/tool"
 import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool/local/screenshot-details"
@@ -1507,6 +1507,11 @@ function createTurnSpec(kernel: TurnKernel, options: {
   const hooks: HarnessRunHooks = {
     beforeTool: async ({ toolCallId, toolName, args, signal }) => {
       const tool = toolsByName.get(toolName)
+      // 治理一旦命中就保持关闭：混合批次晚到的成功不能重新放行后续工具。
+      if (state.stoppedByToolGovernance) {
+        kernel.toolRun.history.push({ toolName, status: "blocked" })
+        return { block: { reason: state.toolGovernanceReason ?? "工具循环治理终止", terminate: true } }
+      }
       // 计数硬上限只服务无人值守的子运行（主回合不传 maxToolCalls）。
       if (options.maxToolCalls !== undefined && toolCallsUsed >= options.maxToolCalls) {
         state.stoppedByToolGovernance = true
@@ -1564,8 +1569,10 @@ function createTurnSpec(kernel: TurnKernel, options: {
       options.onChildToolResult?.(result)
       // show_to_user 的截图路径在这里进入回合状态，由提交链并入最终助手条目。
       collectScreenshotResult(state, toolName, details, isError)
-      // 连续失败入账（成功清零连击）；命中软/硬阈值时把中性提示附到本条结果上。
-      const loop = loopGuard.noteResult(isError)
+      // 用户主动取消不算技术失败，也不清洗已有失败；SDK/权限/界面故障仍按失败累计。
+      const outcome = isError && readHarnessToolOutcome(details) === "user_cancelled"
+        ? "user_cancelled" : isError ? "failure" : "success"
+      const loop = loopGuard.noteResult(outcome)
       if (loop.level !== "none") {
         const notice = toolLoopNotice(loop.reason)
         const pending = toolLoopNotices.get(toolCallId)
@@ -1577,8 +1584,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       // 失败连击到硬阈值：结果侧经 `after_tool` 的 `terminate` 立即终止 —— 本批工具全部带该
       // 标记时上游在当前批次后结束运行、不再发下一次请求（运行仍以 completed 收口，但没有
-      // 收尾助手消息）。治理标志与同参连击共用一枚：宿主按 tool_loop 失败结算并落盘
-      // `toolLoopMaxRounds` 兜底，不把治理终止错报成成功或「模型未产出正文」。
+      // 收尾助手消息）。混合批次若仍产生已提交的终态收尾，主回合交付该正文；
+      // 没有有效收尾才按 tool_loop 失败落盘兜底，工具失败与子运行工作验收不受影响。
       if (loop.level === "hard") {
         state.stoppedByToolGovernance = true
         state.toolGovernanceReason = toolLoopBlockReason(loop.reason)
@@ -2015,6 +2022,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       ...(input.turnContext ? { proactiveTurnContext: input.turnContext } : {}),
       isCurrent: () => runIsCurrent(),
       history: toolCallHistory,
+      pendingFailures: new Map(),
     }
     // 投递正文由调用方构造（用户输入走 userInputMessage、主动消息走 createActiveMessage）：
     // 停止后继续的暂停批次优先，其余按调用方给的 userPrompt 原样投递。
@@ -3043,12 +3051,18 @@ async function settleMainTurn(args: {
     const failed = await failTurn(reason, result.timedOut ? "timeout" : "unknown")
     return { ...failed, undelivered: result.undelivered, abortedByStop: false }
   }
-  // 停止晚于工具循环治理终止（子运行计数上限或主回合病理硬终止）时，停止是更晚、更可见的事实，
-  // 按停止结算：反过来先判治理终止早退，会把「用户已经点了停止」说成「工具轮超限」，
-  // 还丢掉归还的未消费输入。
-  // 这条早退也不补 abortedByStop —— 那会让宿主丢弃 reply，「工具轮超限」文案再也看不到；
-  // 停止与治理终止同时发生的情形已由上面的 aborted 分支覆盖。
-  if (state.stoppedByToolGovernance) {
+  // 只认本次原生操作的已提交终点，且必须正常停止、无工具调用、有正文。
+  // finalPlainAssistant 可能残留较早轮次；工具过程文本、流式未提交正文与旧回合均不能救活失败。
+  // 工具治理发生在工具轮之后，因此满足这些条件的终态助手必然晚于触发治理的工具轮。
+  const closingEvidence = (state.finalAssistant as ReplyEvidenceAssistantMessage | undefined)?.deskpetReplyEvidence
+  const committedClosing = result.status === "completed" && !result.timedOut && !result.error
+    && Boolean(state.finalAssistantEntryId) && result.record?.tipId === state.finalAssistantEntryId
+    && state.finalAssistant?.stopReason === "stop"
+    && !state.finalAssistant.content.some(part => part.type === "toolCall")
+    && contentText(state.finalAssistant.content).trim().length > 0
+    && isDeskpetReplyEvidence(closingEvidence) && closingEvidence.outcome === "delivered"
+    && closingEvidence.generatedText.trim().length > 0
+  if (state.stoppedByToolGovernance && !committedClosing) {
     return failTurn(state.toolGovernanceReason ?? "工具循环治理终止", "tool_loop", getFallbackReply("toolLoopMaxRounds"))
   }
   if (result.status !== "completed") {
@@ -3056,7 +3070,7 @@ async function settleMainTurn(args: {
     const failed = await failTurn(reason, classifyFailureKind(reason))
     return { ...failed, undelivered: result.undelivered }
   }
-  const finalAssistant = state.finalPlainAssistant ?? state.finalAssistant
+  const finalAssistant = state.stoppedByToolGovernance ? state.finalAssistant : state.finalPlainAssistant ?? state.finalAssistant
   if (!finalAssistant || finalAssistant.stopReason === "error" || finalAssistant.stopReason === "aborted") {
     return failTurn(finalAssistant?.errorMessage || "Pi Agent 未返回有效回复", "unknown")
   }
@@ -3223,6 +3237,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
         sessionId, runGeneration: generation,
         isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
         history: toolCallHistory,
+        pendingFailures: new Map(),
       },
     })
     const spec = createTurnSpec(kernel, {
@@ -3456,6 +3471,7 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
       tools.find(tool => tool.name === toolName)?.policy.execution.effect !== "read"
     const toolRun: HarnessToolRun = {
       sessionId: owner.sessionId, runGeneration: generation, isCurrent: current, history,
+      pendingFailures: new Map(),
       ...((owner.kind === "conversation" || owner.kind === "plan") && owner.trustedUserEventId ? { trustedUserEventId: owner.trustedUserEventId } : {}),
       ...(owner.kind === "scheduled" ? { taskAuthorization: owner.authorization } : {}),
       permissionMode: background ? "background" : "interactive",

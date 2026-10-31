@@ -31,7 +31,8 @@ const probe = defineTool({
     context: { resultProjection: "preserve", historyCompaction: "summarize" } },
 }, async args => args.execution
   ? { success: true, content: "参数已补全" }
-  : { success: false, content: DIAGNOSTIC, error: "execution" })
+  : { success: false, content: DIAGNOSTIC, error: "execution", errorCode: "failed",
+    details: { status: "needs_clarification", missing: ["execution"], deskpetToolOutcome: "user_cancelled" } })
 
 let root = ""
 beforeAll(async () => {
@@ -62,6 +63,7 @@ it("错误诊断进入下一次请求并原样落盘，修正后成功仍可区�
     && entry.message.toolName === TOOL_NAME)
   expect(results).toHaveLength(2)
   expect(results[0]).toMatchObject({ message: { isError: true,
+    details: { status: "needs_clarification", missing: ["execution"], deskpetToolOutcome: "failure", errorCode: "failed" },
     content: [{ type: "text", text: `工具 ${TOOL_NAME} 失败：execution\n${DIAGNOSTIC}` }] } })
   expect(results[1]).toMatchObject({ message: { isError: false,
     content: [{ type: "text", text: "参数已补全" }] } })

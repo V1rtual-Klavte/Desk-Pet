@@ -138,7 +138,8 @@ export interface ToolResult {
   success: boolean
   content: string
   error?: string
-  errorCode?: "not_found" | "denied" | "timeout" | "cancelled" | "failed" | "ambiguous"
+  /** user_cancelled 只表示用户主动取消交互；生命周期取消与技术故障不能使用它。 */
+  errorCode?: "not_found" | "denied" | "timeout" | "cancelled" | "user_cancelled" | "failed" | "ambiguous"
   /**
    * 结果随附引入的工具名（渐进披露）：由启用型工具（enable_tools）声明，
    * 适配器映射成 Pi 原生 `addedToolNames`，在本回合后续请求里激活这些工具。

@@ -589,6 +589,29 @@ describe("驱动执行", () => {
       failure: { kind: "tool_loop", message: "工具连续失败 5 次" } })
     expect(progress.steps[0]?.checkpoints).toBeUndefined()
     expect(driverOutcome(progress).status).toBe("interrupted")
+    expect(progress.usage).toMatchObject({ tokens: 120, tokensCalls: 2, tokensReportedCalls: 2, tokensUnknown: false })
+    expect(readDriverProgress(JSON.parse(JSON.stringify(progress))).usage.tokens).toBe(120)
+  })
+
+  it("失败步骤也采集用量，读取失败或缺失时记未知且保留原始故障 [chat-driver-failed-usage-unknown]", async () => {
+    for (const context of [
+      async () => Promise.reject(new Error("context 不可用")),
+      async () => ({}),
+    ]) {
+      const pkg = driverPackage([{ id: "say", kind: "message", text: "你好", at: AT_1 }])
+      const progress = progressFor(pkg)
+      const time = manualTime()
+      const base = fakeTransport()
+      const transport = fakeTransport({ context, message: async (text, operation) => ({
+        ...await base.message(text, operation), outcome: "failed", reply: "工具循环已停止",
+        failure: { kind: "tool_loop", message: "工具连续失败 5 次" },
+      }) })
+      await expect(executeDriver({ progress, driverPackage: pkg, transport, now: time.now, sleep: time.sleep }))
+        .rejects.toThrow(/tool_loop/)
+      expect(progress.usage.tokensUnknown).toBe(true)
+      expect(progress.blocked?.message).toContain("工具连续失败 5 次")
+      expect(progress.steps[0]?.status).toBe("failed")
+    }
   })
 
   it("消息预算到界时在下一步副作用前阻塞 [chat-driver-budget]", async () => {
@@ -716,6 +739,7 @@ describe("驱动执行", () => {
     expect(progress.status).toBe("blocked")
     expect(progress.blocked?.code).toBe("checkpoint.timeout")
     expect(progress.steps[0]?.checkpoints?.[0]?.status).toBe("timeout")
+    expect(progress.usage).toMatchObject({ tokens: 120, tokensCalls: 2, tokensUnknown: false })
   })
 
   it("基线之后的新抽取作业结束后检查点才满足 [chat-driver-memory-new-job]", async () => {

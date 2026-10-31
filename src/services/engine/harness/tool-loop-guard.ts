@@ -100,12 +100,14 @@ export class ToolLoopGuard {
   }
 
   /**
-   * 记一次工具结果：成功清零失败连击，失败累计（同参连击不受成败影响）。
+   * 记一次工具结果：成功清零失败连击，失败累计；用户主动取消既不累计也不清零。
+   * 同参连击不受结果影响，取消不能绕过重复调用检测。
    * 返回**失败连击**的判据（不合并同参连击）：软档用于决定「要不要给这条结果附软提示」，
    * 硬档由 runtime 在结果侧经 `after_tool` 的 `terminate` 立即终止。
    */
-  noteResult(isError: boolean): ToolLoopVerdict {
-    this.failureCount = isError ? this.failureCount + 1 : 0
+  noteResult(outcome: "success" | "failure" | "user_cancelled"): ToolLoopVerdict {
+    if (outcome === "user_cancelled") return { level: "none" }
+    this.failureCount = outcome === "failure" ? this.failureCount + 1 : 0
     return verdictFor("consecutive_failures", this.failureCount, CONSECUTIVE_FAILURE_SOFT_LIMIT, CONSECUTIVE_FAILURE_HARD_LIMIT)
   }
 

@@ -34,7 +34,7 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AssistantMessage, Model, RetryPolicy, ToolResultMessage, Usage } from "@earendil-works/pi-ai"
 import type { ThinkingEffort } from "@/services/agent/types"
 import {
-  toAgentHarnessTools,
+  toAgentHarnessTools, takeHarnessToolFailureDetails,
   flushPendingReleases, retryBorrowerAttachIfPending, setToolPermitLimit,
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef, ToolResultLookup } from "@/services/tool"
@@ -71,8 +71,8 @@ export const COMPACTION_CONTINUATION_ENTRY = "deskpet.compaction_continuation"
 /** 回合内共享的聚合状态：由宿主创建，槽在事件处理中填充。 */
 export interface HarnessRunState {
   /**
-   * 本回合是否被工具循环治理终止（三种出口共用此一枚标志，结算据此走 `toolLoopMaxRounds`
-   * 兜底而不是当成模型未产出正文）：① 子运行计数封顶（`maxToolCalls`）；② 同参连击硬阈值
+   * 本回合是否命中工具循环治理（三种出口共用此一枚标志，后续工具一律拦截；主回合若有
+   * 已提交的终态收尾则正常交付，否则走 `toolLoopMaxRounds` 兜底）：① 子运行计数封顶（`maxToolCalls`）；② 同参连击硬阈值
    * （调用门 `block + terminate`）；③ 失败连击硬阈值（结果侧 `after_tool` 的 `terminate`）。
    */
   stoppedByToolGovernance: boolean
@@ -1865,12 +1865,17 @@ export class HarnessSlot {
         return decision
       }),
       hooks.on("after_tool", (event) => {
-        return this.hostSpec().hooks?.afterTool?.({
+        const spec = this.hostSpec()
+        const failureDetails = this.activeRun
+          ? takeHarnessToolFailureDetails(this.activeRun.spec.toolRun, event.toolCallId)
+          : undefined
+        const details = failureDetails ?? event.details
+        return spec.hooks?.afterTool?.({
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           args: event.args,
           content: event.content,
-          details: event.details,
+          details,
           isError: event.isError,
         })
       }),

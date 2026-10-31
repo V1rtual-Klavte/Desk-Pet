@@ -150,7 +150,7 @@ export const plannerContract: ModuleContract = {
     // 取消归宿的唯一实现（此前 runtime.ts 与 proposal.ts 各存一份同形复刻）。
     // 2026-10-24 交付兜底批次补入：回合内计划结果的暂存（pl-15）—— 工具入口写入、主回合结算取走。
     "src/services/engine/plan/settlement.ts", "src/services/engine/plan/delivery.ts"],
-  sourceHash: "10113402f8a0d36018dfc39ff9dc3aab82e554a349063d4b9f87701c3ef1aa47",
+  sourceHash: "aaf58d2120cb756b1dd1738fc29a55df45e5872feaf32efcb78d2728ecc73b93",
   coverage: [
     // 退役预评估的三个 caseId 随功能删除；显式入口沿用原 ID，普通入口改测零额外请求。
     { id: "pl-01", feature: "显式 --plan 入口", description: "启用 ai.plan.enabled 时，行首 --plan 后为字尾或空白才触发生成、确认、步骤执行和主回复；无额外复杂度评估请求，计划终态 done。规划器的可用工具清单排除派生型工具（isolation=delegate，到不了步骤子代理），生成提示要求每步给出非空 allowedTools，场景同时断言提示词与工具清单（只判入口触发会让权限面错误的计划照样变绿）", why: "用户仍可显式要求计划，命令不能误匹配普通文本；规划器列出的权限面必须是步骤子代理真实可达的工具集", layer: "integration", depth: "deep", scenarios: ["plan-force-trigger"] },

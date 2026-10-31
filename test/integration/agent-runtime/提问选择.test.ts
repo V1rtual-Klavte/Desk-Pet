@@ -156,7 +156,7 @@ describe("向用户提问工具", () => {
     stop()
 
     expect(result.success, "用户取消不得报成功").toBe(false)
-    expect(result.errorCode).toBe("cancelled")
+    expect(result.errorCode).toBe("user_cancelled")
     expect(result.error, "取消文案没有与通道口径对齐").toContain("用户取消了本次提问")
     expect(result.content, "取消结果里混进了选项原文").not.toContain("咖啡")
   })
@@ -187,7 +187,7 @@ describe("向用户提问工具", () => {
     const result = await executeToolDefinition(tool, ASK_PARAMS, toolContext("ask-emit-fail-1"))
 
     expect(result.success, "送达失败时工具结果不得报成功").toBe(false)
-    expect(result.errorCode).toBe("cancelled")
+    expect(result.errorCode).toBe("failed")
     expect(result.error, "送达失败的说明没有与通道口径对齐").toContain("未能送达界面")
     expect(choiceState.pending, "发射失败后仍有待答视图（请求已结算）").toEqual([])
   })

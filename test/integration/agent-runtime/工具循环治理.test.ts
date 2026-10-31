@@ -26,6 +26,8 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { fauxAssistantMessage, fauxText, fauxToolCall } from "@earendil-works/pi-ai"
+import { watch } from "vue"
 
 vi.mock("@/services/tool/execution-permit", () => ({
   acquireToolPermit: async () => ({ kind: "granted" }),
@@ -49,6 +51,10 @@ import { initPaths } from "@/services/paths"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { readPiSessionEntriesOnce } from "@/services/session"
 import { getActiveSessionId } from "@/services/session/store"
+import { resolveSimMessageReply } from "@/services/sim/chat-bridge"
+import { getUiEventPublisher, setUiEventPublisher } from "@/services/host"
+import { choiceState, resolveChoice } from "@/services/engine/choice-confirmation"
+import { flushConfig, setOverride } from "@/services/config"
 
 /** 探针工具名/ID：只读、无副作用，执行次数是「调用到底有没有真的发生」的独立观测面。 */
 const PROBE_ID = "loop-governance-probe"
@@ -60,6 +66,7 @@ const FINAL_TEXT = "工具都跑完了"
 
 let root = ""
 let executions: string[] = []
+let lateSuccess: Promise<void> | undefined
 
 const probe: ToolDef = defineTool({
   id: PROBE_ID, name: PROBE_NAME, description: "循环治理测试探针（只读，不产生副作用）",
@@ -73,10 +80,11 @@ const probe: ToolDef = defineTool({
   },
 }, async args => {
   executions.push(JSON.stringify(args))
+  if (args.late === true) await lateSuccess
   return { success: true, content: "探针结果" }
 })
 
-/** 失败探针：恒定返回 `success:false`（适配器把它抛成工具错误，喂失败连击）。 */
+/** 失败探针：恒定返回 `success:false`（适配器与 after_tool 保留错误标记，喂失败连击）。 */
 const FAILING_PROBE_ID = "loop-governance-failing-probe"
 const FAILING_PROBE_NAME = "loop_governance_failing_probe"
 const failingProbe: ToolDef = defineTool({
@@ -128,6 +136,7 @@ afterAll(() => {
 beforeEach(async () => {
   await standardSetup()
   executions = []
+  lateSuccess = undefined
   register(probe)
   register(failingProbe)
   register(multiProbe)
@@ -156,7 +165,177 @@ function toolResultTexts(payload: { messages: readonly unknown[] } | undefined, 
   return texts
 }
 
+/** 同一模型轮次的多个失败，参数各不相同，只触发失败连击。 */
+function failingBatch(start: number, count: number, processText = "") {
+  return fauxAssistantMessage([
+    ...(processText ? [fauxText(processText)] : []),
+    ...Array.from({ length: count }, (_, index) => fauxToolCall(FAILING_PROBE_NAME,
+      { at: start + index }, { id: `mixed-fail-${start + index}` })),
+  ], { stopReason: "toolUse" })
+}
+
+/** 模拟真实界面通道发送异常；不是用 throw 充当断言。 */
+function publisherFailingOnChoiceStart(): () => void {
+  const previous = getUiEventPublisher()
+  setUiEventPublisher({ publish: async event => {
+    if (event === "deskpet-choice-start") throw new Error("界面通道关闭")
+  } })
+  return () => setUiEventPublisher(previous)
+}
+
 describe("工具循环治理", () => {
+  it("混合批次治理后已提交的诚实收尾正常交付，不追加兜底且失败工具仍留账 [tool-loop-governance-committed-final]", async () => {
+    setOverride("ai.humanizer.enabled", false)
+    await flushConfig()
+    const closing = "这三项都没有保存，提醒功能当前已暂停。"
+    const provider = installFakeProvider([failingBatch(1, 2), failingBatch(3, 3), fakeText(closing)])
+    await initChat()
+    const requestId = "mixed-governance-final"
+    const output = await sendMessage("请创建三项提醒。", { requestId })
+    expect(executions).toHaveLength(5)
+    expect(provider.state.callCount).toBe(3)
+    expect(output).toMatchObject({ outcome: "succeeded", reply: closing })
+    expect(output.failure).toBeUndefined()
+    expect(output.toolCalls.map(item => item.status)).toEqual(["error", "error", "error", "error", "error"])
+    const receipt = await resolveSimMessageReply(getActiveSessionId(), requestId, output)
+    expect(receipt).toMatchObject({ outcome: "succeeded", reply: closing, replyBinding: "request-response" })
+    const entries = await readPiSessionEntriesOnce(getActiveSessionId())
+    expect(entries.find(entry => entry.id === receipt.assistantEntryId)).toMatchObject({ type: "message", message: {
+      role: "assistant", stopReason: "stop", content: [{ type: "text", text: closing }],
+      deskpetReplyEvidence: { outcome: "delivered" },
+    } })
+    const results = entries.filter(entry => entry.type === "message" && entry.message.role === "toolResult"
+      && entry.message.toolName === FAILING_PROBE_NAME)
+    expect(results).toHaveLength(5)
+    expect(results.every(entry => entry.type === "message" && entry.message.role === "toolResult" && entry.message.isError)).toBe(true)
+    expect(entries.filter(entry => entry.type === "message" && entry.message.role === "assistant"
+      && entry.message.content.some(part => part.type === "text" && part.text === getFallbackReply("toolLoopMaxRounds"))))
+      .toHaveLength(0)
+  }, 60_000)
+
+  it("拟人化拒绝沉默产生的非空兜底不冒充模型收尾 [tool-loop-governance-presentation-fallback]", async () => {
+    setOverride("ai.humanizer.enabled", true)
+    await flushConfig()
+    installFakeProvider([fakeText("<<SILENT>>"), failingBatch(1, 2), failingBatch(3, 3), fakeText("<<SILENT>>")])
+    const initial = await runRuntimeTurn("先允许一次沉默。")
+    expect(initial.silent).toBe(true)
+    const output = await runRuntimeTurn("工具失败后仍需要有效收尾。")
+    expect(output.failure?.kind).toBe("tool_loop")
+    expect(output.reply).toBe(getFallbackReply("toolLoopMaxRounds"))
+    const entries = await readPiSessionEntriesOnce(getActiveSessionId())
+    expect(entries.filter(entry => entry.type === "message" && entry.message.role === "assistant"
+      && entry.message.content.some(part => part.type === "text" && part.text === getFallbackReply("silentRejected"))))
+      .toHaveLength(1)
+  }, 60_000)
+
+  it("旧回合与工具过程有字也不能顶替空收尾，仍失败并且兜底只落一次 [tool-loop-governance-empty-final]", async () => {
+    installFakeProvider([fakeText("上个回合的正文"), failingBatch(1, 2),
+      failingBatch(3, 3, "正在处理这些提醒"), fakeText("   ")])
+    await initChat()
+    expect((await sendMessage("上一轮。", { requestId: "mixed-previous" })).outcome).toBe("succeeded")
+    const output = await sendMessage("本轮。", { requestId: "mixed-empty-final" })
+    expect(output.outcome).toBe("failed")
+    expect(output.failure?.kind).toBe("tool_loop")
+    expect(output.reply).toBe(getFallbackReply("toolLoopMaxRounds"))
+    const entries = await readPiSessionEntriesOnce(getActiveSessionId())
+    expect(entries.filter(entry => entry.type === "message" && entry.message.role === "assistant"
+      && entry.message.content.some(part => part.type === "text" && part.text === getFallbackReply("toolLoopMaxRounds"))))
+      .toHaveLength(1)
+  }, 60_000)
+
+  it("治理后晚到成功不能重新放行新的工具调用，无有效收尾仍失败 [tool-loop-governance-blocks-next-tools]", async () => {
+    let releaseLate!: () => void
+    lateSuccess = new Promise<void>(resolve => { releaseLate = resolve })
+    const previousPublisher = getUiEventPublisher()
+    let failedTools = 0
+    setUiEventPublisher({ publish: async (event, payload) => {
+      const result = payload as { toolName?: string; success?: boolean }
+      // 原生 tool_end 在 after_tool 之后发布：第五次错误被治理后才让同批成功返回。
+      if (event === "tool-completed" && result.toolName === FAILING_PROBE_NAME && result.success === false) {
+        failedTools += 1
+        if (failedTools === 5) releaseLate()
+      }
+      await previousPublisher.publish(event, payload)
+    } })
+    const provider = installFakeProvider([
+      fauxAssistantMessage([fauxToolCall(PROBE_NAME, { late: true }, { id: "late-success" }),
+        ...Array.from({ length: 5 }, (_, at) => fauxToolCall(FAILING_PROBE_NAME, { at }, { id: `late-fail-${at}` }))],
+      { stopReason: "toolUse" }),
+      fakeToolCall(PROBE_NAME, { afterGovernance: true }, "after-governance"), fakeText("不应到达"),
+    ])
+    try {
+      const output = await runRuntimeTurn("连续失败后再试另一个工具。")
+      expect(failedTools).toBe(5)
+      expect(executions).toHaveLength(6)
+      expect(provider.state.callCount).toBe(2)
+      expect(output.toolCallHistory.filter(item => item.status === "done")).toHaveLength(1)
+      expect(output.toolCallHistory.filter(item => item.status === "error")).toHaveLength(5)
+      expect(output.toolCallHistory.filter(item => item.status === "blocked")).toHaveLength(1)
+      expect(output.failure?.kind).toBe("tool_loop")
+      expect(output.reply).toBe(getFallbackReply("toolLoopMaxRounds"))
+    } finally { releaseLate(); setUiEventPublisher(previousPublisher) }
+  }, 60_000)
+
+  it("真实提问的用户取消不凑成第五次技术失败，错误回执仍原样落盘 [tool-loop-ask-cancel-neutral]", async () => {
+    await standardSetup("deny", "deny", "hold")
+    setOverride("ai.humanizer.enabled", false)
+    await flushConfig()
+    const previousPublisher = getUiEventPublisher()
+    setUiEventPublisher({ publish: async () => {} })
+    const stop = watch(() => choiceState.pending.map(item => item.requestId).join("|"), () => {
+      for (const item of [...choiceState.pending]) resolveChoice(item.requestId, { kind: "cancelled" })
+    }, { flush: "sync" })
+    const provider = installFakeProvider([
+      ...Array.from({ length: 4 }, (_, at) => fakeToolCall(FAILING_PROBE_NAME, { at }, `before-cancel-${at}`)),
+      fakeToolCall("ask_user", { question: "是否继续？", options: ["继续", "停止"] }, "cancel-neutral"),
+      fakeText("你取消了选择，我先停在这里。"),
+    ])
+    try {
+      const output = await runRuntimeTurn("询问后按用户决定处理。")
+      expect(provider.state.callCount).toBe(6)
+      expect(output.failure).toBeUndefined()
+      expect(output.reply).toBe("你取消了选择，我先停在这里。")
+      const entries = await readPiSessionEntriesOnce(getActiveSessionId())
+      expect(entries.find(entry => entry.type === "message" && entry.message.role === "toolResult"
+        && entry.message.toolName === "ask_user")).toMatchObject({ message: { isError: true,
+        details: { deskpetToolOutcome: "user_cancelled", errorCode: "user_cancelled", audit: { outcome: "cancelled" } },
+      } })
+    } finally { stop(); setUiEventPublisher(previousPublisher) }
+  }, 60_000)
+
+  it("真实提问取消保留已有失败，第五次技术错误仍终止 [tool-loop-ask-cancel-keeps-failures]", async () => {
+    // 标准宿主的默认 choicePolicy=cancel，走真实选择通道的用户取消回执。
+    const provider = installFakeProvider([
+      ...Array.from({ length: 4 }, (_, at) => fakeToolCall(FAILING_PROBE_NAME, { at }, `cancel-keeps-${at}`)),
+      fakeToolCall("ask_user", { question: "是否继续？", options: ["继续", "停止"] }, "cancel-keeps"),
+      fakeToolCall(FAILING_PROBE_NAME, { at: 5 }, "fifth-failure"), fakeText("不应到达"),
+    ])
+    const output = await runRuntimeTurn("取消选择后还有一次工具错误。")
+    expect(provider.state.callCount).toBe(6)
+    expect(output.failure).toEqual({ kind: "tool_loop", message: "工具循环病理检测：工具连续失败 5 次，终止回合" })
+    expect(output.toolCallHistory).toHaveLength(6)
+  }, 60_000)
+
+  it("真实提问发送失败仍算第五次技术失败，不按工具名豁免 [tool-loop-ask-delivery-failure-counted]", async () => {
+    await standardSetup("deny", "deny", "hold")
+    const restorePublisher = publisherFailingOnChoiceStart()
+    const provider = installFakeProvider([
+      ...Array.from({ length: 4 }, (_, at) => fakeToolCall(FAILING_PROBE_NAME, { at }, `before-emit-${at}`)),
+      fakeToolCall("ask_user", { question: "是否继续？", options: ["继续", "停止"] }, "emit-failure"),
+      fakeText("不应到达"),
+    ])
+    try {
+      const output = await runRuntimeTurn("发起一次界面不可达的提问。")
+      expect(provider.state.callCount).toBe(5)
+      expect(output.failure?.kind).toBe("tool_loop")
+      const entries = await readPiSessionEntriesOnce(getActiveSessionId())
+      expect(entries.find(entry => entry.type === "message" && entry.message.role === "toolResult"
+        && entry.message.toolName === "ask_user")).toMatchObject({ message: { isError: true,
+        details: { deskpetToolOutcome: "failure", errorCode: "failed" },
+      } })
+    } finally { restorePublisher() }
+  }, 60_000)
+
   it("主回合不再有计数上限：7 次调用全部执行、以模型正文自然收尾 [tool-loop-main-no-count-cap]", async () => {
     const provider = installFakeProvider([
       ...Array.from({ length: 7 }, (_, at) => fakeToolCall(PROBE_NAME, { at: at + 1 }, `probe-call-${at + 1}`)),

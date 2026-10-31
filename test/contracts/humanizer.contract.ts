@@ -160,7 +160,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/titlebar.ts",
   ],
   // 2026-10-18 列项答案补全批次：补全在拟人变换之后、提交之前应用；无列项时拟人行为不变，有列项时保留多泡并追加缺失项，定向复核后刷新。
-  sourceHash: "6cf1792aaa7493fcf730c4a3ffb398f453288d26ad547e3c638eea5ce08c89a2",
+  sourceHash: "3b0c7b4dd9de3b1fecac999308d7c0de04baf32ea7a29661ddd68b0c991c36a5",
   coverage: [
     {
       id: "hz-01",

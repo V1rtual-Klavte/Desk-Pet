@@ -22,23 +22,39 @@ import { ToolLoopGuard, toolCallSignature } from "@/services/engine/harness/tool
 const TOOL = "probe_tool"
 
 describe("工具循环病理检测", () => {
+  it("用户取消不累计也不清洗失败，仍受同参重复保护 [tool-loop-guard-user-cancelled]", () => {
+    const guard = new ToolLoopGuard()
+    for (let at = 0; at < 4; at += 1) guard.noteResult("failure")
+    expect(guard.noteResult("user_cancelled")).toEqual({ level: "none" })
+    expect(guard.noteResult("failure"))
+      .toEqual({ level: "hard", reason: { kind: "consecutive_failures", count: 5 } })
+
+    const cancelled = new ToolLoopGuard()
+    for (let at = 0; at < 4; at += 1) {
+      cancelled.noteCall("ask_user", { question: "同一个问题" })
+      expect(cancelled.noteResult("user_cancelled")).toEqual({ level: "none" })
+    }
+    expect(cancelled.noteCall("ask_user", { question: "同一个问题" }))
+      .toEqual({ level: "hard", reason: { kind: "repeated_call", count: 5 } })
+  })
+
   it("连续失败：前两次不动、第 3 次软、第 5 次硬；一次成功打断连击 [tool-loop-guard-failures]", () => {
     const guard = new ToolLoopGuard()
-    expect(guard.noteResult(true), "第 1 次失败不应触发判据").toEqual({ level: "none" })
-    expect(guard.noteResult(true), "第 2 次失败不应触发判据").toEqual({ level: "none" })
+    expect(guard.noteResult("failure"), "第 1 次失败不应触发判据").toEqual({ level: "none" })
+    expect(guard.noteResult("failure"), "第 2 次失败不应触发判据").toEqual({ level: "none" })
 
-    expect(guard.noteResult(true), "第 3 次连续失败应到软提示")
+    expect(guard.noteResult("failure"), "第 3 次连续失败应到软提示")
       .toEqual({ level: "soft", reason: { kind: "consecutive_failures", count: 3 } })
-    expect(guard.noteResult(true), "第 4 次仍应停在软档，不提前终止")
+    expect(guard.noteResult("failure"), "第 4 次仍应停在软档，不提前终止")
       .toEqual({ level: "soft", reason: { kind: "consecutive_failures", count: 4 } })
-    expect(guard.noteResult(true), "第 5 次连续失败应到硬终止")
+    expect(guard.noteResult("failure"), "第 5 次连续失败应到硬终止")
       .toEqual({ level: "hard", reason: { kind: "consecutive_failures", count: 5 } })
 
     // 一次成功打断连击：计数归零，重新累计到 3 才再软。
-    expect(guard.noteResult(false), "成功之后不应仍带失败判据").toEqual({ level: "none" })
-    expect(guard.noteResult(true)).toEqual({ level: "none" })
-    expect(guard.noteResult(true)).toEqual({ level: "none" })
-    expect(guard.noteResult(true), "打断后的第 3 次失败应重新到软档")
+    expect(guard.noteResult("success"), "成功之后不应仍带失败判据").toEqual({ level: "none" })
+    expect(guard.noteResult("failure")).toEqual({ level: "none" })
+    expect(guard.noteResult("failure")).toEqual({ level: "none" })
+    expect(guard.noteResult("failure"), "打断后的第 3 次失败应重新到软档")
       .toEqual({ level: "soft", reason: { kind: "consecutive_failures", count: 3 } })
   })
 
@@ -75,7 +91,7 @@ describe("工具循环病理检测", () => {
   it("失败连击的硬判据在下一次调用门可见；结果侧只报失败连击；同级取失败连击 [tool-loop-guard-mixed]", () => {
     const guard = new ToolLoopGuard()
     // 失败连击到硬（第 5 次），随后模型换了工具/参数：新的调用门仍应拿到硬判据（工具坏掉优先收手）。
-    for (let at = 0; at < 5; at += 1) guard.noteResult(true)
+    for (let at = 0; at < 5; at += 1) guard.noteResult("failure")
     expect(guard.noteCall("another_tool", { fresh: true }), "失败连击已硬，换工具的调用门仍应硬")
       .toEqual({ level: "hard", reason: { kind: "consecutive_failures", count: 5 } })
 
@@ -87,11 +103,11 @@ describe("工具循环病理检测", () => {
       expect(resultSide.noteCall(TOOL, { same: 1 }).level, "前置：同参连击第 5 次应已到硬")
         .toBe(at === 4 ? "hard" : at >= 2 ? "soft" : "none")
     }
-    expect(resultSide.noteResult(true), "结果侧第 1 次失败不应带入同参连击的硬判据")
+    expect(resultSide.noteResult("failure"), "结果侧第 1 次失败不应带入同参连击的硬判据")
       .toEqual({ level: "none" })
-    expect(resultSide.noteResult(true), "结果侧第 2 次失败不应带入同参连击的硬判据")
+    expect(resultSide.noteResult("failure"), "结果侧第 2 次失败不应带入同参连击的硬判据")
       .toEqual({ level: "none" })
-    expect(resultSide.noteResult(true), "结果侧第 3 次失败应只报失败连击的软档（不是同参硬档）")
+    expect(resultSide.noteResult("failure"), "结果侧第 3 次失败应只报失败连击的软档（不是同参硬档）")
       .toEqual({ level: "soft", reason: { kind: "consecutive_failures", count: 3 } })
 
     // 调用门上两条连击同为软（重复 4 次 / 失败 3 次）：同级取失败连击（既定优先序）。
@@ -100,9 +116,9 @@ describe("工具循环病理检测", () => {
     tieBreak.noteCall(TOOL, { same: 1 })
     expect(tieBreak.noteCall(TOOL, { same: 1 }), "前置：同参连击已到软")
       .toEqual({ level: "soft", reason: { kind: "repeated_call", count: 3 } })
-    tieBreak.noteResult(true)
-    tieBreak.noteResult(true)
-    expect(tieBreak.noteResult(true), "前置：失败连击已到软")
+    tieBreak.noteResult("failure")
+    tieBreak.noteResult("failure")
+    expect(tieBreak.noteResult("failure"), "前置：失败连击已到软")
       .toEqual({ level: "soft", reason: { kind: "consecutive_failures", count: 3 } })
     expect(tieBreak.noteCall(TOOL, { same: 1 }), "两条连击同为软时调用门应取失败连击")
       .toEqual({ level: "soft", reason: { kind: "consecutive_failures", count: 3 } })
@@ -114,7 +130,7 @@ describe("工具循环病理检测", () => {
     first.noteCall(TOOL, { same: 1 })
     expect(first.noteCall(TOOL, { same: 1 }), "第 3 次同参调用应到软")
       .toEqual({ level: "soft", reason: { kind: "repeated_call", count: 3 } })
-    for (let at = 0; at < 5; at += 1) first.noteResult(true)
+    for (let at = 0; at < 5; at += 1) first.noteResult("failure")
 
     // 下一回合是全新实例：同样的调用序列从零累计，不继承上一回合的连击。
     const second = new ToolLoopGuard()
@@ -122,6 +138,6 @@ describe("工具循环病理检测", () => {
     expect(second.noteCall(TOOL, { same: 1 })).toEqual({ level: "none" })
     expect(second.noteCall(TOOL, { same: 1 }), "新回合里的第 3 次同参调用应重新到软")
       .toEqual({ level: "soft", reason: { kind: "repeated_call", count: 3 } })
-    expect(second.noteResult(true), "新回合不应继承失败连击").toEqual({ level: "none" })
+    expect(second.noteResult("failure"), "新回合不应继承失败连击").toEqual({ level: "none" })
   })
 })

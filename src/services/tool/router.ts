@@ -126,6 +126,10 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
       return audit(result, "success")
     }
 
+    if (result.errorCode === "user_cancelled") {
+      log.info("用户取消工具交互:", toolName, "|", result.error)
+      return audit(result, "cancelled")
+    }
     log.warn("工具失败:", toolName, "| 耗时:", Date.now() - startedAt, "ms | 预算:", timeout, "ms |", result.error)
     return audit(result, "failed")
   } catch (e) {
