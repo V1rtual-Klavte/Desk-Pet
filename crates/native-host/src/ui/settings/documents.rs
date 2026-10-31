@@ -436,7 +436,8 @@ mod tests {
     use crate::ui::settings::*;
 
     /// macOS 平台源码（P3 起是目录）：跨平台守门按**整套目录源码**扫描，
-    /// 只看 `mod.rs` 会漏掉 `content/` 里的渲染点。Windows 侧仍是单文件。
+    /// 只看 `mod.rs` 会漏掉 `content/` 里的渲染点。Windows 侧门禁只读 `mod.rs`
+    /// （面板生命周期与渲染入口保留在该文件）。
     const MACOS_SOURCES: &str = concat!(
         include_str!("../platform/macos_settings/mod.rs"),
         include_str!("../platform/macos_settings/layout.rs"),
@@ -557,11 +558,11 @@ mod tests {
     #[test]
     fn 两平台设置页都渲染记忆说明常量() {
         const MACOS: &str = MACOS_SOURCES;
-        const WINDOWS: &str = include_str!("../platform/windows_settings.rs");
+        const WINDOWS: &str = include_str!("../platform/windows_settings/mod.rs");
         let needle = concat!("MEMORY", "_TIP");
         for (name, source) in [
             ("macos_settings/", MACOS),
-            ("windows_settings.rs", WINDOWS),
+            ("windows_settings/", WINDOWS),
         ] {
             assert!(
                 source.contains(needle),
@@ -578,11 +579,11 @@ mod tests {
     #[test]
     fn 两平台设置页都渲染记忆分页视图() {
         const MACOS: &str = MACOS_SOURCES;
-        const WINDOWS: &str = include_str!("../platform/windows_settings.rs");
+        const WINDOWS: &str = include_str!("../platform/windows_settings/mod.rs");
         let needle = concat!("memory_items", "_view");
         for (name, source) in [
             ("macos_settings/", MACOS),
-            ("windows_settings.rs", WINDOWS),
+            ("windows_settings/", WINDOWS),
         ] {
             assert!(
                 source.contains(needle),
