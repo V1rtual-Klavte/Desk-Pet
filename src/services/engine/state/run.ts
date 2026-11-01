@@ -10,11 +10,16 @@ import type { CompactionAuditSink, RuntimeTraceContext } from "@/services/engine
 /** 回合内共享的聚合状态：由宿主创建，槽在事件处理中填充。 */
 export interface HarnessRunState {
   /**
-   * 本回合是否命中工具循环治理（三种出口共用此一枚标志，后续工具一律拦截；主回合若有
-   * 已提交的终态收尾则正常交付，否则走 `toolLoopMaxRounds` 兜底）：① 子运行计数封顶（`maxToolCalls`）；② 同参连击硬阈值
-   * （调用门 `block + terminate`）；③ 失败连击硬阈值（结果侧 `after_tool` 的 `terminate`）。
+   * 本回合是否命中工具循环治理（同参连击 / 失败连击的硬阈值，或预算耗尽后的收尾生成仍继续调工具；
+   * 后续工具一律拦截。主回合若有已提交的终态收尾则正常交付，否则走 `toolLoopMaxRounds` 兜底）。
    */
   stoppedByToolGovernance: boolean
+  /**
+   * 工具调用计次上限已命中（软着陆）：越界调用被拒，但运行仍允许一次收尾生成；
+   * 只有收尾生成里再次调用工具才置 `stoppedByToolGovernance` 并硬终止。
+   * 子运行据此把 `toolBudgetExhausted` 交给业务侧（预算耗尽不算 complete）。
+   */
+  toolBudgetExhausted: boolean
   /** 由命中治理的分支记录真实原因，不从 Card 兜底台词反推。 */
   toolGovernanceReason?: string
   toolCallsMade: number
@@ -49,7 +54,7 @@ export interface HarnessRunState {
 }
 
 export function createHarnessRunState(): HarnessRunState {
-  return { stoppedByToolGovernance: false, toolCallsMade: 0, retriesUsed: 0, undelivered: [] }
+  return { stoppedByToolGovernance: false, toolBudgetExhausted: false, toolCallsMade: 0, retriesUsed: 0, undelivered: [] }
 }
 
 /** 宿主注入的行为：权限、结果元数据、投影与观测。 */

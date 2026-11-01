@@ -274,10 +274,13 @@ interface Config {
       maxSessions: number
     }
     plan: {
+      /** 仅控制显式 /plan 入口；普通请求由主模型决定是否调用 propose_plan。 */
       enabled: boolean
       maxSteps: number
-      stepTimeoutMs: number
-      stepMaxRounds: number
+      /** 计划级时限（毫秒）；用户等待期不计入。 */
+      planTimeoutMs: number
+      /** 单步子代理的软性工具调用上限（计次，不是轮次）。 */
+      stepMaxToolCalls: number
       thinkingEffort: string
       stepThinkingEffort: string
       onStepFailure: string
@@ -857,10 +860,10 @@ export const memoryConfig = {
 export const planConfig = {
   get enabled() { return overrideOr("ai.plan.enabled", cfg.ai?.plan?.enabled ?? true); },
   get maxSteps() { return overrideOr("ai.plan.maxSteps", cfg.ai?.plan?.maxSteps ?? 8); },
-  /** 单个计划步骤的墙钟（`ai.plan.stepTimeoutMs`）。计划由用户在场批准，步骤里可能出现长命令：
-   *  90s 会在 bash 档位（5 分钟）之下形成隐形截断，2026-10-06 按 bash 档位对齐到 300s。 */
-  get stepTimeoutMs() { return overrideOr("ai.plan.stepTimeoutMs", cfg.ai?.plan?.stepTimeoutMs ?? 300000); },
-  get stepMaxRounds() { return overrideOr("ai.plan.stepMaxRounds", cfg.ai?.plan?.stepMaxRounds ?? 5); },
+  /** 计划级时限（`ai.plan.planTimeoutMs`，默认 2h）：取代按步墙钟，用户等待期不计入。 */
+  get planTimeoutMs() { return overrideOr("ai.plan.planTimeoutMs", cfg.ai?.plan?.planTimeoutMs ?? 7200000); },
+  /** 单步子代理的软性工具调用上限（`ai.plan.stepMaxToolCalls`，计次不是轮次；命中后允许收尾生成）。 */
+  get stepMaxToolCalls() { return overrideOr("ai.plan.stepMaxToolCalls", cfg.ai?.plan?.stepMaxToolCalls ?? 100); },
   get thinkingEffort() { return overrideOr("ai.plan.thinkingEffort", cfg.ai?.plan?.thinkingEffort || "medium") as import("@/services/agent/types").ThinkingEffort; },
   get stepThinkingEffort() { return overrideOr("ai.plan.stepThinkingEffort", cfg.ai?.plan?.stepThinkingEffort || "low") as import("@/services/agent/types").ThinkingEffort; },
   get onStepFailure() { return overrideOr("ai.plan.onStepFailure", cfg.ai?.plan?.onStepFailure || "continue") as "continue" | "abort" | "ask"; },

@@ -10,8 +10,8 @@ import type { FailureKind } from "@/services/error/failure-kind"
 interface PiAgentTurnBase {
   sessionId: string
   /**
-   * 按文本工作的环节（显式计划、记忆召回）用它。技能准入传用户敲下的原文：
-   * 正文由 Harness 从技能文件构造，宿主这里没有别的东西可以代表「这次输入是什么」。
+   * 按文本工作的环节（计划目标、记忆召回）用它。计划入口的前缀由 slash 命令层消化，
+   * 这里收到的是目标正文；技能准入传用户敲下的原文。
    */
   userText: string
   /**
@@ -23,6 +23,11 @@ interface PiAgentTurnBase {
   isActiveMessage?: boolean
   /** A per-turn capability policy, independent of proactive-message semantics. */
   toolMode?: "none"
+  /**
+   * 显式 `/plan` 入口标记：预处理器已把 `/plan` 前缀消掉，`userText` 就是计划目标。
+   * 只有用户输入支会置位；技能准入支没有正文，恒为 undefined。
+   */
+  planRequested?: true
   activeRequest?: ActiveMessageRequest
   turnContext?: ProactiveTurnContext
   runGeneration?: number

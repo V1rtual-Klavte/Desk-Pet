@@ -92,12 +92,13 @@ ai:
     maxSessions: 20
 
   plan:
-    # 仅控制显式 --plan 入口；普通请求由主模型决定是否调用 propose_plan。
+    # 仅控制显式 /plan 入口；普通请求由主模型决定是否调用 propose_plan。
     enabled: true
     maxSteps: 8
-    # 单个计划步骤的墙钟；计划由用户在场批准，按 bash 档位（5 分钟）对齐，避免 90s 截断长命令。
-    stepTimeoutMs: 300000
-    stepMaxRounds: 5
+    # 计划级时限 2h（毫秒）；用户等待期（确认、逐步门、失败询问）不计入。
+    planTimeoutMs: 7200000
+    # 单步子代理的工具调用上限：计次，不是轮次；命中后禁止继续调工具，但允许一次收尾生成。
+    stepMaxToolCalls: 100
     thinkingEffort: medium
     stepThinkingEffort: low
     onStepFailure: continue

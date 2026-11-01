@@ -56,10 +56,11 @@ const ALLOWED = {
   runtime: new Set(["protocol", "state", "harness", "plan", "runtime"]),
 }
 
-// plan → harness 仅允许两条按需边：步骤子代理内核与一次性文本调用（planner 调模型生成计划）。
-// plan 的静态图仍只依赖 protocol/state —— 这两条 import() 都不产生静态边。
+// plan → harness 仅允许按需边：计划生成/步骤执行（planner）与只读核验（verifier）。
+// 两条 import() 都不产生静态边，plan 的静态图仍只依赖 protocol/state。
 const DYNAMIC_ALLOW = new Map([
   ["planner.ts", new Set(["@/services/engine/harness/subagent", "@/services/engine/harness/model-gateway"])],
+  ["plan/verifier.ts", new Set(["@/services/engine/harness/subagent"])],
 ])
 
 function walk(dir, out = []) {

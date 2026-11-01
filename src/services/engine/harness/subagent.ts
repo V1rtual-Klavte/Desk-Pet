@@ -70,7 +70,13 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   const history: PiAgentTurnOutput["toolCallHistory"] = []
   const thinkingEffort = input.thinkingEffort ?? "low"
   const maxToolCalls = input.maxToolCalls ?? SUB_AGENT_DEFAULT_MAX_TOOL_CALLS
-  const deadlineAt = Math.min(input.deadlineAt ?? Infinity, Date.now() + (input.timeoutMs ?? SUB_AGENT_DEFAULT_TIMEOUT_MS))
+  // 时限优先级：调用方的 `deadlineAt` 是权威值（计划级预算），只有同时给了 `timeoutMs`
+  // 才取两者更早者；都没给才退回 60s 默认。计算一次后下游（resolved/提示/准入）共用它。
+  const startedAt = Date.now()
+  const timeoutDeadline = input.timeoutMs === undefined ? undefined : startedAt + input.timeoutMs
+  const deadlineAt = input.deadlineAt === undefined
+    ? timeoutDeadline ?? startedAt + SUB_AGENT_DEFAULT_TIMEOUT_MS
+    : timeoutDeadline === undefined ? input.deadlineAt : Math.min(input.deadlineAt, timeoutDeadline)
   const generation = owner.kind === "scheduled" ? owner.taskVersion : owner.runGeneration
   const background = input.permissionMode
     ? input.permissionMode === "background"
@@ -190,6 +196,7 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
       ...(input.disableAutomaticCompaction ? { disableAutomaticCompaction: true } : {}),
     }))
     output.toolCallsMade = kernel.state.toolCallsMade
+    if (kernel.state.toolBudgetExhausted) evidence.toolBudgetExhausted = true
     if (kernel.state.usage) output.usage = { ...kernel.state.usage }
     for (const row of history) {
       if (!evidence.tools.some(item => item.toolName === row.toolName && item.status === row.status)) evidence.tools.push({ toolName: row.toolName, status: row.status })
@@ -203,8 +210,16 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     const reply = finalAssistant ? contentText(finalAssistant.content) : ""
     const raw = kernel.rawTextForSettledReply(reply)
     output = { ...output, status: "completed", reply, ...(raw !== reply ? { rawReply: raw } : {}) }
-    if (!reply.trim() || kernel.state.stoppedByToolGovernance) {
-      output.error = kernel.state.stoppedByToolGovernance ? "子运行达到工具治理上限，工作未完成" : "子运行没有返回结果"
+    // 预算耗尽走软着陆：收尾正文是有效产出，计划步骤仍要解析它（outcome / 核验器），
+    // 但「正文可解析」不等于「工作完成」—— 统一在此把 success 置 false，
+    // 免得主动规划、子代理、定时任务把半截收尾当成功交付。
+    if (!reply.trim()) {
+      output.error = "子运行没有返回结果"
+      evidence.incomplete.push(output.error)
+      return output
+    }
+    if (kernel.state.stoppedByToolGovernance) {
+      output.error = "子运行达到工具治理上限，工作未完成"
       evidence.incomplete.push(output.error)
       return output
     }
@@ -216,6 +231,10 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     if (!current()) return output = { ...output, status: "cancelled", error: "子运行 owner 已失效或取消" }
     output.success = accepted === true
     if (!output.success) output.error = typeof accepted === "string" ? accepted : "子运行产物未通过验收"
+    if (output.success && kernel.state.toolBudgetExhausted) {
+      output.success = false
+      output.error = "工具调用预算耗尽，工作未完成"
+    }
     return output
   } catch (error) {
     log.warn("子运行失败:", { runId: owner.runId, owner: owner.kind }, formatError(error))

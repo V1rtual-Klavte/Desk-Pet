@@ -223,6 +223,11 @@ export class HarnessSlot {
   private readonly turnDeadline = createPausableDeadline(() => { void this.abort(ABORT_REASON_TIMEOUT) })
   /** 该槽当前是否处于用户等待挂起态（起表时决定「以挂起态起步」；见 `setUserWaitHeld`）。 */
   private userWaitHeld = false
+  /**
+   * 委托型长任务对回合墙钟的挂起计数（`holdTurnClock`）。与用户等待分开登记：
+   * 用户等待要从计划时钟里扣除，而计划执行本身必须计入计划时限 —— 不能共用一张表。
+   */
+  private turnClockHolds = 0
   private abortReason?: HarnessAbortReason
   private runAbortController = new AbortController()
 
@@ -1359,6 +1364,8 @@ export class HarnessSlot {
     this.lastSystemPrompt = spec.systemPrompt
     this.abortReason = undefined
     this.clearTimer()
+    // 委托挂起只在所属回合内有效：上一回合漏下的挂起不允许压住下一次运行的墙钟。
+    this.turnClockHolds = 0
     this.turnDeadline.start(Math.max(1, spec.timeoutMs))
     // 起表时该会话已在等用户（罕见：上一相位遗留的等待，或本轮等待先于本条 run 起表）：
     // 以挂起态起步，用户思考期间不计入墙钟。
@@ -1613,8 +1620,29 @@ export class HarnessSlot {
    */
   setUserWaitHeld(waiting: boolean): void {
     this.userWaitHeld = waiting
+    this.applyTurnClockHold()
+  }
+
+  /**
+   * 委托型长任务（`propose_plan` 的计划执行与核验）挂起回合墙钟；返回幂等的释放函数。
+   * 与用户等待不同，这里不登记 `state/user-wait.ts`：计划时钟必须继续走，否则计划级
+   * 2h 时限会被自己的执行时长冻结住。
+   */
+  holdTurnClock(): () => void {
+    this.turnClockHolds++
+    this.applyTurnClockHold()
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.turnClockHolds = Math.max(0, this.turnClockHolds - 1)
+      this.applyTurnClockHold()
+    }
+  }
+
+  private applyTurnClockHold(): void {
     if (!this.activeRun) return
-    if (waiting) this.turnDeadline.hold()
+    if (this.userWaitHeld || this.turnClockHolds > 0) this.turnDeadline.hold()
     else this.turnDeadline.resume()
   }
 

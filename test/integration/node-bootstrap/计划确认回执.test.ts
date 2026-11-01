@@ -54,8 +54,16 @@ function receiveReceipt(event: string, payload: unknown): void {
   handler?.(payload)
 }
 
-const PLAN: PlanResult = { steps: [{ id: 1, description: "第一步", allowedTools: ["read"] }], summary: "探针计划", estimatedComplexity: 3 }
-const STEP: PlanStep = { id: 1, description: "第一步" }
+const PLAN: PlanResult = {
+  steps: [{
+    id: 1, description: "第一步", allowedTools: ["read"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过",
+  }],
+  summary: "探针计划",
+  estimatedComplexity: 3,
+}
+const STEP: PlanStep = {
+  id: 1, description: "第一步", allowedTools: ["read"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过",
+}
 
 beforeAll(() => {
   // harness 引导的等价物：订阅安装一次（幂等）；安装后一直有效。
@@ -89,7 +97,8 @@ describe("计划确认回执", () => {
     receiveReceipt("deskpet-plan-confirm-resolved", { planId: "p-unknown", result: { confirmed: true, mode: "auto" } })
     await Promise.resolve()
     expect(settled).toBe("pending")
-    expect(planConfirmState.pending?.planId).toBe("p-known")
+    // 待确认视图在 PLAN_START 送达后才暴露（保证进度事件不会先于起点到达面板）。
+    await vi.waitFor(() => { expect(planConfirmState.pending?.planId).toBe("p-known") })
 
     // 收尾：用正确的 planId 结算，不留悬挂的确认与定时器。
     receiveReceipt("deskpet-plan-confirm-resolved", { planId: "p-known", result: { confirmed: false, reason: "user" } })

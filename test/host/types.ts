@@ -43,7 +43,7 @@ export interface ConfirmRecord {
 
 /**
  * 一次计划确认的记录。字段取确认当时的真实视图：
- * `steps` 是**截断后**（`maxSteps` 生效后）的计划步数，`mode` 是一次性答复给出的执行方式。
+ * `steps` 是计划的实际步数（超过 `maxSteps` 在准入阶段拒绝，不存在截断），`mode` 是一次性答复给出的执行方式。
  */
 export interface PlanConfirmRecord {
   planId: string

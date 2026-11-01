@@ -298,6 +298,8 @@ interface TurnInvocation {
    * 正文与那条 `role:"user"` 条目由 Harness 在 `accept` 内按技能文件构造并提交。
    */
   skillAdmission?: SlashSkillAdmission
+  /** 显式 `/plan`：目标正文已由预处理放进 `userText`，这里只传标记。 */
+  planRequested?: true
   /**
    * 输入已落盘后的记账（普通输入推用户气泡、清未回复计数）；继续暂停输入不需要
    * （暂停输入在排队时已展示）。记账晚于落盘：未获准入时不会先画一条不存在于会话里的气泡。
@@ -320,6 +322,7 @@ async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutpu
     unansweredCount: unansweredCount.value,
     isActiveMessage: false,
     ...(invocation.toolMode ? { toolMode: invocation.toolMode } : {}),
+    ...(invocation.planRequested ? { planRequested: true as const } : {}),
     runGeneration,
     ...(invocation.onInputAdmitted ? { onInputAdmitted: invocation.onInputAdmitted } : {}),
     ...(invocation.turnContext ? { turnContext: invocation.turnContext } : {}),
@@ -610,6 +613,16 @@ async function dispatchMessageInner(
     }
   }
 
+  if (preResult.planRequest && options.toolMode === "none") {
+    // 计划相位要生成并执行带工具的子代理：无工具回合给不了，明确拒绝而不是静默降级成普通聊天。
+    const notice = "计划需要工具能力，无工具回合不能执行 /plan"
+    pushSystemMessage(notice, originSessionId)
+    return {
+      reply: notice, toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [],
+      failure: { kind: "admission", message: notice },
+    }
+  }
+
   const runGeneration = harnessSlots.begin(originSessionId)
   if (runGeneration === undefined) {
     // 罕见竞态（投递失败后槽仍被占用）或槽已 fault：不抛给 UI，按「未发送」如实告知。
@@ -682,6 +695,7 @@ async function dispatchMessageInner(
       runGeneration,
       userText: preResult.text,
       ...(options.toolMode ? { toolMode: options.toolMode } : {}),
+      ...(preResult.planRequest ? { planRequested: true as const } : {}),
       ...(turnContext ? { turnContext } : {}),
       ...turnDelivery(),
     })

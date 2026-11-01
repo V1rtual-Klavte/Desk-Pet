@@ -25,6 +25,8 @@ import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import type { PlanStep } from "@/services/engine"
+// 零依赖叶子：直连工作单模块，避免 tool → engine barrel → planner → tool 的运行时环。
+import { type PlanWorkOrder, validateWorkOrderFields } from "@/services/engine/plan/work-order"
 
 const log = createLogger("ToolPlan")
 
@@ -39,9 +41,9 @@ type PlanAdmission =
 /**
  * 参数准入（Schema 校验之后的语义校验）。拒绝理由必须点名到步，模型据此改参再试：
  *   · steps 非空、不超过 `ai.plan.maxSteps`（超出不静默截断 —— 截断会让模型以为全部步骤都会跑）；
- *   · 每步至少给出 description 或 title（标题与说明同供时组合为「标题：说明」）；
- *   · allowedTools 给了就必须全部解析得到、且不是派生型工具（解析不到等于这一步的权限面不可信）；
- *   · dependsOn 只能引用更早的步骤 id（依赖步骤失败时本步会被跳过，不能引用未来或自身）。
+ *   · 每步必须给出工作单：description/inputs/deliverable/acceptance 与 allowedTools 都不可缺；
+ *   · allowedTools 必须显式声明（缺省不再放大到全部工具），且全部解析得到、不是派生型工具；
+ *   · dependsOn 只能引用更早的步骤 id（依赖步骤未完成时本步会落 blocked，不能引用未来或自身）。
  *
  * 计划目标不在模型参数里：`intent` 只取本轮可信用户原文（`ctx.trustedUserText`），
  * 模型转述不能替换用户事实；没有用户原文时退回计划摘要。
@@ -59,7 +61,7 @@ function admitPlan(params: Record<string, unknown>, trustedUserText: string | un
   for (const [index, item] of raw.entries()) {
     const at = index + 1
     if (!item || typeof item !== "object" || Array.isArray(item)) {
-      return { ok: false, reason: `第 ${at} 步不是对象（需要 description 或 title）` }
+      return { ok: false, reason: `第 ${at} 步不是对象（需要 description 等字段）` }
     }
     const row = item as Record<string, unknown>
     if (row.title !== undefined && typeof row.title !== "string") {
@@ -70,25 +72,39 @@ function admitPlan(params: Record<string, unknown>, trustedUserText: string | un
     }
     const description = typeof row.description === "string" ? row.description.trim() : ""
     const title = typeof row.title === "string" ? row.title.trim() : ""
-    if (description === "" && title === "") {
+    if (description === "") {
       return { ok: false, reason: `第 ${at} 步缺少 description（这一步要做什么）` }
     }
-    let allowedTools: string[] | undefined
-    if (row.allowedTools !== undefined) {
-      if (!Array.isArray(row.allowedTools) || row.allowedTools.length === 0
-        || row.allowedTools.some(name => typeof name !== "string" || name.trim() === "")) {
-        return { ok: false, reason: `第 ${at} 步的 allowedTools 必须是非空工具名数组（不限定工具请省略它）` }
-      }
-      const names = row.allowedTools.map(name => (name as string).trim())
-      const missing = names.filter(name => !getToolByName(name))
-      if (missing.length > 0) {
-        return { ok: false, reason: `第 ${at} 步指定的工具不存在: ${missing.join("、")}` }
-      }
-      const derived = names.filter(name => getToolByName(name)?.policy.execution.isolation === "delegate")
-      if (derived.length > 0) {
-        return { ok: false, reason: `第 ${at} 步指定的工具不可用于子代理: ${derived.join("、")}` }
-      }
-      allowedTools = names
+    // 权限面必须显式声明：缺省放大到全部工具会让每一步都能做用户没批准过的事。
+    if (row.allowedTools === undefined) {
+      return { ok: false, reason: `第 ${at} 步缺少 allowedTools：这一步的权限面必须显式声明` }
+    }
+    if (!Array.isArray(row.allowedTools) || row.allowedTools.length === 0
+      || row.allowedTools.some(name => typeof name !== "string" || name.trim() === "")) {
+      return { ok: false, reason: `第 ${at} 步的 allowedTools 必须是非空工具名数组：这一步的权限面必须显式声明` }
+    }
+    const allowedTools = row.allowedTools.map(name => (name as string).trim())
+    const inputs = typeof row.inputs === "string" ? row.inputs.trim() : ""
+    const deliverable = typeof row.deliverable === "string" ? row.deliverable.trim() : ""
+    const acceptance = typeof row.acceptance === "string" ? row.acceptance.trim() : ""
+    const nonGoals = typeof row.nonGoals === "string" ? row.nonGoals.trim() : ""
+    const workOrder: PlanWorkOrder = {
+      description,
+      allowedTools,
+      inputs,
+      deliverable,
+      acceptance,
+      ...(nonGoals !== "" ? { nonGoals } : {}),
+    }
+    const invalidFields = validateWorkOrderFields(workOrder, at)
+    if (invalidFields) return { ok: false, reason: invalidFields }
+    const missing = allowedTools.filter(name => !getToolByName(name))
+    if (missing.length > 0) {
+      return { ok: false, reason: `第 ${at} 步指定的工具不存在: ${missing.join("、")}` }
+    }
+    const derived = allowedTools.filter(name => getToolByName(name)?.policy.execution.isolation === "delegate")
+    if (derived.length > 0) {
+      return { ok: false, reason: `第 ${at} 步指定的工具不可用于子代理: ${derived.join("、")}` }
     }
     let dependsOn: number[] | undefined
     if (row.dependsOn !== undefined) {
@@ -106,11 +122,15 @@ function admitPlan(params: Record<string, unknown>, trustedUserText: string | un
     const role = typeof row.role === "string" ? row.role.trim() : ""
     steps.push({
       id: at,
-      // 标题是给面板的短记；与说明同一个字段承载（既有计划模型只有一个步骤文本字段）。
-      description: title !== "" && description !== "" && title !== description ? `${title}：${description}` : (description || title),
+      // 标题是给面板的短记；与说明同供时组合为「标题：说明」。
+      description: title !== "" && title !== description ? `${title}：${description}` : description,
       ...(role !== "" ? { role } : {}),
-      ...(allowedTools ? { allowedTools } : {}),
+      allowedTools,
       ...(dependsOn ? { dependsOn } : {}),
+      inputs,
+      deliverable,
+      acceptance,
+      ...(nonGoals !== "" ? { nonGoals } : {}),
     })
   }
   const summary = typeof params.summary === "string" && params.summary.trim() !== "" ? params.summary.trim() : "执行计划"
@@ -123,7 +143,7 @@ const proposePlanTool: ToolDef = defineTool({
   id: "local-propose-plan",
   name: PROPOSE_PLAN_TOOL,
   description:
-    "向用户提议一个多步骤执行计划并请求确认：用户在你的计划面板点「开始」后，系统逐步执行（每步由子代理完成）并按步骤返回执行结果；步骤可用 dependsOn 声明对更早步骤的依赖（依赖未完成时该步跳过并说明原因）；用户取消或计划面板不可用时不执行任何步骤，结果会如实说明。需要用户确认的多步操作必须用本工具请求确认，不要用 osascript / display dialog 等 GUI 弹窗命令等待用户输入（弹窗会因工具超时而变成孤儿窗口，确认也到不了用户面前）。",
+    "向用户提议一个多步骤执行计划并请求确认：用户在你的计划面板点「开始」后，系统逐步执行（每步由子代理完成）并按步骤返回执行结果；每步必须给出交付物与验收标准，并用 dependsOn 声明对更早步骤的依赖（依赖未完成时该步落 blocked 并说明原因）；用户取消或计划面板不可用时不执行任何步骤，结果会如实说明。需要用户确认的多步操作必须用本工具请求确认，不要用 osascript / display dialog 等 GUI 弹窗命令等待用户输入（弹窗会因工具超时而变成孤儿窗口，确认也到不了用户面前）。",
   parameters: {
     type: "object",
     properties: {
@@ -134,12 +154,17 @@ const proposePlanTool: ToolDef = defineTool({
         items: {
           type: "object",
           properties: {
-            description: { type: "string", description: "这一步要做什么（与 title 至少给一个；同时作为面板文本与该步执行子代理的任务）" },
+            description: { type: "string", description: "这一步要做什么（同时作为面板文本与该步执行子代理的任务）" },
             title: { type: "string", description: "短标题（可选）：与 description 同时给出时组合为「标题：说明」" },
             role: { type: "string", description: "该步子代理的角色名（可选，如 文件分析员）" },
-            allowedTools: { type: "array", items: { type: "string" }, description: "该步允许使用的工具名（可选；缺省为除派生型工具外的全部已注册工具）" },
-            dependsOn: { type: "array", items: { type: "integer" }, description: "该步依赖的更早步骤 id（可选；依赖步骤未完成时本步会被跳过）" },
+            inputs: { type: "string", description: "这一步需要的输入（依赖步骤用 id 指明）" },
+            deliverable: { type: "string", description: "这一步的交付物（文件 / 结论 / 检查结果）" },
+            acceptance: { type: "string", description: "可检查的验收条目，一行一条" },
+            nonGoals: { type: "string", description: "本步明确不做什么（可选，用于防跑偏）" },
+            allowedTools: { type: "array", items: { type: "string" }, description: "该步允许使用的工具名（必填、非空；权限面必须显式声明）" },
+            dependsOn: { type: "array", items: { type: "integer" }, description: "该步依赖的更早步骤 id（可选；依赖未完成时本步落 blocked）" },
           },
+          required: ["description", "inputs", "deliverable", "acceptance", "allowedTools"],
         },
       },
       summary: { type: "string", description: "一句话概述计划（可选）" },
@@ -156,7 +181,8 @@ const proposePlanTool: ToolDef = defineTool({
   // 计划有外部副作用，崩溃后不自动重放（恢复走 planCheckpointStore 的显式「继续」入口）。
   // 执行超时 `null`（不设本工具的执行预算）：handler 的相位由「用户确认（想多久想多久，
   // 2026-10-06 用户裁决不留超时）+ 计划执行（executePlan 自带 `deadlineAt` 时限）」组成，
-  // 没有有限的预算能覆盖两段；外层兜底是回合墙钟（等待期已豁免，见 engine/state/user-wait.ts）。
+  // 没有有限的预算能覆盖两段；外层兜底是回合墙钟 —— 确认期的用户等待与执行核验期的
+  // 委托挂起（`HarnessSlot.holdTurnClock`）都会暂停它，见 engine/state/user-wait.ts。
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },

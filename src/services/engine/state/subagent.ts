@@ -77,6 +77,8 @@ export interface PiSubAgentEvidence {
   incomplete: string[]
   /** A failed/cancelled non-read call may have left effects before its receipt (local mutation / process / external). */
   unconfirmedEffects: boolean
+  /** 工具调用预算耗尽：允许收尾生成，但任何产出都不得自称 complete（由 Harness 侧置位）。 */
+  toolBudgetExhausted?: boolean
 }
 
 export interface PiSubAgentOutput {

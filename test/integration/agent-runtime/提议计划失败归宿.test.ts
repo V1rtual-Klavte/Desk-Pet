@@ -91,7 +91,10 @@ function toolContext(toolCallId: string): ToolContext {
   }
 }
 
-const ONE_STEP = [{ description: "读一份文件", allowedTools: ["read"] }]
+const ONE_STEP = [{
+  description: "读一份文件", allowedTools: ["read"],
+  inputs: "一份文件", deliverable: "文件内容", acceptance: "读到内容",
+}]
 
 describe("提议计划的非确认归宿", () => {
   it("面板不可用：如实返回、计划落 interrupted、步骤保持 pending、面板收起 [plan-tool-panel-unavailable]", async () => {

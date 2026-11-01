@@ -13,9 +13,10 @@
 // provider 的响应队列顺序就是逐次请求的顺序（faux provider 按队列交付）：
 //   1. 计划生成（`completePiText`）→ 计划 JSON（1 步，步内只给 live 工具）；
 //   2. 步骤子代理第 1 轮 → 工具调用（TOOL_NAME）；
-//   3. 步骤子代理第 2 轮 → 最终回复带 RUNTIME_DATA（被剥离，原始正文进 plan_step_result）；
-//   4. 主回合第 1 轮 → 工具调用（TOOL_NAME）；
-//   5. 主回合第 2 轮 → 最终回复带 RUNTIME_DATA（断言 A 的写入来源）。
+//   3. 步骤子代理第 2 轮 → 结构化产出（JSON 在前）+ RUNTIME_DATA（被剥离，原始正文进 plan_step_result）；
+//   4. 计划核验 → pass（步骤有 complete 声明才会运行）；
+//   5. 主回合第 1 轮 → 工具调用（TOOL_NAME）；
+//   6. 主回合第 2 轮 → 最终回复带 RUNTIME_DATA（断言 A 的写入来源）。
 // 注意第 1 条：计划生成本身也是一次 provider 请求，不先喂计划 JSON 就会拿到空计划，
 // 计划段直接跳过（原任务草案的 3 条响应脚本缺这一条）。
 //
@@ -49,7 +50,7 @@ import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-
 import type { AssertCheck, SceneDef } from "../../../e2e/types"
 
 const TOOL_NAME = "live_plan_write_tool"
-const USER_TEXT = "--plan 帮我分析一下配置文件"
+const USER_TEXT = "/plan 帮我分析一下配置文件"
 /** 主回合载荷值：断言 A 的期望值。 */
 const MAIN_VALUE = "计划写入值"
 /** 步骤载荷值：只允许出现在 plan_step_result 里，不得进变量池。 */
@@ -100,11 +101,21 @@ async function stepResults(sessionId: string): Promise<PlanStepResult[]> {
   return results
 }
 
+/** 步骤产出契约：只有 complete 才会让计划判完成，核验器也才会运行。 */
+function stepComplete(summary: string): string {
+  return JSON.stringify({ status: "complete", summary })
+}
+/** 计划核验器的确定性应答。 */
+function planVerified(verdict: "pass" | "partial" | "fail", summary = "核验完成"): string {
+  return JSON.stringify({ verdict, reasons: [], missing: [], drift: [], summary })
+}
+
 /** 计划 JSON：1 步，步内只给 live 工具（allow 默认的工具，不需要确认）。 */
 function planJson(): string {
   const plan = {
     summary: "分析配置文件",
-    steps: [{ id: 1, description: "读取并汇总配置文件", role: "文件分析员", allowedTools: [TOOL_NAME] }],
+    steps: [{ id: 1, description: "读取并汇总配置文件", role: "文件分析员", allowedTools: [TOOL_NAME],
+      inputs: "配置文件", deliverable: "配置分析结论", acceptance: "结论覆盖配置要点" }],
     estimatedComplexity: 3,
   }
   return ["```json", JSON.stringify(plan), "```"].join("\n")
@@ -248,7 +259,8 @@ export const 计划步骤变量写入: SceneDef = {
     installFakeProvider([
       fakeText(planJson()),
       fakeToolCall(TOOL_NAME, {}, "plan-step-call"),
-      fakeText(`${STEP_REPLY_TEXT} ${runtimeDataBlock(name, STEP_VALUE)}`),
+      fakeText(`${stepComplete(STEP_REPLY_TEXT)} ${runtimeDataBlock(name, STEP_VALUE)}`),
+      fakeText(planVerified("pass")),
       fakeToolCall(TOOL_NAME, {}, "main-turn-call"),
       fakeText(`${REPLY_TEXT} ${runtimeDataBlock(name, MAIN_VALUE)}`),
     ])

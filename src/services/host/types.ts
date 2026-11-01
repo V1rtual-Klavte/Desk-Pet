@@ -1915,7 +1915,8 @@ export type HostEventMap = {
   }
   /**
    * 计划步骤进度（runtime/plan-phase.ts、runtime/plan-proposal.ts）。消费方是原生 UI 的计划确认面板，按
-   * stepId/total/status 消费；desc 是生产端补充说明，一并冻结。
+   * stepId/total/status 消费；desc 是生产端补充说明，一并冻结。`partial` / `blocked` 由
+   * 计划步骤的结构化产出产生（`onStepDone` / `onStepBlocked`），原生面板以 `~~` / `//` 记号展示。
    * TODO(W0): 无命名 payload 类型；status 枚举没有共享类型，W4a 命名并导出。
    */
   [HOST_EVENT_PLAN_PROGRESS]: {
@@ -1924,7 +1925,7 @@ export type HostEventMap = {
     stepId: string
     total: number
     desc: string
-    status: "running" | "done" | "failed" | "warning"
+    status: "running" | "done" | "partial" | "blocked" | "failed" | "warning"
   }
   /**
    * 步骤门/失败询问（plan-confirmation.ts:269）。error 仅在 kind="failed" 时出现。

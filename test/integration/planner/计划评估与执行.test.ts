@@ -18,6 +18,11 @@ import { defineTool, listAll, register, unregister, TOOL_POLICY_VERSION } from "
 import type { EffectClass } from "@/services/tool"
 import { registerDefaultTools } from "@/services/tool/registry"
 
+/** 步骤产出契约：只有 complete 才会让计划判完成，核验器也才会运行。 */
+function stepComplete(summary: string): string {
+  return JSON.stringify({ status: "complete", summary })
+}
+
 let root = ""
 const registered: string[] = []
 
@@ -56,19 +61,19 @@ describe("计划评估与执行", () => {
   it("失败后继续执行不抹掉失败，异常步骤也须结算 [plan-continue-keeps-failure]", async () => {
     for (const onStepFailure of ["continue", "ask"] as const) {
       for (const rejectNotice of [false, true]) {
-        const provider = installFakeProvider([fakeText("第二步完成")])
+        const provider = installFakeProvider([fakeText(stepComplete("第二步完成"))])
         const completed: Array<{ id: number; success: boolean }> = []
         const asked: number[] = []
         const result = await executePlan({
           summary: "部分失败", estimatedComplexity: 2,
           steps: [
-            { id: 1, description: "失败步骤", allowedTools: ["missing_plan_tool"] },
-            { id: 2, description: "继续执行", allowedTools: ["read"] },
+            { id: 1, description: "失败步骤", allowedTools: ["missing_plan_tool"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+            { id: 2, description: "继续执行", allowedTools: ["read"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
           ],
         }, {
           planId: "continue-failure", intent: "验证失败后继续执行",
           scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
-          stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure,
+          stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure,
         }, {
           onStepStart: () => {},
           onStepDone: (step, output) => { completed.push({ id: step.id, success: output.success }) },
@@ -87,7 +92,7 @@ describe("计划评估与执行", () => {
 
   it("generatePlan 解析模型返回的步骤 [plan-generate]", async () => {
     installFakeProvider([
-      fakeText('```json\n{"summary":"两步搞定","estimatedComplexity":4,"steps":[{"id":1,"description":"读取配置"},{"id":2,"description":"改写配置"}]}\n```'),
+      fakeText('```json\n{"summary":"两步搞定","estimatedComplexity":4,"steps":[{"id":1,"description":"读取配置","allowedTools":["read"],"inputs":"当前配置","deliverable":"配置内容","acceptance":"读到完整配置"},{"id":2,"description":"改写配置","allowedTools":["read"],"inputs":"配置内容","deliverable":"修改后的配置","acceptance":"目标项已改写"}]}\n```'),
     ])
 
     const plan = await generatePlan("改一下配置", {
@@ -134,18 +139,18 @@ describe("计划评估与执行", () => {
     const result: PlanExecutionResult = {
       stepResults: [
         {
-          step: { id: 1, description: "读取配置" },
+          step: { id: 1, description: "读取配置", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
           output: { status: "completed", evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { ownerKind: "plan", runId: "format-test", requestId: "format-test" }, reply: "配置已读取", toolCallsMade: 0, success: true },
           durationMs: 1234,
           resultEntryId: "entry-plan-step-1",
         },
         {
-          step: { id: 2, description: "改写配置" },
+          step: { id: 2, description: "改写配置", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
           output: { status: "completed", evidence: { tools: [], incomplete: [], unconfirmedEffects: false }, audit: { ownerKind: "plan", runId: "format-test", requestId: "format-test" }, reply: "写失败：权限不足", toolCallsMade: 2, success: false, error: "权限不足" },
           durationMs: 500,
         },
       ],
-      skippedSteps: [],
+      blockedSteps: [],
       overallSuccess: false,
       totalSteps: 2,
       totalDurationMs: 1734,
@@ -154,7 +159,8 @@ describe("计划评估与执行", () => {
     const text = formatStepResults(result)
 
     // 成功与失败两条渲染分支都要被看见：只判失败侧等于没覆盖「完成态怎么渲染」
-    expect(text).toContain('OK 步骤 1 "读取配置" - 完成（证据已核对）')
+    // 没有结构化产出时退回验收档口径：成功但没产出 = 未验收。
+    expect(text).toContain('OK 步骤 1 "读取配置" - 完成（未验收）')
     expect(text).toContain('FAIL 步骤 2 "改写配置" - 失败')
     // 正文是截断预览，回读地址是模型与用户回到原文的唯一通道：有地址要标明、没有地址要如实说
     expect(text).toContain("配置已读取")
@@ -169,7 +175,7 @@ describe("计划评估与执行", () => {
     const delivery = formatPlanDeliverySummary(result)
     expect(delivery).toBe([
       "计划步骤已执行结束：1/2 步完成。",
-      "- 步骤 1「读取配置」：完成（证据已核对）",
+      "- 步骤 1「读取配置」：完成（未验收）",
       "- 步骤 2「改写配置」：失败 - 权限不足",
     ].join("\n"))
     expect(delivery).not.toContain("entry-plan-step-1")
@@ -180,11 +186,11 @@ describe("计划评估与执行", () => {
     // 不能因为正文非空就把证据缺口涂成「已核对」。
     const incomplete: PlanExecutionResult = {
       stepResults: [{
-        step: { id: 3, description: "读取外部资料" },
+        step: { id: 3, description: "读取外部资料", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
         output: { status: "completed", evidence: { tools: [], incomplete: ["MCP docs: 连接失败"], unconfirmedEffects: false }, audit: { ownerKind: "plan", runId: "format-test", requestId: "format-incomplete" }, reply: "已用本地资料回答", toolCallsMade: 0, success: true },
         durationMs: 10,
       }],
-      skippedSteps: [],
+      blockedSteps: [],
       overallSuccess: true,
       totalSteps: 1,
       totalDurationMs: 10,
@@ -197,17 +203,17 @@ describe("计划评估与执行", () => {
     const baseConfig = {
       intent: "验证失败效果不能冒充完成",
       scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
-      stepTimeoutMs: 10_000, stepMaxRounds: 2, stepThinkingEffort: "low" as const,
-      maxSteps: 5, onStepFailure: "abort" as const,
+      stepMaxToolCalls: 2, stepThinkingEffort: "low" as const,
+      onStepFailure: "abort" as const,
     }
     // 非只读效果（写盘 / 进程 / 外部系统）的失败回执都可能已经产生效果：
     // 模型随后返回非空正文不能把这一步洗成完成。
     for (const effect of ["local_mutation", "process", "external_side_effect"] as const) {
       const tool = effectProbe(`fail_${effect}`, effect)
-      installFakeProvider([fakeToolCall(tool, {}, `effect-${effect}`), fakeText("工具失败了，但我说已经完成")])
+      installFakeProvider([fakeToolCall(tool, {}, `effect-${effect}`), fakeText(stepComplete("工具失败了，但我说已经完成"))])
       const execution = await executePlan({
         summary: "效果回执", estimatedComplexity: 1,
-        steps: [{ id: 1, description: "执行可变更操作", allowedTools: [tool] }],
+        steps: [{ id: 1, description: "执行可变更操作", allowedTools: [tool], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" }],
       }, { ...baseConfig, planId: `effect-${effect}` }, {
         onStepStart: () => {}, onStepDone: () => "entry-effect",
         onStepFailed: async () => "abort" as const, onStepNotice: () => {},
@@ -217,38 +223,40 @@ describe("计划评估与执行", () => {
       expect(output.evidence.unconfirmedEffects, `${effect} 失败没有记未确认效果`).toBe(true)
       expect(output.error, `${effect} 失败原因没有说明效果未确认`).toContain("未确认")
       expect(execution.overallSuccess, `${effect} 失败后计划仍判整体成功`).toBe(false)
-      expect(formatStepResults(execution)).toContain('FAIL 步骤 1 "执行可变更操作" - 失败')
+      // 自称 complete 被确定性降级为 partial：渲染按结构化产出说「部分完成」，不是冒充完成。
+      expect(formatStepResults(execution)).toContain('PART 步骤 1 "执行可变更操作" - 部分完成')
     }
 
     // 只读失败没有未确认效果：正文非空时步骤仍可完成 —— 这里核对的是证据闭环，
     // 不是「工具没报过错」。
     const readTool = effectProbe("fail_read", "read")
-    installFakeProvider([fakeToolCall(readTool, {}, "effect-read"), fakeText("读取失败，已改走本地缓存")])
+    installFakeProvider([fakeToolCall(readTool, {}, "effect-read"), fakeText(stepComplete("读取失败，已改走本地缓存"))])
     const readExecution = await executePlan({
       summary: "只读失败", estimatedComplexity: 1,
-      steps: [{ id: 1, description: "读取配置", allowedTools: [readTool] }],
+      steps: [{ id: 1, description: "读取配置", allowedTools: [readTool], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" }],
     }, { ...baseConfig, planId: "effect-read" }, {
       onStepStart: () => {}, onStepDone: () => "entry-read",
       onStepFailed: async () => "abort" as const, onStepNotice: () => {},
     })
     expect(readExecution.stepResults[0]?.output.success).toBe(true)
     expect(readExecution.stepResults[0]?.output.evidence.unconfirmedEffects).toBe(false)
-    expect(formatStepResults(readExecution)).toContain("完成（证据已核对）")
+    // 有结构化产出时按产出状态说「完成」，不再退回验收档文案。
+    expect(formatStepResults(readExecution)).toContain('OK 步骤 1 "读取配置" - 完成 (')
   })
 
   it("步骤交接：后一步拿到前一步的结果摘要（不依赖回读地址） [plan-handoff]", async () => {
     const token = `token-${crypto.randomUUID()}`
-    const provider = installFakeProvider([fakeText(`第一步产出 ${token}`), fakeText("第二步完成")])
+    const provider = installFakeProvider([fakeText(stepComplete(`第一步产出 ${token}`)), fakeText(stepComplete("第二步完成"))])
     const execution = await executePlan({
       summary: "交接计划", estimatedComplexity: 2,
       steps: [
-        { id: 1, description: "产出令牌" },
-        { id: 2, description: "消费令牌" },
+        { id: 1, description: "产出令牌", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+        { id: 2, description: "消费令牌", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
       ],
     }, {
       planId: "handoff", intent: "验证步骤之间能交接结果",
       scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
-      stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "continue",
+      stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure: "continue",
     }, {
       onStepStart: () => {},
       onStepDone: step => `entry-step-${step.id}`,
@@ -262,9 +270,9 @@ describe("计划评估与执行", () => {
     // 原始目标对每一步可见
     expect(first).toContain("## 原始目标")
     expect(second).toContain("验证步骤之间能交接结果")
-    // 前序块带验收档与自包含摘要；子运行读不到父会话条目，不能给读不到的地址
+    // 前序块带状态与自包含摘要；子运行读不到父会话条目，不能给读不到的地址
     expect(second).toContain("## 前序步骤")
-    expect(second).toContain("[done|verified] 产出令牌")
+    expect(second).toContain("[complete] 产出令牌")
     expect(second).toContain(token)
     expect(second).not.toContain("entry-step-1")
     expect(second).not.toContain("plan_step_result")
@@ -275,17 +283,17 @@ describe("计划评估与执行", () => {
   })
 
   it("步骤交接：失败步骤只给错误，不伪造产出 [plan-handoff-failure]", async () => {
-    const provider = installFakeProvider([fakeText("第二步完成")])
+    const provider = installFakeProvider([fakeText(stepComplete("第二步完成"))])
     const execution = await executePlan({
       summary: "失败交接", estimatedComplexity: 2,
       steps: [
-        { id: 1, description: "缺工具步骤", allowedTools: ["missing_handoff_tool"] },
-        { id: 2, description: "继续下一步" },
+        { id: 1, description: "缺工具步骤", allowedTools: ["missing_handoff_tool"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+        { id: 2, description: "继续下一步", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
       ],
     }, {
       planId: "handoff-failure", intent: "验证失败步骤只交接错误",
       scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
-      stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "continue",
+      stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure: "continue",
     }, {
       onStepStart: () => {},
       onStepDone: () => "entry-failed",
@@ -299,24 +307,24 @@ describe("计划评估与执行", () => {
     expect(second).toContain("[failed] 缺工具步骤 — 失败：")
     expect(second).toContain("missing_handoff_tool")
     // 失败步骤没有成功标记，也不给半截正文或地址（避免下游把失败产出当结论）
-    expect(second).not.toContain("[done|unverified] 缺工具步骤")
+    expect(second).not.toContain("[complete] 缺工具步骤")
     expect(second).not.toContain("entry-failed")
     expect(second).not.toContain("plan_step_result")
   })
 
   it("步骤交接：超长前序正文保留头尾并标注截断 [plan-handoff-truncate]", async () => {
     const longReply = `开头-${"长".repeat(1600)}-结尾`
-    const provider = installFakeProvider([fakeText(longReply), fakeText("第二步完成")])
+    const provider = installFakeProvider([fakeText(stepComplete(longReply)), fakeText(stepComplete("第二步完成"))])
     await executePlan({
       summary: "截断交接", estimatedComplexity: 2,
       steps: [
-        { id: 1, description: "产出长文" },
-        { id: 2, description: "消费长文" },
+        { id: 1, description: "产出长文", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+        { id: 2, description: "消费长文", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
       ],
     }, {
       planId: "handoff-truncate", intent: "验证超长前序会截断",
       scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
-      stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "continue",
+      stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure: "continue",
     }, {
       onStepStart: () => {},
       onStepDone: () => "entry-long",
@@ -332,67 +340,68 @@ describe("计划评估与执行", () => {
     expect(second).toContain("-结尾")
   })
 
-  it("依赖步骤未完成时跳过并说明原因 [plan-dependency-skip]", async () => {
-    // 只有第三步会真的开工：第一步因缺工具失败，第二步依赖它必须被跳过。
-    const provider = installFakeProvider([fakeText("第三步完成")])
+  it("依赖未满足时未执行并说明原因 [plan-dependency-skip]", async () => {
+    // 只有第三步会真的开工：第一步因缺工具失败，第二步依赖它必须被判为未执行。
+    const provider = installFakeProvider([fakeText(stepComplete("第三步完成"))])
     const started: number[] = []
-    const skipped: Array<{ id: number; reason: string; deps: number[] }> = []
+    const blockedCallbacks: Array<{ id: number; reason: string; deps: number[] }> = []
     const execution = await executePlan({
       summary: "依赖跳过", estimatedComplexity: 3,
       steps: [
-        { id: 1, description: "缺工具步骤", allowedTools: ["missing_dependency_tool"] },
-        { id: 2, description: "依赖前一步", dependsOn: [1] },
-        { id: 3, description: "独立步骤" },
+        { id: 1, description: "缺工具步骤", allowedTools: ["missing_dependency_tool"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+        { id: 2, description: "依赖前一步", dependsOn: [1], allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+        { id: 3, description: "独立步骤", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
       ],
     }, {
       planId: "dependency-skip", intent: "验证依赖未完成会跳过",
       scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
-      stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "continue",
+      stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure: "continue",
     }, {
       onStepStart: step => { started.push(step.id) },
       onStepDone: () => {},
       onStepFailed: async () => "continue" as const,
-      onStepSkipped: (step, reason, deps) => { skipped.push({ id: step.id, reason, deps }) },
+      onStepBlocked: (step, reason, deps) => { blockedCallbacks.push({ id: step.id, reason, deps }) },
       onStepNotice: () => {},
     })
 
-    // 跳过不是执行：不占 onStepStart、不发子代理请求；独立步骤照常跑
+    // 未执行不是执行：不占 onStepStart、不发子代理请求；独立步骤照常跑
     expect(started).toEqual([1, 3])
     expect(provider.payloads).toHaveLength(1)
-    expect(skipped).toEqual([{ id: 2, reason: "依赖步骤 1 未完成", deps: [1] }])
+    expect(blockedCallbacks).toEqual([{ id: 2, reason: "依赖步骤 1（failed） 未完成", deps: [1] }])
     expect(execution.stepResults.map(item => item.step.id)).toEqual([1, 3])
-    expect(execution.skippedSteps.map(item => item.step.id)).toEqual([2])
+    expect(execution.blockedSteps).toHaveLength(1)
+    expect(execution.blockedSteps[0]).toMatchObject({ step: { id: 2 }, dependencyStepIds: [1] })
     expect(execution.overallSuccess).toBe(false)
 
-    // 模型可见结果与用户可见交付都按步骤顺序说明跳过原因（不能只缺一步不说为什么）
+    // 模型可见结果与用户可见交付都按步骤顺序说明未执行原因（不能只缺一步不说为什么）
     const text = formatStepResults(execution)
-    expect(text).toContain('SKIP 步骤 2 "依赖前一步" - 跳过（依赖步骤 1 未完成）')
-    expect(text.indexOf("FAIL 步骤 1")).toBeLessThan(text.indexOf("SKIP 步骤 2"))
-    expect(text.indexOf("SKIP 步骤 2")).toBeLessThan(text.indexOf("OK 步骤 3"))
+    expect(text).toContain('BLOCK 步骤 2 "依赖前一步" - 未执行（依赖步骤 1（failed） 未完成）')
+    expect(text.indexOf("FAIL 步骤 1")).toBeLessThan(text.indexOf("BLOCK 步骤 2"))
+    expect(text.indexOf("BLOCK 步骤 2")).toBeLessThan(text.indexOf("OK 步骤 3"))
     const delivery = formatPlanDeliverySummary(execution)
     expect(delivery).toContain("计划步骤已执行结束：1/3 步完成。")
-    expect(delivery).toContain("- 步骤 2「依赖前一步」：跳过（依赖步骤 1 未完成）")
+    expect(delivery).toContain("- 步骤 2「依赖前一步」：未执行（依赖步骤 1（failed） 未完成）")
 
-    // 后续步骤的计划全貌必须反映真实状态，而不是把跳过步骤当成待执行
+    // 后续步骤的计划全貌必须反映真实状态，而不是把未执行步骤当成待执行
     const thirdPrompt = provider.payloads[0]?.systemPrompt ?? ""
     expect(thirdPrompt).toContain("## 计划全貌")
     expect(thirdPrompt).toContain("1. [失败] 缺工具步骤")
-    expect(thirdPrompt).toContain("2. [已跳过] 依赖前一步（依赖 1）")
+    expect(thirdPrompt).toContain("2. [未执行（依赖未完成）] 依赖前一步（依赖 1）")
     expect(thirdPrompt).toContain("3. [当前] 独立步骤")
   })
 
   it("步骤提示包含全计划大纲与其他步骤状态 [plan-outline]", async () => {
-    const provider = installFakeProvider([fakeText("第一步完成"), fakeText("第二步完成")])
+    const provider = installFakeProvider([fakeText(stepComplete("第一步完成")), fakeText(stepComplete("第二步完成"))])
     const execution = await executePlan({
       summary: "大纲", estimatedComplexity: 2,
       steps: [
-        { id: 1, description: "先查资料" },
-        { id: 2, description: "再写结论", dependsOn: [1] },
+        { id: 1, description: "先查资料", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+        { id: 2, description: "再写结论", dependsOn: [1], allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
       ],
     }, {
       planId: "outline", intent: "验证步骤能看到整份计划",
       scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true },
-      stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "continue",
+      stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure: "continue",
     }, {
       onStepStart: () => {},
       onStepDone: () => {},
@@ -415,14 +424,14 @@ describe("计划评估与执行", () => {
   })
 
   it("executePlan 逐步执行并回调 [plan-execute-loop]", async () => {
-    // 每一步的子代理都要一次模型回复；两步就准备两条。provider 句柄留着：工具面放大是不是真的
-    // 发生，只能从发出去的请求里看
-    const stepProvider = installFakeProvider([fakeText("第一步完成"), fakeText("第二步完成")])
+    // 每一步的子代理都要一次模型回复；两步就准备两条。provider 句柄留着：工具面是否按
+    // allowedTools 收窄，只能从发出去的请求里看
+    const stepProvider = installFakeProvider([fakeText(stepComplete("第一步完成")), fakeText(stepComplete("第二步完成"))])
 
     const plan: PlanResult = {
       steps: [
-        { id: 1, description: "第一步" },
-        { id: 2, description: "第二步" },
+        { id: 1, description: "第一步", allowedTools: ["read"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+        { id: 2, description: "第二步", allowedTools: ["read"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
       ],
       summary: "两步计划",
       estimatedComplexity: 3,
@@ -433,7 +442,7 @@ describe("计划评估与执行", () => {
     const notices: StepToolNotice[] = []
     const execution = await executePlan(
       plan,
-      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure: "abort" },
       {
         onStepStart: step => { started.push(step.id) },
         onStepDone: step => { done.push(step.id) },
@@ -451,22 +460,12 @@ describe("计划评估与执行", () => {
     expect(execution.stepResults.map(item => item.output.audit.ownerKind)).toEqual(["plan", "plan"])
     expect(execution.stepResults.map(item => item.output.audit.planId)).toEqual(["integration-plan", "integration-plan"])
 
-    // 未限定 allowedTools = 工具面放大到全部已注册工具，必须逐步骤报告（不静默）
-    expect(notices).toEqual([{ kind: "unbounded_tools" }, { kind: "unbounded_tools" }])
-    // 放大是真的发生，不是只发了一条 notice：两步的子代理请求都要带上「除派生型工具外的
-    // 全部已注册工具」。期望集合按注册表现取（判定读每个工具自己的 isolation，不写死名单），
-    // 派生型工具到不了子代理（runPiSubAgent 是唯一剥离点），请求里出现即放大面被说错。
+    // allowedTools 必填后执行器不再放大工具面：每个步骤请求里只出现自己声明的工具。
+    expect(notices).toEqual([])
     expect(stepProvider.payloads).toHaveLength(2)
-    const registered = listAll()
-    const derived = registered.filter(tool => tool.policy.execution.isolation === "delegate").map(tool => tool.name)
-    // 前提：剥离侧至少有一个派生型工具，否则下面的比较退化成「全量相等」，失去意义；
-    // 末段还要用 agent_spawn 这个名字（名字能解析到，但到不了子代理）
-    expect(derived).toContain("agent_spawn")
-    const amplified = registered.filter(tool => !derived.includes(tool.name)).map(tool => tool.name)
     for (const [index, payload] of stepProvider.payloads.entries()) {
       const sent = (payload.tools ?? []).map(tool => tool.name)
-      // 集合相等同时覆盖两个方向：派生型工具一个都没漏出去，已注册工具一个都没少
-      expect([...sent].sort(), `第 ${index + 1} 步的子代理工具面`).toEqual([...amplified].sort())
+      expect(sent, `第 ${index + 1} 步的子代理工具面没有按 allowedTools 收窄`).toEqual(["read"])
     }
 
     // 指定的工具解析不到就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
@@ -483,8 +482,8 @@ describe("计划评估与执行", () => {
     const missingStarted: number[] = []
     const missingDone: number[] = []
     const blocked = await executePlan(
-      { steps: [{ id: 1, description: "用不存在的工具干活", allowedTools: ["live_missing_tool_probe"] }], summary: "缺工具", estimatedComplexity: 1 },
-      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { steps: [{ id: 1, description: "用不存在的工具干活", allowedTools: ["live_missing_tool_probe"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" }], summary: "缺工具", estimatedComplexity: 1 },
+      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure: "abort" },
       {
         onStepStart: step => { missingStarted.push(step.id) },
         onStepDone: step => { missingDone.push(step.id) },
@@ -517,8 +516,8 @@ describe("计划评估与执行", () => {
     const derivedStarted: number[] = []
     const derivedDone: number[] = []
     const derivedBlocked = await executePlan(
-      { steps: [{ id: 1, description: "派个子代理去干活", allowedTools: ["agent_spawn"] }], summary: "派生工具", estimatedComplexity: 1 },
-      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+      { steps: [{ id: 1, description: "派个子代理去干活", allowedTools: ["agent_spawn"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" }], summary: "派生工具", estimatedComplexity: 1 },
+      { planId: "integration-plan", intent: "测试计划目标", scope: { sessionId: "plan-test", runGeneration: 1, isCurrent: () => true }, stepMaxToolCalls: 1, stepThinkingEffort: "low", onStepFailure: "abort" },
       {
         onStepStart: step => { derivedStarted.push(step.id) },
         onStepDone: step => { derivedDone.push(step.id) },

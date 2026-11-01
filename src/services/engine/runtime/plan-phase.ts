@@ -6,8 +6,9 @@ import type { RuntimeTraceContext } from "@/services/engine/protocol"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import { createPlanSettlement } from "@/services/engine/plan/settlement"
 import type { PlanCancelReason, PlanConfirmDeclineReason } from "@/services/engine/plan/settlement"
+import { verifyPlanExecution } from "@/services/engine/plan/verifier"
 import { bindRunningPlan, clearRunningPlan, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
-import { executePlan, generatePlan, normalizePlan, planEffectClassFor, planStepAcceptance, planToRecords, recordsToPlan } from "@/services/engine/planner"
+import { executePlan, generatePlan, normalizePlan, planEffectClassFor, planStepAcceptance, planStepStateOf, planToRecords, recordsToPlan } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanPriorResult, PlanResult } from "@/services/engine/planner"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import { getActiveSessionId } from "@/services/session/store"
@@ -15,7 +16,7 @@ import { pushSystemMessage } from "@/services/session"
 import { listAll } from "@/services/tool"
 import { planConfig, safetyConfig } from "@/services/config"
 import { HOST_EVENT_PLAN_PROGRESS } from "@/services/host"
-import type { PiAgentTurnOutput } from "@/services/engine/state"
+import type { PiAgentTurnOutput, PiSubAgentScope } from "@/services/engine/state"
 import type { HarnessSlot } from "@/services/engine/harness/slot"
 import { emitUiEvent } from "@/services/engine/harness/titlebar"
 import { formatError, reportError } from "@/services/error"
@@ -86,6 +87,15 @@ export async function runPlanPhase(args: {
   let planIntent: string
   // 恢复执行的前序步骤结果来自会话条目；新建计划没有前序。
   let priorResults: PlanPriorResult[] | undefined
+  // 核验必须看到完整计划：恢复时只执行 pending/running，但已定档步骤的工作单与产出
+  // 同样是「原始目标是否达成」的证据。`verificationPlan` 始终是整份计划，
+  // `priorStepEntries` 把盘上已定档步骤的产出补进核验结果（`result` 只含本次执行）。
+  let verificationPlan: PlanResult
+  let priorStepEntries: PlanExecutionResult["stepResults"] = []
+  // 进度事件的接收方是确认面板：只有发过 PLAN_START 的计划才有面板可更新。
+  // 恢复入口不发起点事件，just_do_it 也不发（下面是两者都不发），推进度只会落到
+  // 宿主「找不到对应计划」的日志里。
+  let progressPanelOpen = false
 
   if ("existingPlanId" in args) {
     planId = args.existingPlanId
@@ -95,21 +105,46 @@ export async function runPlanPhase(args: {
     if (!recovered) throw new Error(`计划恢复入口找不到落盘记录: ${planId}`)
     // 只跑还能跑的步骤：`pending`，以及「重跑此步」（FIX-30⑤）重新武装成 `running` 的那一步。
     // 恢复扫描已保证崩溃残留的 `running` 步骤都被定档，这里出现的 `running` 只来自用户的显式选择。
-    // 已 `done`/`skipped` 的步骤保留在 checkpoint 里，不进本次执行与结果段。
+    // 已定档的步骤（done/partial/blocked/failed/skipped）保留在 checkpoint 里，不进本次执行与结果段。
+    verificationPlan = recordsToPlan(recovered.plan, recovered.steps)
     plan = recordsToPlan(recovered.plan, recovered.steps.filter(step => step.state === "pending" || step.state === "running"))
     planIntent = recovered.plan.intent
     // 前序结果从盘上回读（执行期交接用的内存结果已随进程消失）；读取失败按空处理，不阻断恢复。
     // `PlanStepResult` 的 stepId 是落盘字符串，交接投影用数值（与执行列表的 step.id 同域）。
-    priorResults = (await planCheckpointStore.readStepResults(sessionId, planId))
+    const persisted = await planCheckpointStore.readStepResults(sessionId, planId)
+    priorResults = persisted
       .map((item): PlanPriorResult => ({
         stepId: Number(item.stepId),
         title: item.title,
-        success: item.success,
-        acceptance: item.acceptance,
+        status: item.outcome?.status ?? (item.success ? "complete" : "failed"),
+        summary: item.outcome?.summary ?? item.reply,
         reply: item.reply,
         ...(item.error ? { error: item.error } : {}),
       }))
       .filter(item => Number.isFinite(item.stepId))
+    // 核验侧的已定档步骤产出：`step` 取自完整计划（带工作单），`output` 是盘上事实的投影
+    // （核验只读 `output.status`/`output.error` 与 `outcome`，不重放子运行）。
+    const stepsById = new Map(verificationPlan.steps.map(step => [step.id, step]))
+    priorStepEntries = persisted.flatMap(item => {
+      const step = stepsById.get(Number(item.stepId))
+      if (!step) return []
+      const base = `plan-${planId}-prior-${item.stepId}`
+      return [{
+        step,
+        output: {
+          status: "completed" as const,
+          success: item.success,
+          reply: item.reply,
+          toolCallsMade: item.toolCallsMade,
+          evidence: { tools: [], incomplete: [], unconfirmedEffects: false },
+          audit: { sessionId, planId, stepId: item.stepId, ownerKind: "plan" as const, runId: base, requestId: base },
+          ...(item.error ? { error: item.error } : {}),
+        },
+        durationMs: item.durationMs,
+        ...(item.outcome ? { outcome: item.outcome } : {}),
+        ...(item.resultEntryId ? { resultEntryId: item.resultEntryId } : {}),
+      }]
+    })
     // 恢复即已确认：不再问一次「全部执行/逐步确认」，也不重新生成
     stepMode = "auto"
     if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_confirmed", () => ({ planId, decision: "user_approved_resume" }))
@@ -132,20 +167,26 @@ export async function runPlanPhase(args: {
     if (generated.degradedReason === "json_parse_failed" && getActiveSessionId() === sessionId) {
       pushSystemMessage("计划解析失败，已改为单步直接执行", sessionId)
     }
+    if (generated.degradedReason === "work_order_invalid" && getActiveSessionId() === sessionId) {
+      pushSystemMessage("计划工作单不完整（缺少输入/交付物/验收或工具声明），已改为单步直接执行", sessionId)
+    }
     // 规范化后的 plan 是唯一进入确认、执行、进度事件与落盘的形态
-    const normalized = normalizePlan(generated, planConfig.maxSteps)
+    const normalized = normalizePlan(generated)
     plan = normalized.plan
+    verificationPlan = plan
+    // just_do_it 跳过确认面板（不发 PLAN_START），执行期没有面板可更新。
+    progressPanelOpen = safetyConfig.mode !== "just_do_it"
     planIntent = args.planInput.userText
     if (normalized.dropped > 0) {
-      log.warn(`计划步骤被丢弃/截断 ${normalized.dropped} 步: ${generated.steps.length} → ${plan.steps.length}（${planId}）`)
-      // PLAN-13：丢弃必须可见，不能只留在日志里。丢弃原因不止截断（依赖不可满足也会丢步骤），
-      // 文案不再声称「仅执行前 N 步」—— 那会把中间缺步的计划说成完整前缀。
-      pushSystemMessage(`计划有 ${normalized.dropped} 步被丢弃（依赖不可满足或超出上限），实际执行 ${plan.steps.length}/${generated.steps.length} 步`, sessionId)
+      log.warn(`计划步骤被丢弃 ${normalized.dropped} 步: ${generated.steps.length} → ${plan.steps.length}（${planId}）`)
+      // PLAN-13：丢弃必须可见，不能只留在日志里。规范化不再按上限截断，只剩「依赖不可满足」
+      // 这一种丢弃原因，文案不声称「执行前 N 步」—— 那会把中间缺步的计划说成完整前缀。
+      pushSystemMessage(`计划有 ${normalized.dropped} 步因依赖不可满足被丢弃，实际执行 ${plan.steps.length}/${generated.steps.length} 步`, sessionId)
     }
     if (plan.steps.length === 0) {
       // 模型没给出可执行步骤：不落记录、不确认，与原路径一致地直接走主回合
       log.warn("计划没有可执行步骤，跳过确认与执行:", planId)
-      return { kind: "completed", result: { stepResults: [], skippedSteps: [], overallSuccess: true, totalSteps: 0, totalDurationMs: 0 } }
+      return { kind: "completed", result: { stepResults: [], blockedSteps: [], overallSuccess: true, totalSteps: 0, totalDurationMs: 0 } }
     }
     const { record, steps } = planToRecords(plan, {
       planId,
@@ -200,45 +241,49 @@ export async function runPlanPhase(args: {
   // 步骤耗时由相位侧计时（执行是串行的，一个变量够）：条目里的 `durationMs` 要覆盖
   // `onStepStart` 到 `onStepDone` 这一段，而不是子代理内部的一段。
   let stepStartedAt = 0
+  // 子运行归属（PLAN-02 / PLAN-03）：步骤子代理的许可身份绑定父会话与代际，
+  // 并挂到父槽下 —— 「终止执行」/会话切换/计划时限都能立刻结束当前那一步。
+  const executionScope: PiSubAgentScope = {
+    sessionId,
+    runGeneration: parentGeneration,
+    ...(args.trustedUserEventId ? { trustedUserEventId: args.trustedUserEventId } : {}),
+    // 许可确认还要看活跃会话：切走后同参 grant 不得命中（PLAN-03 的验证点）。
+    isCurrent: () => args.runIsCurrent() && getActiveSessionId() === sessionId,
+    signal: planAbort.signal,
+    parentSlot: args.parentSlot,
+  }
+  // 核验是只读的：会话切换不取消已执行完的计划（FIX-32），核验只看回合代际是否仍有效。
+  // 不复用 executionScope.isCurrent（它要求活跃会话）；signal 与 parentSlot 保留，
+  // 停止执行 / 父槽取消仍要能中止核验。
+  const verificationScope: PiSubAgentScope = { ...executionScope, isCurrent: () => args.runIsCurrent() }
   const result = await executePlan(plan, {
     intent: planIntent,
     ...(priorResults ? { priorResults } : {}),
-    stepTimeoutMs: planConfig.stepTimeoutMs,
-    stepMaxRounds: planConfig.stepMaxRounds,
+    stepMaxToolCalls: planConfig.stepMaxToolCalls,
     stepThinkingEffort: planConfig.stepThinkingEffort,
-    maxSteps: planConfig.maxSteps,
     // 步骤子运行的请求快照按计划身份落进父会话（快照能回答「哪一步的请求」）。
     planId,
     sessionId,
     // 逐步确认：每步开工前都要用户在面板放行（逐步门），步骤失败也停下来问 —— 面板不再自动放行
     onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
     signal: planAbort.signal,
-    // §7 #33：计划级时限由步骤配置派生（`stepTimeoutMs × maxSteps`），不新增 YAML 字段
-    deadlineAt: Date.now() + planConfig.stepTimeoutMs * planConfig.maxSteps,
+    // 计划级时限（`ai.plan.planTimeoutMs`，默认 2h）：用户等待期由执行器从时钟里扣除。
+    deadlineAt: Date.now() + planConfig.planTimeoutMs,
     stepGate: stepMode === "stepByStep" ? "each" : "none",
-    // 子运行归属（PLAN-02 / PLAN-03）：步骤子代理的许可身份绑定父会话与代际，
-    // 并挂到父槽下 —— 「终止执行」/会话切换/计划时限都能立刻结束当前那一步。
-    scope: {
-      sessionId,
-      runGeneration: parentGeneration,
-      ...(args.trustedUserEventId ? { trustedUserEventId: args.trustedUserEventId } : {}),
-      // 许可确认还要看活跃会话：切走后同参 grant 不得命中（PLAN-03 的验证点）。
-      isCurrent: () => args.runIsCurrent() && getActiveSessionId() === sessionId,
-      signal: planAbort.signal,
-      parentSlot: args.parentSlot,
-    },
+    scope: executionScope,
   }, {
     async onStepStart(step) {
       assertCurrent()
       stepStartedAt = Date.now()
       await planCheckpointStore.transitionStep(planId, String(step.id), "running")
-      void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
+      if (progressPanelOpen) void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
     },
-    async onStepDone(step, output) {
+    async onStepDone(step, output, outcome) {
       assertCurrent()
-      await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
-      void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
-      // PLAN-09②：步骤产出落盘成可回读证据（失败路径同样落，FIX-50 —— 失败原因与工具调用数
+      const state = planStepStateOf(outcome, output)
+      await planCheckpointStore.transitionStep(planId, String(step.id), state, outcome)
+      if (progressPanelOpen) void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: state === "done" ? "done" : state === "failed" ? "failed" : state })
+      // PLAN-09②：步骤产出落盘成可回读证据（失败路径同样落 —— 失败原因与工具调用数
       // 不再只活在返回值里）。与 checkpoint 写入同一收口；`index` 是执行列表中的 0 基位置。
       // 写盘失败只降级成「原文未落盘」（`formatStepResults` 会如实标注），不拖垮计划结算。
       const replyText = output.rawReply ?? output.reply
@@ -253,34 +298,33 @@ export async function runPlanPhase(args: {
         toolCallsMade: output.toolCallsMade,
         reply: replyText,
         ...(output.error ? { error: output.error } : {}),
+        ...(outcome ? { outcome } : {}),
         summaryHash: await sha256Text(replyText),
       }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
       if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_step_end", () => ({
-        planId, stepId: String(step.id), status: output.success ? "done" : "failed",
+        planId, stepId: String(step.id), status: state,
       }), { entryId })
       // 返回回读地址：`executePlan` 把它写进本步结果，供 `formatStepResults` 标注；写盘失败仍返回 undefined。
       return entryId
     },
-    // 依赖未满足（失败或被跳过）：本步不开工、不占 attempt，落 skipped。
-    // 跳过原因必须同时进进度事件与聊天文案，否则用户只看到计划停了一半却不知道为什么。
-    async onStepSkipped(step, reason) {
+    // 依赖未满足：本步不开工、不占 attempt，落 blocked。
+    // 原因必须同时进进度事件与聊天文案，否则用户只看到计划停了一半却不知道为什么。
+    async onStepBlocked(step, reason) {
       assertCurrent()
-      await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
-      void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: `${step.description}（${reason}）`, status: "warning" })
+      await planCheckpointStore.transitionStep(planId, String(step.id), "blocked")
+      if (progressPanelOpen) void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: `${step.description}（${reason}）`, status: "blocked" })
       const index = plan.steps.findIndex(item => item.id === step.id) + 1
-      pushSystemMessage(`计划第 ${index} 步已跳过：${reason}`, sessionId)
+      pushSystemMessage(`计划第 ${index} 步未执行：${reason}`, sessionId)
     },
-    // 工具解析报告（FIX-51，2026-10-06 收窄）：工具名解析不到是异常，写进度事件与系统消息；
-    // 未限定工具是例行情形（多数步骤本就不写 allowedTools），只留进度事件与日志 —— 逐步敲
-    // 聊天系统消息是刷屏噪音（用户 2026-10-06 裁决）。放大到子代理时派生型工具会被剥离
-    // （runPiSubAgent），missing 文案按子代理实际拿到的集合写，不写成「全部」。
+    // 工具解析报告：工具名解析不到是异常，写进度事件与系统消息。
+    // `allowedTools` 必填后不再有「放大到全部工具」的分支；派生型工具到不了子代理
+    // （runPiSubAgent 剥离），missing 文案按子代理实际拿到的集合写，不写成「全部」。
     async onStepNotice(step, notice) {
       const index = plan.steps.findIndex(item => item.id === step.id) + 1
-      void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
+      if (progressPanelOpen) void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
       if (notice.kind === "missing_tools") {
         pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
       }
-      // unbounded_tools：不敲聊天，见上注（进度事件已标 warning）。
     },
     // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
     // 不让计划在没有答复的情况下继续跑。用户在中止上落定的归宿是 `declined`（planner 侧给出）。
@@ -336,12 +380,34 @@ export async function runPlanPhase(args: {
   // 会让记录永远停在 `running`，回合还会被 runner 当成 LLM 失败。
   assertCurrent()
   if (planCheckpointStore.snapshot(planId)?.steps.some(step => step.state !== "done")) result.overallSuccess = false
+  // 计划级核验：完成度只是「多少步 done」，原始目标是否达成由独立只读子代理对照 intent 裁决。
+  // 恢复时把已定档步骤的产出并入核验结果（本次执行覆盖同 id 的条目），核验不重跑已定档步骤。
+  const verificationResult: PlanExecutionResult = priorStepEntries.length === 0
+    ? result
+    : {
+        ...result,
+        stepResults: [...new Map(
+          [...priorStepEntries, ...result.stepResults].map(entry => [entry.step.id, entry]),
+        ).values()].sort((a, b) => a.step.id - b.step.id),
+        totalSteps: verificationPlan.steps.length,
+      }
+  const verification = await verifyPlanExecution({
+    sessionId, planId, intent: planIntent, plan: verificationPlan, result: verificationResult, scope: verificationScope,
+  })
+  if (verification) {
+    result.verification = verification
+    // 核验没通过（含未完成核验的 partial）不是成功：完成度不能顶替核验。
+    if (verification.verdict !== "pass") result.overallSuccess = false
+  }
+  // 裁决：核验期间回合可能被停止（最长 120s）。计划步骤已全部执行完，记录必须落终态，
+  // 不能因为停止把计划永远留在 running；停止期间核验按 partial 收束，状态如实为 failed。
   await planSettlement.finishPlan({
     sessionId,
     planId,
     state: result.overallSuccess ? "done" : "failed",
     reason: result.overallSuccess ? "completed" : "failed",
     notify: result.overallSuccess ? "done" : "failed",
+    ...(verification ? { verification } : {}),
     traceContext: args.traceContext,
   })
   return { kind: "completed", result }

@@ -329,7 +329,7 @@ import type { ModuleContract } from "../host/types"
 // 默认 auto → high；sourceFiles 中 config/types 变化，主动规划仍显式 low，覆盖描述未受影响，
 // sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "a757b8c36886fc82377cad9c54611a2d7e425581d1efed4be04d85023a11b948",
+  module:"proactive",sourceHash: "0e4a32ec3b2db3b145a4e654a7d1ef552c1d32b65c184e0e1c02945b6e0cd232",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

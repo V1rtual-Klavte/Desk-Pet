@@ -3,7 +3,7 @@
 //
 // 两条计划入口自 2026-10-06 起消费同一份实现（此前 `runtime/turn.ts` 与 `runtime/plan-proposal.ts` 各存
 // 一份同形复刻，为避免一次引爆多份契约与并行冲突而复制；历史债务已清）：
-//   1. 显式命令入口：`engine/runtime/plan-phase.ts` 的 `runPlanPhase`（完整 `--plan` 命令且开关启用时发起）；
+//   1. 显式命令入口：`engine/runtime/plan-phase.ts` 的 `runPlanPhase`（完整 `/plan` 命令且开关启用时发起）；
 //   2. 模型提议入口：`engine/runtime/plan-proposal.ts` 的 `runProposedPlan`（propose_plan 工具发起）。
 //
 // 共享的是机制，不是语义：两条入口的对外归宿（`PlanPhaseOutcome` / `ProposedPlanOutcome`）、
@@ -28,7 +28,7 @@ import { getActiveSessionId } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"
 import { formatError } from "@/services/error"
 import { publishRuntimeTrace } from "@/services/engine/protocol"
-import type { PlanCompletion, PlanStepState, RuntimeTraceContext } from "@/services/engine/protocol"
+import type { PlanCompletion, PlanStepState, PlanVerification, RuntimeTraceContext } from "@/services/engine/protocol"
 import type { Logger } from "@/services/logger"
 import { notifyPlanEnd } from "../plan-confirmation"
 import type { PlanConfirmResult } from "../plan-confirmation"
@@ -62,6 +62,7 @@ export interface PlanSettlement {
   /**
    * 收尾的唯一出口（FIX-34 / PLAN-15）：写终态 →（轨迹）→ 收起面板 → 系统消息。
    * 四种归宿（completed / cancelled-user / cancelled-other / declined）都经它，不各写一份收尾。
+   * `verification` 是计划级核验（与 `completion` 正交）：只有它存在时才写进终态记录。
    */
   finishPlan(args: {
     sessionId: string
@@ -70,6 +71,7 @@ export interface PlanSettlement {
     /** 可见原因（用于系统消息文案；只有 deadline / declined 发消息）。 */
     reason: PlanSettleReason
     notify: PlanEndNotify
+    verification?: PlanVerification
     traceContext?: RuntimeTraceContext
   }): Promise<void>
   /**
@@ -93,13 +95,15 @@ export interface PlanSettlement {
 
 /**
  * 目标完成度：按已 `done` 的步骤数判定，与生命周期状态正交。
+ * `partial` 步骤计入「有完成度」但不算完成 —— 全部 `done` 才是 `complete`。
  * 终态写盘共用（含 `discardPlan` 的直接落 failed），运行中不写。
  */
 export function planCompletionOf(steps: readonly { state: PlanStepState }[]): PlanCompletion {
-  const completed = steps.filter(step => step.state === "done").length
-  return steps.length > 0 && completed === steps.length
+  const done = steps.filter(step => step.state === "done").length
+  const progressed = steps.filter(step => step.state === "done" || step.state === "partial").length
+  return steps.length > 0 && done === steps.length
     ? "complete"
-    : completed > 0 ? "partial" : "none"
+    : progressed > 0 ? "partial" : "none"
 }
 
 /**
@@ -124,13 +128,14 @@ export function createPlanSettlement(log: Logger): PlanSettlement {
     state: PlanSettleState
     reason: PlanSettleReason
     notify: PlanEndNotify
+    verification?: PlanVerification
     traceContext?: RuntimeTraceContext
   }): Promise<void> {
-    // 目标完成度与生命周期正交：完成/失败/中断都按「已 done 的步骤数」判定，
-    // 取消与用户拒绝因此自然得到 partial / none（取消时仍在跑的步骤落 interrupted）。
+    // 目标完成度与生命周期正交：完成/失败/中断都按「已 done 的步骤数」判定
+    // （`partial` 步骤计入完成度但不等于完成）。核验结果原样透传给终态写盘。
     const completion = planCompletionOf(planCheckpointStore.snapshot(args.planId)?.steps ?? [])
     await withPlanWriteDegrade(args.sessionId, args.planId,
-      () => planCheckpointStore.transitionPlan(args.planId, args.state, completion))
+      () => planCheckpointStore.transitionPlan(args.planId, args.state, completion, args.verification))
     if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_settled", () => ({ planId: args.planId, status: args.state }))
     // 收起 Plan 面板：没有这个事件时它只在两个按钮里被隐藏，跑完会一直挂着
     notifyPlanEnd(args.sessionId, args.notify)

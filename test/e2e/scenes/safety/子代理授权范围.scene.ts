@@ -11,8 +11,9 @@
 //   1. 计划生成 → 1 步计划，步内只给 DANGER 探针工具；
 //   2. 步骤子代理第 1 轮 → 探针调用（宿主 approve 通道应答 `allow_session` → 工具以 done 收场，grant 入账）；
 //   3. 步骤子代理第 2 轮 → 同一工具同一参数（必须命中 grant：不再产生确认请求）；
-//   4. 步骤子代理第 3 轮 → 步骤完成文本；
-//   5. 计划段之后的主回合 → 收尾文本。
+//   4. 步骤子代理第 3 轮 → 步骤完成的结构化产出；
+//   5. 计划核验 → pass（步骤有 complete 声明才会运行）；
+//   6. 计划段之后的主回合 → 收尾文本。
 //
 // 断言（对应 PLAN-03 与 T2.17 的定稿）：
 //   ① 会话 A：两次同参调用都以 done 收场（探针 handler 只在权限放行后执行），确认请求只有一次；
@@ -54,11 +55,20 @@ const TOOL_ID = "live-sf20-scope-tool"
 const TOOL_NAME = "live_sf20_scope_tool"
 /** 两次调用必须逐字同参：grant 的身份包含参数 hash。 */
 const PARAMS = { target: "sf20-scope" }
-const USER_TEXT = "--plan 分析一次需要确认的子代理操作"
+const USER_TEXT = "/plan 分析一次需要确认的子代理操作"
 const STEP_DONE_A = "步骤 A 完成"
 const MAIN_DONE_A = "会话 A 完成"
 const STEP_DONE_B = "步骤 B 完成"
 const MAIN_DONE_B = "会话 B 完成"
+
+/** 步骤产出契约：只有 complete 才会让计划判完成，核验器也才会运行。 */
+function stepComplete(summary: string): string {
+  return JSON.stringify({ status: "complete", summary })
+}
+/** 计划核验器的确定性应答。 */
+function planVerified(verdict: "pass" | "partial" | "fail", summary = "核验完成"): string {
+  return JSON.stringify({ verdict, reasons: [], missing: [], drift: [], summary })
+}
 
 /** 一次探针执行：handler 只在权限放行后才跑，这条记录就是「工具以 done 收场」。 */
 interface ProbeCall {
@@ -79,19 +89,21 @@ let planEnabledBefore: boolean | undefined
 function planJson(): string {
   const plan = {
     summary: "确认一次需要授权的操作",
-    steps: [{ id: 1, description: "调用探针工具两次", role: "执行员", allowedTools: [TOOL_NAME] }],
+    steps: [{ id: 1, description: "调用探针工具两次", role: "执行员", allowedTools: [TOOL_NAME],
+      inputs: "用户目标", deliverable: "两次探针调用结果", acceptance: "两次调用都以 done 收场" }],
     estimatedComplexity: 3,
   }
   return ["```json", JSON.stringify(plan), "```"].join("\n")
 }
 
-/** 一个计划回合的完整 provider 脚本（5 条，见文件头）。 */
+/** 一个计划回合的完整 provider 脚本（6 条，见文件头）。 */
 function turnScript(stepDone: string, mainDone: string, tag: string): FauxResponseStep[] {
   return [
     fakeText(planJson()),
     fakeToolCall(TOOL_NAME, PARAMS, `${tag}-call-1`),
     fakeToolCall(TOOL_NAME, PARAMS, `${tag}-call-2`),
     fakeText(stepDone),
+    fakeText(planVerified("pass")),
     fakeText(mainDone),
   ]
 }
@@ -241,7 +253,7 @@ const checkGrantBoundToSessionA: AssertCheck = {
     }
 
     // 会话 B 的回合脚本：下一个 turn 驱动会话 B，同工具同参数必须重新确认。
-    provider?.appendResponses(turnScript(STEP_DONE_B, MAIN_DONE_B, "sf20-b"))
+    provider?.appendResponses(turnScript(stepComplete(STEP_DONE_B), MAIN_DONE_B, "sf20-b"))
   },
 }
 
@@ -308,7 +320,7 @@ export const 子代理授权范围: SceneDef = {
     description: "子代理内的 allow_session 授权绑定父会话与代际：切会话后同参 grant 不得命中，必须重新确认",
     depth: "deep",
     suite: "safety",
-    entry: "runtime",
+    entry: "production",
     // 探针是 DANGER 工具：测试宿主没有 ChatPanel，确认由通道按场景策略确定性应答
     // （approve → resolveConfirm(true) → `allow_session`，这正是本场景要验证的授权形态）。
     confirmPolicy: "approve",
@@ -327,7 +339,7 @@ export const 子代理授权范围: SceneDef = {
     // setup 抛错时运行器直接结束本场景（后面的断言一个都不跑），覆盖必须在这里就收尾
     try {
       registerProbeTool()
-      provider = installFakeProvider(turnScript(STEP_DONE_A, MAIN_DONE_A, "sf20-a"))
+      provider = installFakeProvider(turnScript(stepComplete(STEP_DONE_A), MAIN_DONE_A, "sf20-a"))
       await initChat()
       sessionA = getActiveSessionId()
       if (!sessionA) throw new Error("initChat 之后没有活跃会话")

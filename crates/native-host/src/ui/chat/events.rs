@@ -7,7 +7,8 @@
 //!
 //! W8b 增补：
 //! - `deskpet-plan-*` 四条（冻结矩阵内，字段对齐 `plan-confirmation.ts` /
-//!   `runtime.ts` 的生产载荷；`PlanStep` 镜像 `planner.ts` 的形状）；
+//!   `runtime.ts` 的生产载荷；`PlanStep` 是 `planner.ts` 的 `id` + `plan/work-order.ts`
+//!   的工作单字段）；
 //! - `deskpet-permission-confirm`：**权限确认请求的送达通道**。该确认在 Node
 //!   进程内走 `src/services/safety/confirm.ts` 的 `confirmState` 响应式对象，
 //!   **不在 `HostEventMap`、也没有线上事件名**；Node 宿主形态下 UI 在另一进程，
@@ -121,12 +122,14 @@ struct SendOutcomePayload {
 }
 
 // ==========================================
-// 计划（`deskpet-plan-*`；`PlanStep` 镜像 `planner.ts`）
+// 计划（`deskpet-plan-*`；`PlanStep` 见 `PlanStepWire` 的说明）
 // ==========================================
 
-/// `PlanStep`（`src/services/engine/planner.ts`）的镜像。`role` 面板不展示，
-/// 但按冻结形状一并解析，避免同一结构出现两份子集定义；`allowedTools` 是步骤的权限面，
-/// 面板作为提示与步骤描述同排展示。
+/// 计划步骤（`PlanStep = PlanWorkOrder & { id }`）的镜像：工作单字段定义在
+/// `src/services/engine/plan/work-order.ts`，`id` 在 `src/services/engine/planner.ts`。
+/// 线载荷携带完整步骤对象（`plan-confirmation.ts` 直接透传 `plan.steps`），这里只解析
+/// 面板要用的字段，其余字段由 serde 忽略。`role` 面板不展示，但一并解析，避免同一结构
+/// 出现两份子集定义；`allowedTools` 是步骤的权限面，面板作为提示与步骤描述同排展示。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStepWire {
@@ -145,21 +148,32 @@ pub struct PlanStepWire {
 pub enum PlanStepStatus {
     Running,
     Done,
+    /// 有产出但目标只部分达成（结构化产出的 `partial`）。
+    Partial,
+    /// 依赖未满足、本步未执行（结构化产出的 `blocked`）；与「还没轮到」（`None`）不同。
+    Blocked,
     Failed,
     /// 工具解析警告（`runtime.ts::onStepNotice`；该步未执行或未限定工具）。
     Warning,
 }
 
 impl PlanStepStatus {
-    /// 面板前缀记号（`OK` / `..` / `XX` / `!!`）。
+    /// 面板前缀记号（`..` / `OK` / `~~` / `//` / `XX` / `!!`；未轮到为 `--`，
+    /// 见 `PlanStepView::marker`）。
     ///
     /// ⚠️ 这是刻意的：warning 步骤显式给 `!!`（渲染为 `[!!]`）而非不显眼的记号 ——
     /// 工具解析警告必须可见（把 warning 回落成与待执行同记号会让它完全不可见，
     /// 是真实的可用性缺陷）。**不要为了「对齐」而改回去**；其余记号映射不变。
+    ///
+    /// `blocked` 给 `//` 而不回落 `--`：`--` 表示「还没轮到」，blocked 是已定局的
+    /// 「不会执行」，混同会让用户以为计划仍在推进。`partial` 给 `~~` 而不回落 `OK`：
+    /// 它没达成目标，只是比 `XX` 诚实。两个新记号与既有五记号不重复，且保持两字符对齐。
     pub fn marker(self) -> &'static str {
         match self {
             PlanStepStatus::Running => "..",
             PlanStepStatus::Done => "OK",
+            PlanStepStatus::Partial => "~~",
+            PlanStepStatus::Blocked => "//",
             PlanStepStatus::Failed => "XX",
             PlanStepStatus::Warning => "!!",
         }
@@ -633,6 +647,10 @@ mod tests {
         assert_eq!(PlanStepStatus::Running.marker(), "..");
         assert_eq!(PlanStepStatus::Done.marker(), "OK");
         assert_eq!(PlanStepStatus::Failed.marker(), "XX");
+        // partial / blocked 各有记号：blocked 禁止回落成 `--`（那是「还没轮到」），
+        // partial 也不回落成 `OK`（目标未达成）。
+        assert_eq!(PlanStepStatus::Partial.marker(), "~~");
+        assert_eq!(PlanStepStatus::Blocked.marker(), "//");
     }
 
     #[test]
@@ -692,6 +710,32 @@ mod tests {
                 status: PlanStepStatus::Warning,
             }
         );
+
+        // partial / blocked 来自步骤的结构化产出；不认这两个值时整帧解析失败、面板停在旧状态。
+        for (wire, expected) in [
+            ("partial", PlanStepStatus::Partial),
+            ("blocked", PlanStepStatus::Blocked),
+        ] {
+            let event = ChatEvent::from_wire(
+                "deskpet-plan-progress",
+                &format!(
+                    r#"{{"sessionId":"s1","planId":"p1","stepId":"3","total":3,"desc":"第三步","status":"{wire}"}}"#
+                ),
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                event,
+                ChatEvent::PlanProgress {
+                    session_id: "s1".into(),
+                    plan_id: "p1".into(),
+                    step_id: "3".into(),
+                    total: 3,
+                    desc: "第三步".into(),
+                    status: expected,
+                }
+            );
+        }
 
         // 失败询问带 error。
         let event = ChatEvent::from_wire(

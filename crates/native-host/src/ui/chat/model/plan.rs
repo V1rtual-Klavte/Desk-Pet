@@ -362,6 +362,78 @@ mod tests {
         assert!(model.plan().is_none());
     }
     #[test]
+    fn 部分达成与阻塞步骤用各自记号() {
+        let mut model = ChatModel::new();
+        model.apply_projection(projection("s1", vec![]));
+        assert!(model.plan_start(
+            "s1".into(),
+            "p1".into(),
+            "完成两件事".into(),
+            vec![plan_step(1, "第一步"), plan_step(2, "第二步")],
+            2,
+            false,
+        ));
+
+        assert!(model.plan_progress(
+            "s1",
+            "p1",
+            "1",
+            2,
+            super::super::super::events::PlanStepStatus::Partial,
+        ));
+        assert_eq!(model.plan().unwrap().steps[0].marker(), "~~");
+        assert!(model.plan_progress(
+            "s1",
+            "p1",
+            "2",
+            2,
+            super::super::super::events::PlanStepStatus::Blocked,
+        ));
+        let plan = model.plan().unwrap();
+        assert_eq!(plan.steps[1].marker(), "//");
+        // partial / blocked 不得被误映射成完成或失败（那会把「没达成」说成「做到了」）。
+        for step in &plan.steps {
+            let marker = step.marker();
+            assert!(
+                marker != "OK" && marker != "XX",
+                "partial/blocked 被映射成了 {marker}"
+            );
+        }
+
+        let views = model.panel_views();
+        let panel = views
+            .iter()
+            .find(|view| view.kind == super::super::super::panels::PanelKind::Plan)
+            .expect("计划面板存在");
+        let lines: Vec<&str> = panel
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                super::super::super::panels::PanelBlock::Line { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            lines.iter().any(|line| line.starts_with("[~~] ")),
+            "面板没有 partial 记号：{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.starts_with("[//] ")),
+            "面板没有 blocked 记号：{lines:?}"
+        );
+
+        // 收尾后面板清空（记号不应残留）。
+        assert!(model.plan_end("s1"));
+        assert!(model.plan().is_none());
+        assert!(
+            !model
+                .panel_views()
+                .iter()
+                .any(|view| view.kind == super::super::super::panels::PanelKind::Plan),
+            "plan_end 后计划面板仍可见"
+        );
+    }
+    #[test]
     fn 非当前会话与不匹配计划的事件被丢弃() {
         let mut model = ChatModel::new();
         model.apply_projection(projection("s1", vec![]));

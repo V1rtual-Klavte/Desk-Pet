@@ -20,21 +20,22 @@ afterAll(() => rmSync(dataRoot, { recursive: true, force: true }))
 beforeEach(async () => { await standardSetup() })
 
 describe("按回合冻结空工具面", () => {
-  it("Plan开启仍只发空工具请求，下一普通回合恢复工具 [runtime-empty-tools-turn]", async () => {
+  it("无工具回合明确拒绝 /plan，下一普通回合恢复工具 [runtime-empty-tools-turn]", async () => {
     await initChat()
     setOverrides({ "ai.plan.enabled": true })
-    const provider = installFakeProvider([fakeText("已完成纯回答"), fakeText("普通回答")])
+    const provider = installFakeProvider([fakeText("普通回答")])
     try {
-      const isolated = await sendMessage("--plan 先检索、再创建文件、最后执行命令", { toolMode: "none" })
-      expect(isolated.outcome).toBe("succeeded")
+      const isolated = await sendMessage("/plan 先检索、再创建文件、最后执行命令", { toolMode: "none" })
+      expect(isolated.outcome).toBe("failed")
       expect(isolated.toolCallsMade).toBe(0)
-      expect(provider.payloads, "Plan或能力准备额外触发了模型请求").toHaveLength(1)
-      expect(provider.payloads[0]?.tools ?? []).toEqual([])
+      expect(isolated.failure?.message).toContain("计划需要工具能力，无工具回合不能执行 /plan")
+      expect(isolated.reply).toBe("计划需要工具能力，无工具回合不能执行 /plan")
+      expect(provider.payloads, "拒绝 /plan 发生在任何模型请求之前").toHaveLength(0)
       setOverrides({ "ai.plan.enabled": false })
       const ordinary = await sendMessage("普通回合工具应该可用")
       expect(ordinary.outcome).toBe("succeeded")
-      expect(provider.payloads).toHaveLength(2)
-      expect(provider.payloads[1]?.tools?.some(tool => tool.name === "read_session_event")).toBe(true)
+      expect(provider.payloads).toHaveLength(1)
+      expect(provider.payloads[0]?.tools?.some(tool => tool.name === "read_session_event")).toBe(true)
     } finally {
       provider.restore()
     }

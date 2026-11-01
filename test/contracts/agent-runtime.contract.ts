@@ -1,3 +1,15 @@
+// 2026-11-01 计划工作单批次（声明更新；sourceHash 留待 T9 analyze→generate）：/plan 命令
+// 取代 --plan 前缀（忙碌 exclusive、无工具回合在 Provider 前拒绝）；子运行工具预算改为
+// 软着陆并带 toolBudgetExhausted 证据；计划段执行与核验期间挂起回合墙钟。ar-12/ar-28/ar-38/
+// ar-40/ar-41 描述修订，ar-38 增 slash-plan-admission；sourceFiles 补入 /plan 与 /skill
+// 命令、状态层的回合/子运行契约类型与宿主线形状。
+// 2026-11-01 T9 最终复核修复：plan-phase.ts 的恢复分支把完整计划与盘上已定档步骤产出
+// 一并交给核验（本次执行同 id 覆盖）；核验语义归 planner pl-17，ar-* 覆盖点未修订，
+// sourceHash 按当前源码复算。
+// 2026-11-01 复核遗留处理：plan-confirmation.ts 先送达 PLAN_START、再暴露待确认视图，
+// 保证进度事件不会先于起点到达原生面板；plan-phase.ts / plan-proposal.ts 在 just_do_it
+// 与恢复（都没有 PLAN_START）下不再发布进度事件 —— 演练里 `just_do_it` 计划的进度曾全部
+// 落成宿主「找不到对应计划」。ar-* 覆盖点未修订，sourceHash 按当前源码复算。
 // 2026-10-31 集中验收：ar-27 用户取消中性、ar-29 已提交终态收尾／混合批次反例与治理后拦截实跑通过；
 // 共享内核改动仅限治理结算与 after_tool 元数据桥，按 agent-runtime 归属刷新 sourceHash，
 // 其余引用这些枢纽的契约逐份核对 diff 区域后同刷。
@@ -360,9 +372,14 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/read-model.ts",
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
+    // 2026-11-01 计划工作单批次：/plan 与 /skill 的准入（ar-38）、状态层的回合/子运行
+    // 契约类型（ar-28/ar-41）与计划进度的宿主线形状（ar-41 证据/进度消费方）。
+    "src/services/engine/slash/commands/plan.ts", "src/services/engine/slash/commands/skill.ts",
+    "src/services/engine/state/turn.ts", "src/services/engine/state/subagent.ts",
+    "src/services/host/types.ts",
   ],
   // 2026-10-18 列项答案补全批次：HarnessRunState 增加 completedReply，settle 采用与提交条目同源的补全正文；通用循环行为不变，记忆列项行为归 memory mm-74，定向复核后刷新。
-  sourceHash: "2569de9afe85c0079b6318cb6510a6f2c1b5166a96d0f250586073cd89c049e1",
+  sourceHash: "845002b60a2b541401de215efcb2ef41d684b9f1f5b409aff460c3adf6771cbb",
   // Shared-hub ownership is evidenced by existing points: runner ingress/commit (ar-01/ar-10/ar-12),
   // Harness admission and slot state (ar-04/ar-08/ar-13/ar-15), gateway usage (ar-07), and runtime
   // consumer wiring for variables, sub-runs, tool-stage callbacks and reminder injection
@@ -371,7 +388,7 @@ export const agentRuntimeContract: ModuleContract = {
     {"id": "ar-42", "feature": "协议剥离时精确保留生成正文空白", "description": "parseRuntimeData以同一正则和变量解析入口支持显式preserveWhitespace取证；默认展示解析的trim行为保持，取证模式仅去内部协议块，保留首尾空白与CRLF，不复制第二套协议定义。", "why": "协议解析阶段的trim也会损失生成证据，不能在后续采集阶段伪称原文完整。", "layer": "unit", "depth": "deep", "scenarios": ["reply-runtime-data-evidence-whitespace"]},
     {
       id: "ar-41", feature: "统一子运行 owner、产物验收与工具证据",
-      description: "runPiSubAgent 是 fork/team、Plan、主动规划和定时工作的唯一内核。host 必须给定 conversation/plan/proactive/scheduled owner；预取消和过期 deadline 在 Provider 前返回 cancelled/timed_out。maxToolCalls 只表示工具调用次数，保留各业务默认上限。运行状态 completed 与业务 success 分离：空正文、非法 JSON 或治理中止没有成功兜底。必需能力缺失不开工，定时任务明确要求的思考档位不受模型支持时拒绝；resolved 记录模型/provider/期望档位与映射适配、deadline 和冻结工具名。定时任务持久授权不足：有确认面板时通过 interactive 权限模式弹窗，用户批准后继续执行；无面板时以 needs_input 收口，不打开用户确认；父取消中止正在执行的工具。工具证据来自真实 after_tool 回执，只提取有界安全 URL、获取时间及同一 JSON 对象中的 URL/发布日期配对；助手自报来源不进证据。失败的非只读工具回执（afterTool 与 onChildToolResult 两路）标记 unconfirmedEffects —— 写盘 / 进程 / 外部效果在失败回执前都可能已经生效，通用 outputContract 可据此拒绝非空正文（计划侧的验收与展示归 planner pl-06/pl-07）。audit.runId 与 host owner 一致；team 使用 2–3 个分析角度（缺省取默认角度前两个，自定义角度按顺序标为「角度 N」并在派发前校验非空且不重复），成员按角度并行、runId 带序号，lead 必须按角度逐项汇总且不得补写未完成角度；team 保留全部成员状态，单个角度失败不拖垮整体，success = lead.success && 至少一个可用角度，全部角度失败或 lead 空结果都不能包装成功。MCP 按本 run 借用并在所有收尾路径释放（真实连接生命周期仍由 tool-execution 的相关 L4 契约验证）。",
+      description: "runPiSubAgent 是 fork/team、Plan、主动规划和定时工作的唯一内核。host 必须给定 conversation/plan/proactive/scheduled owner；预取消和过期 deadline 在 Provider 前返回 cancelled/timed_out。maxToolCalls 只表示工具调用次数，保留各业务默认上限。运行状态 completed 与业务 success 分离：空正文、非法 JSON 或治理中止没有成功兜底。必需能力缺失不开工，定时任务明确要求的思考档位不受模型支持时拒绝；resolved 记录模型/provider/期望档位与映射适配、deadline 和冻结工具名。定时任务持久授权不足：有确认面板时通过 interactive 权限模式弹窗，用户批准后继续执行；无面板时以 needs_input 收口，不打开用户确认；父取消中止正在执行的工具。工具证据来自真实 after_tool 回执，只提取有界安全 URL、获取时间及同一 JSON 对象中的 URL/发布日期配对；助手自报来源不进证据。失败的非只读工具回执（afterTool 与 onChildToolResult 两路）标记 unconfirmedEffects —— 写盘 / 进程 / 外部效果在失败回执前都可能已经生效，通用 outputContract 可据此拒绝非空正文（计划侧的验收与展示归 planner pl-06/pl-07）。工具调用预算按软着陆结算：达到 maxToolCalls 后的同请求越界调用被拒但不终止，模型可做一次收尾生成；后续请求仍调用工具才硬终止。预算耗尽记 evidence.toolBudgetExhausted=true，即使 outputContract 通过或正文非空也判 success=false、错误文案「工具调用预算耗尽，工作未完成」，调用方不得把它当成功交付。audit.runId 与 host owner 一致；team 使用 2–3 个分析角度（缺省取默认角度前两个，自定义角度按顺序标为「角度 N」并在派发前校验非空且不重复），成员按角度并行、runId 带序号，lead 必须按角度逐项汇总且不得补写未完成角度；team 保留全部成员状态，单个角度失败不拖垮整体，success = lead.success && 至少一个可用角度，全部角度失败或 lead 空结果都不能包装成功。MCP 按本 run 借用并在所有收尾路径释放（真实连接生命周期仍由 tool-execution 的相关 L4 契约验证）。",
       why: "临时 owner、空正文成功、team 字符串包装成功会把未完成工作伪装成已交付；背景任务等待交互或把模型来源自报当真证据同样不可接受。",
       layer: "integration", depth: "deep",
       scenarios: ["subrun-output-acceptance", "subrun-owner-preflight", "subrun-required-capabilities", "subrun-tool-source-evidence", "subrun-background-authorization", "subrun-scheduled-permission-prompt", "subrun-inflight-cancel", "subrun-team-lead-failure", "subrun-team-custom-angles", "subrun-team-partial", "subrun-team-angle-validation"],
@@ -379,7 +396,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-40",
       feature: "独立回合冻结空工具面",
-      description: "sendMessage 的 toolMode=none 沿生产入口透传，Plan开启也只发送一次 tools=[] 的请求；冻结面和激活面均为空，不挂内部回读/取用工具，不借用主动消息语义或改全局注册表；下一普通回合仍有会话回读工具",
+      description: "sendMessage 的 toolMode=none 沿生产入口透传，工具面（冻结面与激活面）均为空，不挂内部回读/取用工具，不借用主动消息语义或改全局注册表。该回合内的 /plan 在 runner 空闲路径被明确拒绝（文案「计划需要工具能力，无工具回合不能执行 /plan」），不发起任何 Provider 请求、不生成计划记录/确认面板；随后下一普通回合仍有会话回读工具（read_session_event）且工具面恢复。",
       why: "撤下注册工具不能移除 Harness 内部工具，事后断言也不能阻止工具调用，需要核对真正的 Provider 请求及下一普通回合的工具面",
       layer: "integration",
       depth: "deep",
@@ -505,7 +522,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-12",
       feature: "空闲输入的持久身份与来源标记",
-      description: "空闲路径的用户输入同样带 `deskpetEventId` 身份并进入投递证据链；输入在计划与预检之前提交为会话条目（用户条目 `seq` 早于其 `deskpet.plan_checkpoint`），预检失败时输入条目保留、已接受操作按取消结算。规划回合经生产入口的完整 `--plan` 前缀触发进入 —— 该路径同时验证前缀剥离不得先于计划入口判定；计划段由 `planConfig.enabled` 单独把守（该开关出厂为 true，普通请求不再触发计划），Live 基线把它钉在 false，要走计划段的场景在 setup 里显式打开",
+      description: "空闲路径的用户输入同样带 `deskpetEventId` 身份并进入投递证据链；输入在计划与预检之前提交为会话条目（用户条目 `seq` 早于其 `deskpet.plan_checkpoint`），预检失败时输入条目保留、已接受操作按取消结算。规划回合经生产入口的 `/plan <目标>` 命令触发进入 —— 命令层消化命令名、目标即用户正文，命令行本身不进用户事实；普通句中的 /plan 不触发；计划段由 `planConfig.enabled` 单独把守（该开关出厂为 true，普通请求不再触发计划），Live 基线把它钉在 false，要走计划段的场景在 setup 里显式打开",
       why: "P6 的 memory_source 追溯要求用户输入条目自带身份与 eligibleForMemory/taint 标记；裸字符串输入让证据链对空闲发送永远返回 undefined",
       layer: "e2e",
       depth: "deep",
@@ -650,7 +667,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-28",
       feature: "工具调用计数上限的口径（主回合无 / 子运行保留）",
-      description: "主聊天回合不再有工具调用计数硬上限：回合驱动（`runPiAgentTurn` 的回合 spec）与中断续跑（`continueInterruptedRun`）都不给 createTurnSpec 传 maxToolCalls，超过旧默认值（5）的连续调用全部真实执行、以模型正文自然收尾（不是 toolLoopMaxRounds 兜底文案）、工具历史没有 blocked —— 自然出口 = 模型不再调工具，兜底防线是 ar-27 / ar-29 的病理检测。无人值守子运行保留计数封顶：runPiSubAgent（计划步骤 / 主动规划 / fork·team 的共同出口）仍传 maxToolCalls = input.maxToolCalls ?? 3，达到上限的那次调用在调用门被拦下（记 blocked）、不再发起下一次请求，运行按 completed 收口（子运行返回 completed + success=false 和空正文，不把无结果文案当成功；toolLoopMaxRounds 是主回合的治理文案）。agent 子代理的轮数映射在 `agent/sub-agent.ts`（取 `ai.loop.subAgentRounds`，原 `ai.loop.maxToolCallsPerTurn` 改名、默认值 5 不变），不在本契约 sourceFiles",
+      description: "主聊天回合不再有工具调用计数硬上限：回合驱动（runPiAgentTurn 的回合 spec）与中断续跑（continueInterruptedRun）都不给 createTurnSpec 传 maxToolCalls，超过旧默认值（5）的连续调用全部真实执行、以模型正文自然收尾（不是 toolLoopMaxRounds 兜底文案）、工具历史没有 blocked —— 自然出口 = 模型不再调工具，兜底防线是 ar-27 / ar-29 的病理检测。无人值守子运行保留计数封顶并改为软着陆：runPiSubAgent（计划步骤 / 主动规划 / fork·team 的共同出口）传 maxToolCalls = input.maxToolCalls ?? 子运行默认值（计划步骤取 ai.plan.stepMaxToolCalls，默认 100）；同一请求内超出上限的调用在调用门被拦下（记 blocked、不执行），该请求仍允许模型基于已有结果生成收尾正文；若后续请求再次调用工具，则硬终止本批、不再发下一次请求。预算耗尽时子运行记 evidence.toolBudgetExhausted=true；即使模型给出非空正文也不算成功（success=false，错误文案「工具调用预算耗尽，工作未完成」），计划步骤据此把 complete 降级为 partial。agent 子代理的轮数映射在 agent/sub-agent.ts（取 ai.loop.subAgentRounds，原 ai.loop.maxToolCallsPerTurn 改名、默认值 5 不变），不在本契约 sourceFiles",
       why: "上限口径从「所有回合的计数封顶」改成「只给无人值守子运行封顶」是行为反转：主回合误留封顶会把长任务掐断（旧默认 5 次），子运行误删封顶则让无人值守的调用失去上界",
       layer: "integration",
       depth: "deep",
@@ -760,7 +777,7 @@ export const agentRuntimeContract: ModuleContract = {
       id: "ar-38",
       feature: "Slash 命令表的查找、忙碌准入、结果路由与 /help",
       description:
-        "find 的顺序是硬约定：整串精确匹配优先（含空格的命令名不被某个可带参数的短名抢走），未命中时才只对声明了 acceptsArgs 的命令做最长前缀匹配，前缀必须以一处分隔空白开头（`x` 后缀与只有尾部空白都不算带参调用），参数是命令名之后的余下文本；search 按整串 / 前缀 / 包含三档计分（3/2/1）并优先高分展示，输入大小写不影响分档。preProcess 是唯一执行入口：忙碌期 busyPolicy=exclusive（缺省）明确拒绝且不执行命令、immediate 与 coordinated 照常执行；结果面五条出口各归各的形态 —— 文本进 response 且 text 清空、null 不出回复、技能准入返回 handled=false 并保留完整输入、命令异常收口为「命令执行出错…」、未注册的 slash 文本透传 AI。initSlashCommands 幂等（重复调用不复制命令、无重名），/help 按 会话 → 记忆 → 技能 → 通用 的固定顺序列出注册表全部命令（数量与 listAll 一致，含参数的命令显示参数说明）",
+        "find 的顺序是硬约定：整串精确匹配优先（含空格的命令名不被某个可带参数的短名抢走），未命中时才只对声明了 acceptsArgs 的命令做最长前缀匹配，前缀必须以一处分隔空白开头（`x` 后缀与只有尾部空白都不算带参调用），参数是命令名之后的余下文本；search 按整串 / 前缀 / 包含三档计分（3/2/1）并优先高分展示，输入大小写不影响分档。preProcess 是唯一执行入口：忙碌期 busyPolicy=exclusive（缺省）明确拒绝且不执行命令、immediate 与 coordinated 照常执行；结果面五条出口各归各的形态 —— 文本进 response 且 text 清空、null 不出回复、技能准入返回 handled=false 并保留完整输入、命令异常收口为「命令执行出错…」、未注册的 slash 文本透传 AI。initSlashCommands 幂等（重复调用不复制命令、无重名），/help 按 会话 → 记忆 → 技能 → 通用 的固定顺序列出注册表全部命令（数量与 listAll 一致，含参数的命令显示参数说明）。/plan 只做准入（不执行计划）：acceptsArgs 为 true，目标即命令名之后的余下文本；空目标返回用法、ai.plan.enabled=false 时说明设置项；busyPolicy=exclusive，忙碌期由 preProcess 明确拒绝；命令本身不进入用户事实。",
       why: "查找顺序弄反会让 /memory clean 落到 /memory 上，用户看到的是另一条命令的结果；忙碌期放行 exclusive 命令会在别人回合中途改会话；把技能准入当普通文本会让 Harness 拿不到运行代际、正文永远不落盘；命令表重复注册或 /help 漏项都只在用户点下拉框/敲 /help 时暴露",
       layer: "unit",
       depth: "deep",
@@ -771,6 +788,7 @@ export const agentRuntimeContract: ModuleContract = {
         "slash-preprocess-busy-policy",
         "slash-preprocess-result-routing",
         "slash-help-grouped-listing",
+        "slash-plan-admission",
       ],
     },
     // 2026-10-27 Slash 命令表层（B5）：/clear 的会话替换在 L2 只能靠替身，真实仓库

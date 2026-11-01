@@ -40,7 +40,7 @@ export async function settleMainTurn(args: {
 }): Promise<PiAgentTurnOutput> {
   const { kernel, result, toolCallHistory } = args
   const turnSessionId = args.input.sessionId
-  // 工具入口（propose_plan）在回合中途执行完的计划；`--plan` 入口由参数直接给出。
+  // 工具入口（propose_plan）在回合中途执行完的计划；`/plan` 入口由参数直接给出。
   // 结算每次都会取走暂存（成功回合也清），不把结果留给下一回合。
   const planDelivery = args.planDelivery ?? takePlanDelivery(turnSessionId)
   const state = kernel.state

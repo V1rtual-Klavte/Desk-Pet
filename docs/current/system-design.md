@@ -87,7 +87,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
   → 空闲 slot.admitInput() → driveAdmitted()（先 lane.accept 落盘再驱动，不走上游 lane.prompt）/ 忙碌 lane 持久 inbox（steer / followUp）
   → runPiAgentTurn：捕获会话与运行身份、Card/变量/模型快照（preflight）
       → 准备本轮工具与 Skill 清单（每回合核对目录指纹）
-      → 完整 --plan 前缀且 ai.plan.enabled 时显式规划，取得步骤结果
+      → /plan 命令且 ai.plan.enabled 时显式规划，取得步骤结果
       → recallMemory → Harness Lane：transform_context 投影 → Provider → before_tool 权限与执行
           → 普通请求由主模型按需调用 propose_plan，复用计划确认、执行与恢复链
       → 条目提交、逐请求 usage、流式正文事件

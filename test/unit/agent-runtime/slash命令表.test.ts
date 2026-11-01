@@ -127,7 +127,7 @@ describe("Slash 忙碌准入与结果路由", () => {
   it("文本 / 静默 / 技能准入 / 执行失败 / 未注册五条出口各归各的形态 [slash-preprocess-result-routing]", async () => {
     register(probe("probe-text"))
     register(probe("probe-silent", { execute: async () => null }))
-    const admission: SlashSkillAdmission = { name: "probe-skill", additionalInstructions: "额外指示" }
+    const admission: SlashSkillAdmission = { kind: "skill", name: "probe-skill", additionalInstructions: "额外指示" }
     register(probe("probe-admission", { acceptsArgs: true, execute: async () => admission }))
     register(probe("probe-throws", { execute: () => Promise.reject(new Error("探针内爆")) }))
 
@@ -173,6 +173,7 @@ describe("Slash 初始化与 /help", () => {
     for (const line of [
       "/help",
       "/clear",
+      "/plan <目标>",
       "/memory clean",
       "/skill <技能名> [额外指示]",
       "/proactive status",
@@ -183,5 +184,40 @@ describe("Slash 初始化与 /help", () => {
     const order = ["会话:", "记忆:", "技能:", "通用:"].map(label => text.indexOf(label))
     expect(order.every(index => index >= 0), "/help 缺少分类标题").toBe(true)
     expect(order, "/help 的分类顺序被改换").toEqual([...order].sort((a, b) => a - b))
+  })
+})
+
+describe("Slash /plan", () => {
+  it("/plan 只做准入：目标即用户正文，关闭/空目标明确拒绝 [slash-plan-admission]", async () => {
+    const { initSlashCommands } = await import("@/services/engine/slash/commands")
+    const { planCommand } = await import("@/services/engine/slash/commands/plan")
+    initSlashCommands()
+    expect(planCommand.busyPolicy).toBe("exclusive")
+    expect(planCommand.acceptsArgs).toBe(true)
+
+    const { getOverride, setOverride } = await import("@/services/config")
+    const previous = getOverride<boolean>("ai.plan.enabled")
+    try {
+      setOverride("ai.plan.enabled", true)
+      const accepted = await preProcess("/plan  修复构建")
+      expect(accepted).toMatchObject({
+        handled: false,
+        planRequest: { kind: "plan", goal: "修复构建" },
+        text: "修复构建",
+        rawText: "/plan  修复构建",
+      })
+      expect(accepted.planRequest?.goal).toBe("修复构建")
+
+      const empty = await preProcess("/plan   ")
+      expect(empty.handled).toBe(true)
+      expect(empty.response).toBe("用法：/plan <目标>")
+
+      setOverride("ai.plan.enabled", false)
+      const disabled = await preProcess("/plan 修复构建")
+      expect(disabled.handled).toBe(true)
+      expect(disabled.response).toContain("计划功能已关闭")
+    } finally {
+      setOverride("ai.plan.enabled", previous)
+    }
   })
 })

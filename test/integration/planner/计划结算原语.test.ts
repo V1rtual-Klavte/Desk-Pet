@@ -93,7 +93,10 @@ async function seedPlan(planId: string): Promise<void> {
   const plan: PlanResult = {
     summary: "两步计划",
     estimatedComplexity: 3,
-    steps: [{ id: 1, description: "第一步" }, { id: 2, description: "第二步" }],
+    steps: [
+      { id: 1, description: "第一步", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+      { id: 2, description: "第二步", allowedTools: [], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过" },
+    ],
   }
   const { record, steps } = planToRecords(plan, { planId, sessionId, rootTurnId: "turn-settlement-test", intent: "验证结算原语", effectOf: planEffectClassFor })
   await planCheckpointStore.create(record, steps)

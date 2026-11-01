@@ -37,15 +37,24 @@ function payload(chars: number): string {
 const GIANT_PREFIX = "预检超限输入："
 const GIANT = `${GIANT_PREFIX}${payload(BUDGET.hardInputLimit + 4096)}`
 
-const PLAN_REQUEST = "--plan 读取配置再改写配置"
+const PLAN_REQUEST = "/plan 读取配置再改写配置"
 const PLAN_REQUEST_NEEDLE = "读取配置再改写配置"
 /** 规划脚本要求的正文标记（`generatePlan` 的 userText 前缀）。 */
 const PLAN_PROMPT_MARKER = "用户请求:"
-const PLAN_JSON = '```json\n{"summary":"两步","steps":[{"id":1,"description":"读取配置"},{"id":2,"description":"改写配置"}]}\n```'
+const PLAN_JSON = '```json\n{"summary":"两步","steps":[{"id":1,"description":"读取配置","allowedTools":["read"],"inputs":"当前配置","deliverable":"配置内容","acceptance":"读到完整配置"},{"id":2,"description":"改写配置","allowedTools":["read"],"inputs":"配置内容","deliverable":"修改后的配置","acceptance":"目标项已改写"}]}\n```'
 const STEP_REPLY = "步骤完成"
 const MAIN_REPLY = "计划执行完成"
 /** 场景自己的回合（核对用）的脚本响应；它跑在计划回合之后。 */
 const TURN_REPLY = "核对完成"
+
+/** 步骤产出契约：只有 complete 才会让计划判完成，核验器也才会运行。 */
+function stepComplete(summary: string): string {
+  return JSON.stringify({ status: "complete", summary })
+}
+/** 计划核验器的确定性应答。 */
+function planVerified(verdict: "pass" | "partial" | "fail", summary = "核验完成"): string {
+  return JSON.stringify({ verdict, reasons: [], missing: [], drift: [], summary })
+}
 
 /** 规划脚本响应：被别的请求取走就是脚本错位，立即报错。 */
 function planStep(): FauxResponseStep {
@@ -97,8 +106,9 @@ export const 输入先落盘: SceneDef = {
     snapshot = captureOverrides()
     installFakeProvider([
       planStep(),
-      fakeText(STEP_REPLY),
-      fakeText(STEP_REPLY),
+      fakeText(stepComplete(STEP_REPLY)),
+      fakeText(stepComplete(STEP_REPLY)),
+      fakeText(planVerified("pass")),
       fakeText(MAIN_REPLY),
       fakeText(TURN_REPLY),
     ], FAKE_MODEL)
@@ -109,7 +119,7 @@ export const 输入先落盘: SceneDef = {
     sessionId = getActiveSessionId()
     planned = await sendMessage(PLAN_REQUEST)
     // 计划回合之后就把计划入口关回去：场景自己的回合与后面的超限路径都不该再进计划段
-    //（显式命令入口只按 `--plan` 前缀触发，普通回合不会再静默进入计划段）。
+    //（`/plan` 命令入口只在显式命令时触发，普通回合不会再静默进入计划段）。
     setOverride("ai.plan.enabled", false)
   },
   turns: [{

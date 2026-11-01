@@ -56,7 +56,7 @@ export const skillCommand: SlashCommand<SlashCommandResult> = {
 
     // 余下文本是附加指示，可为空；「是否启动得了」由运行入口按运行代际与 lane 准入裁定。
     return additionalInstructions
-      ? { name: skill.name, additionalInstructions }
-      : { name: skill.name }
+      ? { kind: "skill", name: skill.name, additionalInstructions }
+      : { kind: "skill", name: skill.name }
   },
 }

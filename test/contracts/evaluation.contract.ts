@@ -229,7 +229,7 @@ export const evaluationContract: ModuleContract = {
   // 2026-10-28 MultiChallenge 试跑阻塞修复：外部静态用例把目标回合排在固定时钟之后（模拟时钟只前进
   // 不回退，步骤时间起步即过期会让驱动在第一个步骤阻塞），驱动时钟守卫补出「步骤时间已过去」的原因；
   // sourceHash 按当前源码复算。
-  sourceHash: "0ee915d22846218c86e54172f58fd700883a7accb683dc5937982ea9f1702ffe",
+  sourceHash: "61b9563be0593ca25b463d168a363de42c1b01d0c43d64db28449a0bd4a201b8",
   coverage: [
     {"id": "eval-16", "feature": "直接消息回执的持久正文绑定", "description": "真实 sendMessage 与 JSONL 产生消息后，控制通道的 resolveSimMessageReply 只按同一 requestId 的持久 run 分支取终态助手正文；返回字符串不能覆盖它。找不到本次请求时即使有别的非空回复也返回 failed，不借用最后一条消息。", "why": "回执有字不证明该请求的助手正文已提交，缺绑定会把工具治理兜底或其他请求的回复误当成完成。", "layer": "integration", "depth": "deep", "scenarios": ["chat-receipt-committed-reply", "chat-receipt-uncommitted-rejected"]},
     {"id": "eval-15", "feature": "生成正文与最终交付证据同源封存", "description": "助手消息按稳定session/entry身份采集最终text/textParts、同消息工具调用数与replyEvidence；生成正文只从同条消息的已校验持久取证读取，缺失明确unavailable，非法标注使采集不完整，不从final或旧原文字段回填；空助手工具轮与沉默保留明确状态。JSONL校验parts与text一致、白名单与封存哈希覆盖新增字段；packet4/view2/chat-judge@6/chat-grader@4携带生成与交付证据，窗口外精简视图不泄露被省略原文。generated引用仅用于归因，产品规则仍按最终交付判定；句数不等于行/气泡数，记得旧说法不要求继续认同。旧封存和判分不回写，重判追加。", "why": "只有展示后的文本无法区分模型漏答、后处理损伤和判据误读；取证原文不能反过来替代产品交付成绩，也不能绕过消息身份与封存完整性。", "layer": "unit", "depth": "deep", "scenarios": ["chat-capture-reply-evidence-provenance", "chat-capture-reply-evidence-missing", "chat-capture-reply-evidence-invalid", "chat-capture-final-parts-mismatch", "chat-evidence-reply-evidence-whitelist", "chat-evidence-reply-evidence-tamper", "chat-judge-reply-evidence-attribution", "chat-judge-reply-evidence-legacy", "chat-judge-generated-only-evidence-rejected"]},

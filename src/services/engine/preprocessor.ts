@@ -7,15 +7,15 @@
 import { createLogger } from "@/services/logger"
 import { loopConfig } from "@/services/config"
 import { find } from "./slash/registry"
-import type { RegisteredSlashCommand, SlashCommandResult, SlashSkillAdmission } from "./slash/types"
+import type { RegisteredSlashCommand, SlashCommandResult, SlashPlanRequest, SlashSkillAdmission } from "./slash/types"
 
 const log = createLogger("PreProc")
 
 export interface PreProcessResult {
   /**
    * 是否为 slash 命令并已处理。
-   * 带 `skillAdmission` 时为 false：命令已被识别，但这次输入还没结束 —— 正文由 Harness 落盘
-   * （见下），由运行入口在拿到运行代际后接手。
+   * 带 `skillAdmission` / `planRequest` 时为 false：命令已被识别，但这次输入还没结束 ——
+   * 正文由运行入口在拿到运行代际后落盘并接手（见下）。
    */
   handled: boolean
   /** 处理后应直接返回给用户的消息（slash 命令结果） */
@@ -25,6 +25,11 @@ export interface PreProcessResult {
    * 正文与那条 `role:"user"` 条目由 Harness 在 `accept` 内按技能文件构造并提交（先落盘再投递）。
    */
   skillAdmission?: SlashSkillAdmission
+  /**
+   * 计划请求（`/plan <目标>`）：命令层只声明「走计划、目标是什么」，正文由运行入口投递。
+   * 与 `skillAdmission` 一样，`handled` 为 false —— 这次输入还没有结束。
+   */
+  planRequest?: SlashPlanRequest
   /** 经过过滤的用户文本（空 = 跳过） */
   text: string
   rawText: string
@@ -38,9 +43,9 @@ export interface PreProcessDedupAdmission {
   release(): void
 }
 
-/** 命令结果里的非文本形态只有技能准入（`SlashCommandResult` 是一个联合）。 */
-function isSkillAdmission(result: SlashCommandResult): result is SlashSkillAdmission {
-  return typeof result === "object" && result !== null
+/** 命令结果里的非文本形态只有运行准入（技能 / 计划），按 `kind` 判别。 */
+function admissionOf(result: SlashCommandResult): SlashSkillAdmission | SlashPlanRequest | undefined {
+  return typeof result === "object" && result !== null ? result : undefined
 }
 
 export interface PreProcessState {
@@ -135,15 +140,21 @@ export async function preProcess(rawText: string, state: PreProcessState = {}, o
       }
       try {
         const result = await command.execute(hit.args)
-        if (isSkillAdmission(result)) {
+        const admission = admissionOf(result)
+        if (admission?.kind === "skill") {
           // 技能准入不是「已处理的文本」：它要一次运行代际才能落盘（`accept` 在准入内提交正文），
           // 这里只把意图交出去，由运行入口接手；命令层不写会话条目、也不自己投递正文。
-          return { handled: false, skillAdmission: result, text, rawText, normalizedText: text }
+          return { handled: false, skillAdmission: admission, text, rawText, normalizedText: text }
         }
-        if (result !== null) {
+        if (admission?.kind === "plan") {
+          // 计划请求同样要一次运行代际。`/plan` 前缀由命令层消化，目标正文就是用户这次的消息：
+          // 按普通输入投递（原文仍完整留在 rawText，供规范化痕迹对照）。
+          return { handled: false, planRequest: admission, text: admission.goal, rawText, normalizedText: admission.goal }
+        }
+        // 两种运行准入都已交出去，剩下的是文本结果本身（`null` = 命令已执行但不需要显示回复）。
+        if (typeof result === "string") {
           return { handled: true, response: result, text: "", rawText, normalizedText: text }
         }
-        // result === null → 命令已执行但不需要显示回复
         return { handled: true, text: "", rawText, normalizedText: text }
       } catch (e) {
         log.error("命令执行失败:", cmdText, e)

@@ -16,8 +16,13 @@ export type {
   PlanCompletion,
   PlanRecord,
   PlanState,
+  PlanStepAcceptanceCheck,
+  PlanStepOutcome,
+  PlanStepOutcomeStatus,
   PlanStepRecord,
   PlanStepState,
+  PlanVerification,
+  PlanVerificationVerdict,
   PromptAgentMessage,
   PromptCacheInfo,
   PromptCapabilityContext,
@@ -89,4 +94,4 @@ export {
 export {
   PLAN_CHECKPOINT_ENTRY, PLAN_RECOVERY_FAILED_ENTRY, PLAN_STEP_RESULT_ENTRY, PLAN_WRITE_FAILED_ENTRY,
 } from "./entries"
-export { formatPlanStepResultReadback, planAcceptanceLabel } from "./plan-readback"
+export { formatPlanStepResultReadback, planAcceptanceLabel, planOutcomeLabel, planVerificationLabel } from "./plan-readback"

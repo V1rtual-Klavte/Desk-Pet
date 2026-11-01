@@ -230,8 +230,8 @@ export function requestPlanConfirm(plan: PlanResult, opts: {
       entry.signalCleanup = () => signal.removeEventListener("abort", onAbort)
     }
 
-    planConfirmState.pending = view
-
+    // 先送达 PLAN_START，再暴露待确认视图：同步应答者（演练/测试替身）在视图赋值时就会拍板，
+    // 若起点事件还在路上，执行期的进度事件会先到原生面板（找不到对应计划）。
     void emitUiEvent(HOST_EVENT_PLAN_START, {
       sessionId,
       planId,
@@ -240,11 +240,15 @@ export function requestPlanConfirm(plan: PlanResult, opts: {
       complexity: view.complexity,
       forceStepByStep: view.forceStepByStep,
     }).then(delivered => {
-      if (delivered) return
-      // 事件没送达 = 确认方永远等不到答案：立即按 emit_failed 结算（§4.1）
-      if (!settleConfirm(planId, { confirmed: false, reason: "emit_failed" })) return
-      log.error("计划确认事件发射失败，已按 emit_failed 结算:", planId, sessionId)
-      writeNotice(sessionId, "emit_failed")
+      if (!delivered) {
+        // 事件没送达 = 确认方永远等不到答案：立即按 emit_failed 结算（§4.1）
+        if (!settleConfirm(planId, { confirmed: false, reason: "emit_failed" })) return
+        log.error("计划确认事件发射失败，已按 emit_failed 结算:", planId, sessionId)
+        writeNotice(sessionId, "emit_failed")
+        return
+      }
+      // 等待期间可能已被 signal / 会话生命周期结算：只在仍待确认时暴露视图。
+      if (pendingConfirms.has(planId)) planConfirmState.pending = view
     })
   })
 }

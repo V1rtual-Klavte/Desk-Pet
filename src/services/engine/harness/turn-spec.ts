@@ -111,6 +111,10 @@ export function createTurnSpec(kernel: TurnKernel, options: {
   // 压缩审计槽：摘要内核的成败写在这里，由槽在 compaction_end 收口成 deskpet.* 条目。
   const compactionAudit: CompactionAuditSink = {}
   let toolCallsUsed = 0
+  // 请求序号：把「预算耗尽的那次请求」与「收尾生成」区分开 —— 同一次请求内的并行越界
+  // 调用一律软拒，收尾生成里再调工具才算无视提示、硬终止。
+  let requestSequence = 0
+  let budgetExhaustedAtRequest: number | undefined
   // 病理检测：每回合新建（重置点就是这里），喂入工具调用与结果，产出软提示 / 硬终止判据。
   const loopGuard = new ToolLoopGuard()
   /**
@@ -131,6 +135,7 @@ export function createTurnSpec(kernel: TurnKernel, options: {
       traceContext: kernel.traceContext,
     },
   })
+  const requestOptionsPatch = createRequestOptionsPatch((step, attempt) => { kernel.currentRequest = { step, attempt } })
   const hooks: HarnessRunHooks = {
     beforeTool: async ({ toolCallId, toolName, args, signal }) => {
       const tool = toolsByName.get(toolName)
@@ -139,12 +144,20 @@ export function createTurnSpec(kernel: TurnKernel, options: {
         kernel.toolRun.history.push({ toolName, status: "blocked" })
         return { block: { reason: state.toolGovernanceReason ?? "工具循环治理终止", terminate: true } }
       }
-      // 计数硬上限只服务无人值守的子运行（主回合不传 maxToolCalls）。
+      // 计次上限只服务无人值守的子运行（主回合不传 maxToolCalls）。
+      // 命中后软着陆：本次越界调用被拒，但允许模型基于已有结果做一次收尾生成；
+      // 只有收尾生成里仍要调工具才硬终止。同一次请求内的并行越界调用一律软拒，
+      // 不能因为第二条越界调用抢掉收尾机会。
       if (options.maxToolCalls !== undefined && toolCallsUsed >= options.maxToolCalls) {
-        state.stoppedByToolGovernance = true
-        state.toolGovernanceReason = `工具调用次数达到上限 (${options.maxToolCalls})`
         kernel.toolRun.history.push({ toolName, status: "blocked" })
-        return { block: { reason: state.toolGovernanceReason, terminate: true } }
+        if (state.toolBudgetExhausted && budgetExhaustedAtRequest !== requestSequence) {
+          state.stoppedByToolGovernance = true
+          state.toolGovernanceReason = `工具调用次数达到上限 (${options.maxToolCalls})`
+          return { block: { reason: state.toolGovernanceReason, terminate: true } }
+        }
+        state.toolBudgetExhausted = true
+        budgetExhaustedAtRequest ??= requestSequence
+        return { block: { reason: `工具调用次数达到上限 (${options.maxToolCalls})，不能再调用工具；请基于已有结果给出最终结论` } }
       }
       // 病理检测在调用门（权限之前）：同参连击到硬阈值就整回合优雅终止；失败连击的硬阈值
       // 在结果侧已经终止（afterTool 的 terminate），这里兜住「本批未整体终止仍有后续调用」的窗口。
@@ -263,7 +276,10 @@ export function createTurnSpec(kernel: TurnKernel, options: {
     }),
     compactionAudit,
     // 记当次请求归属：payload 采集据此区分「本回合的请求」与「压缩/分支摘要的一次性请求」。
-    beforeRequest: createRequestOptionsPatch((step, attempt) => { kernel.currentRequest = { step, attempt } }),
+    beforeRequest: input => {
+      requestSequence++
+      return requestOptionsPatch(input)
+    },
     afterResponse: async (message, meta) => {
       publishRuntimeTrace(kernel.traceContext, "provider_response", () => ({
         model: kernel.model.id,

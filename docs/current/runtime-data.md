@@ -93,15 +93,15 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 记忆请求预算由运行期按实际剩余输入空间自动派生，不提供手动 core/recall 额度或切换开关，见[记忆预算](memory.md#预算与工具大结果)。
 
-另有从不提供控件、也不在本表撤下语义内的技术参数：`ai.loop.turnTimeoutMs`（主回合/恢复墙钟，默认 600s）与 `ai.plan.stepTimeoutMs`（计划步骤墙钟，默认 300s）——用途、与 bash 档位的约束关系（回合墙钟必须 ≥ 工具档位 + 一次模型往返）与修改入口见[工具系统](tool-system.md#文件命令与取消)的档位说明，不重复默认值。
+另有从不提供控件、也不在本表撤下语义内的技术参数：`ai.loop.turnTimeoutMs`（主回合/恢复墙钟，默认 600s）与 `ai.plan.planTimeoutMs`（计划级时限，默认 7200000ms；用户等待期不计入，计划执行与核验期间主回合墙钟挂起）——用途、与 bash 档位的约束关系（回合墙钟必须 ≥ 工具档位 + 一次模型往返）与修改入口见[工具系统](tool-system.md#文件命令与取消)的档位说明，不重复默认值。
 
 ### 显式计划开关的语义与生效时机
 
 | 字段 | 取值 | 语义 | 生效 |
 |---|---|---|---|
-| `ai.plan.enabled` | boolean，默认 true | 只控制显式 `--plan` 命令；普通请求由主模型按需调用 `propose_plan` | 保存后下一回合生效 |
+| `ai.plan.enabled` | boolean，默认 true | 只控制显式 `/plan` 命令；普通请求由主模型按需调用 `propose_plan` | 保存后下一回合生效 |
 
-原生设置窗「启用 --plan 命令」经 `settings_commit` 写入同一 CONFIG 键，运行期由 [config.ts](../../src/services/config.ts) 的 `planConfig.enabled` 读取。前缀必须是完整 `--plan`（后接空白或文本结束），`--planet` 不触发；命令开关关闭不隐藏计划工具。关键词列表、复杂度阈值和独立复杂度评估请求已删除；无工具回合两条计划入口都不运行。
+原生设置窗「启用 /plan 命令」经 `settings_commit` 写入同一 CONFIG 键，运行期由 [config.ts](../../src/services/config.ts) 的 `planConfig.enabled` 读取。命令层在开关关闭时拒绝并说明设置项，目标为空时给出用法；忙碌期按 `busyPolicy: "exclusive"` 明确拒绝；无工具回合在 runner 空闲路径拒绝（「计划需要工具能力，无工具回合不能执行 /plan」，不发 Provider 请求）。普通文本里的 `/plan` 与 `/planet` 不触发；命令开关关闭不隐藏计划工具。关键词列表、复杂度阈值和独立复杂度评估请求已删除。
 
 ### Bash 白名单字段的语义与生效时机
 

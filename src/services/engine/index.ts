@@ -31,7 +31,7 @@ export {
   normalizePlan, planToRecords, recordsToPlan, planEffectClassFor,
 } from "./planner"
 export type {
-  PlanStep, PlanResult, PlanExecutionResult, PlanPriorResult,
+  PlanStep, PlanResult, PlanExecutionResult, PlanPriorResult, PlanBlockedStep, PlanStepRunStatus,
   GeneratePlanContext, PlanRecordContext,
 } from "./planner"
 

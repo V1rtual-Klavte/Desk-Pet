@@ -359,11 +359,55 @@ export type PlanState = "admitting" | "running" | "paused" | "done" | "failed" |
  */
 export type PlanCompletion = "complete" | "partial" | "none"
 
+/**
+ * 步骤产出的结构化归宿（由步骤子代理按输出契约给出，确定性校验）：
+ * `complete` 只在该步的验收条目全部满足且没有缺口时成立；`partial` 表示有产出但没做完；
+ * `blocked` 表示被前置条件卡住、下一步需要什么。
+ */
+export type PlanStepOutcomeStatus = "complete" | "partial" | "blocked"
+
+/** 一条验收结论：`item` 是验收条目原文，`met` 是子代理的逐条判定。 */
+export interface PlanStepAcceptanceCheck {
+  item: string
+  met: boolean
+  note?: string
+}
+
+/**
+ * 步骤的持久产出（写入 `PlanStepResult` 与 `PlanStepRecord`）。
+ * `status = complete` 时不得有 `missing`，`acceptance` 也不得出现 `met: false`（见 work-order 解析）。
+ */
+export interface PlanStepOutcome {
+  status: PlanStepOutcomeStatus
+  summary: string
+  artifacts?: string[]
+  evidence?: string[]
+  acceptance?: PlanStepAcceptanceCheck[]
+  missing?: string[]
+  /** `blocked` 时说明下一步需要什么（缺的输入 / 需要用户决定的事）。 */
+  needs?: string
+}
+
+/** 计划级核验结论：完成度（`PlanCompletion`）与核验正交，核验只回答「是否达成原始目标」。 */
+export type PlanVerificationVerdict = "pass" | "partial" | "fail"
+
+/** 计划级核验（独立只读子代理对照原始目标给出）。 */
+export interface PlanVerification {
+  verdict: PlanVerificationVerdict
+  reasons: string[]
+  missing: string[]
+  drift: string[]
+  summary: string
+}
+
 export type PlanStepState =
   | "pending"
   | "running"
   | "done"
+  | "partial"
+  | "blocked"
   | "failed"
+  /** 只用于用户拒绝确认（一步都没跑）；依赖未满足的步骤落 `blocked`，不是 `skipped`。 */
   | "skipped"
   | "interrupted"
   | "unknown_side_effect"
@@ -371,14 +415,14 @@ export type PlanStepState =
 export type PlanEffectClass = "read_only" | "external_side_effect"
 
 /**
- * 计划的唯一持久形态（`schemaVersion: 3`）。
+ * 计划的唯一持久形态（`schemaVersion: 4`）。
  *
  * `summary`/`estimatedComplexity` 随记录落盘，恢复时不需要第二份 `PlanResult`；
  * `intent` 是用户原始请求或等价目标，恢复与步骤交接都读它，不再从步骤标题反推。
- * `schemaVersion: 3` 的形态变更不做数据迁移，存量旧格式计划按不可恢复处理（旧数据可弃）。
+ * schema 4 保存结构化工作单、步骤产出与计划级核验；不做数据迁移，存量旧格式计划按不可恢复处理（旧数据可弃）。
  */
 export interface PlanRecord {
-  schemaVersion: 3
+  schemaVersion: 4
   planId: string
   sessionId: string
   rootTurnId: string
@@ -389,6 +433,11 @@ export interface PlanRecord {
   estimatedComplexity: number
   /** 目标完成度；仅终态写，运行中为 undefined（生命周期由 `state` 表达）。 */
   completion?: PlanCompletion
+  /**
+   * 计划级核验结果（仅终态写）：与 `completion` 正交 —— `completion` 答「多少步做完了」，
+   * 核验答「原始目标是否达成」。核验缺失表示没有核验过，不能当成通过。
+   */
+  verification?: PlanVerification & { verifiedAt: number }
   version: number
   createdAt: number
   updatedAt: number
@@ -399,12 +448,20 @@ export interface PlanStepRecord {
   stepId: string
   title: string
   role?: string
-  allowedTools?: string[]
+  /** 必填、非空：每一步的权限面必须显式声明，不允许「缺省放大到全部工具」。 */
+  allowedTools: string[]
   /** 依赖的更早步骤 id（规范化后的数值域）；缺省表示无依赖。 */
   dependsOn?: number[]
+  /** 工作单：需要的输入、交付物、验收条目（一行一条）与明确不做的范围。 */
+  inputs: string
+  deliverable: string
+  acceptance: string
+  nonGoals?: string
   state: PlanStepState
   attempt: number
   effectClass: PlanEffectClass
+  /** 当前尝试的结构化产出；`running` 开新尝试时清空。 */
+  outcome?: PlanStepOutcome
   /** 当前尝试一旦出现非只读工具就保持 true，只有用户明确重试才清除。 */
   sideEffectStarted?: boolean
   lastEventId?: string

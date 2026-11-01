@@ -12,7 +12,8 @@
 //    不再发第 6 次请求、收尾同样走兜底文案；
 // ⑤ 软提示跨请求持续存在；多 text 块结果整条只拼一次；
 // ⑥ 每回合重置：同一会话两个回合各 3 次同参调用都只停在软档（guard 不跨回合复用）；
-// ⑦ 无人值守子运行保留计数封顶：runPiSubAgent 在 maxToolCalls 处停下（第 3 次调用不再执行）；
+// ⑦ 无人值守子运行保留计数封顶：runPiSubAgent 在 maxToolCalls 处软着陆（越界调用被拒但不执行），
+//    下一次请求允许模型生成收尾正文；预算耗尽且没有完成声明时以失败结算并留证据。
 // ⑧ 子运行同吃病理检测：maxToolCalls=10（封顶够不着）时同参连续第 5 次在调用门被硬终止 ——
 //    前 4 次真实执行、第 5 次不执行且不再发请求（去掉子运行这段接线、把硬阈值放宽、
 //    或丢掉 block 的 terminate，三种改法都会红）。子运行的请求投影关闭，软提示不附进请求视图，
@@ -483,10 +484,10 @@ describe("工具循环治理", () => {
     expect(second.reply, "第二回合没有以模型正文收尾（疑似跨回合累计触发硬终止）").toContain("第二回合收尾")
   }, 60_000)
 
-  it("无人值守子运行保留计数封顶：runPiSubAgent 在 maxToolCalls 处停下 [tool-loop-subagent-cap-kept]", async () => {
+  it("无人值守子运行保留计数封顶：runPiSubAgent 软着陆后允许一次收尾生成 [tool-loop-subagent-cap-kept]", async () => {
     const provider = installFakeProvider([
-      ...Array.from({ length: 4 }, (_, at) => fakeToolCall(PROBE_NAME, { at: at + 1 }, `sub-call-${at + 1}`)),
-      fakeText("子代理不应继续"),
+      ...Array.from({ length: 3 }, (_, at) => fakeToolCall(PROBE_NAME, { at: at + 1 }, `sub-call-${at + 1}`)),
+      fakeText("收尾：预算被用完，工作未完成"),
     ])
 
     const result = await runPiSubAgent({
@@ -498,9 +499,13 @@ describe("工具循环治理", () => {
       timeoutMs: 30_000,
     })
 
+    // 软着陆：第 3 次越界调用被软拒（不执行），下一次请求仍拿到收尾正文。
     expect(executions.length, `子运行没有在 maxToolCalls=2 处停下（执行了 ${executions.length} 次）`).toBe(2)
     expect(result.toolCallsMade, "子运行的已执行工具数与封顶不一致").toBe(2)
-    expect(provider.state.callCount, "封顶后不应请求第 4 次（第 3 次调用被拦下即终止）").toBe(3)
+    expect(provider.state.callCount, "软着陆后应恰好多发一次收尾请求").toBe(4)
+    expect(result.reply, "预算耗尽后的收尾正文没有交付").toContain("收尾：预算被用完")
+    expect(result.success, "预算耗尽且未完成时不应判成功").toBe(false)
+    expect(result.evidence.toolBudgetExhausted, "预算耗尽的证据标记缺失").toBe(true)
   }, 60_000)
 
   it("子运行同吃病理检测：同参第 5 次在调用门硬终止（先于 maxToolCalls 封顶） [tool-loop-subagent-guard]", async () => {

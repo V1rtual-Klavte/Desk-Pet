@@ -11,20 +11,34 @@
  * 最终核对 —— 这里不复制它的校验规则，也不留运行期约定。
  */
 export interface SlashSkillAdmission {
+  kind: "skill"
   /** 技能名：Pi `Skill.name`，即技能清单里的键 */
   name: string
   /** 跟在技能正文之后的附加指示（命令名之后的余下文本） */
   additionalInstructions?: string
 }
 
-/** 命令执行结果：给用户看的文本（null = 不显示），或一次技能准入（由运行入口落盘并驱动回合）。 */
-export type SlashCommandResult = string | null | SlashSkillAdmission
+/**
+ * 计划请求 —— `/plan <目标>` 的出口形态。
+ *
+ * 命令层只声明「这次输入走计划、目标是什么」：计划生成、确认、执行与面板事件都在运行入口
+ * （`runtime/plan-phase.ts`）。预处理把它当普通用户输入投递（`goal` 即用户正文），
+ * 运行入口据 `planRequested` 标记进入计划相位。
+ */
+export interface SlashPlanRequest {
+  kind: "plan"
+  /** `/plan` 之后的正文（两端空白已去掉，非空） */
+  goal: string
+}
+
+/** 命令执行结果：给用户看的文本（null = 不显示），或一次运行准入（技能 / 计划）。 */
+export type SlashCommandResult = string | null | SlashSkillAdmission | SlashPlanRequest
 
 /**
  * Slash 命令定义。
  *
  * `Result` 是 `execute` 的结果面，缺省就是文本命令（现状形态）：只有把输入交给运行入口的
- * 命令（`/skill`）才需要实例化到 `SlashCommandResult`，两处都只这一份字段定义。
+ * 命令（`/skill`、`/plan`）才需要实例化到 `SlashCommandResult`，两处都只这一份字段定义。
  */
 export interface SlashCommand<Result extends SlashCommandResult = string | null> {
   /** 命令名（不含 /），如 "help", "clear", "memory clean" */
@@ -54,14 +68,14 @@ export interface SlashCommand<Result extends SlashCommandResult = string | null>
    *
    * @param args 声明了 `acceptsArgs` 时由 `find()` 拆出的余下文本（两端空白已去掉，不会有空串）；
    *             未声明的命令不接收它。
-   * @returns 给用户的消息（null = 不显示），或一次技能准入 —— 后者交给运行入口在拿到运行代际后
-   *          经 Harness 落盘并驱动回合，命令层不自己写会话条目。
+   * @returns 给用户的消息（null = 不显示），或一次运行准入（技能 / 计划）—— 后者交给运行入口在
+   *          拿到运行代际后经 Harness 落盘并驱动回合，命令层不自己写会话条目。
    */
   execute: (args?: string) => Promise<Result>
 }
 
 /**
- * 注册表与 /help 持有的命令面：`execute` 的结果可能是文本，也可能是一次技能准入。
+ * 注册表与 /help 持有的命令面：`execute` 的结果可能是文本，也可能是一次运行准入（技能 / 计划）。
  *
  * 文本命令（`SlashCommand`，缺省结果面）都赋得进来 —— 结果面按协变放宽，命令自己的声明面不变。
  */

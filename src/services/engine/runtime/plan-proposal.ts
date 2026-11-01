@@ -2,7 +2,7 @@
 // 模型提议计划的执行相位 —— 计划机制的第二条入口（propose_plan 工具驱动）
 //
 // 计划链路有两条入口，共用同一批原语（确认通道、执行器、记录存储、面板事件）：
-//   1. 显式命令入口：`runtime/plan-phase.ts` 的 `runPlanPhase`（完整 `--plan` 命令且开关启用时由 harness
+//   1. 显式命令入口：`runtime/plan-phase.ts` 的 `runPlanPhase`（完整 `/plan` 命令且开关启用时由 harness
 //      发起，计划由 `generatePlan` 生成）；
 //   2. 模型提议入口：本模块（模型在回合中调用 `propose_plan`，计划由模型给出）。
 // 两条入口的差异只在「计划从哪来」与「结果去哪」：显式命令入口把 `formatStepResults`
@@ -22,8 +22,11 @@
 //
 // 生命周期边界（已登记的差异）：显式命令入口的确认与执行发生在回合定时器启动**之前**
 // （`runPlanPhase` 在 `driveAdmitted` 之前），本入口运行在回合的**工具调用内** ——
-// 整个确认 + 执行都处在回合时限（`turnTimeoutMs`）之内。回合被停止/超时时工具信号先断，
-// 确认按 `session_switched` 结算、执行按取消归宿停在步骤边界，都不会把计划留在半途。
+// 确认期靠用户等待豁免回合墙钟，执行与核验期靠槽的委托挂起（`holdTurnClock`）暂停它，
+// 因此计划时限（`planTimeoutMs`）而不是 600s 回合墙钟决定能跑多久。计划时钟只扣除
+// 用户等待：执行本身计入计划时限（`executePlan` 的 `userWaitTotalMs` 口径）。
+// 回合被停止/超时时工具信号先断，确认按 `session_switched` 结算、执行按取消归宿停在
+// 步骤边界，都不会把计划留在半途。
 //
 // 并发边界：同一会话同一时刻只允许一个计划（执行契约口径）。提议入口是唯一能在同一
 // 回合内并发创建两个计划的来源（工具批次并行 + just_do_it 下无确认面板），因此在这里
@@ -45,13 +48,14 @@ import {
   requestPlanConfirm, requestPlanStepDecision,
 } from "@/services/engine/plan-confirmation"
 import {
-  executePlan, formatPlanDeliverySummary, normalizePlan, planEffectClassFor, planStepAcceptance, planToRecords,
+  executePlan, formatPlanDeliverySummary, normalizePlan, planEffectClassFor, planStepAcceptance, planStepStateOf, planToRecords,
 } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanResult, PlanStep } from "@/services/engine/planner"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import { stashPlanDelivery } from "@/services/engine/plan/delivery"
 import { createPlanSettlement } from "@/services/engine/plan/settlement"
 import type { PlanConfirmDeclineReason, PlanExecutionCancelReason } from "@/services/engine/plan/settlement"
+import { verifyPlanExecution } from "@/services/engine/plan/verifier"
 
 const log = createLogger("PlanProposal")
 
@@ -132,7 +136,6 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
     // 规范化后的计划是唯一进入确认、执行、进度与落盘的形态（与显式命令入口同一收口）。
     const plan: PlanResult = normalizePlan(
       { steps: input.steps, summary: input.summary, estimatedComplexity: input.estimatedComplexity },
-      planConfig.maxSteps,
     ).plan
     if (plan.steps.length === 0) return { kind: "invalid", reason: "计划没有可执行步骤" }
 
@@ -174,6 +177,9 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
     }
 
     // ── 执行（与显式命令入口同一批原语与收尾语义）──
+    // 进度事件的接收方是确认面板：just_do_it 跳过确认、不发 PLAN_START，没有面板可更新，
+    // 推进度只会落到宿主「找不到对应计划」的日志里。
+    const progressPanelOpen = safetyConfig.mode !== "just_do_it"
     const planAbort = new AbortController()
     // 父回合取消/超时（工具信号）与面板「终止执行」共用同一个中断通道：任何一方中止，
     // 当前正在跑的步骤立刻停（由 `executePlan` 传给子运行）。
@@ -194,125 +200,146 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
       ...(parentSlot ? { parentSlot } : {}),
     }
 
-    await planSettlement.withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
-    bindRunningPlan(sessionId, planId, planAbort)
-    // 步骤产出证据（PLAN-09②）与显式命令入口同一条写盘链：entry id 在 `onStepDone` 里与
-    // checkpoint 同一收口落盘并就地返回，`executePlan` 直接写进本步结果供 `formatStepResults` 标注。
-    let stepStartedAt = 0
-    const result = await executePlan(plan, {
-      intent: input.intent,
-      stepTimeoutMs: planConfig.stepTimeoutMs,
-      stepMaxRounds: planConfig.stepMaxRounds,
-      stepThinkingEffort: planConfig.stepThinkingEffort,
-      maxSteps: planConfig.maxSteps,
-      planId,
-      sessionId,
-      onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
-      signal: planAbort.signal,
-      deadlineAt: Date.now() + planConfig.stepTimeoutMs * planConfig.maxSteps,
-      stepGate: stepMode === "stepByStep" ? "each" : "none",
-      scope,
-    }, {
-      async onStepStart(step) {
-        assertCurrent()
-        stepStartedAt = Date.now()
-        await planCheckpointStore.transitionStep(planId, String(step.id), "running")
-        void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
-      },
-      async onStepDone(step, output) {
-        assertCurrent()
-        await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
-        void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
-        // 写盘失败只降级成「原文未落盘」（`formatStepResults` 会如实标注），不拖垮计划结算。
-        const replyText = output.rawReply ?? output.reply
-        const entryId = await planCheckpointStore.writeStepResult(sessionId, {
-          planId,
-          stepId: String(step.id),
-          title: step.description,
-          acceptance: planStepAcceptance(output),
-          index: plan.steps.findIndex(item => item.id === step.id),
-          success: output.success,
-          durationMs: Date.now() - stepStartedAt,
-          toolCallsMade: output.toolCallsMade,
-          reply: replyText,
-          ...(output.error ? { error: output.error } : {}),
-          summaryHash: await sha256Text(replyText),
-        }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
-        // 返回回读地址供 `formatStepResults` 标注；写盘失败仍返回 undefined。
-        return entryId
-      },
-      // 依赖未满足（失败或被跳过）：本步不开工、不占 attempt，落 skipped；
-      // 与显式命令入口同款写进度事件与聊天说明，跳过原因不能只留在结果文本里。
-      async onStepSkipped(step, reason) {
-        assertCurrent()
-        await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
-        void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: `${step.description}（${reason}）`, status: "warning" })
-        const index = plan.steps.findIndex(item => item.id === step.id) + 1
-        pushSystemMessage(`计划第 ${index} 步已跳过：${reason}`, sessionId)
-      },
-      // 工具解析报告（FIX-51，2026-10-06 收窄）：与显式命令入口 `runtime/plan-phase.ts::runPlanPhase`
-      // 同一口径 —— 工具名不存在（真异常）发系统消息；未限定工具属例行情形，只留进度事件，
-      // 不敲聊天（逐步系统消息是刷屏噪音）。放大到子代理时派生型工具会被剥离，按实际集合写。
-      async onStepNotice(step, notice) {
-        const index = plan.steps.findIndex(item => item.id === step.id) + 1
-        void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
-        if (notice.kind === "missing_tools") {
-          pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
-        }
-      },
-      // 失败询问与逐步前置门都接既有步骤裁决面板；会话切换/终止执行时按 `abort` 结算，
-      // 不让计划在没有答复的情况下继续跑。
-      onStepFailed: async (step, error) => {
-        return await requestPlanStepDecision(step, error, {
-          sessionId,
-          planId,
-          signal: planAbort.signal,
-          index: plan.steps.findIndex(item => item.id === step.id) + 1,
-          total: plan.steps.length,
-        })
-      },
-      onStepGate: async (step, index) => {
-        return await requestPlanStepDecision(step, undefined, {
-          sessionId,
-          planId,
-          signal: planAbort.signal,
-          index: index + 1,
-          total: plan.steps.length,
-        })
-      },
-      onToolStart: (step, toolName, toolCallId) => {
-        assertCurrent()
-        return planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName]))
-      },
-      onToolDone: (step, toolName, toolCallId, success) => {
-        assertCurrent()
-        return planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success)
-      },
-    }).finally(() => {
-      clearRunningPlan(sessionId, planId)
-      if (input.signal) input.signal.removeEventListener("abort", abortFromParent)
-    })
+    // 执行 + 核验期间挂起主回合墙钟：工具入口的相位跑在父回合内，600s 回合墙钟会把
+    // 2h 计划腰斩。这里用槽的委托挂起而不是 `beginUserWait` —— 后者会被计划时钟当作
+    // 用户思考扣除，计划时限就永远不会到期。
+    const releaseTurnClock = parentSlot?.holdTurnClock()
+    try {
+      await planSettlement.withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
+      bindRunningPlan(sessionId, planId, planAbort)
+      // 步骤产出证据（PLAN-09②）与显式命令入口同一条写盘链：entry id 在 `onStepDone` 里与
+      // checkpoint 同一收口落盘并就地返回，`executePlan` 直接写进本步结果供 `formatStepResults` 标注。
+      let stepStartedAt = 0
+      const result = await executePlan(plan, {
+        intent: input.intent,
+        stepMaxToolCalls: planConfig.stepMaxToolCalls,
+        stepThinkingEffort: planConfig.stepThinkingEffort,
+        planId,
+        sessionId,
+        onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
+        signal: planAbort.signal,
+        // 计划级时限（`ai.plan.planTimeoutMs`，默认 2h）：用户等待期由执行器从时钟里扣除。
+        deadlineAt: Date.now() + planConfig.planTimeoutMs,
+        stepGate: stepMode === "stepByStep" ? "each" : "none",
+        scope,
+      }, {
+        async onStepStart(step) {
+          assertCurrent()
+          stepStartedAt = Date.now()
+          await planCheckpointStore.transitionStep(planId, String(step.id), "running")
+          if (progressPanelOpen) void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
+        },
+        async onStepDone(step, output, outcome) {
+          assertCurrent()
+          const state = planStepStateOf(outcome, output)
+          await planCheckpointStore.transitionStep(planId, String(step.id), state, outcome)
+          if (progressPanelOpen) void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: state === "done" ? "done" : state === "failed" ? "failed" : state })
+          // 写盘失败只降级成「原文未落盘」（`formatStepResults` 会如实标注），不拖垮计划结算。
+          const replyText = output.rawReply ?? output.reply
+          const entryId = await planCheckpointStore.writeStepResult(sessionId, {
+            planId,
+            stepId: String(step.id),
+            title: step.description,
+            acceptance: planStepAcceptance(output),
+            index: plan.steps.findIndex(item => item.id === step.id),
+            success: output.success,
+            durationMs: Date.now() - stepStartedAt,
+            toolCallsMade: output.toolCallsMade,
+            reply: replyText,
+            ...(output.error ? { error: output.error } : {}),
+            ...(outcome ? { outcome } : {}),
+            summaryHash: await sha256Text(replyText),
+          }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
+          // 返回回读地址供 `formatStepResults` 标注；写盘失败仍返回 undefined。
+          return entryId
+        },
+        // 依赖未满足：本步不开工、不占 attempt，落 blocked；
+        // 与显式命令入口同款写进度事件与聊天说明，未执行原因不能只留在结果文本里。
+        async onStepBlocked(step, reason) {
+          assertCurrent()
+          await planCheckpointStore.transitionStep(planId, String(step.id), "blocked")
+          if (progressPanelOpen) void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: `${step.description}（${reason}）`, status: "blocked" })
+          const index = plan.steps.findIndex(item => item.id === step.id) + 1
+          pushSystemMessage(`计划第 ${index} 步未执行：${reason}`, sessionId)
+        },
+        // 工具解析报告：与显式命令入口 `runtime/plan-phase.ts::runPlanPhase` 同一口径 ——
+        // 工具名不存在（真异常）发系统消息；`allowedTools` 必填后不再有「放大到全部工具」的分支。
+        async onStepNotice(step, notice) {
+          const index = plan.steps.findIndex(item => item.id === step.id) + 1
+          if (progressPanelOpen) void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
+          if (notice.kind === "missing_tools") {
+            pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
+          }
+        },
+        // 失败询问与逐步前置门都接既有步骤裁决面板；会话切换/终止执行时按 `abort` 结算，
+        // 不让计划在没有答复的情况下继续跑。
+        onStepFailed: async (step, error) => {
+          return await requestPlanStepDecision(step, error, {
+            sessionId,
+            planId,
+            signal: planAbort.signal,
+            index: plan.steps.findIndex(item => item.id === step.id) + 1,
+            total: plan.steps.length,
+          })
+        },
+        onStepGate: async (step, index) => {
+          return await requestPlanStepDecision(step, undefined, {
+            sessionId,
+            planId,
+            signal: planAbort.signal,
+            index: index + 1,
+            total: plan.steps.length,
+          })
+        },
+        onToolStart: (step, toolName, toolCallId) => {
+          assertCurrent()
+          return planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName]))
+        },
+        onToolDone: (step, toolName, toolCallId, success) => {
+          assertCurrent()
+          return planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success)
+        },
+      }).finally(() => {
+        clearRunningPlan(sessionId, planId)
+        if (input.signal) input.signal.removeEventListener("abort", abortFromParent)
+      })
 
-    if (result.cancelled) {
-      const reasonText = result.cancelled.reason === "user" ? "用户终止执行"
-        : result.cancelled.reason === "deadline" ? "超过计划时限" : "按用户选择中止"
-      const context = `${result.stepResults.length}/${plan.steps.length} 步已执行，${reasonText}`
-      await planSettlement.cancelPlanRun({ sessionId, planId, reason: result.cancelled.reason })
-      return { kind: "cancelled", stage: "execution", reason: result.cancelled.reason, context }
+      if (result.cancelled) {
+        const reasonText = result.cancelled.reason === "user" ? "用户终止执行"
+          : result.cancelled.reason === "deadline" ? "超过计划时限" : "按用户选择中止"
+        const context = `${result.stepResults.length}/${plan.steps.length} 步已执行，${reasonText}`
+        await planSettlement.cancelPlanRun({ sessionId, planId, reason: result.cancelled.reason })
+        return { kind: "cancelled", stage: "execution", reason: result.cancelled.reason, context }
+      }
+      // 执行已收尾、写终态之前再核对一次代际（与显式命令入口同款：放在取消归宿之后，
+      // 取消路径必须如实落 interrupted，不被守卫拦成永久 running）。
+      assertCurrent()
+      // 计划级核验：完成度只是「多少步 done」，原始目标是否达成由独立只读子代理对照 intent 裁决。
+      // 核验是只读的，只看回合代际是否仍有效（切会话不取消已执行完的计划，FIX-32）。
+      const verification = await verifyPlanExecution({
+        sessionId, planId, intent: input.intent, plan, result,
+        scope: { ...scope, isCurrent: () => input.isCurrent() },
+      })
+      if (verification) {
+        result.verification = verification
+        // 核验没通过（含未完成核验的 partial）不是成功：完成度不能顶替核验。
+        if (verification.verdict !== "pass") result.overallSuccess = false
+      }
+      // 同上裁决：核验期间回合可能被停止；计划已执行完，记录必须落终态。
+      await planSettlement.finishPlan({
+        sessionId,
+        planId,
+        state: result.overallSuccess ? "done" : "failed",
+        reason: result.overallSuccess ? "completed" : "failed",
+        notify: result.overallSuccess ? "done" : "failed",
+        ...(verification ? { verification } : {}),
+      })
+      // 工具入口拿不到回合结算：计划结果先挂在会话上，最终回复失败时由 `settleMainTurn`
+      // 作为系统消息交付（成功回合取走即清）。暂存的是核验后的结果摘要（overallSuccess/verification 已更新）。
+      stashPlanDelivery(sessionId, formatPlanDeliverySummary(result))
+      return { kind: "completed", result, confirmation }
+    } finally {
+      releaseTurnClock?.()
     }
-    // 执行已收尾、写终态之前再核对一次代际（与显式命令入口同款：放在取消归宿之后，
-    // 取消路径必须如实落 interrupted，不被守卫拦成永久 running）。
-    assertCurrent()
-    await planSettlement.finishPlan({
-      sessionId,
-      planId,
-      state: result.overallSuccess ? "done" : "failed",
-      reason: result.overallSuccess ? "completed" : "failed",
-      notify: result.overallSuccess ? "done" : "failed",
-    })
-    // 工具入口拿不到回合结算：计划结果先挂在会话上，最终回复失败时由 `settleMainTurn`
-    // 作为系统消息交付（成功回合取走即清）。
-    stashPlanDelivery(sessionId, formatPlanDeliverySummary(result))
-    return { kind: "completed", result, confirmation }
   }
 }

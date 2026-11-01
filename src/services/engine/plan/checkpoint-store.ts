@@ -1,7 +1,9 @@
 // 未完成步骤按本次尝试的累计效果恢复；工具返回或后续只读事件不能证明整步可安全重放。
 
 import type { Entry, JsonValue } from "@earendil-works/pi-agent-core"
-import type { PlanCompletion, PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/protocol"
+import type {
+  PlanCompletion, PlanEffectClass, PlanRecord, PlanState, PlanStepOutcome, PlanStepRecord, PlanStepState, PlanVerification,
+} from "@/services/engine/protocol"
 import {
   PLAN_CHECKPOINT_ENTRY, PLAN_RECOVERY_FAILED_ENTRY, PLAN_STEP_RESULT_ENTRY, PLAN_WRITE_FAILED_ENTRY,
 } from "@/services/engine/protocol/entries"
@@ -45,6 +47,8 @@ export interface PlanStepResult {
   toolCallsMade: number
   reply: string
   error?: string
+  /** 结构化产出（schema 4）；缺失表示这一步没有产出结论。 */
+  outcome?: PlanStepOutcome
   summaryHash: string
   /**
    * 读取时补上的会话条目 id（写入形态不包含它）。
@@ -57,14 +61,14 @@ export interface PlanStepResult {
 const RECOVERABLE_PLAN_STATES: ReadonlySet<PlanState> = new Set<PlanState>(["admitting", "running", "interrupted", "paused"])
 
 /**
- * 形状不合的条目按跳过处理（含存量 `schemaVersion: 1`：旧数据可弃，不是缺陷）。
+ * 形状不合的条目按跳过处理（含 schemaVersion 1-3：旧数据可弃，不是缺陷）。
  * `created`/`terminal` 缺全量基线时同样视为不可解析 —— 折迭没有任何起点。
  */
 function entryPayload(entry: Entry): PlanCheckpointPayload | undefined {
   if (entry.type !== "custom" || entry.customType !== PLAN_CHECKPOINT_ENTRY) return undefined
   const payload = entry.data as unknown as Partial<PlanCheckpointPayload> | undefined
   const plan = payload?.plan as Partial<PlanRecord> | undefined
-  if (!payload || !plan || plan.schemaVersion !== 3 || typeof payload.action !== "string") return undefined
+  if (!payload || !plan || plan.schemaVersion !== 4 || typeof payload.action !== "string") return undefined
   if ((payload.action === "created" || payload.action === "terminal") && !Array.isArray(payload.steps)) return undefined
   return payload as PlanCheckpointPayload
 }
@@ -72,6 +76,17 @@ function entryPayload(entry: Entry): PlanCheckpointPayload | undefined {
 function classifyRecoveredStepState(step: PlanStepRecord): PlanStepState {
   const hasEffects = step.sideEffectStarted ?? step.effectClass !== "read_only"
   return hasEffects ? "unknown_side_effect" : "pending"
+}
+
+/**
+ * 读盘时的产出形状门槛：`outcome` 可缺省；存在时 `status` 必须是三档之一。
+ * 更细的字段由 work-order 的解析器负责 —— 读盘只挡「认不出状态的噪声」，不重写产出语义。
+ */
+function isValidOutcome(value: unknown): boolean {
+  if (value === undefined) return true
+  if (typeof value !== "object" || value === null) return false
+  const status = (value as { status?: unknown }).status
+  return status === "complete" || status === "partial" || status === "blocked"
 }
 
 export class PlanCheckpointStore {
@@ -83,10 +98,16 @@ export class PlanCheckpointStore {
   }
 
   /**
-   * 计划状态迁移。终态可带目标完成度：`completion` 只在终态写进 `PlanRecord`，
-   * `created`（以及所有非终态）不写；运行中的计划即使误传也忽略。
+   * 计划状态迁移。终态可带目标完成度与计划级核验：两者只在终态写进 `PlanRecord`，
+   * 非终态（含 `created`）即使误传也忽略 —— 运行中的核验没有意义，写进去会被读成「已核验」。
+   * 传入的核验已带 `verifiedAt` 时保留，否则用当前时间。
    */
-  async transitionPlan(planId: string, state: PlanState, completion?: PlanCompletion): Promise<void> {
+  async transitionPlan(
+    planId: string,
+    state: PlanState,
+    completion?: PlanCompletion,
+    verification?: PlanVerification & { verifiedAt?: number },
+  ): Promise<void> {
     const current = this.require(planId)
     // 终态是第二个（也是最后一个）全量快照落点
     const terminal = state === "done" || state === "failed" || state === "interrupted"
@@ -96,11 +117,13 @@ export class PlanCheckpointStore {
       version: current.plan.version + 1,
       updatedAt: Date.now(),
       ...(terminal && completion ? { completion } : {}),
+      ...(terminal && verification ? { verification: { ...verification, verifiedAt: verification.verifiedAt ?? Date.now() } } : {}),
     }
     await this.write(planId, terminal ? "terminal" : "plan_state")
   }
 
-  async transitionStep(planId: string, stepId: string, state: PlanStepState): Promise<void> {
+  /** 步骤状态迁移；`running` 开新尝试时清空上一条产出，`outcome` 只在本次尝试内保留。 */
+  async transitionStep(planId: string, stepId: string, state: PlanStepState, outcome?: PlanStepOutcome): Promise<void> {
     const previous = this.require(planId).steps.find(step => step.stepId === stepId)
     if (!previous) {
       log.warn("计划步骤不存在，忽略状态变更:", planId, stepId)
@@ -110,7 +133,10 @@ export class PlanCheckpointStore {
     await this.patchStep(planId, stepId, {
       state,
       attempt: newAttempt ? previous.attempt + 1 : previous.attempt,
-      ...(newAttempt ? { sideEffectStarted: false, lastEventId: undefined, lastEventKind: undefined, lastEventEffect: undefined } : {}),
+      ...(newAttempt
+        ? { sideEffectStarted: false, lastEventId: undefined, lastEventKind: undefined, lastEventEffect: undefined, outcome: undefined }
+        : {}),
+      ...(outcome ? { outcome } : {}),
     })
   }
 
@@ -245,7 +271,8 @@ export class PlanCheckpointStore {
           || typeof data.index !== "number" || typeof data.success !== "boolean"
           || typeof data.durationMs !== "number" || typeof data.toolCallsMade !== "number"
           || typeof data.reply !== "string" || typeof data.summaryHash !== "string"
-          || (data.error !== undefined && typeof data.error !== "string")) {
+          || (data.error !== undefined && typeof data.error !== "string")
+          || !isValidOutcome(data.outcome)) {
           log.warn("忽略形状不合的步骤结果条目:", { sessionId, planId, entryId: entry.id })
           continue
         }

@@ -126,11 +126,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     assertCurrent()
     // 工具运行面与投递正文在准入前装配一次：它们既是准入的入参，也是本回合 spec 的组成部分，
     // 不因「准入提前」写第二份定义。
-    // 可信用户原文同时是显式计划的目标：`--plan` 只是宿主命令前缀，不进入目标文本。
+    // 可信用户原文同时是显式计划的目标：`/plan` 前缀由 slash 命令层消化，
+    // 这里收到的正文就是目标本身，没有可剥的前缀。
     // 主动消息与技能准入没有可信用户事件，也不注入原文（模型参数不能伪造用户事实）。
-    const trustedUserText = planConfig.enabled && /^--plan(?:\s|$)/.test(userText)
-      ? userText.replace(/^--plan\s*/, "")
-      : userText
+    const trustedUserText = userText
     const toolRun: HarnessToolRun = {
       sessionId: turnSessionId, runGeneration: generation,
       ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
@@ -194,7 +193,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 最终回复失败时的中性交付兜底；与 planStepContext 同作用域，只有计划确实执行过步骤才非空。
     let planDeliverySummary = ""
     let planUserText = trustedUserText
-    if (planConfig.enabled && !toolsDisabled && /^--plan(?:\s|$)/.test(userText)) {
+    if (planConfig.enabled && !toolsDisabled && input.planRequested === true) {
       emitStageHint(turnSessionId, "planning", generation)
       const planAbort = new AbortController()
       const outcome = await runPlanPhase({

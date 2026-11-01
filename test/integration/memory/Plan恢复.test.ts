@@ -58,7 +58,7 @@ describe("Plan恢复", () => {
     const sessionId = await ensureSession()
     const now = Date.now()
     await planCheckpointStore.create({
-      schemaVersion: 3,
+      schemaVersion: 4,
       planId: PLAN_ID,
       sessionId,
       rootTurnId: "turn-plan-live-resume",
@@ -70,9 +70,9 @@ describe("Plan恢复", () => {
       createdAt: now,
       updatedAt: now,
     }, [
-      { planId: PLAN_ID, stepId: "read", title: "读取", state: "running", attempt: 1, effectClass: "read_only", updatedAt: now },
-      { planId: PLAN_ID, stepId: "write", title: "外部写入", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
-      { planId: PLAN_ID, stepId: "end", title: "已收尾", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
+      { planId: PLAN_ID, stepId: "read", title: "读取", allowedTools: ["read"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过", state: "running", attempt: 1, effectClass: "read_only", updatedAt: now },
+      { planId: PLAN_ID, stepId: "write", title: "外部写入", allowedTools: ["write"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
+      { planId: PLAN_ID, stepId: "end", title: "已收尾", allowedTools: ["write"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
     ])
     // 后续只读事件不能掩盖此前已经完成的写入。
     await planCheckpointStore.checkpointTool(PLAN_ID, "read", "tool_start", "fs_read", "call-read", "read_only")
@@ -146,10 +146,10 @@ describe("Plan恢复", () => {
     expect(stepStatesOf(PLAN_ID)).toEqual(["pending", "done", "unknown_side_effect"])
     for (const state of ["interrupted", "paused"] as const) {
       const planId = `plan-${state}`
-      await planCheckpointStore.create({ schemaVersion: 3, planId, sessionId, rootTurnId: planId, intent: "验证中断恢复",
+      await planCheckpointStore.create({ schemaVersion: 4, planId, sessionId, rootTurnId: planId, intent: "验证中断恢复",
         state, summary: "中断恢复", estimatedComplexity: 1, version: 1, createdAt: now, updatedAt: now }, [
-        { planId, stepId: "effect", title: "写入", state: "interrupted", attempt: 1, effectClass: "external_side_effect", sideEffectStarted: true, updatedAt: now },
-        { planId, stepId: "read", title: "读取", state: "interrupted", attempt: 1, effectClass: "read_only", sideEffectStarted: false, updatedAt: now },
+        { planId, stepId: "effect", title: "写入", allowedTools: ["write"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过", state: "interrupted", attempt: 1, effectClass: "external_side_effect", sideEffectStarted: true, updatedAt: now },
+        { planId, stepId: "read", title: "读取", allowedTools: ["read"], inputs: "测试输入", deliverable: "测试产出", acceptance: "测试通过", state: "interrupted", attempt: 1, effectClass: "read_only", sideEffectStarted: false, updatedAt: now },
       ])
       planCheckpointStore.reset()
       await planCheckpointStore.recover(sessionId)
@@ -160,5 +160,49 @@ describe("Plan恢复", () => {
       await planCheckpointStore.recover(sessionId)
       expect(planCheckpointStore.snapshot(planId)?.steps[0]).toMatchObject({ state: "unknown_side_effect", attempt: 2 })
     }
+  })
+
+  it("重启恢复保留终态步骤产出与计划级核验 [plan-restore-outcome-verification]", async () => {
+    const sessionId = await ensureSession()
+    const now = Date.now()
+    const planId = "plan-restore-outcome-verification"
+    await planCheckpointStore.create({
+      schemaVersion: 4,
+      planId,
+      sessionId,
+      rootTurnId: planId,
+      intent: "验证恢复保留产出与核验",
+      state: "running",
+      summary: "恢复核验",
+      estimatedComplexity: 1,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    }, [
+      { planId, stepId: "1", title: "产出文件", allowedTools: ["read"], inputs: "测试输入", deliverable: "a.txt", acceptance: "文件已产出", state: "running", attempt: 1, effectClass: "read_only", updatedAt: now },
+    ])
+    await planCheckpointStore.transitionStep(planId, "1", "done", { status: "complete", summary: "已产出", artifacts: ["a.txt"] })
+    // `interrupted` 是终态里仍可恢复的一档（failed/done 不进入恢复扫描）：用它验证终态快照
+    // 往返后核验与步骤产出都原样保留；业务终态本身不参与恢复。
+    await planCheckpointStore.transitionPlan(planId, "interrupted", "partial", {
+      verdict: "partial", reasons: ["只达成一半"], missing: ["b"], drift: ["跑偏 c"], summary: "部分通过",
+    })
+    planCheckpointStore.reset()
+
+    const recovered = await planCheckpointStore.recover(sessionId)
+    const current = recovered.find(item => item.plan.planId === planId)
+    expect(current, "终态计划没有从落盘快照恢复出来").toBeDefined()
+    const verification = current?.plan.verification
+    expect(verification, "恢复后计划级核验丢失").toBeDefined()
+    expect(verification).toMatchObject({
+      verdict: "partial",
+      reasons: ["只达成一半"],
+      missing: ["b"],
+      drift: ["跑偏 c"],
+      summary: "部分通过",
+    })
+    expect(typeof verification?.verifiedAt, "恢复后核验时间戳丢失").toBe("number")
+    const outcome = current?.steps[0]?.outcome
+    expect(outcome, "恢复后步骤产出丢失").toMatchObject({ status: "complete", summary: "已产出", artifacts: ["a.txt"] })
   })
 })

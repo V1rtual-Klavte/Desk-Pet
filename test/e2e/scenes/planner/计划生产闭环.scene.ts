@@ -18,21 +18,30 @@ import type { SceneDef } from "../../../e2e/types"
  *   保持未执行、停止不按失败结算）；
  * - `plan-step-gate-each-step`（pl-11）：`stepByStep` 下逐步前置门每步都真的问一次。
  *
- * 三个场景显式启用 --plan；普通输入只由主模型决定是否调用 propose_plan。
+ * 三个场景显式启用 /plan；普通输入只由主模型决定是否调用 propose_plan。
  */
-const PLAN_JSON = '```json\n{"summary":"两件事","steps":[{"id":1,"description":"读取配置"},{"id":2,"description":"改写配置"},{"id":3,"description":"多余的一步"}]}\n```'
-const FIRST_TEXT = "第一步完成"
-const SECOND_TEXT = "第二步完成"
+/** 步骤产出契约：只有 complete 才会让计划判完成，核验器也才会运行。 */
+function stepComplete(summary: string): string {
+  return JSON.stringify({ status: "complete", summary })
+}
+/** 计划核验器的确定性应答。 */
+function planVerified(verdict: "pass" | "partial" | "fail", summary = "核验完成"): string {
+  return JSON.stringify({ verdict, reasons: [], missing: [], drift: [], summary })
+}
+
+const PLAN_JSON = '```json\n{"summary":"两件事","steps":[{"id":1,"description":"读取配置","allowedTools":["read"],"inputs":"当前配置","deliverable":"配置内容","acceptance":"读到完整配置"},{"id":2,"description":"改写配置","allowedTools":["read"],"inputs":"配置内容","deliverable":"修改后的配置","acceptance":"目标项已改写"}]}\n```'
+const FIRST_TEXT = stepComplete("第一步完成")
+const SECOND_TEXT = stepComplete("第二步完成")
 const FINAL_TEXT = "计划执行完了，这是最终回复"
-/** pl-11：2 步计划（`maxSteps` 默认下不截断），两句话都成功、每步前各过一次门。 */
-const GATE_PLAN_JSON = '```json\n{"summary":"两步改配置","steps":[{"id":1,"description":"读取配置"},{"id":2,"description":"改写配置"}]}\n```'
-const GATE_TURN_TEXT = "--plan 帮我改配置"
-const GATE_STEP1_TEXT = "配置已读取"
-const GATE_STEP2_TEXT = "配置已改写"
+/** pl-11：2 步计划，两步产出都成功、每步前各过一次门。 */
+const GATE_PLAN_JSON = '```json\n{"summary":"两步改配置","steps":[{"id":1,"description":"读取配置","allowedTools":["read"],"inputs":"当前配置","deliverable":"配置内容","acceptance":"读到完整配置"},{"id":2,"description":"改写配置","allowedTools":["read"],"inputs":"配置内容","deliverable":"修改后的配置","acceptance":"目标项已改写"}]}\n```'
+const GATE_TURN_TEXT = "/plan 帮我改配置"
+const GATE_STEP1_TEXT = stepComplete("配置已读取")
+const GATE_STEP2_TEXT = stepComplete("配置已改写")
 const GATE_FINAL_TEXT = "两步都做完了"
 const CANCEL_TOOL = "live_plan_cancel_probe"
-const CANCEL_TURN_TEXT = "--plan 读取配置并改写"
-const CANCEL_PLAN_JSON = `\`\`\`json\n{"summary":"取消回归两步","steps":[{"id":1,"description":"读取第一项配置","allowedTools":["${CANCEL_TOOL}"]},{"id":2,"description":"改写配置"}]}\n\`\`\``
+const CANCEL_TURN_TEXT = "/plan 读取配置并改写"
+const CANCEL_PLAN_JSON = `\`\`\`json\n{"summary":"取消回归两步","steps":[{"id":1,"description":"读取第一项配置","allowedTools":["${CANCEL_TOOL}"],"inputs":"当前配置","deliverable":"配置内容","acceptance":"读到完整配置"},{"id":2,"description":"改写配置","allowedTools":["read"],"inputs":"配置内容","deliverable":"修改后的配置","acceptance":"目标项已改写"}]}\n\`\`\``
 /** pl-10 的收尾回合：停止发生在 setup 的回合里，场景自己的回合只用来承载核对断言。 */
 const SETTLE_TURN_TEXT = "刚才的计划停下来了吗？"
 const SETTLE_TURN_REPLY = "计划已经停下了。"
@@ -94,7 +103,7 @@ async function waitSystemMessage(sessionId: string, needle: string): Promise<voi
 export const 计划生产闭环: SceneDef = {
   meta: {
     caseId: "plan-production-loop", module: "planner", contractId: "pl-09",
-    description: "生产入口跑完整计划闭环：截断后的确认与进度、终态条目与终态事件",
+    description: "生产入口跑完整计划闭环：两步计划的确认与进度、终态条目与终态事件",
     depth: "deep", suite: "regression", entry: "production",
     tags: ["plan", "production-entry", "boundary", "error"],
     /** 测试宿主没有 PlanConfirm 面板：按 auto 确定性应答确认（逐步门在本场景不出现）。 */
@@ -102,12 +111,11 @@ export const 计划生产闭环: SceneDef = {
   },
   setup: async () => {
     setOverride("ai.plan.enabled", true)
-    // 模型给 3 步，配置只允许 2 步：截断必须体现在确认视图与进度 total 上。
-    setOverride("ai.plan.maxSteps", 2)
     installFakeProvider([
       fakeText(PLAN_JSON),
       fakeText(FIRST_TEXT),
       fakeText(SECOND_TEXT),
+      fakeText(planVerified("pass")),
       fakeText(FINAL_TEXT),
     ])
     await initChat()
@@ -115,13 +123,12 @@ export const 计划生产闭环: SceneDef = {
   turns: [{
     index: 1,
     description: "显式规划 → 生成 → 确认 → 逐步执行 → 终态落盘",
-    userText: "--plan 帮我重构整个配置模块",
+    userText: "/plan 帮我重构整个配置模块",
     checks: [
       {
         type: "expectPlanProductionLoop",
         run: async ctx => {
           const sessionId = getActiveSessionId()
-          const restore = { maxSteps: planConfig.maxSteps }
           try {
             if (ctx.output.failure) throw new Error(`计划回合失败: ${JSON.stringify(ctx.output.failure)}`)
 
@@ -132,23 +139,16 @@ export const 计划生产闭环: SceneDef = {
             if (!confirmed.confirmed) throw new Error("auto 策略下确认没有被应答为 confirmed")
             if (confirmed.mode !== "auto") throw new Error(`确认方式应为 auto，实际 ${confirmed.mode}`)
 
-            // ② 确认视图与进度事件都按截断后的步数：3 步被 maxSteps=2 截断
-            if (confirmed.steps !== 2) throw new Error(`确认视图的步数应是截断后的 2，实际 ${confirmed.steps}`)
+            // ② 确认视图与进度事件都按计划步数：两步计划就是两步
+            if (confirmed.steps !== 2) throw new Error(`确认视图的步数应是 2，实际 ${confirmed.steps}`)
             await waitRecords(() => planProgressRecords(), records => records.some(record => record.status === "done"), "计划进度事件")
             const progress = planProgressRecords()
             if (progress.some(record => record.total !== 2)) {
-              throw new Error(`进度的 total 不是截断后步数: ${JSON.stringify(progress)}`)
+              throw new Error(`进度的 total 不是计划步数: ${JSON.stringify(progress)}`)
             }
             if (progress.some(record => record.step > 2)) {
-              throw new Error(`进度里出现了被截断的步骤: ${JSON.stringify(progress)}`)
+              throw new Error(`进度里出现了计划外的步骤: ${JSON.stringify(progress)}`)
             }
-
-            // ②b 工具面放大的报告口径（2026-10-06 用户裁决收窄）：步骤都没限定 allowedTools 属
-            //     例行情形 —— 宿主只推进度事件（status=warning，口径「除派生型工具外的全部已注册
-            //     工具」，派生型工具在子代理入口被剥掉），不再逐步敲聊天系统消息；系统消息只剩
-            //     「工具名解析不到」的真异常分支（pl-06 的 unit 场景）。负向断言放在 ⑥：
-            //     系统消息落盘是异步的，必须等整轮计划收尾后核对，避免竞态假绿。
-            await waitRecords(() => planProgressRecords(), records => records.some(record => record.status === "warning"), "未限定工具的进度事件（warning）")
 
             // ③ 终态条目：checkpoint 的 terminal 快照是 done，且全量步骤基线里两步都 done
             const entries = await sessionEntries(sessionId)
@@ -167,16 +167,7 @@ export const 计划生产闭环: SceneDef = {
 
             // ⑤ 终态事件
             await waitRecords(() => planEndRecords(), records => records.some(record => record.reason === "done"), "计划终态事件 done")
-
-            // ⑥ 收窄的负向半边（②b）：整轮计划已收尾，聊天里不得再有「未限定工具」系统消息。
-            //     把它放在全部步骤跑完之后核对 —— 系统消息落盘是异步的，提前查会变成竞态假绿。
-            const systemTexts = customEntries(await sessionEntries(sessionId), DESKPET_SYSTEM_MESSAGE_ENTRY)
-              .map(entry => String((entry.data as { text?: string } | undefined)?.text ?? ""))
-            if (systemTexts.some(text => text.includes("将使用除派生型工具外的全部已注册工具"))) {
-              throw new Error(`未限定工具不应再写系统消息，实际 ${JSON.stringify(systemTexts)}`)
-            }
           } finally {
-            setOverride("ai.plan.maxSteps", restore.maxSteps)
             setOverride("ai.plan.enabled", false)
           }
         },
@@ -223,7 +214,7 @@ export const 计划取消结算: SceneDef = {
     const stoppedTurn = sendMessage(CANCEL_TURN_TEXT)
     // 工具进入执行 = 计划已绑定中断通道、步骤落 running（checkpoint 写入先于工具调用），
     // 因此这里只等这个状态，不用固定 sleep 代替状态等待。等待**有界**：计划没跑起来时
-    // （「--plan 没有强制触发」这类前提失效）要给出「工具未进入执行」的诊断，不能把整场景
+    // （「/plan 没有强制触发」这类前提失效）要给出「工具未进入执行」的诊断，不能把整场景
     // 拖成 120s 的裸超时 —— 2026-09-24 W5 在这里吃掉 125s，报告里只剩一句「卡在 setup」。
     // 计时器在 started 先到时会清掉，不会留下未处理的拒绝。
     const startedBudgetMs = 10_000
@@ -331,6 +322,7 @@ export const 计划逐步门: SceneDef = {
       fakeText(GATE_PLAN_JSON),
       fakeText(GATE_STEP1_TEXT),
       fakeText(GATE_STEP2_TEXT),
+      fakeText(planVerified("pass")),
       fakeText(GATE_FINAL_TEXT),
     ])
     await initChat()

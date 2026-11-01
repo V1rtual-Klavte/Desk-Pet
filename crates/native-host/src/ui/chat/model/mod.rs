@@ -233,7 +233,8 @@ pub struct PlanStepView {
 
 impl PlanStepView {
     /// 面板前缀记号（待执行为 `--`；warning 的 `!!` 是刻意的更可见记号，
-    /// 见 `events.rs::PlanStepStatus::marker` 的说明）。
+    /// 见 `events.rs::PlanStepStatus::marker` 的说明）。partial / blocked 用各自的
+    /// `~~` / `//` 而不回落 `--`：`--` 仍是「还没轮到」，回落会让用户以为计划还在推进。
     pub fn marker(&self) -> &'static str {
         self.status.map(|s| s.marker()).unwrap_or("--")
     }

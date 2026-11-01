@@ -16,7 +16,7 @@ import type { SceneDef } from "../../../e2e/types"
 
 const PLAN_USER_TEXT = "顺手把配置改一下"
 
-const PLAN_JSON = '```json\n{"summary":"两步","steps":[{"id":1,"description":"读取配置"},{"id":2,"description":"改写配置"}]}\n```'
+const PLAN_JSON = '```json\n{"summary":"两步","steps":[{"id":1,"description":"读取配置","allowedTools":["read"],"inputs":"用户目标","deliverable":"配置内容","acceptance":"读到配置"},{"id":2,"description":"改写配置","allowedTools":["edit"],"inputs":"配置内容","deliverable":"改写后的配置","acceptance":"改写完成"}]}\n```'
 
 /** 规划脚本响应：被别的请求取走就是脚本错位，立即报错。 */
 function planStep(): FauxResponseStep {

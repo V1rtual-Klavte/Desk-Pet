@@ -270,7 +270,7 @@ export const 技能准入: SceneDef = {
             sessionId,
             userText: `/skill ${MISSING_SKILL}`,
             unansweredCount: 0,
-            skillAdmission: { name: MISSING_SKILL },
+            skillAdmission: { kind: "skill", name: MISSING_SKILL },
           })
           if (!denied.failure) throw new Error("未知技能没有被拒绝")
           if (denied.failure.kind !== "admission") {
