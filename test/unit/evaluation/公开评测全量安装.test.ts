@@ -729,7 +729,7 @@ describe("公开评测安装状态汇总", () => {
     expect(failed).toEqual({ complete: false, results: [{ dataset: "memoryarena", installed: false, error: "fixture bridge unavailable" }] });
   });
 
-  it("LHTB 取离线校验的 ready 而非安装文件存在，不把镜像未检查当安装失败 [external-inspect-lhtb-ready-field]", async () => {
+  it.skipIf(process.platform === "win32")("LHTB 取离线校验的 ready 而非安装文件存在，不把镜像未检查当安装失败 [external-inspect-lhtb-ready-field]", async () => {
     const repoRoot = scratchDir();
     const root = lhtbFixture(repoRoot);
     const sourceTreeSha256 = `sha256:${"1".repeat(64)}`;

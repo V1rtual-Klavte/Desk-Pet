@@ -249,4 +249,8 @@ export const evaluationContract: ModuleContract = {
     {"id": "eval-12", "feature": "聊天评测闭环组合流程", "description": "fake Provider 配合真实 initChat／sendMessage／会话 JSONL 与 trace 采集跑通一次闭环：固定时钟只推进 Node 域时间，两轮消息经真实 loop 落盘；驱动在消息步骤后崩溃，从同一进度续跑且不重放已完成步骤；host 新建会话后跨会话采集把驱动与 fixture 来源分开，对话、状态与产物写入 attempt 并通过封存核验；数据集漂移拒绝冻结判分包，驱动文本不泄露 oracle 后冻结判分包；未判分时汇总为 inconclusive、标签保持 silver/pending、抽查显式未抽查，报告从同一证据生成且不产生 grades。输入身份里的 CONFIG 哈希忽略宿主写回的窗口位置，真正影响回合行为的字段仍参与绑定。Rust 调度与 OS 时间戳不随固定时钟推进。 两次消息回执经过产品 resolveSimMessageReply，以同一请求的持久正文与条目身份驱动检查点。", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "integration", "depth": "deep", "scenarios": ["w5-loop-smoke", "eval-config-identity"]},
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: false },
+  // LHTB 依赖 Unix socket 或 Unix 可执行夹具，Windows 上用例显式跳过；跳过仍不计覆盖。
+  platformExempt: {
+    win32: ["external-inspect-lhtb-ready-field", "external-lhtb-plan-checks-exact-local-image", "external-lhtb-run-id-phase-budget"],
+  },
 }

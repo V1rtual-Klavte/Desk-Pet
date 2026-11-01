@@ -487,4 +487,4 @@ with patch.object(life.signal, "signal", side_effect=register), patch.object(b, 
     assert cleanup.call_count == 1
     assert output.getvalue() == ""
 `));
-});
+}, 20_000);

@@ -235,6 +235,8 @@ node scripts/desk-pet-chat.mjs dataset driver <caseId>
 
 `contracts/*.contract.ts` 是模块行为契约。每个 coverage point 的 `scenarios` 必须写场景的稳定 **`caseId`**，不是文件名、描述或导出名。每个 caseId 只能归属一个场景，且场景的 `meta.module`、`meta.contractId` 必须与其 Contract coverage point 一致。
 
+只在某一平台无法执行的用例（例如 LHTB 依赖 Unix socket），除在测试上加 `it.skipIf` 外，还要把 caseId 写进所属 Contract 的 `platformExempt[平台]`：该平台上快层校验不报 MISSING，其他平台仍要求 caseId 由声明层的测试真实携带。跳过本身仍不计覆盖，豁免不能用来掩盖没人实现的用例。
+
 **跨层 caseId 对账在全量 L4 的收尾路径真实执行**：启动脚本（`scripts/contract-layers.mjs`）把三层实际收集到的 caseId 汇总 —— unit / integration 读最近一次整层快层运行落盘的 `test/reports/caseids-*.json`，e2e 读本次报告的场景集（skip 不算）—— 与全部 Contract 声明的 `scenarios` 对比：声明了没有任何层携带（MISSING）、携带了没有任何声明（ORPHAN）、同一 caseId 被两层同时携带（CROSS-LAYER，违反跨层唯一）任一命中即打印明细并非零退出。带 `--module` / `--scene` / `--case` / `--tag` / `--suite` 过滤、或 `--bench` / `--quality` / `--performance` 特殊模式的运行跳过（集合残缺会误报），所以全量 L4 前要先跑过快层（`test:release` 的顺序保证）。快层逐层运行时 `test/host/caseid-reporter.ts` 只判自己那层并把整层集合落盘 —— 落盘文件正是这份对账的输入。
 
 独立秒级入口 `pnpm run check:contract-hashes` 与 E2E 启动/收尾复核共用 `scripts/check-contract-hashes.mjs`：不编译、不启动宿主，直接校验全部 `sourceHash`，一次列出所有 stale 模块与声明/当前 hash，任一失败退出非零。push/PR 的 CI 在 Ubuntu `bundle-config` job 提前执行同一入口。调试可用 `pnpm run check:contract-hashes -- --contracts selected --module <模块>` 只看一份；默认全量检查。源码变更后应先按 SKILL 重新分析 Contract，再更新 hash 和场景。不要只替换 hash 来绕过门禁。`--strict` 还会拒绝 coverage、深度、边界、错误或入口规则的缺口。

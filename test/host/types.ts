@@ -104,6 +104,14 @@ export interface ModuleContract {
   sourceHash: string
   coverage: CoveragePoint[]
   rules: ContractRules
+  /**
+   * 平台限定覆盖点：列出的 caseId 在对应平台上不做 MISSING 判定。
+   *
+   * 只用于测试在该平台确实无法执行的用例（例如 LHTB 依赖 Unix socket）。被跳过的
+   * 测试仍然不计覆盖；这里只是把「平台上不存在」与「没人实现」区分开，未列出的
+   * 平台照常要求 caseId 由声明层的测试真实携带。
+   */
+  platformExempt?: Partial<Record<NodeJS.Platform, readonly string[]>>
 }
 
 // ── Contract Check ──

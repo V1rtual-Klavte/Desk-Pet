@@ -182,6 +182,8 @@ export interface LayerIssue {
  * - `MISSING`：coverage point 的 `scenarios[]` 里写了、却没有任何一层的测试带着它
  *   —— 收窄到**声明的层**判定：声明 layer=L 的覆盖点，其每个 caseId 必须出现在 L 层
  *   的集合里。声明层本次未收集时不判定（这正是「各校验自己那层」）。
+ *   `platformExempt` 列出的 caseId 在对应平台不做这项判定（测试在该平台无法执行，
+ *   跳过本身仍不计覆盖）。
  * - `ORPHAN`：某层收集到 `[caseId]`、却没有**同层**的 coverage point 引用它
  *   —— 包括「任何覆盖点都没引用」（凭空多出）与「只被别的层引用」（层声明写错 /
  *   案例已换层）两种，它们都会让该层的覆盖账面与真实运行的测试对不上。
@@ -190,9 +192,10 @@ export interface LayerIssue {
 export function checkLayerCoverage(
   contracts: ModuleContract[],
   caseIdsByLayer: CaseIdsByLayer,
+  platform: NodeJS.Platform = process.platform,
 ): LayerIssue[] {
-  const points: Array<{ module: string; point: CoveragePoint }> = contracts.flatMap(contract =>
-    contract.coverage.map(point => ({ module: contract.module, point })),
+  const points: Array<{ module: string; contract: ModuleContract; point: CoveragePoint }> = contracts.flatMap(contract =>
+    contract.coverage.map(point => ({ module: contract.module, contract, point })),
   )
   const collected = new Map<TestLayer, string[]>()
   for (const layer of LAYERS) {
@@ -202,12 +205,14 @@ export function checkLayerCoverage(
 
   const issues: LayerIssue[] = []
 
-  // 1. MISSING：声明层的集合里必须有它的每个 caseId。
-  for (const { module, point } of points) {
+  // 1. MISSING：声明层的集合里必须有它的每个 caseId；平台限定用例在对应平台豁免。
+  for (const { module, contract, point } of points) {
     const layerIds = collected.get(point.layer)
     if (!layerIds) continue
     const layerSet = new Set(layerIds)
+    const exempt = new Set(contract.platformExempt?.[platform] ?? [])
     for (const caseId of point.scenarios) {
+      if (exempt.has(caseId)) continue
       if (!layerSet.has(caseId)) {
         issues.push({
           rule: "MISSING",
