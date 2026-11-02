@@ -13,7 +13,7 @@ Rust 实现细则见 [native-host AGENTS](../../crates/native-host/AGENTS.md)，
 
 | 任务 | 文档入口 |
 |---|---|
-| 回合、队列、取消、恢复、Prompt/压缩 | [运行时契约](../../docs/current/runtime-contract.md) |
+| 回合、队列、Plan、取消、恢复、Prompt/压缩 | [运行时契约](../../docs/current/runtime-contract.md) |
 | 会话与长期记忆边界 | [当前记忆](../../docs/current/memory.md)、[数据库](../../docs/current/database.md) |
 | 工具、权限、MCP、Skill | [工具系统](../../docs/current/tool-system.md) |
 | 配置、路径、Card/Profile 与种子 | [运行时数据](../../docs/current/runtime-data.md) |

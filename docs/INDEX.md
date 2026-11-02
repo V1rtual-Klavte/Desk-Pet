@@ -11,7 +11,7 @@
 | 找模块、跟踪主调用链 | [系统地图](current/system-design.md) | 目标源码与对应 current 文档 |
 | TypeScript 业务服务与 HostBridge 接线规则 | [services AGENTS](../src/services/AGENTS.md) | 目标领域 current 与源码 |
 | Rust 宿主、原生 UI 与平台规则 | [native-host AGENTS](../crates/native-host/AGENTS.md) | [工程参考](current/development.md)与目标源码 |
-| 会话队列、取消、恢复、Pi 协议与 Harness 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
+| 会话队列、Plan、取消、恢复、Pi 协议与 Harness 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
 | 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
 | 数据库表结构、schema 版本、库文件与 WAL | [数据库](current/database.md) | 记忆与主动链同库；行为见[当前记忆](current/memory.md)、[主动陪伴](current/proactive.md) |
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |

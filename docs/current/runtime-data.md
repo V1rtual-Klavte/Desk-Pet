@@ -103,6 +103,8 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 原生设置窗「启用 /plan 命令」经 `settings_commit` 写入同一 CONFIG 键，运行期由 [config.ts](../../src/services/config.ts) 的 `planConfig.enabled` 读取。命令层在开关关闭时拒绝并说明设置项，目标为空时给出用法；忙碌期按 `busyPolicy: "exclusive"` 明确拒绝；无工具回合在 runner 空闲路径拒绝（「计划需要工具能力，无工具回合不能执行 /plan」，不发 Provider 请求）。普通文本里的 `/plan` 与 `/planet` 不触发；命令开关关闭不隐藏计划工具。关键词列表、复杂度阈值和独立复杂度评估请求已删除。
 
+其余计划参数不提供设置控件，修改入口是运行时 CONFIG 的 YAML（字段见 [CONFIG.yaml](../../CONFIG.yaml) 的 `ai.plan`）：`maxSteps`（默认 8，规划输出步骤上限，超过按工作单不合法降级为单步直接执行）、`stepMaxToolCalls`（默认 100，单步子代理的工具调用次数上限，计次不计轮，命中后禁止再调工具但允许一次收尾生成）、`thinkingEffort`（默认 medium，规划与计划级核验共用）、`stepThinkingEffort`（默认 low，每步执行子代理）、`onStepFailure`（默认 `continue`，可取 `continue`/`abort`/`ask`，逐步确认模式强制 `ask`）；`planTimeoutMs` 见上文技术参数段。运行期分别由 [plan-phase.ts](../../src/services/engine/runtime/plan-phase.ts)、[plan-proposal.ts](../../src/services/engine/runtime/plan-proposal.ts) 与 [verifier.ts](../../src/services/engine/plan/verifier.ts) 经 `planConfig` getter 读取。
+
 ### Bash 白名单字段的语义与生效时机
 
 | 字段 | 取值 | 语义 | 生效 |

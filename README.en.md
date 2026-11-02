@@ -189,7 +189,8 @@ information when unavailable.
 On first launch, pick a Card, Profile, and AI model in the settings window (General / AI /
 Memory / Tools / Appearance), and configure humanized delivery, silent access, MCP servers,
 and skills as needed. Type `/help` in the chat box to see all commands: `/skill` invokes a
-skill, `/compact` compacts the current session's context.
+skill, `/compact` compacts the current session's context, and `/plan <goal>` plans before
+executing.
 
 With memory enabled, chat draws on user facts and the committed conversation transcript —
 current and cross-session. Her past words keep their role and time provenance, so you can ask
